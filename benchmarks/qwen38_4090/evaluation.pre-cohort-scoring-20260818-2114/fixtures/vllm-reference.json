@@ -1,0 +1,85 @@
+{
+  "schema": "apxinf.qwen38_27b.leaderboard_submission.v1",
+  "implementation": {
+    "name": "vLLM reference",
+    "revision": "teacher-run-2026-08-17",
+    "backend": "vllm"
+  },
+  "correctness": {
+    "protocol_pass": true,
+    "public_pass_rate": 1.0,
+    "hidden_pass_rate": null,
+    "token_trajectory_rate": 1.0
+  },
+  "cells": {
+    "text-perf-1024": {
+      "actual_prompt_tokens": 1024,
+      "completion_tokens": 128,
+      "success_rate": 1.0,
+      "measured_repeats": 3,
+      "warmup_repeats": 1,
+      "ttft_s": 0.4311209,
+      "tpot_s": 0.083827
+    },
+    "text-perf-2048": {
+      "actual_prompt_tokens": 2048,
+      "completion_tokens": 128,
+      "success_rate": 1.0,
+      "measured_repeats": 3,
+      "warmup_repeats": 1,
+      "ttft_s": 0.826997,
+      "tpot_s": 0.08706
+    },
+    "text-perf-4096": {
+      "actual_prompt_tokens": 4096,
+      "completion_tokens": 128,
+      "success_rate": 1.0,
+      "measured_repeats": 3,
+      "warmup_repeats": 1,
+      "ttft_s": 1.602,
+      "tpot_s": 0.08529
+    },
+    "text-perf-8192": {
+      "actual_prompt_tokens": 8192,
+      "completion_tokens": 128,
+      "success_rate": 1.0,
+      "measured_repeats": 3,
+      "warmup_repeats": 1,
+      "ttft_s": 3.1837,
+      "tpot_s": 0.084592
+    },
+    "text-perf-16384": {
+      "actual_prompt_tokens": 16384,
+      "completion_tokens": 128,
+      "success_rate": 1.0,
+      "measured_repeats": 3,
+      "warmup_repeats": 1,
+      "ttft_s": 6.525,
+      "tpot_s": 0.08696
+    },
+    "text-perf-32768": {
+      "actual_prompt_tokens": 32768,
+      "completion_tokens": 128,
+      "success_rate": 1.0,
+      "measured_repeats": 3,
+      "warmup_repeats": 1,
+      "ttft_s": 13.906,
+      "tpot_s": 0.08446
+    }
+  },
+  "context": {
+    "max_verified_prompt_tokens": 32768,
+    "verified_output_tokens": 128,
+    "first_failed_prompt_tokens": 42210,
+    "failure_mode": "oom",
+    "service_healthy_after_failure": true
+  },
+  "reliability": {
+    "request_success_rate": 1.0,
+    "no_oom": true,
+    "no_nan": true,
+    "no_fallback": true,
+    "no_xid": true,
+    "service_healthy_after_failure": true
+  }
+}

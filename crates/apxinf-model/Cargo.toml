@@ -29,5 +29,49 @@ name = "pi05_bench"
 required-features = ["cuda"]
 
 [[example]]
+name = "qwen35_w4a16_probe"
+required-features = ["cuda"]
+
+[[example]]
+name = "qwen35_gdn_core_probe"
+required-features = ["cuda"]
+
+[[example]]
+name = "qwen35_gdn_layer_probe"
+required-features = ["cuda"]
+
+[[example]]
+name = "qwen35_mlp_layer_probe"
+required-features = ["cuda"]
+
+[[example]]
+name = "qwen35_attention_layer_probe"
+required-features = ["cuda"]
+
+[[example]]
+name = "qwen35_hybrid_unit_probe"
+required-features = ["cuda"]
+
+[[example]]
+name = "qwen35_64layer_probe"
+required-features = ["cuda"]
+
+[[example]]
+name = "qwen35_token_probe"
+required-features = ["cuda"]
+
+[[example]]
+name = "qwen35_trajectory_probe"
+required-features = ["cuda"]
+
+[[example]]
+name = "qwen35_w4a16_prefill_probe"
+required-features = ["cuda"]
+
+[[example]]
+name = "qwen35_mlp_prefill_probe"
+required-features = ["cuda"]
+
+[[example]]
 name = "pi05_auto_smoke"
 required-features = ["cuda"]

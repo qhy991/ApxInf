@@ -1,0 +1,168 @@
+{
+  "contract": {
+    "oracle": "eight existing single-token production kernels",
+    "path": "fused conv4/prepare -> recurrent scan -> gated RMSNorm",
+    "state_semantics": "one causal conv and recurrent state carried across all eight tokens",
+    "tokens": 8
+  },
+  "correctness": {
+    "comparison": "BF16 and FP32 bitwise identity at every output and final state endpoint",
+    "different_values": [
+      [
+        "a",
+        0
+      ],
+      [
+        "b",
+        0
+      ],
+      [
+        "query",
+        0
+      ],
+      [
+        "key",
+        0
+      ],
+      [
+        "value",
+        0
+      ],
+      [
+        "core",
+        0
+      ],
+      [
+        "norm",
+        0
+      ],
+      [
+        "g",
+        0
+      ],
+      [
+        "beta",
+        0
+      ],
+      [
+        "conv_state",
+        0
+      ],
+      [
+        "recurrent_state",
+        0
+      ]
+    ],
+    "pass": true
+  },
+  "device": {
+    "cublas": "12.3.2",
+    "cuda": "12.3",
+    "multiprocessors": 128,
+    "name": "NVIDIA GeForce RTX 4090",
+    "sm": 89
+  },
+  "evidence_level": "stateful-gdn-prefill-primitive",
+  "kernel_build_id": "kb1-4e9f6bf88b93b7c8d954d65e2aca2027",
+  "layer": 1,
+  "model_dir": "/mnt/user_dir/hanjinchen/models/cyankiwi/Qwen3.8-27B-AWQ-INT4",
+  "model_promoted": false,
+  "schema": "apxinf.qwen35.gdn_scan_prefill_probe.v1",
+  "timing": {
+    "boundary": "all conv/prepare, recurrent, and gated-norm launches through stream synchronize",
+    "calls_per_sample": 3,
+    "candidate_median_us": 87.27999999999999,
+    "candidate_raw_us": [
+      87.70333333333333,
+      87.19333333333334,
+      87.053,
+      87.58666666666666,
+      87.27999999999999
+    ],
+    "candidate_tokens_per_second": 91659.02841429882,
+    "candidate_wins": 5,
+    "median_speedup": 1.3827528261533764,
+    "pairs": 5,
+    "records": [
+      {
+        "arm": "serial_m1",
+        "order": "AB",
+        "order_index": 0,
+        "pair": 0,
+        "us_per_8_tokens": 121.07966666666668
+      },
+      {
+        "arm": "m8_scan",
+        "order": "AB",
+        "order_index": 1,
+        "pair": 0,
+        "us_per_8_tokens": 87.70333333333333
+      },
+      {
+        "arm": "m8_scan",
+        "order": "BA",
+        "order_index": 0,
+        "pair": 1,
+        "us_per_8_tokens": 87.19333333333334
+      },
+      {
+        "arm": "serial_m1",
+        "order": "BA",
+        "order_index": 1,
+        "pair": 1,
+        "us_per_8_tokens": 121.17966666666668
+      },
+      {
+        "arm": "serial_m1",
+        "order": "AB",
+        "order_index": 0,
+        "pair": 2,
+        "us_per_8_tokens": 121.0
+      },
+      {
+        "arm": "m8_scan",
+        "order": "AB",
+        "order_index": 1,
+        "pair": 2,
+        "us_per_8_tokens": 87.053
+      },
+      {
+        "arm": "m8_scan",
+        "order": "BA",
+        "order_index": 0,
+        "pair": 3,
+        "us_per_8_tokens": 87.58666666666666
+      },
+      {
+        "arm": "serial_m1",
+        "order": "BA",
+        "order_index": 1,
+        "pair": 3,
+        "us_per_8_tokens": 120.94633333333333
+      },
+      {
+        "arm": "serial_m1",
+        "order": "AB",
+        "order_index": 0,
+        "pair": 4,
+        "us_per_8_tokens": 120.68666666666667
+      },
+      {
+        "arm": "m8_scan",
+        "order": "AB",
+        "order_index": 1,
+        "pair": 4,
+        "us_per_8_tokens": 87.27999999999999
+      }
+    ],
+    "serial_median_us": 121.0,
+    "serial_raw_us": [
+      121.07966666666668,
+      121.17966666666668,
+      121.0,
+      120.94633333333333,
+      120.68666666666667
+    ],
+    "warmups_per_arm": 3
+  }
+}

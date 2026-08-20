@@ -1,0 +1,124 @@
+{
+  "context_details": {
+    "max_verified_prompt_tokens": 8192,
+    "points": 9.0,
+    "reasons": []
+  },
+  "correctness_details": {
+    "hidden_cases": 0.0,
+    "protocol": 5.0,
+    "public_cases": 15.0,
+    "token_trajectory": 5.0
+  },
+  "diagnostic_score": 65.00528137194189,
+  "eligibility_failures": [],
+  "eligible": true,
+  "implementation": {
+    "backend": "apxinf-marlin-m64",
+    "name": "ApxInf Marlin-M64 current teacher candidate",
+    "revision": "teacher-run-2026-08-18"
+  },
+  "latency_details": {
+    "tpot": [
+      {
+        "anchor_seconds": 0.0237901301,
+        "eligible": true,
+        "id": "text-perf-1024",
+        "metric": "tpot_s",
+        "observed_seconds": 0.02258225248789224,
+        "points": 8.0,
+        "reasons": [],
+        "weight": 8.0
+      },
+      {
+        "anchor_seconds": 0.0284912848,
+        "eligible": true,
+        "id": "text-perf-8192",
+        "metric": "tpot_s",
+        "observed_seconds": 0.026969426377551762,
+        "points": 12.0,
+        "reasons": [],
+        "weight": 12.0
+      }
+    ],
+    "ttft": [
+      {
+        "anchor_seconds": 0.4311209,
+        "eligible": true,
+        "id": "text-perf-1024",
+        "metric": "ttft_s",
+        "observed_seconds": 5.617632523179054,
+        "points": 0.4604653987826451,
+        "reasons": [],
+        "weight": 6.0
+      },
+      {
+        "anchor_seconds": 0.826997,
+        "eligible": false,
+        "id": "text-perf-2048",
+        "metric": "ttft_s",
+        "observed_seconds": null,
+        "points": 0.0,
+        "reasons": [
+          "missing_cell"
+        ],
+        "weight": 5.0
+      },
+      {
+        "anchor_seconds": 1.602,
+        "eligible": false,
+        "id": "text-perf-4096",
+        "metric": "ttft_s",
+        "observed_seconds": null,
+        "points": 0.0,
+        "reasons": [
+          "missing_cell"
+        ],
+        "weight": 5.0
+      },
+      {
+        "anchor_seconds": 3.1837,
+        "eligible": true,
+        "id": "text-perf-8192",
+        "metric": "ttft_s",
+        "observed_seconds": 46.74899645894766,
+        "points": 0.5448159731592521,
+        "reasons": [],
+        "weight": 8.0
+      },
+      {
+        "anchor_seconds": 6.525,
+        "eligible": false,
+        "id": "text-perf-16384",
+        "metric": "ttft_s",
+        "observed_seconds": null,
+        "points": 0.0,
+        "reasons": [
+          "missing_cell"
+        ],
+        "weight": 6.0
+      }
+    ]
+  },
+  "leaderboard_score": 65.00528137194189,
+  "profile": "public_calibration",
+  "reliability_details": {
+    "boolean_checks": {
+      "no_fallback": true,
+      "no_nan": true,
+      "no_oom": true,
+      "no_xid": true,
+      "service_healthy_after_failure": true
+    },
+    "points": 10.0,
+    "request_success_rate": 1.0
+  },
+  "schema": "apxinf.qwen38_27b.leaderboard_score.v1",
+  "section_scores": {
+    "context": 9.0,
+    "correctness": 25.0,
+    "reliability": 10.0,
+    "tpot": 20.0,
+    "ttft": 1.0052813719418972
+  }
+}

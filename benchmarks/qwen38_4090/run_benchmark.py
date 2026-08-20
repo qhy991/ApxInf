@@ -1,0 +1,701 @@
+#!/usr/bin/env python3
+"""Run deterministic Qwen3.8 workloads against an OpenAI-compatible server.
+
+Official latency is client-observed, no-profiler wall time. Hardware samples
+are explanatory evidence and are never substituted for service timing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import csv
+import hashlib
+import json
+import math
+import statistics
+import subprocess
+import threading
+import time
+from collections import defaultdict
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterable
+
+import requests
+from transformers import AutoTokenizer
+
+
+def parse_args() -> argparse.Namespace:
+    here = Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--spec", type=Path, default=here / "spec.json")
+    parser.add_argument("--data-dir", type=Path, default=here / "data")
+    parser.add_argument("--output-dir", type=Path, default=here / "results")
+    parser.add_argument(
+        "--suite",
+        choices=["all", "text-capability", "text-performance", "multimodal"],
+        default="all",
+    )
+    parser.add_argument("--case-id", action="append", default=[])
+    parser.add_argument("--base-url")
+    parser.add_argument("--model")
+    parser.add_argument("--repeats", type=int)
+    parser.add_argument("--warmups", type=int)
+    parser.add_argument("--timeout", type=float)
+    parser.add_argument("--max-context", type=int)
+    parser.add_argument("--skip-health-check", action="store_true")
+    parser.add_argument(
+        "--apxinf-prefill-mode", choices=["m8", "marlin-m64"]
+    )
+    parser.add_argument(
+        "--api-mode",
+        choices=["chat", "evaluation"],
+        default="chat",
+        help="Use the standard chat API or the exact pre-tokenized evaluation v1 API.",
+    )
+    return parser.parse_args()
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    with path.open(encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def percentile(values: list[float], p: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * p / 100.0
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+
+def safe_mean(values: Iterable[float]) -> float | None:
+    values = list(values)
+    return statistics.fmean(values) if values else None
+
+
+def safe_cv(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return 0.0 if values else None
+    mean = statistics.fmean(values)
+    return statistics.stdev(values) / mean if mean else None
+
+
+def normalize_answer(text: str) -> str:
+    text = text.strip().lower()
+    return " ".join(text.strip("`'\".,:;!?()[]{} ").split())
+
+
+def validate(case: dict[str, Any], output: str) -> tuple[bool, str]:
+    mode = case.get("validation", "nonempty")
+    if mode == "nonempty":
+        return bool(output.strip()), "nonempty"
+    if mode == "normalized_exact":
+        actual = normalize_answer(output)
+        expected = normalize_answer(str(case["expected"]))
+        return actual == expected, f"expected={expected!r} actual={actual!r}"
+    raise ValueError(f"unknown validation mode: {mode}")
+
+
+def image_data_uri(path: Path) -> str:
+    suffix = path.suffix.lower()
+    mime = "image/png" if suffix == ".png" else "image/jpeg"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+@dataclass
+class HardwareSample:
+    monotonic_s: float
+    wall_time: str
+    gpu_util_pct: float
+    memory_util_pct: float
+    memory_used_mib: float
+    memory_total_mib: float
+    power_w: float
+    sm_clock_mhz: float
+    memory_clock_mhz: float
+    temperature_c: float
+
+
+@dataclass
+class HardwareSampler:
+    interval_ms: int
+    samples: list[HardwareSample] = field(default_factory=list)
+    process: subprocess.Popen | None = None
+    thread: threading.Thread | None = None
+
+    fields = [
+        "timestamp",
+        "utilization.gpu",
+        "utilization.memory",
+        "memory.used",
+        "memory.total",
+        "power.draw",
+        "clocks.current.sm",
+        "clocks.current.memory",
+        "temperature.gpu",
+    ]
+
+    def start(self) -> None:
+        command = [
+            "nvidia-smi",
+            f"--query-gpu={','.join(self.fields)}",
+            "--format=csv,noheader,nounits",
+            "-lms",
+            str(self.interval_ms),
+        ]
+        self.process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self.thread = threading.Thread(target=self._consume, daemon=True)
+        self.thread.start()
+
+    def _consume(self) -> None:
+        assert self.process and self.process.stdout
+        reader = csv.reader(self.process.stdout)
+        for row in reader:
+            if len(row) != len(self.fields):
+                continue
+            try:
+                self.samples.append(
+                    HardwareSample(
+                        monotonic_s=time.perf_counter(),
+                        wall_time=row[0].strip(),
+                        gpu_util_pct=float(row[1]),
+                        memory_util_pct=float(row[2]),
+                        memory_used_mib=float(row[3]),
+                        memory_total_mib=float(row[4]),
+                        power_w=float(row[5]),
+                        sm_clock_mhz=float(row[6]),
+                        memory_clock_mhz=float(row[7]),
+                        temperature_c=float(row[8]),
+                    )
+                )
+            except ValueError:
+                continue
+
+    def stop(self) -> None:
+        if self.process is None:
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=3)
+        if self.thread:
+            self.thread.join(timeout=3)
+
+    def window(self, start: float, end: float) -> dict[str, Any]:
+        rows = [sample for sample in self.samples if start <= sample.monotonic_s <= end]
+        if not rows:
+            return {"sample_count": 0}
+        duration = max(0.0, end - start)
+        power_mean = statistics.fmean(row.power_w for row in rows)
+        total_mib = rows[0].memory_total_mib
+        peak_mib = max(row.memory_used_mib for row in rows)
+        return {
+            "sample_count": len(rows),
+            "gpu_util_mean_pct": statistics.fmean(row.gpu_util_pct for row in rows),
+            "gpu_util_max_pct": max(row.gpu_util_pct for row in rows),
+            "memory_controller_util_mean_pct": statistics.fmean(row.memory_util_pct for row in rows),
+            "memory_controller_util_max_pct": max(row.memory_util_pct for row in rows),
+            "memory_used_peak_mib": peak_mib,
+            "memory_total_mib": total_mib,
+            "memory_headroom_min_mib": total_mib - peak_mib,
+            "power_mean_w": power_mean,
+            "power_max_w": max(row.power_w for row in rows),
+            "energy_estimate_j": power_mean * duration,
+            "sm_clock_mean_mhz": statistics.fmean(row.sm_clock_mhz for row in rows),
+            "memory_clock_mean_mhz": statistics.fmean(row.memory_clock_mhz for row in rows),
+            "temperature_max_c": max(row.temperature_c for row in rows),
+        }
+
+
+def load_tokenizer(model_dir: Path):
+    return AutoTokenizer.from_pretrained(
+        str(model_dir),
+        trust_remote_code=True,
+        local_files_only=True,
+        use_fast=True,
+    )
+
+
+def build_messages(case: dict[str, Any], manifest_dir: Path) -> list[dict[str, Any]]:
+    if case["modality"] == "text":
+        return [{"role": "user", "content": case["prompt"]}]
+    content: list[dict[str, Any]] = []
+    for image in case["images"]:
+        path = manifest_dir / image["path"]
+        if sha256_file(path) != image["sha256"]:
+            raise ValueError(f"image hash mismatch: {path}")
+        content.append({"type": "image_url", "image_url": {"url": image_data_uri(path)}})
+    content.append({"type": "text", "text": case["prompt"]})
+    return [{"role": "user", "content": content}]
+
+
+def chat_token_ids(tokenizer, prompt: str) -> list[int]:
+    messages = [{"role": "user", "content": prompt}]
+    kwargs = {
+        "tokenize": True,
+        "add_generation_prompt": True,
+        "enable_thinking": False,
+        "preserve_thinking": False,
+    }
+    try:
+        ids = tokenizer.apply_chat_template(messages, **kwargs)
+    except TypeError:
+        kwargs.pop("preserve_thinking", None)
+        try:
+            ids = tokenizer.apply_chat_template(messages, **kwargs)
+        except TypeError:
+            kwargs.pop("enable_thinking", None)
+            ids = tokenizer.apply_chat_template(messages, **kwargs)
+    if isinstance(ids, Mapping):
+        ids = ids["input_ids"]
+    return list(ids)
+
+
+def extract_delta_text(event: dict[str, Any]) -> tuple[str, str]:
+    choices = event.get("choices") or []
+    if not choices:
+        return "", ""
+    delta = choices[0].get("delta") or {}
+    content = delta.get("content")
+    reasoning = delta.get("reasoning_content")
+    content_text = content if isinstance(content, str) else ""
+    reasoning_text = reasoning if isinstance(reasoning, str) else ""
+    return content_text, reasoning_text
+
+
+def request_once(
+    case: dict[str, Any],
+    manifest_dir: Path,
+    base_url: str,
+    model: str,
+    timeout: float,
+    chat_template_kwargs: dict[str, Any],
+    tokenizer,
+    sampler: HardwareSampler,
+    apxinf_prefill_mode: str | None = None,
+    api_mode: str = "chat",
+) -> dict[str, Any]:
+    if api_mode == "evaluation":
+        if case["modality"] != "text":
+            raise ValueError("evaluation v1 is text-only; multimodal cases require chat mode")
+        body = {
+            "input_ids": chat_token_ids(tokenizer, case["prompt"]),
+            "max_new_tokens": case["max_tokens"],
+            "temperature": case.get("temperature", 0.0),
+            "ignore_eos": case.get("ignore_eos", False),
+            "stream": True,
+        }
+        endpoint = "/v1/evaluations/generate"
+    else:
+        body = {
+            "model": model,
+            "messages": build_messages(case, manifest_dir),
+            "temperature": case.get("temperature", 0.0),
+            "max_tokens": case["max_tokens"],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "ignore_eos": case.get("ignore_eos", False),
+            "chat_template_kwargs": chat_template_kwargs,
+        }
+        if apxinf_prefill_mode is not None:
+            body["apxinf_prefill_mode"] = apxinf_prefill_mode
+        endpoint = "/v1/chat/completions"
+    start = time.perf_counter()
+    first_output = None
+    last_output = None
+    chunk_itls: list[float] = []
+    content_chunks: list[str] = []
+    reasoning_chunks: list[str] = []
+    output_token_ids: list[int] = []
+    usage: dict[str, Any] = {}
+    server_metrics: dict[str, Any] = {}
+    apxinf_metrics: dict[str, Any] = {}
+    status_code = None
+    error = None
+
+    try:
+        with requests.post(
+            f"{base_url.rstrip('/')}{endpoint}",
+            json=body,
+            stream=True,
+            timeout=(30, timeout),
+        ) as response:
+            status_code = response.status_code
+            response.raise_for_status()
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if isinstance(raw_line, bytes):
+                    raw_line = raw_line.decode("utf-8", "replace")
+                if not raw_line or not raw_line.startswith("data:"):
+                    continue
+                data = raw_line[5:].strip()
+                if data == "[DONE]":
+                    break
+                event = json.loads(data)
+                if event.get("usage"):
+                    usage = event["usage"]
+                if event.get("metrics"):
+                    server_metrics = event["metrics"]
+                if event.get("server_timing"):
+                    server_metrics = event["server_timing"]
+                if event.get("apxinf"):
+                    apxinf_metrics = event["apxinf"]
+                if event.get("type") == "token":
+                    token_id = event.get("token_id")
+                    if not isinstance(token_id, int) or token_id < 0:
+                        raise ValueError("evaluation token event has invalid token_id")
+                    now = time.perf_counter()
+                    if first_output is None:
+                        first_output = now
+                    if last_output is not None:
+                        chunk_itls.append(now - last_output)
+                    last_output = now
+                    output_token_ids.append(token_id)
+                    continue
+                content, reasoning = extract_delta_text(event)
+                if content or reasoning:
+                    now = time.perf_counter()
+                    if first_output is None:
+                        first_output = now
+                    if last_output is not None:
+                        chunk_itls.append(now - last_output)
+                    last_output = now
+                    content_chunks.append(content)
+                    reasoning_chunks.append(reasoning)
+    except Exception as exc:  # Preserve the raw failure as benchmark evidence.
+        error = f"{type(exc).__name__}: {exc}"
+
+    end = time.perf_counter()
+    content_output = "".join(content_chunks)
+    reasoning_output = "".join(reasoning_chunks)
+    output_for_validation = content_output or reasoning_output
+    if output_token_ids:
+        output_for_validation = tokenizer.decode(output_token_ids, skip_special_tokens=True)
+
+    prompt_tokens = usage.get("prompt_tokens") or case.get("manifest_prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    if completion_tokens is None and output_for_validation:
+        completion_tokens = len(tokenizer.encode(output_for_validation, add_special_tokens=False))
+
+    ttft = first_output - start if first_output is not None else None
+    e2e = end - start
+    decode_duration = (
+        last_output - first_output
+        if first_output is not None and last_output is not None
+        else None
+    )
+    tpot = None
+    decode_tps = None
+    if decode_duration is not None and completion_tokens and completion_tokens > 1:
+        tpot = decode_duration / (completion_tokens - 1)
+        decode_tps = (completion_tokens - 1) / decode_duration if decode_duration > 0 else None
+    effective_prefill_tps = None
+    if ttft and prompt_tokens:
+        effective_prefill_tps = prompt_tokens / ttft
+
+    functional_pass, validation_detail = validate(case, output_for_validation)
+    success = error is None and status_code == 200 and first_output is not None
+    return {
+        "timestamp_utc": utc_now(),
+        "case_id": case["id"],
+        "suite": case["suite"],
+        "modality": case["modality"],
+        "target_context_tokens": case.get("target_context_tokens"),
+        "input_sha256": case["input_sha256"],
+        "status_code": status_code,
+        "success": success,
+        "functional_pass": success and functional_pass,
+        "validation_detail": validation_detail,
+        "error": error,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "ttft_s": ttft,
+        "e2e_s": e2e,
+        "decode_duration_s": decode_duration,
+        "tpot_s": tpot,
+        "effective_prefill_tokens_per_s": effective_prefill_tps,
+        "decode_tokens_per_s": decode_tps,
+        "chunk_itl_s": chunk_itls,
+        "chunk_itl_p50_s": percentile(chunk_itls, 50),
+        "chunk_itl_p95_s": percentile(chunk_itls, 95),
+        "chunk_itl_p99_s": percentile(chunk_itls, 99),
+        "usage": usage,
+        "server_metrics": server_metrics,
+        "apxinf": apxinf_metrics,
+        "output_text": content_output,
+        "reasoning_text": reasoning_output,
+        "output_token_ids": output_token_ids,
+        "hardware": sampler.window(start, end),
+    }
+
+
+def health_check(base_url: str, timeout: float) -> None:
+    response = requests.get(f"{base_url.rstrip('/')}/health", timeout=min(timeout, 30))
+    response.raise_for_status()
+
+
+def summarize(
+    rows: list[dict[str, Any]], spec: dict[str, Any]
+) -> dict[str, Any]:
+    measured = [row for row in rows if row["phase"] == "measure"]
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in measured:
+        grouped[row["case_id"]].append(row)
+
+    cases: dict[str, Any] = {}
+    for case_id, group in grouped.items():
+        successful = [row for row in group if row["success"]]
+        values = lambda key: [float(row[key]) for row in successful if row.get(key) is not None]
+        ttft = values("ttft_s")
+        tpot = values("tpot_s")
+        e2e = values("e2e_s")
+        decode_tps = values("decode_tokens_per_s")
+        prefill_tps = values("effective_prefill_tokens_per_s")
+        warnings = []
+        cv_limit = spec["acceptance"]["measurement_cv_warning"]
+        if safe_cv(ttft) is not None and safe_cv(ttft) > cv_limit:
+            warnings.append("ttft_cv")
+        if safe_cv(tpot) is not None and safe_cv(tpot) > cv_limit:
+            warnings.append("tpot_cv")
+        if len(successful) != len(group):
+            warnings.append("request_failure")
+        if not all(row["functional_pass"] for row in group):
+            warnings.append("functional_failure")
+        cases[case_id] = {
+            "suite": group[0]["suite"],
+            "target_context_tokens": group[0].get("target_context_tokens"),
+            "runs": len(group),
+            "successes": len(successful),
+            "functional_passes": sum(bool(row["functional_pass"]) for row in group),
+            "prompt_tokens_median": percentile(values("prompt_tokens"), 50),
+            "completion_tokens_median": percentile(values("completion_tokens"), 50),
+            "ttft_s_median": percentile(ttft, 50),
+            "ttft_s_mean": safe_mean(ttft),
+            "ttft_cv": safe_cv(ttft),
+            "tpot_s_median": percentile(tpot, 50),
+            "tpot_s_mean": safe_mean(tpot),
+            "tpot_cv": safe_cv(tpot),
+            "e2e_s_median": percentile(e2e, 50),
+            "decode_tokens_per_s_median": percentile(decode_tps, 50),
+            "effective_prefill_tokens_per_s_median": percentile(prefill_tps, 50),
+            "gpu_util_mean_pct": safe_mean(
+                row["hardware"].get("gpu_util_mean_pct")
+                for row in successful
+                if row["hardware"].get("gpu_util_mean_pct") is not None
+            ),
+            "memory_controller_util_mean_pct": safe_mean(
+                row["hardware"].get("memory_controller_util_mean_pct")
+                for row in successful
+                if row["hardware"].get("memory_controller_util_mean_pct") is not None
+            ),
+            "memory_used_peak_mib": max(
+                (row["hardware"].get("memory_used_peak_mib", 0) for row in successful),
+                default=None,
+            ),
+            "power_mean_w": safe_mean(
+                row["hardware"].get("power_mean_w")
+                for row in successful
+                if row["hardware"].get("power_mean_w") is not None
+            ),
+            "warnings": warnings,
+        }
+
+    text_perf = [
+        value
+        for value in cases.values()
+        if value["suite"] == "text-performance"
+        and value["successes"] == value["runs"]
+        and value["functional_passes"] == value["runs"]
+        and value["prompt_tokens_median"] == value["target_context_tokens"]
+    ]
+    max_context = max(
+        (value["target_context_tokens"] for value in text_perf if value["target_context_tokens"]),
+        default=None,
+    )
+
+    adjacent_warnings = []
+    text_perf.sort(key=lambda value: value["target_context_tokens"] or 0)
+    drop_limit = spec["acceptance"]["adjacent_decode_throughput_drop_warning"]
+    for previous, current in zip(text_perf, text_perf[1:]):
+        prev_tps = previous["decode_tokens_per_s_median"]
+        curr_tps = current["decode_tokens_per_s_median"]
+        if prev_tps and curr_tps and curr_tps < prev_tps * (1.0 - drop_limit):
+            adjacent_warnings.append(
+                {
+                    "from_context": previous["target_context_tokens"],
+                    "to_context": current["target_context_tokens"],
+                    "kind": "decode_throughput_drop",
+                    "previous_tokens_per_s": prev_tps,
+                    "current_tokens_per_s": curr_tps,
+                }
+            )
+
+    return {
+        "schema_version": 1,
+        "experiment_id": spec["experiment_id"],
+        "measured_requests": len(measured),
+        "successful_requests": sum(bool(row["success"]) for row in measured),
+        "functional_passes": sum(bool(row["functional_pass"]) for row in measured),
+        "max_supported_context_tokens": max_context,
+        "case_summaries": cases,
+        "cross_context_warnings": adjacent_warnings,
+        "metric_notes": {
+            "ttft": "Client send to first non-empty streamed model output; includes queue, tokenization, preprocessing, prefill, and first decode.",
+            "tpot": "Client-observed (last output time - first output time) / (completion_tokens - 1).",
+            "effective_prefill_tokens_per_s": "prompt_tokens / TTFT; not isolated GPU prefill kernel throughput.",
+            "memory_controller_util": "nvidia-smi percentage proxy; use Nsight Compute for measured DRAM GB/s.",
+            "max_supported_context_tokens": "Largest target context whose measured requests all succeeded, all passed validation, and reported exactly the target prompt-token count.",
+        },
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    spec = read_json(args.spec)
+    base_url = args.base_url or spec["server"]["base_url"]
+    model = args.model or spec["model"]["served_name"]
+    timeout = args.timeout or spec["server"]["request_timeout_seconds"]
+    tokenizer = load_tokenizer(Path(spec["model"]["local_path"]))
+
+    text_path = args.data_dir / "text.jsonl"
+    multimodal_path = args.data_dir / "multimodal.jsonl"
+    manifest_path = args.data_dir / "manifest.json"
+    manifest = read_json(manifest_path)
+    if sha256_file(text_path) != manifest["text_jsonl_sha256"]:
+        raise SystemExit("text manifest hash mismatch")
+    if sha256_file(multimodal_path) != manifest["multimodal_jsonl_sha256"]:
+        raise SystemExit("multimodal manifest hash mismatch")
+
+    cases = read_jsonl(text_path) + read_jsonl(multimodal_path)
+    if args.suite != "all":
+        cases = [case for case in cases if case["suite"] == args.suite]
+    if args.case_id:
+        selected = set(args.case_id)
+        cases = [case for case in cases if case["id"] in selected]
+    if args.max_context:
+        cases = [
+            case
+            for case in cases
+            if not case.get("target_context_tokens")
+            or case["target_context_tokens"] <= args.max_context
+        ]
+    if not cases:
+        raise SystemExit("no benchmark cases selected")
+    if args.api_mode == "evaluation" and any(case["modality"] != "text" for case in cases):
+        raise SystemExit("evaluation API v1 is text-only; select a text suite")
+
+    if not args.skip_health_check:
+        health_check(base_url, timeout)
+
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_dir = args.output_dir / run_id
+    output_dir.mkdir(parents=True, exist_ok=False)
+    raw_path = output_dir / "raw.jsonl"
+
+    metadata = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "started_utc": utc_now(),
+        "experiment_id": spec["experiment_id"],
+        "spec_sha256": sha256_file(args.spec),
+        "dataset_manifest_sha256": sha256_file(manifest_path),
+        "model_revision": spec["model"]["revision"],
+        "base_url": base_url,
+        "served_model": model,
+        "suite": args.suite,
+        "case_ids": [case["id"] for case in cases],
+        "api_mode": args.api_mode,
+    }
+    (output_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    sampler = HardwareSampler(spec["telemetry"]["sample_interval_ms"])
+    sampler.start()
+    time.sleep(max(0.5, sampler.interval_ms / 1000 * 2))
+    rows: list[dict[str, Any]] = []
+    try:
+        with raw_path.open("w", encoding="utf-8") as raw_handle:
+            for case in cases:
+                default_warmups = spec[
+                    "multimodal" if case["suite"] == "multimodal" else "text"
+                ]["warmup_repeats"]
+                default_repeats = spec[
+                    "multimodal" if case["suite"] == "multimodal" else "text"
+                ]["measurement_repeats"]
+                warmups = default_warmups if args.warmups is None else args.warmups
+                repeats = default_repeats if args.repeats is None else args.repeats
+                schedule = [("warmup", index) for index in range(warmups)] + [
+                    ("measure", index) for index in range(repeats)
+                ]
+                for phase, repeat in schedule:
+                    row = request_once(
+                        case=case,
+                        manifest_dir=args.data_dir,
+                        base_url=base_url,
+                        model=model,
+                        timeout=timeout,
+                        chat_template_kwargs=spec["server"]["chat_template_kwargs"],
+                        tokenizer=tokenizer,
+                        sampler=sampler,
+                        apxinf_prefill_mode=args.apxinf_prefill_mode,
+                        api_mode=args.api_mode,
+                    )
+                    row["phase"] = phase
+                    row["repeat"] = repeat
+                    rows.append(row)
+                    raw_handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+                    raw_handle.flush()
+                    print(
+                        f"{case['id']} {phase}[{repeat}] success={row['success']} "
+                        f"functional={row['functional_pass']} ttft={row['ttft_s']} "
+                        f"tpot={row['tpot_s']}"
+                    )
+    finally:
+        sampler.stop()
+
+    summary = summarize(rows, spec)
+    summary["completed_utc"] = utc_now()
+    (output_dir / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

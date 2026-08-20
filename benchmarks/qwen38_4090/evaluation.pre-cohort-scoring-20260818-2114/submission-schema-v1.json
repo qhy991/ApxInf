@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/infinigence/ApxInf/benchmarks/qwen38_4090/evaluation/submission-schema-v1.json",
+  "title": "ApxInf Qwen3.8-27B leaderboard submission",
+  "type": "object",
+  "required": ["schema", "implementation", "correctness", "cells", "context", "reliability"],
+  "properties": {
+    "schema": {"const": "apxinf.qwen38_27b.leaderboard_submission.v1"},
+    "implementation": {
+      "type": "object",
+      "required": ["name", "revision", "backend"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "backend": {"type": "string", "minLength": 1}
+      }
+    },
+    "correctness": {
+      "type": "object",
+      "required": ["protocol_pass", "public_pass_rate", "token_trajectory_rate"],
+      "properties": {
+        "protocol_pass": {"type": "boolean"},
+        "public_pass_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "hidden_pass_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "token_trajectory_rate": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "cells": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["actual_prompt_tokens", "completion_tokens", "success_rate", "measured_repeats", "warmup_repeats"],
+        "properties": {
+          "actual_prompt_tokens": {"type": "integer", "minimum": 1},
+          "completion_tokens": {"type": "integer", "minimum": 1},
+          "success_rate": {"type": "number", "minimum": 0, "maximum": 1},
+          "measured_repeats": {"type": "integer", "minimum": 1},
+          "warmup_repeats": {"type": "integer", "minimum": 0},
+          "ttft_cv": {"type": ["number", "null"], "minimum": 0},
+          "tpot_cv": {"type": ["number", "null"], "minimum": 0},
+          "ttft_s": {"type": "number", "exclusiveMinimum": 0},
+          "tpot_s": {"type": "number", "exclusiveMinimum": 0},
+          "e2e_s": {"type": "number", "exclusiveMinimum": 0},
+          "peak_vram_mib": {"type": ["number", "null"], "minimum": 0},
+          "profile": {
+            "type": "object",
+            "properties": {
+              "prefill": {"$ref": "#/$defs/profilePhase"},
+              "decode": {"$ref": "#/$defs/profilePhase"}
+            }
+          }
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "required": ["max_verified_prompt_tokens", "verified_output_tokens", "service_healthy_after_failure"],
+      "properties": {
+        "max_verified_prompt_tokens": {"type": "integer", "minimum": 0},
+        "verified_output_tokens": {"type": "integer", "minimum": 0},
+        "first_failed_prompt_tokens": {"type": ["integer", "null"], "minimum": 0},
+        "failure_mode": {"type": ["string", "null"]},
+        "service_healthy_after_failure": {"type": "boolean"}
+      }
+    },
+    "reliability": {
+      "type": "object",
+      "required": ["request_success_rate", "no_oom", "no_nan", "no_fallback", "no_xid", "service_healthy_after_failure"],
+      "properties": {
+        "request_success_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "no_oom": {"type": "boolean"},
+        "no_nan": {"type": "boolean"},
+        "no_fallback": {"type": "boolean"},
+        "no_xid": {"type": "boolean"},
+        "service_healthy_after_failure": {"type": "boolean"}
+      }
+    }
+  },
+  "$defs": {
+    "profilePhase": {
+      "type": "object",
+      "required": ["kernel_elapsed_s", "dram_read_bytes", "dram_write_bytes"],
+      "properties": {
+        "kernel_elapsed_s": {"type": "number", "exclusiveMinimum": 0},
+        "dram_read_bytes": {"type": "number", "minimum": 0},
+        "dram_write_bytes": {"type": "number", "minimum": 0},
+        "tensor_pipe_active_pct": {"type": ["number", "null"], "minimum": 0, "maximum": 100}
+      }
+    }
+  }
+}

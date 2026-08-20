@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "environment": {
+    "python": "3.10.12",
+    "vllm": "0.27.1",
+    "torch": "2.13.0+cu130",
+    "transformers": "5.15.0",
+    "compressed_tensors": "0.17.0",
+    "flashinfer_python": "0.6.16.post3",
+    "nvidia_driver": "580.95.05",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "compute_capability": "8.9"
+  },
+  "patch": {
+    "file": "/root/venvs/qwen38-vllm-0.27.1/lib/python3.10/site-packages/flashinfer/comm/fd_exchange.py",
+    "backup": "/root/venvs/qwen38-vllm-0.27.1/lib/python3.10/site-packages/flashinfer/comm/fd_exchange.py.py310.orig",
+    "reason": "flashinfer-python evaluates array.array[int] at import time, but array.array is not subscriptable on Python 3.10",
+    "change": "Insert from __future__ import annotations immediately after the module docstring",
+    "original_sha256": "6f9549238cc450efeb30aa740c0bdc2e6dfd4cfa29cee43a9ab010c90a407cee",
+    "patched_sha256": "1401284b1ecce37b1259540f40063e808301d142483a4c7a737d810564864a7c",
+    "validation": "import flashinfer.comm succeeds"
+  }
+}

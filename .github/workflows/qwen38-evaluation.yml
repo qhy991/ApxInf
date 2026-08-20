@@ -1,0 +1,30 @@
+name: Qwen3.8 evaluation contract
+
+on:
+  pull_request:
+    paths:
+      - "benchmarks/qwen38_4090/evaluation/**"
+      - ".github/workflows/qwen38-evaluation.yml"
+  push:
+    paths:
+      - "benchmarks/qwen38_4090/evaluation/**"
+      - ".github/workflows/qwen38-evaluation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Compile evaluator and run deterministic negative controls
+        run: |
+          python -m py_compile benchmarks/qwen38_4090/evaluation/*.py
+          python -m unittest discover \
+            -s benchmarks/qwen38_4090/evaluation \
+            -p 'test_*.py'

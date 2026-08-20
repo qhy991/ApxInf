@@ -1,0 +1,126 @@
+{
+  "contract": {
+    "hidden": 5120,
+    "intermediate": 17408,
+    "path": "gate/up M8 W4 -> eight existing SiLU*Mul views -> down M8 W4",
+    "tokens": 8
+  },
+  "correctness": {
+    "different_bf16_values": [
+      [
+        "gate_up",
+        0
+      ],
+      [
+        "silu_mul",
+        0
+      ],
+      [
+        "output",
+        0
+      ]
+    ],
+    "pass": true
+  },
+  "evidence_level": "mlp-prefill-layer",
+  "kernel_build_id": "kb1-1db8464322ebd9eff34a17628f67add1",
+  "layer": 0,
+  "model_dir": "/mnt/user_dir/hanjinchen/models/cyankiwi/Qwen3.8-27B-AWQ-INT4",
+  "model_promoted": false,
+  "schema": "apxinf.qwen35.mlp_prefill_probe.v1",
+  "timing": {
+    "calls_per_sample": 3,
+    "candidate_median_us": 609.6203333333333,
+    "candidate_raw_us": [
+      609.6203333333333,
+      606.6636666666667,
+      609.6873333333333,
+      606.8036666666667,
+      610.074
+    ],
+    "candidate_tokens_per_second": 13122.921862295714,
+    "candidate_wins": 5,
+    "median_speedup": 2.360189757450129,
+    "pairs": 5,
+    "records": [
+      {
+        "arm": "serial_m1",
+        "order": "AB",
+        "order_index": 0,
+        "pair": 0,
+        "us_per_8_tokens": 1438.8196666666665
+      },
+      {
+        "arm": "m8",
+        "order": "AB",
+        "order_index": 1,
+        "pair": 0,
+        "us_per_8_tokens": 609.6203333333333
+      },
+      {
+        "arm": "m8",
+        "order": "BA",
+        "order_index": 0,
+        "pair": 1,
+        "us_per_8_tokens": 606.6636666666667
+      },
+      {
+        "arm": "serial_m1",
+        "order": "BA",
+        "order_index": 1,
+        "pair": 1,
+        "us_per_8_tokens": 1473.5126666666665
+      },
+      {
+        "arm": "serial_m1",
+        "order": "AB",
+        "order_index": 0,
+        "pair": 2,
+        "us_per_8_tokens": 1438.6063333333334
+      },
+      {
+        "arm": "m8",
+        "order": "AB",
+        "order_index": 1,
+        "pair": 2,
+        "us_per_8_tokens": 609.6873333333333
+      },
+      {
+        "arm": "m8",
+        "order": "BA",
+        "order_index": 0,
+        "pair": 3,
+        "us_per_8_tokens": 606.8036666666667
+      },
+      {
+        "arm": "serial_m1",
+        "order": "BA",
+        "order_index": 1,
+        "pair": 3,
+        "us_per_8_tokens": 1438.7793333333336
+      },
+      {
+        "arm": "serial_m1",
+        "order": "AB",
+        "order_index": 0,
+        "pair": 4,
+        "us_per_8_tokens": 1438.3429999999998
+      },
+      {
+        "arm": "m8",
+        "order": "AB",
+        "order_index": 1,
+        "pair": 4,
+        "us_per_8_tokens": 610.074
+      }
+    ],
+    "serial_median_us": 1438.7793333333336,
+    "serial_raw_us": [
+      1438.8196666666665,
+      1473.5126666666665,
+      1438.6063333333334,
+      1438.7793333333336,
+      1438.3429999999998
+    ]
+  }
+}

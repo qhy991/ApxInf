@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+data/
+results/
+limit_data/
+limit_results/
+edge_data/
+edge_results/
+final_edge_data/
+final_edge_results/

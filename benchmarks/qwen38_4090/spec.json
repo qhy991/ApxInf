@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "experiment_id": "qwen38-awq-int4-rtx4090-bringup-v1",
+  "objective": "Bring up Qwen3.8-27B AWQ INT4 on one RTX 4090 and characterize functional, long-context, multimodal, latency, throughput, and hardware behavior.",
+  "non_goals": [
+    "BF16 numerical equivalence",
+    "online multi-user capacity",
+    "formal optimization promotion",
+    "contexts above 32768 tokens"
+  ],
+  "model": {
+    "repo_id": "cyankiwi/Qwen3.8-27B-AWQ-INT4",
+    "revision": "63768c10df38c0395e12ef49edac1bd539eaeeea",
+    "local_path": "/mnt/user_dir/hanjinchen/models/cyankiwi/Qwen3.8-27B-AWQ-INT4",
+    "served_name": "qwen3.8-27b-awq-int4",
+    "quantization": {
+      "format": "compressed-tensors",
+      "weight_bits": 4,
+      "group_size": 32,
+      "symmetric": false,
+      "activation_dtype": "bf16"
+    }
+  },
+  "server": {
+    "base_url": "http://127.0.0.1:8000",
+    "max_model_len": 33792,
+    "gpu_memory_utilization": 0.97,
+    "kv_cache_dtype": "fp8",
+    "max_num_seqs": 1,
+    "enable_chunked_prefill": true,
+    "enforce_eager": true,
+    "request_timeout_seconds": 900,
+    "chat_template_kwargs": {
+      "enable_thinking": false,
+      "preserve_thinking": false
+    }
+  },
+  "text": {
+    "context_lengths": [1024, 2048, 4096, 8192, 16384, 32768],
+    "needle_positions": [0.1, 0.5, 0.9],
+    "capability_output_tokens": 24,
+    "performance_output_tokens": 128,
+    "warmup_repeats": 1,
+    "measurement_repeats": 3,
+    "seed": 20260817
+  },
+  "multimodal": {
+    "output_tokens": 32,
+    "warmup_repeats": 1,
+    "measurement_repeats": 3,
+    "max_images_per_prompt": 2,
+    "seed": 20260817
+  },
+  "telemetry": {
+    "sample_interval_ms": 200,
+    "bandwidth_proxy": "nvidia-smi utilization.memory is a memory-controller busy percentage, not measured GB/s",
+    "fields": [
+      "utilization.gpu",
+      "utilization.memory",
+      "memory.used",
+      "memory.total",
+      "power.draw",
+      "clocks.current.sm",
+      "clocks.current.memory",
+      "temperature.gpu"
+    ]
+  },
+  "acceptance": {
+    "functional_success_rate": 1.0,
+    "measurement_cv_warning": 0.15,
+    "adjacent_decode_throughput_drop_warning": 0.5,
+    "memory_headroom_warning_mib": 256,
+    "max_context_definition": "Largest target context for which every measured request succeeds and the server remains healthy"
+  }
+}

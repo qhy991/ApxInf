@@ -1,0 +1,49 @@
+{
+  "architecture": "Qwen3_5ForConditionalGeneration",
+  "binary": {
+    "build_id": "70fadb0f85b20576fd8b46512cd88f535e1743c4",
+    "path": "/root/apxinf-target-sm89/release/apxinf",
+    "sha256": "4d83eef615bff6861002f516c68477dc8eb55239a0c9dc2c2f45b86ca84ece8d"
+  },
+  "checkpoint": {
+    "dtype_counts": {
+      "bf16": 1199,
+      "i32": 798,
+      "i64": 399
+    },
+    "shards": 5,
+    "tensor_bytes": 21017689808,
+    "tensors": 2396
+  },
+  "command": "/root/apxinf-target-sm89/release/apxinf inspect --model /mnt/user_dir/hanjinchen/models/cyankiwi/Qwen3.8-27B-AWQ-INT4 --json",
+  "elapsed_seconds": 0.437,
+  "model_revision": "63768c10df38c0395e12ef49edac1bd539eaeeea",
+  "model_type": "qwen3_5",
+  "native_execution_ready": false,
+  "quantization": {
+    "bits": 4,
+    "format": "pack-quantized",
+    "group_size": 32,
+    "ignored_modules": 313,
+    "method": "compressed-tensors",
+    "quantized_linears": 399,
+    "symmetric": false
+  },
+  "status": "validated",
+  "text": {
+    "attention_heads": 24,
+    "full_attention_layers": 16,
+    "head_dim": 256,
+    "hidden_size": 5120,
+    "intermediate_size": 17408,
+    "kv_heads": 4,
+    "layers": 64,
+    "linear_attention_layers": 48,
+    "max_position_embeddings": 262144
+  },
+  "vision": {
+    "depth": 27,
+    "hidden_size": 1152,
+    "output_hidden_size": 5120
+  }
+}

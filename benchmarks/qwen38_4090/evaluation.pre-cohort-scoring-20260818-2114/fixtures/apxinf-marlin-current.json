@@ -1,0 +1,53 @@
+{
+  "schema": "apxinf.qwen38_27b.leaderboard_submission.v1",
+  "implementation": {
+    "name": "ApxInf Marlin-M64 current teacher candidate",
+    "revision": "teacher-run-2026-08-18",
+    "backend": "apxinf-marlin-m64"
+  },
+  "correctness": {
+    "protocol_pass": true,
+    "public_pass_rate": 1.0,
+    "hidden_pass_rate": null,
+    "token_trajectory_rate": 1.0
+  },
+  "cells": {
+    "text-perf-1024": {
+      "actual_prompt_tokens": 1024,
+      "completion_tokens": 128,
+      "success_rate": 1.0,
+      "measured_repeats": 1,
+      "warmup_repeats": 0,
+      "ttft_s": 5.617632523179054,
+      "tpot_s": 0.02258225248789224,
+      "e2e_s": 8.485618352890015,
+      "peak_vram_mib": 18373
+    },
+    "text-perf-8192": {
+      "actual_prompt_tokens": 8192,
+      "completion_tokens": 128,
+      "success_rate": 1.0,
+      "measured_repeats": 1,
+      "warmup_repeats": 0,
+      "ttft_s": 46.74899645894766,
+      "tpot_s": 0.026969426377551762,
+      "e2e_s": 50.17413907498121,
+      "peak_vram_mib": 18373
+    }
+  },
+  "context": {
+    "max_verified_prompt_tokens": 8192,
+    "verified_output_tokens": 128,
+    "first_failed_prompt_tokens": null,
+    "failure_mode": null,
+    "service_healthy_after_failure": true
+  },
+  "reliability": {
+    "request_success_rate": 1.0,
+    "no_oom": true,
+    "no_nan": true,
+    "no_fallback": true,
+    "no_xid": true,
+    "service_healthy_after_failure": true
+  }
+}

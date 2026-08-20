@@ -1,0 +1,148 @@
+{
+  "schema": "apxinf.qwen38_27b.leaderboard_contract.v1",
+  "scenario": {
+    "name": "single_request_offline_service",
+    "primary": true,
+    "description": "One text request at a time on one RTX 4090. Queueing, continuous batching, and multi-request goodput are not scored in v1.",
+    "non_goals": [
+      "continuous batching",
+      "multi-request tail latency",
+      "multimodal inference",
+      "student-side BF16 execution",
+      "contexts above 32768 prompt tokens"
+    ]
+  },
+  "model": {
+    "repo_id": "cyankiwi/Qwen3.8-27B-AWQ-INT4",
+    "revision": "63768c10df38c0395e12ef49edac1bd539eaeeea",
+    "architecture": "Qwen3_5ForConditionalGeneration",
+    "quantization": "compressed-tensors W4A16 group-32 asymmetric",
+    "dense_equivalent_flops_per_token": 54000000000,
+    "full_attention_layers": 16,
+    "attention_query_width": 6144,
+    "minimum_weight_bytes": 21017689808,
+    "efficiency_model_note": "The FLOP and byte counts are frozen leaderboard proxies. They omit some elementwise and recurrent work, and minimum_weight_bytes is a checkpoint-sweep proxy rather than measured HBM traffic."
+  },
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "count": 1,
+    "compute_capability": "8.9",
+    "peak_bf16_tensor_tflops_dense_fp32_accumulate": 165.2,
+    "peak_int4_tensor_tops_dense": 1321.2,
+    "peak_memory_bandwidth_gb_s": 1008.0,
+    "structured_sparsity_allowed": false,
+    "peak_source": "NVIDIA Ada GPU Architecture whitepaper, Appendix A"
+  },
+  "request": {
+    "modality": "text",
+    "temperature": 0.0,
+    "thinking": false,
+    "preserve_thinking": false,
+    "parallel_requests": 1,
+    "max_num_seqs": 1,
+    "require_pretokenized_input_ids": true,
+    "require_exact_prompt_tokens": true,
+    "require_exact_output_budget": true
+  },
+  "correctness_workload": {
+    "public_case_ids": [
+      "text-niah-1024-p10",
+      "text-niah-1024-p50",
+      "text-niah-1024-p90"
+    ],
+    "hidden_case_policy": "Pinned teacher-only text cases covering prompt perturbations and longer contexts; no hidden case may change the public interface or output budget semantics.",
+    "token_trajectory_case_ids": [
+      "text-perf-1024",
+      "text-perf-8192"
+    ],
+    "token_trajectory_definition": "Position-wise exact generated token-ID agreement with the frozen vLLM greedy reference, aggregated over all declared trajectory tokens."
+  },
+  "score_profiles": {
+    "public_calibration": {
+      "measurement": {
+        "minimum_measured_repeats_per_latency_cell": 1,
+        "required_warmup_repeats": 0,
+        "statistic": "median"
+      },
+      "correctness": {
+        "protocol": 5.0,
+        "public_cases": 15.0,
+        "hidden_cases": 0.0,
+        "token_trajectory": 5.0
+      },
+      "eligibility": {
+        "public_pass_rate_min": 0.9,
+        "hidden_pass_rate_min": null,
+        "token_trajectory_rate_min": 0.9
+      }
+    },
+    "midterm_leaderboard": {
+      "measurement": {
+        "minimum_measured_repeats_per_latency_cell": 3,
+        "required_warmup_repeats": 1,
+        "statistic": "median"
+      },
+      "correctness": {
+        "protocol": 5.0,
+        "public_cases": 5.0,
+        "hidden_cases": 10.0,
+        "token_trajectory": 5.0
+      },
+      "eligibility": {
+        "public_pass_rate_min": 0.9,
+        "hidden_pass_rate_min": 0.9,
+        "token_trajectory_rate_min": 0.9
+      }
+    }
+  },
+  "latency_scoring": {
+    "formula": "points = weight * min(1, anchor_seconds / observed_seconds)",
+    "ttft_cells": [
+      {"id": "text-perf-1024", "prompt_tokens": 1024, "output_tokens": 128, "anchor_seconds": 0.4311209, "weight": 6.0},
+      {"id": "text-perf-2048", "prompt_tokens": 2048, "output_tokens": 128, "anchor_seconds": 0.8269970, "weight": 5.0},
+      {"id": "text-perf-4096", "prompt_tokens": 4096, "output_tokens": 128, "anchor_seconds": 1.6020000, "weight": 5.0},
+      {"id": "text-perf-8192", "prompt_tokens": 8192, "output_tokens": 128, "anchor_seconds": 3.1837000, "weight": 8.0},
+      {"id": "text-perf-16384", "prompt_tokens": 16384, "output_tokens": 128, "anchor_seconds": 6.5250000, "weight": 6.0}
+    ],
+    "tpot_cells": [
+      {"id": "text-perf-1024", "prompt_tokens": 1024, "output_tokens": 128, "anchor_seconds": 0.0237901301, "weight": 8.0},
+      {"id": "text-perf-8192", "prompt_tokens": 8192, "output_tokens": 128, "anchor_seconds": 0.0284912848, "weight": 12.0}
+    ]
+  },
+  "context_scoring": {
+    "weight": 15.0,
+    "minimum_prompt_tokens": 1024,
+    "full_score_prompt_tokens": 32768,
+    "minimum_output_tokens": 16,
+    "formula": "weight * clamp(log2(max_verified_prompt/minimum_prompt) / log2(full_score_prompt/minimum_prompt), 0, 1)"
+  },
+  "reliability_scoring": {
+    "weight": 10.0,
+    "request_success_rate_weight": 5.0,
+    "boolean_checks": [
+      "no_oom",
+      "no_nan",
+      "no_fallback",
+      "no_xid",
+      "service_healthy_after_failure"
+    ]
+  },
+  "score_totals": {
+    "correctness": 25.0,
+    "ttft": 30.0,
+    "tpot": 20.0,
+    "context": 15.0,
+    "reliability": 10.0,
+    "leaderboard": 100.0
+  },
+  "course_grade": {
+    "automated_leaderboard_percent": 80,
+    "pr_review_percent": 20,
+    "pr_review_breakdown": {
+      "tests_and_negative_controls": 8,
+      "interface_and_error_handling": 4,
+      "reproducibility": 4,
+      "analysis_and_decision": 4
+    }
+  }
+}
