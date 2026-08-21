@@ -513,6 +513,9 @@ fn validate_chat_content(body: &Value) -> Result<(), String> {
             }
         }
     }
+    if images > 0 && audios > 0 {
+        return Err("simultaneous image and audio input is outside the deployed capability".into());
+    }
     Ok(())
 }
 
@@ -919,5 +922,21 @@ mod tests {
         assert!(validate_generation_request(&unknown, true)
             .unwrap_err()
             .contains("beam_search"));
+    }
+
+    #[test]
+    fn rejects_combined_image_and_audio_before_preprocessing() {
+        let request = json!({
+            "messages":[{
+                "role":"user",
+                "content":[
+                    {"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}},
+                    {"type":"input_audio","input_audio":{"format":"wav","data":"AA=="}}
+                ]
+            }]
+        });
+        assert!(validate_chat_content(&request)
+            .unwrap_err()
+            .contains("simultaneous image and audio"));
     }
 }

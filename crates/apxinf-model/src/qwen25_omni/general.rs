@@ -103,6 +103,7 @@ impl GeneralQwen25Omni {
                 "qwen2.5-omni prompt exceeds context capacity".into(),
             ));
         }
+        reject_unsupported_media_combination(input)?;
         reject_video(input.token_ids, self.config.video_token_id)?;
         let mut hidden = self
             .backend
@@ -347,6 +348,16 @@ fn reject_video(token_ids: &[u32], video_token_id: u32) -> Result<()> {
     Ok(())
 }
 
+fn reject_unsupported_media_combination(input: LlmInput<'_>) -> Result<()> {
+    if input.image.is_some() && input.audio.is_some() {
+        return Err(Error::Other(
+            "qwen2.5-omni simultaneous image and audio input is outside the deployed capability"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn token_positions(token_ids: &[u32], token: u32) -> Vec<usize> {
     token_ids
         .iter()
@@ -529,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn constructs_mixed_media_positions_and_rejects_video() {
+    fn rejects_combined_media_and_video() {
         let config = config();
         let pixels = Tensor::from_f32(vec![16, 1176], &vec![0.0; 16 * 1176]).unwrap();
         let grids = [[1, 4, 4]];
@@ -543,8 +554,7 @@ mod tests {
             Some(ImageInput::new(&pixels, &grids)),
             Some(AudioInput::new(&features, &mask, &lengths, &audio_counts)),
         );
-        let positions = multimodal_positions(&config, input).unwrap();
-        assert_eq!(positions.len(), tokens.len() * 3);
+        assert!(reject_unsupported_media_combination(input).is_err());
         assert!(reject_video(&[config.video_token_id], config.video_token_id).is_err());
     }
 }
