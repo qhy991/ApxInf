@@ -65,6 +65,10 @@ name = "qwen35_trajectory_probe"
 required-features = ["cuda"]
 
 [[example]]
+name = "qwen25_omni_check"
+required-features = ["cuda"]
+
+[[example]]
 name = "qwen35_w4a16_prefill_probe"
 required-features = ["cuda"]
 

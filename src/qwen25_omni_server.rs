@@ -3,11 +3,12 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apxinf_core::{Device, Tensor};
+use apxinf_model::llm_trait::validate_generation_limits;
 use apxinf_model::{
     AudioInput, AutoModel, ImageInput, LlmInput, LoadOptions, LoadedModel, ModelPrecision,
     Qwen25OmniConfig,
@@ -22,9 +23,9 @@ static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 pub fn serve(model_dir: &Path, host: &str, port: u16, max_model_len: usize) -> Result<(), String> {
     let config = Qwen25OmniConfig::from_model_dir(model_dir).map_err(|error| error.to_string())?;
-    if max_model_len == 0 || max_model_len > config.text.max_position_embeddings {
+    if max_model_len < 2 || max_model_len > config.text.max_position_embeddings {
         return Err(format!(
-            "qwen2.5-omni max_model_len must be in 1..={}, got {max_model_len}",
+            "qwen2.5-omni max_model_len must be in 2..={}, got {max_model_len}",
             config.text.max_position_embeddings
         ));
     }
@@ -108,18 +109,13 @@ impl Runtime {
         if prepared.tokens.is_empty() {
             return Err("processor produced an empty prompt".into());
         }
-        let required = prepared
-            .tokens
-            .len()
-            .checked_add(max_tokens)
-            .ok_or_else(|| "combined context length overflow".to_string())?;
-        if required > self.max_model_len {
-            return Err(format!(
-                "prompt {} + completion {max_tokens} exceeds max_model_len {}",
-                prepared.tokens.len(),
-                self.max_model_len
-            ));
-        }
+        validate_generation_limits(
+            prepared.tokens.len(),
+            max_tokens,
+            Some(128),
+            Some(self.max_model_len),
+        )
+        .map_err(|error| error.to_string())?;
         let image = prepared
             .image
             .as_ref()
@@ -172,7 +168,9 @@ fn handle_connection(runtime: &mut Runtime, stream: &mut TcpStream) -> Result<()
                 "precision":"bf16",
                 "parallel_requests":1,
                 "max_model_len":runtime.max_model_len,
+                "max_prompt_tokens":runtime.max_model_len.saturating_sub(1),
                 "max_output_tokens":128,
+                "context_contract":"prompt_tokens + requested_completion_tokens <= max_model_len",
                 "input_modalities":["text","image","audio"],
                 "output_modalities":["text"],
                 "talker_disabled":true,
@@ -579,8 +577,8 @@ from PIL import Image
 from scipy.signal import resample_poly
 from transformers import AutoProcessor
 
-model_dir, body_json, metadata_path, pixel_path, feature_path, mask_path = sys.argv[1:]
-body = json.loads(body_json)
+model_dir, metadata_path, pixel_path, feature_path, mask_path = sys.argv[1:]
+body = json.load(sys.stdin)
 processor = AutoProcessor.from_pretrained(model_dir, local_files_only=True)
 messages = body.get("messages")
 if not isinstance(messages, list) or not messages:
@@ -666,17 +664,29 @@ if audios:
 with open(metadata_path, "w") as output:
     json.dump(metadata, output)
 "#;
-    let output = Command::new("python3")
+    let body_json = serde_json::to_vec(body).map_err(|error| error.to_string())?;
+    let mut child = Command::new("python3")
         .arg("-c")
         .arg(script)
         .arg(model_dir)
-        .arg(serde_json::to_string(body).map_err(|error| error.to_string())?)
         .arg(&metadata_path)
         .arg(&pixel_path)
         .arg(&feature_path)
         .arg(&mask_path)
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| format!("launch local Omni processor: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "local Omni processor stdin is unavailable".to_string())?
+        .write_all(&body_json)
+        .map_err(|error| format!("write local Omni processor request: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("wait for local Omni processor: {error}"))?;
     if !output.status.success() {
         cleanup(&[&metadata_path, &pixel_path, &feature_path, &mask_path]);
         return Err(format!(

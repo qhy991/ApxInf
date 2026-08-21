@@ -242,34 +242,12 @@ where
     F: FnMut(u32),
 {
     let prompt_tokens = input.token_ids;
-    if prompt_tokens.is_empty() {
-        return Err(Error::Other("generate_streaming: empty prompt".into()));
-    }
-    if max_new_tokens == 0 {
-        return Err(Error::Other(
-            "generate_streaming: max_new_tokens must be positive".into(),
-        ));
-    }
-    if model
-        .max_new_tokens_limit()
-        .is_some_and(|limit| max_new_tokens > limit)
-    {
-        return Err(Error::Other(format!(
-            "generate_streaming: max_new_tokens {max_new_tokens} exceeds model limit {}",
-            model.max_new_tokens_limit().unwrap()
-        )));
-    }
-    if let Some(limit) = model.max_context_len() {
-        let required = prompt_tokens.len().checked_add(max_new_tokens).ok_or_else(|| {
-            Error::Other("generate_streaming: combined context length overflow".into())
-        })?;
-        if required > limit {
-            return Err(Error::Other(format!(
-                "generate_streaming: prompt {} + completion {max_new_tokens} exceeds context {limit}",
-                prompt_tokens.len()
-            )));
-        }
-    }
+    validate_generation_limits(
+        prompt_tokens.len(),
+        max_new_tokens,
+        model.max_new_tokens_limit(),
+        model.max_context_len(),
+    )?;
     // Reject unsupported media before graph prewarm or any model forward.
     if input.image.is_some() && !model.capabilities().image {
         return Err(Error::Other(
@@ -353,6 +331,46 @@ where
     Ok((generated, profile))
 }
 
+/// Validate the one canonical autoregressive capacity contract.
+///
+/// Prompt and completion limits are not independent allocation promises: a
+/// request must satisfy both the completion cap and `prompt + completion <=
+/// context`. The checked addition makes oversized input fail before model,
+/// cache, or backend work.
+pub fn validate_generation_limits(
+    prompt_tokens: usize,
+    max_new_tokens: usize,
+    max_new_tokens_limit: Option<usize>,
+    context_limit: Option<usize>,
+) -> Result<()> {
+    if prompt_tokens == 0 {
+        return Err(Error::Other("generate_streaming: empty prompt".into()));
+    }
+    if max_new_tokens == 0 {
+        return Err(Error::Other(
+            "generate_streaming: max_new_tokens must be positive".into(),
+        ));
+    }
+    if let Some(limit) = max_new_tokens_limit {
+        if max_new_tokens > limit {
+            return Err(Error::Other(format!(
+                "generate_streaming: max_new_tokens {max_new_tokens} exceeds model limit {limit}"
+            )));
+        }
+    }
+    if let Some(limit) = context_limit {
+        let required = prompt_tokens.checked_add(max_new_tokens).ok_or_else(|| {
+            Error::Other("generate_streaming: combined context length overflow".into())
+        })?;
+        if required > limit {
+            return Err(Error::Other(format!(
+                "generate_streaming: prompt {prompt_tokens} + completion {max_new_tokens} exceeds context {limit}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Extract logits for the last row and return its argmax token.
 /// `logits` shape: `[seq_len, vocab_size]`. Logits may live on any device — this
 /// helper moves to CPU if needed (callers' responsibility for now).
@@ -392,4 +410,20 @@ fn argmax_last_row(logits: &Tensor, seq_len: usize, vocab_size: usize) -> Result
         }
     }
     Ok(best_i)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_generation_limits;
+
+    #[test]
+    fn combined_context_contract_is_checked_and_fail_closed() {
+        assert!(validate_generation_limits(32_640, 128, Some(128), Some(32_768)).is_ok());
+        assert!(validate_generation_limits(32_767, 1, Some(128), Some(32_768)).is_ok());
+        assert!(validate_generation_limits(32_768, 1, Some(128), Some(32_768)).is_err());
+        assert!(validate_generation_limits(1, 129, Some(128), Some(32_768)).is_err());
+        assert!(validate_generation_limits(usize::MAX, 1, Some(128), Some(usize::MAX)).is_err());
+        assert!(validate_generation_limits(0, 1, Some(128), Some(32_768)).is_err());
+        assert!(validate_generation_limits(1, 0, Some(128), Some(32_768)).is_err());
+    }
 }
