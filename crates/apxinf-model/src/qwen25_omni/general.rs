@@ -105,11 +105,8 @@ impl GeneralQwen25Omni {
         }
         reject_unsupported_media_combination(input)?;
         reject_video(input.token_ids, self.config.video_token_id)?;
-        let mut hidden = self
-            .backend
-            .embedding(&self.text.token_embedding, input.token_ids)?;
-
-        if let Some(image) = input.image {
+        let image_positions = if let Some(image) = input.image {
+            vision::validate_input(&self.config, image.pixel_values, image.grid_thw)?;
             let expected =
                 vision::merged_token_count(image.grid_thw, self.config.vision.spatial_merge_size)?;
             let positions = token_positions(input.token_ids, self.config.image_token_id);
@@ -119,21 +116,16 @@ impl GeneralQwen25Omni {
                     positions.len()
                 )));
             }
-            let encoded = vision::forward(
-                &self.config,
-                &self.vision,
-                &*self.backend,
-                image.pixel_values,
-                image.grid_thw,
-            )?;
-            hidden = scatter_replace(&hidden, &positions, &encoded, &*self.backend)?;
-        } else if input.token_ids.contains(&self.config.image_token_id) {
-            return Err(Error::Other(
-                "qwen2.5-omni image placeholders require image input".into(),
-            ));
-        }
-
-        if let Some(audio_input) = input.audio {
+            Some(positions)
+        } else {
+            if input.token_ids.contains(&self.config.image_token_id) {
+                return Err(Error::Other(
+                    "qwen2.5-omni image placeholders require image input".into(),
+                ));
+            }
+            None
+        };
+        let audio_positions = if let Some(audio_input) = input.audio {
             let expected = audio::validate_input(&self.config, audio_input)?;
             let positions = token_positions(input.token_ids, self.config.audio_token_id);
             if positions.len() != expected {
@@ -142,12 +134,54 @@ impl GeneralQwen25Omni {
                     positions.len()
                 )));
             }
+            let boundaries = audio_boundary_positions(
+                input.token_ids,
+                self.config.audio_start_token_id,
+                self.config.audio_token_id,
+                self.config.audio_end_token_id,
+                expected,
+            )?;
+            Some((positions, boundaries))
+        } else {
+            if input.token_ids.contains(&self.config.audio_token_id)
+                || input.token_ids.contains(&self.config.audio_start_token_id)
+                || input.token_ids.contains(&self.config.audio_end_token_id)
+            {
+                return Err(Error::Other(
+                    "qwen2.5-omni audio markers require audio input".into(),
+                ));
+            }
+            None
+        };
+
+        // Every processor shape, placeholder count, and modality marker is
+        // validated above so malformed media fails before any backend work.
+        let mut hidden = self
+            .backend
+            .embedding(&self.text.token_embedding, input.token_ids)?;
+
+        if let (Some(image), Some(positions)) = (input.image, image_positions.as_ref()) {
+            let encoded = vision::forward(
+                &self.config,
+                &self.vision,
+                &*self.backend,
+                image.pixel_values,
+                image.grid_thw,
+            )?;
+            hidden = scatter_replace(&hidden, &positions, &encoded, &*self.backend)?;
+        }
+
+        if let (Some(audio_input), Some((positions, boundaries))) =
+            (input.audio, audio_positions.as_ref())
+        {
             let encoded = audio::forward(&self.config, &self.audio, &*self.backend, audio_input)?;
             hidden = scatter_replace(&hidden, &positions, &encoded, &*self.backend)?;
-        } else if input.token_ids.contains(&self.config.audio_token_id) {
-            return Err(Error::Other(
-                "qwen2.5-omni audio placeholders require audio input".into(),
-            ));
+            hidden = scatter_replace(
+                &hidden,
+                boundaries,
+                self.audio.boundary_embeddings(),
+                &*self.backend,
+            )?;
         }
 
         let positions = multimodal_positions(&self.config, input)?;
@@ -366,6 +400,36 @@ fn token_positions(token_ids: &[u32], token: u32) -> Vec<usize> {
         .collect()
 }
 
+fn audio_boundary_positions(
+    token_ids: &[u32],
+    start_token: u32,
+    audio_token: u32,
+    end_token: u32,
+    audio_count: usize,
+) -> Result<Vec<usize>> {
+    let starts = token_positions(token_ids, start_token);
+    let ends = token_positions(token_ids, end_token);
+    if starts.len() != 1 || ends.len() != 1 {
+        return Err(Error::Other(format!(
+            "qwen2.5-omni one audio clip requires exactly one start/end marker, got {}/{}",
+            starts.len(),
+            ends.len()
+        )));
+    }
+    let start = starts[0];
+    let end = ends[0];
+    if end != start + audio_count + 1
+        || token_ids[start + 1..end]
+            .iter()
+            .any(|token| *token != audio_token)
+    {
+        return Err(Error::Other(
+            "qwen2.5-omni audio markers must enclose one contiguous placeholder run".into(),
+        ));
+    }
+    Ok(vec![start, end])
+}
+
 fn linear_positions(length: usize, start: u32, delta: i64) -> Result<Vec<u32>> {
     let first = i64::from(start) + delta;
     if first < 0 {
@@ -556,5 +620,54 @@ mod tests {
         );
         assert!(reject_unsupported_media_combination(input).is_err());
         assert!(reject_video(&[config.video_token_id], config.video_token_id).is_err());
+    }
+
+    #[test]
+    fn validates_audio_boundaries_and_multimodal_positions() {
+        let config = config();
+        let audio_tokens = [10, 151647, 151646, 151646, 151646, 151648, 11];
+        assert_eq!(
+            audio_boundary_positions(&audio_tokens, 151647, 151646, 151648, 3).unwrap(),
+            [1, 5]
+        );
+        assert!(audio_boundary_positions(
+            &[10, 151647, 151646, 12, 151646, 151648],
+            151647,
+            151646,
+            151648,
+            3
+        )
+        .is_err());
+
+        let pixels = Tensor::from_f32(vec![16, 1176], &vec![0.0; 16 * 1176]).unwrap();
+        let image_grid = [[1, 4, 4]];
+        let image_tokens = [10, 151655, 151655, 151655, 151655, 11];
+        let image_positions = multimodal_positions(
+            &config,
+            LlmInput::with_image(&image_tokens, ImageInput::new(&pixels, &image_grid)),
+        )
+        .unwrap();
+        assert_eq!(
+            image_positions,
+            [0, 0, 0, 1, 1, 1, 1, 1, 2, 1, 2, 1, 1, 2, 2, 3, 3, 3]
+        );
+
+        let features = Tensor::from_f32(vec![7, 128], &vec![0.0; 7 * 128]).unwrap();
+        let mask = Tensor::from_f32(vec![7], &[1.0; 7]).unwrap();
+        let lengths = [7];
+        let counts = [2];
+        let positioned_audio = [10, 151647, 151646, 151646, 151648, 11];
+        let audio_positions = multimodal_positions(
+            &config,
+            LlmInput::with_audio(
+                &positioned_audio,
+                AudioInput::new(&features, &mask, &lengths, &counts),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            audio_positions,
+            [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 2, 2, 4, 4, 4, 5, 5, 5]
+        );
     }
 }

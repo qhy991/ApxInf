@@ -933,6 +933,19 @@ mod tests {
         assert!(validate_generation_request(&unknown, true)
             .unwrap_err()
             .contains("beam_search"));
+        for request in [
+            json!({"messages":[],"model":"wrong","max_tokens":1}),
+            json!({"messages":[],"max_tokens":0}),
+            json!({"messages":[],"max_tokens":129}),
+            json!({"messages":[],"max_tokens":1,"top_p":0.9}),
+            json!({"messages":[],"max_tokens":1,"top_k":1}),
+            json!({"messages":[],"max_tokens":1,"presence_penalty":0.1}),
+            json!({"messages":[],"max_tokens":1,"frequency_penalty":0.1}),
+            json!({"messages":[],"max_tokens":1,"repetition_penalty":1.1}),
+            json!({"messages":[],"max_tokens":1,"n":2}),
+        ] {
+            assert!(validate_generation_request(&request, true).is_err());
+        }
     }
 
     #[test]
@@ -949,5 +962,14 @@ mod tests {
         assert!(validate_chat_content(&request)
             .unwrap_err()
             .contains("simultaneous image and audio"));
+
+        for request in [
+            json!({"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/image.png"}}]}]}),
+            json!({"messages":[{"role":"user","content":[{"type":"video","video":"AA=="}]}]}),
+            json!({"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"format":"mp3","data":"AA=="}}]}]}),
+            json!({"messages":[{"role":"tool","content":"unsupported"}]}),
+        ] {
+            assert!(validate_chat_content(&request).is_err());
+        }
     }
 }

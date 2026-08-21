@@ -3,6 +3,8 @@
   "model_type": "qwen2_5_omni",
   "torch_dtype": "bfloat16",
   "thinker_config": {
+    "model_type": "qwen2_5_omni_thinker",
+    "torch_dtype": "bfloat16",
     "pad_token_id": 151643,
     "bos_token_id": 151644,
     "eos_token_id": 151645,
@@ -17,6 +19,12 @@
     "position_id_per_seconds": 25,
     "seconds_per_chunk": 2,
     "text_config": {
+      "model_type": "qwen2_5_omni_text",
+      "hidden_act": "silu",
+      "attention_dropout": 0.0,
+      "use_cache": true,
+      "use_sliding_window": false,
+      "tie_word_embeddings": false,
       "hidden_size": 2048,
       "intermediate_size": 11008,
       "num_hidden_layers": 36,
@@ -29,6 +37,8 @@
       "rope_scaling": {"mrope_section": [16, 24, 24]}
     },
     "vision_config": {
+      "model_type": "qwen2_5_omni_vision_encoder",
+      "hidden_act": "silu",
       "depth": 32,
       "hidden_size": 1280,
       "intermediate_size": 3420,
@@ -42,6 +52,12 @@
       "fullatt_block_indexes": [7, 15, 23, 31]
     },
     "audio_config": {
+      "model_type": "qwen2_5_omni_audio_encoder",
+      "activation_function": "gelu",
+      "activation_dropout": 0.0,
+      "attention_dropout": 0.0,
+      "dropout": 0.0,
+      "encoder_layerdrop": 0.0,
       "num_mel_bins": 128,
       "d_model": 1280,
       "encoder_ffn_dim": 5120,

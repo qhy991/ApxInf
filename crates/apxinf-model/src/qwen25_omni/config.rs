@@ -123,6 +123,7 @@ impl Qwen25OmniConfig {
         let text = object_field(thinker, "text_config")?;
         let vision = object_field(thinker, "vision_config")?;
         let audio = object_field(thinker, "audio_config")?;
+        validate_runtime_semantics(thinker, text, vision, audio)?;
         let rope = object_field(text, "rope_scaling")?;
         let mrope = array(rope, "mrope_section")?;
         if mrope.len() != 3 {
@@ -277,6 +278,7 @@ impl Qwen25OmniConfig {
         );
         exact!("vision.heads", self.vision.n_heads, 16);
         exact!("vision.head_dim", self.vision.head_dim, 80);
+        exact!("vision.in_channels", self.vision.in_channels, 3);
         exact!("vision.patch_size", self.vision.patch_size, 14);
         exact!(
             "vision.temporal_patch_size",
@@ -285,6 +287,7 @@ impl Qwen25OmniConfig {
         );
         exact!("vision.merge_size", self.vision.spatial_merge_size, 2);
         exact!("vision.output", self.vision.out_hidden_size, 2048);
+        exact!("vision.window_size", self.vision.window_size, 112);
         exact!(
             "vision.full_attention_blocks",
             self.vision.full_attention_blocks.as_slice(),
@@ -294,12 +297,19 @@ impl Qwen25OmniConfig {
         exact!("audio.hidden_size", self.audio.hidden_size, 1280);
         exact!("audio.layers", self.audio.n_layers, 32);
         exact!("audio.heads", self.audio.n_heads, 20);
+        exact!("audio.head_dim", self.audio.head_dim, 64);
         exact!(
             "audio.intermediate_size",
             self.audio.intermediate_size,
             5120
         );
         exact!("audio.output_dim", self.audio.output_dim, 2048);
+        exact!(
+            "audio.max_source_positions",
+            self.audio.max_source_positions,
+            1500
+        );
+        exact!("audio.n_window", self.audio.n_window, 100);
         exact!(
             "processor.sampling_rate",
             self.processor.sampling_rate,
@@ -319,6 +329,8 @@ impl Qwen25OmniConfig {
         exact!("vision_token_id", self.vision_token_id, 151654);
         exact!("image_token_id", self.image_token_id, 151655);
         exact!("video_token_id", self.video_token_id, 151656);
+        exact!("position_id_per_seconds", self.position_id_per_seconds, 25);
+        exact!("seconds_per_chunk", self.seconds_per_chunk, 2);
         if (self.text.rms_norm_eps - 1e-6).abs() > f32::EPSILON {
             return Err(Error::Other(format!(
                 "qwen2.5-omni config: text.rms_norm_eps={}, expected 1e-6",
@@ -327,6 +339,67 @@ impl Qwen25OmniConfig {
         }
         Ok(())
     }
+}
+
+fn validate_runtime_semantics(
+    thinker: &Map<String, Value>,
+    text: &Map<String, Value>,
+    vision: &Map<String, Value>,
+    audio: &Map<String, Value>,
+) -> Result<()> {
+    require_eq(
+        "thinker.model_type",
+        &string_field(thinker, "model_type")?,
+        "qwen2_5_omni_thinker",
+    )?;
+    require_eq(
+        "thinker.torch_dtype",
+        &string_field(thinker, "torch_dtype")?,
+        "bfloat16",
+    )?;
+    require_eq(
+        "text.model_type",
+        &string_field(text, "model_type")?,
+        "qwen2_5_omni_text",
+    )?;
+    require_eq(
+        "text.hidden_act",
+        &string_field(text, "hidden_act")?,
+        "silu",
+    )?;
+    require_bool(text, "use_cache", true)?;
+    require_bool(text, "use_sliding_window", false)?;
+    require_bool(text, "tie_word_embeddings", false)?;
+    require_zero(text, "attention_dropout")?;
+    require_eq(
+        "vision.model_type",
+        &string_field(vision, "model_type")?,
+        "qwen2_5_omni_vision_encoder",
+    )?;
+    require_eq(
+        "vision.hidden_act",
+        &string_field(vision, "hidden_act")?,
+        "silu",
+    )?;
+    require_eq(
+        "audio.model_type",
+        &string_field(audio, "model_type")?,
+        "qwen2_5_omni_audio_encoder",
+    )?;
+    require_eq(
+        "audio.activation_function",
+        &string_field(audio, "activation_function")?,
+        "gelu",
+    )?;
+    for field in [
+        "activation_dropout",
+        "attention_dropout",
+        "dropout",
+        "encoder_layerdrop",
+    ] {
+        require_zero(audio, field)?;
+    }
+    Ok(())
 }
 
 fn parse_processor_file(path: &Path) -> Result<Qwen25OmniProcessorConfig> {
@@ -412,6 +485,30 @@ fn f32_field(map: &Map<String, Value>, key: &str) -> Result<f32> {
     }
     Ok(value as f32)
 }
+fn require_bool(map: &Map<String, Value>, key: &str, expected: bool) -> Result<()> {
+    let actual = map
+        .get(key)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| Error::Other(format!("qwen2.5-omni config: {key} must be boolean")))?;
+    if actual != expected {
+        return Err(Error::Other(format!(
+            "qwen2.5-omni config: {key}={actual}, expected {expected}"
+        )));
+    }
+    Ok(())
+}
+fn require_zero(map: &Map<String, Value>, key: &str) -> Result<()> {
+    let actual = map
+        .get(key)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| Error::Other(format!("qwen2.5-omni config: {key} must be numeric")))?;
+    if actual != 0.0 {
+        return Err(Error::Other(format!(
+            "qwen2.5-omni config: {key}={actual}, expected 0"
+        )));
+    }
+    Ok(())
+}
 fn require_eq(name: &str, actual: &str, expected: &str) -> Result<()> {
     if actual != expected {
         return Err(Error::Other(format!(
@@ -427,17 +524,23 @@ mod tests {
 
     const CONFIG: &str = r#"{
       "architectures":["Qwen2_5OmniModel"],"model_type":"qwen2_5_omni","torch_dtype":"bfloat16",
-      "thinker_config":{"pad_token_id":151643,"bos_token_id":151644,"eos_token_id":151645,
+      "thinker_config":{"model_type":"qwen2_5_omni_thinker","torch_dtype":"bfloat16",
+        "pad_token_id":151643,"bos_token_id":151644,"eos_token_id":151645,
         "audio_token_index":151646,"audio_start_token_id":151647,"audio_end_token_id":151648,
         "vision_start_token_id":151652,"vision_end_token_id":151653,"vision_token_id":151654,
         "image_token_index":151655,"video_token_index":151656,"position_id_per_seconds":25,"seconds_per_chunk":2,
-        "text_config":{"hidden_size":2048,"intermediate_size":11008,"num_hidden_layers":36,
+        "text_config":{"model_type":"qwen2_5_omni_text","hidden_act":"silu","attention_dropout":0,
+          "use_cache":true,"use_sliding_window":false,"tie_word_embeddings":false,
+          "hidden_size":2048,"intermediate_size":11008,"num_hidden_layers":36,
           "num_attention_heads":16,"num_key_value_heads":2,"vocab_size":151936,"max_position_embeddings":32768,
           "rms_norm_eps":0.000001,"rope_theta":1000000,"rope_scaling":{"mrope_section":[16,24,24]}},
-        "vision_config":{"depth":32,"hidden_size":1280,"intermediate_size":3420,"num_heads":16,
+        "vision_config":{"model_type":"qwen2_5_omni_vision_encoder","hidden_act":"silu",
+          "depth":32,"hidden_size":1280,"intermediate_size":3420,"num_heads":16,
           "patch_size":14,"temporal_patch_size":2,"spatial_merge_size":2,"in_channels":3,
           "out_hidden_size":2048,"window_size":112,"fullatt_block_indexes":[7,15,23,31]},
-        "audio_config":{"num_mel_bins":128,"d_model":1280,"encoder_ffn_dim":5120,"encoder_layers":32,
+        "audio_config":{"model_type":"qwen2_5_omni_audio_encoder","activation_function":"gelu",
+          "activation_dropout":0,"attention_dropout":0,"dropout":0,"encoder_layerdrop":0,
+          "num_mel_bins":128,"d_model":1280,"encoder_ffn_dim":5120,"encoder_layers":32,
           "encoder_attention_heads":20,"output_dim":2048,"max_source_positions":1500,"n_window":100}}
     }"#;
 
@@ -463,5 +566,13 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("num_hidden_layers"));
+        let unsupported_activation = CONFIG.replace(
+            "\"activation_function\":\"gelu\"",
+            "\"activation_function\":\"relu\"",
+        );
+        assert!(Qwen25OmniConfig::from_json_str(&unsupported_activation)
+            .unwrap_err()
+            .to_string()
+            .contains("activation_function"));
     }
 }

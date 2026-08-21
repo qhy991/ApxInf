@@ -144,6 +144,10 @@ impl Qwen25OmniAudioWeights {
             projection_bias: backend.to_device(&self.projection_bias)?,
         })
     }
+
+    pub(crate) fn boundary_embeddings(&self) -> &Tensor {
+        &self.bos_eos
+    }
 }
 
 pub fn output_token_count(feature_frames: usize) -> Result<usize> {

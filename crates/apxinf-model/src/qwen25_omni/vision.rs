@@ -127,19 +127,8 @@ pub fn forward(
     pixel_values: &Tensor,
     grid_thw: &[[u32; 3]],
 ) -> Result<Tensor> {
-    if grid_thw.is_empty() {
-        return Err(Error::Other("qwen2.5-omni image grid is empty".into()));
-    }
     let vision = &config.vision;
-    let patch_width =
-        vision.in_channels * vision.temporal_patch_size * vision.patch_size * vision.patch_size;
-    let raw_tokens = validate_grids(grid_thw, vision.spatial_merge_size)?;
-    if pixel_values.shape().dims() != [raw_tokens, patch_width] {
-        return Err(Error::Other(format!(
-            "qwen2.5-omni pixel_values shape {:?}, expected [{raw_tokens}, {patch_width}]",
-            pixel_values.shape().dims()
-        )));
-    }
+    let raw_tokens = validate_input(config, pixel_values, grid_thw)?;
     let uploaded = if pixel_values.device() != backend.device() {
         Some(backend.to_device(pixel_values)?)
     } else {
@@ -198,6 +187,30 @@ pub fn forward(
         &backend.matmul(&merged, &weights.merger_fc2)?,
         &weights.merger_fc2_bias,
     )
+}
+
+/// Validate processor-owned image views without executing a backend operator.
+pub fn validate_input(
+    config: &Qwen25OmniConfig,
+    pixel_values: &Tensor,
+    grid_thw: &[[u32; 3]],
+) -> Result<usize> {
+    if grid_thw.len() != 1 {
+        return Err(Error::Other(
+            "qwen2.5-omni first deployment slice accepts exactly one image grid".into(),
+        ));
+    }
+    let vision = &config.vision;
+    let patch_width =
+        vision.in_channels * vision.temporal_patch_size * vision.patch_size * vision.patch_size;
+    let raw_tokens = validate_grids(grid_thw, vision.spatial_merge_size)?;
+    if pixel_values.shape().dims() != [raw_tokens, patch_width] {
+        return Err(Error::Other(format!(
+            "qwen2.5-omni pixel_values shape {:?}, expected [{raw_tokens}, {patch_width}]",
+            pixel_values.shape().dims()
+        )));
+    }
+    Ok(raw_tokens)
 }
 
 pub fn merged_token_count(grid_thw: &[[u32; 3]], merge: usize) -> Result<usize> {
@@ -305,5 +318,17 @@ mod tests {
     fn validates_merged_grid_contract() {
         assert_eq!(merged_token_count(&[[1, 4, 6]], 2).unwrap(), 6);
         assert!(validate_grids(&[[1, 3, 4]], 2).is_err());
+    }
+
+    #[test]
+    fn validates_one_processor_image_before_backend_work() {
+        let raw = include_str!("../../tests/data/qwen25_omni_config_minimal.json");
+        let config = Qwen25OmniConfig::from_json_str(raw).unwrap();
+        let pixels = Tensor::from_f32(vec![16, 1176], &vec![0.0; 16 * 1176]).unwrap();
+        assert_eq!(validate_input(&config, &pixels, &[[1, 4, 4]]).unwrap(), 16);
+        assert!(validate_input(&config, &pixels, &[]).is_err());
+        assert!(validate_input(&config, &pixels, &[[1, 4, 4], [1, 4, 4]]).is_err());
+        let wrong = Tensor::from_f32(vec![15, 1176], &vec![0.0; 15 * 1176]).unwrap();
+        assert!(validate_input(&config, &wrong, &[[1, 4, 4]]).is_err());
     }
 }
