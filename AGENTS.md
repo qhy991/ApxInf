@@ -5,7 +5,9 @@
   do not require the broker.
 - Always provide `--owner codex-apxinf`, a short `--label`,
   `--mode shared|exclusive`, `--gpu-count 1`, realistic queue/run timeouts, and
-  an estimate.
+  an estimate. When submitting from the remote root account, also pass
+  `--cwd` under `/mnt/user_dir/hanjinchen` or `/var/lib/agent-gpu-broker`;
+  broker jobs run as the unprivileged `gpuq` user and cannot enter `/root`.
 - Use `shared` only for bounded correctness checks that are known to fit beside
   the resident service. Use `exclusive` for model loading, OOM/capacity probes,
   benchmarks, NCU/Nsight, and deployment acceptance.
