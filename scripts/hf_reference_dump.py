@@ -533,7 +533,9 @@ def dump_qwen25_omni(case: str, model_dir: Path, out_path: Path):
         f"[qwen25_omni_{case}] loading {model_dir} "
         f"({QWEN25_OMNI_MODEL_ID}@{QWEN25_OMNI_REVISION}, bf16, cuda, offline)"
     )
-    processor = AutoProcessor.from_pretrained(str(model_dir), local_files_only=True)
+    processor = AutoProcessor.from_pretrained(
+        str(model_dir), local_files_only=True, use_fast=False
+    )
     wrapper = Qwen2_5OmniForConditionalGeneration.from_pretrained(
         str(model_dir),
         torch_dtype=torch.bfloat16,

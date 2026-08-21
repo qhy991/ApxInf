@@ -579,7 +579,7 @@ from transformers import AutoProcessor
 
 model_dir, metadata_path, pixel_path, feature_path, mask_path = sys.argv[1:]
 body = json.load(sys.stdin)
-processor = AutoProcessor.from_pretrained(model_dir, local_files_only=True)
+processor = AutoProcessor.from_pretrained(model_dir, local_files_only=True, use_fast=False)
 messages = body.get("messages")
 if not isinstance(messages, list) or not messages:
     raise ValueError("messages must be a nonempty array")
@@ -591,6 +591,7 @@ for message in messages:
         raise ValueError("unsupported message role")
     content = message.get("content")
     if isinstance(content, str):
+        message["content"] = [{"type":"text","text":content}]
         continue
     if not isinstance(content, list):
         raise ValueError("message content must be a string or array")

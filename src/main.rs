@@ -935,7 +935,7 @@ from transformers import AutoProcessor
 from PIL import Image
 
 model_dir, image_path, prompt, system, pixel_path, metadata_path = sys.argv[1:]
-processor = AutoProcessor.from_pretrained(model_dir, local_files_only=True)
+processor = AutoProcessor.from_pretrained(model_dir, local_files_only=True, use_fast=False)
 image = Image.open(image_path).convert("RGB")
 messages = []
 if system:
@@ -1068,7 +1068,7 @@ from scipy.signal import resample_poly
 from transformers import AutoProcessor
 
 model_dir, audio_path, prompt, system, feature_path, mask_path, metadata_path = sys.argv[1:]
-processor = AutoProcessor.from_pretrained(model_dir, local_files_only=True)
+processor = AutoProcessor.from_pretrained(model_dir, local_files_only=True, use_fast=False)
 audio, sampling_rate = sf.read(audio_path, dtype="float32", always_2d=False)
 if audio.ndim == 2:
     audio = audio.mean(axis=1)
