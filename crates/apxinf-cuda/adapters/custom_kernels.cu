@@ -27,6 +27,40 @@ namespace {
 #include "../kernels/custom/cache.cuh"
 }  // namespace
 
+extern "C" cudaError_t apxinf_im2col1d_bf16(
+    const void* input, void* output, int frames, int channels, int kernel,
+    int stride, int padding, int output_frames, cudaStream_t stream) {
+  if (input == nullptr || output == nullptr || frames <= 0 || channels <= 0 ||
+      kernel <= 0 || stride <= 0 || padding < 0 || output_frames <= 0) {
+    return cudaErrorInvalidValue;
+  }
+  int64_t count = static_cast<int64_t>(output_frames) * channels * kernel;
+  constexpr int threads = 256;
+  int blocks = static_cast<int>((count + threads - 1) / threads);
+  im2col1d_bf16_kernel<<<blocks, threads, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(input),
+      static_cast<__nv_bfloat16*>(output), frames, channels, kernel, stride,
+      padding, output_frames);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_avg_pool1d_bf16(
+    const void* input, void* output, int frames, int channels, int kernel,
+    int stride, int output_frames, cudaStream_t stream) {
+  if (input == nullptr || output == nullptr || frames <= 0 || channels <= 0 ||
+      kernel <= 0 || stride <= 0 || output_frames <= 0) {
+    return cudaErrorInvalidValue;
+  }
+  int64_t count = static_cast<int64_t>(output_frames) * channels;
+  constexpr int threads = 256;
+  int blocks = static_cast<int>((count + threads - 1) / threads);
+  avg_pool1d_bf16_kernel<<<blocks, threads, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(input),
+      static_cast<__nv_bfloat16*>(output), frames, channels, kernel, stride,
+      output_frames);
+  return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_static_evict_l2(
     void* buffer, size_t bytes, uint32_t seed, cudaStream_t stream) {
   if (buffer == nullptr || bytes < sizeof(uint32_t) ||

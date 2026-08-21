@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use apxinf_core::{Backend, DType, Device, Error, Result, Tensor};
 
-use crate::auto::{LoadOptions, LoadedModel};
+use crate::auto::{LoadOptions, LoadedModel, ModelPrecision};
 use crate::llama::{GeneralLlama, LlamaWeights};
+use crate::qwen25_omni::{checkpoint, GeneralQwen25Omni, Qwen25OmniConfig};
 use crate::qwen3vl::{GeneralQwen3VL, Qwen3VLConfig};
 use crate::registry;
 
@@ -17,9 +18,62 @@ pub fn register_builtin_models() {
     registry::register("llama", load_llama);
     registry::register("qwen3_vl", load_qwen3vl);
     registry::register("qwen3vl", load_qwen3vl);
+    registry::register("qwen2_5_omni", load_qwen25_omni);
 
     #[cfg(feature = "cuda")]
     crate::pi05::register_builtin();
+}
+
+fn load_qwen25_omni(
+    path: &Path,
+    device: Device,
+    backend: Arc<dyn Backend>,
+    options: &LoadOptions,
+) -> Result<LoadedModel> {
+    validate_qwen25_omni_load_options(device, options)?;
+    let model_dir = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or_else(|| Path::new("."))
+    };
+    let config = Qwen25OmniConfig::from_model_dir(model_dir)?;
+    let (tensors, _report) = checkpoint::load_required_tensors(model_dir, &config)?;
+    let model = GeneralQwen25Omni::from_selected_weights(config, tensors, backend)?;
+    Ok(LoadedModel::Text(Box::new(model)))
+}
+
+pub fn validate_qwen25_omni_load_options(device: Device, options: &LoadOptions) -> Result<()> {
+    if !matches!(device, Device::Cuda(_)) {
+        return Err(Error::Other(
+            "qwen2.5-omni BF16 deployment requires a CUDA device".into(),
+        ));
+    }
+    if !matches!(options.precision, ModelPrecision::Auto | ModelPrecision::Bf16) {
+        return Err(Error::Other(format!(
+            "qwen2.5-omni deployment supports only checkpoint-native BF16, not {:?}",
+            options.precision
+        )));
+    }
+    if options
+        .text_weight_dtype
+        .is_some_and(|dtype| dtype != DType::BF16)
+    {
+        return Err(Error::Other(
+            "qwen2.5-omni text_weight_dtype must be BF16 when specified".into(),
+        ));
+    }
+    if options.calibration_path.is_some()
+        || options.tuning_path.is_some()
+        || options.config.is_some()
+        || options.synthetic.is_some()
+        || options.uniform_fp8_scale.is_some()
+    {
+        return Err(Error::Other(
+            "qwen2.5-omni rejects calibration, tuning, config overrides, and synthetic weights"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 fn load_llama(
     path: &Path,

@@ -256,6 +256,49 @@ pub fn apply_mrope(
     ))
 }
 
+/// Qwen2.5-Omni contiguous-section TMRoPE (BF16).
+pub fn apply_tmrope(
+    ctx: &CudaContext,
+    input: &Tensor,
+    n_heads: usize,
+    head_dim: usize,
+    theta: f32,
+    sections: [usize; 3],
+    pos_ids: &CudaBuffer,
+) -> Result<Tensor> {
+    if input.dtype() != DType::BF16 || sections.iter().sum::<usize>() != head_dim / 2 {
+        return Err(Error::Other("rope_tmrope: invalid BF16 input or sections".into()));
+    }
+    let dims = input.shape().dims();
+    let seq_len = if dims.len() == 2 { 1 } else { dims[0] };
+    if pos_ids.len() != seq_len * 3 * 4 {
+        return Err(Error::Other("rope_tmrope: position buffer length mismatch".into()));
+    }
+    let output = CudaBuffer::alloc_zeros(input.size_in_bytes(), ctx.device_id())
+        .map_err(Error::Cuda)?;
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_rope_tmrope_bf16(
+            gpu_ptr(input)?,
+            output.ptr(),
+            head_dim as u32,
+            n_heads as u32,
+            seq_len as u32,
+            theta,
+            pos_ids.ptr(),
+            sections[0] as u32,
+            sections[1] as u32,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+    Ok(make_gpu_tensor(
+        input.shape().clone(),
+        DType::BF16,
+        ctx.device_id(),
+        output,
+    ))
+}
+
 /// Vision 2D-RoPE (bf16). `input` `[seq, heads, head_dim]`; `pos_ids` flat
 /// u32 slice of length `seq * 2` (h, w per token). head_dim=64 for Qwen3-VL.
 pub fn apply_vision_2d(

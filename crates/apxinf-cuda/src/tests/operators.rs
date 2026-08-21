@@ -3,13 +3,14 @@ use apxinf_core::{DType, Error, Result, Shape, Tensor};
 use crate::buffer::{CudaBuffer, HostMappedBuffer};
 use crate::context::CudaContext;
 use crate::kernels::activation::{gelu_tanh, silu};
-use crate::kernels::attention::{causal_mask, softmax, softmax_causal, vision};
+use crate::kernels::attention::{causal_mask, grouped, softmax, softmax_causal, vision};
 use crate::kernels::cache::append;
 use crate::kernels::elementwise::{add, add_bias, mul, scale};
 use crate::kernels::embedding::lookup;
 use crate::kernels::norm::{layer, rms};
 use crate::kernels::qwen35_attention;
-use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_vision_2d};
+use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
+use crate::kernels::preprocess::{avg_pool1d_bf16, im2col1d_bf16};
 
 fn gpu_ptr(tensor: &Tensor) -> Result<*mut std::ffi::c_void> {
     Ok(CudaBuffer::from_tensor(tensor).map_err(Error::Cuda)?.ptr())
@@ -889,6 +890,45 @@ fn rope_vision_2d_bf16_matches_reference() {
     assert_bf16_close_reduction(&download_bf16_as_fp32(&out).unwrap(), &expected);
 }
 
+#[test]
+fn qwen25_tmrope_bf16_matches_contiguous_section_reference() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, head_dim) = (1usize, 1usize, 128usize);
+    let sections = [16usize, 24usize, 24usize];
+    let positions = [3u32, 7u32, 11u32];
+    let theta = 1_000_000.0f32;
+    let input = (0..head_dim)
+        .map(|index| (index as f32 * 0.03 - 1.0).sin())
+        .collect::<Vec<_>>();
+    let half = head_dim / 2;
+    let boundaries = [2 * sections[0], 2 * (sections[0] + sections[1])];
+    let expected = (0..head_dim)
+        .map(|dimension| {
+            let axis = if dimension < boundaries[0] { 0 } else if dimension < boundaries[1] { 1 } else { 2 };
+            let pair = dimension % half;
+            let angle = positions[axis] as f32
+                / theta.powf(2.0 * pair as f32 / head_dim as f32);
+            let rotated = if dimension < half { -input[dimension + half] } else { input[dimension - half] };
+            input[dimension] * angle.cos() + rotated * angle.sin()
+        })
+        .collect::<Vec<_>>();
+    let tensor = upload_fp32_as_bf16(&ctx, &input, vec![seq_len, n_heads, head_dim]).unwrap();
+    let position_bytes = positions.into_iter().flat_map(u32::to_ne_bytes).collect::<Vec<_>>();
+    let position_buffer = CudaBuffer::alloc(position_bytes.len(), ctx.device_id()).unwrap();
+    position_buffer.copy_from_host(&position_bytes).unwrap();
+    let output = apply_tmrope(
+        &ctx,
+        &tensor,
+        n_heads,
+        head_dim,
+        theta,
+        sections,
+        &position_buffer,
+    )
+    .unwrap();
+    assert_bf16_close_reduction(&download_bf16_as_fp32(&output).unwrap(), &expected);
+}
+
 // ── Vision SDPA (non-causal full attention) ──────────────────────
 
 #[test]
@@ -899,6 +939,49 @@ fn vision_sdpa_bf16_matches_reference() {
 #[test]
 fn vision_sdpa_bf16_head72_matches_reference() {
     assert_vision_sdpa_bf16_case(72);
+}
+
+#[test]
+fn vision_sdpa_bf16_head80_matches_reference() {
+    assert_vision_sdpa_bf16_case(80);
+}
+
+#[test]
+fn grouped_sdpa_bf16_respects_window_boundaries() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, head_dim) = (2usize, 1usize, 64usize);
+    let q = upload_fp32_as_bf16(&ctx, &vec![1.0; seq_len * head_dim], vec![seq_len, n_heads, head_dim]).unwrap();
+    let k = upload_fp32_as_bf16(&ctx, &vec![1.0; seq_len * head_dim], vec![seq_len, n_heads, head_dim]).unwrap();
+    let mut values = vec![2.0; head_dim];
+    values.extend(vec![8.0; head_dim]);
+    let v = upload_fp32_as_bf16(&ctx, &values, vec![seq_len, n_heads, head_dim]).unwrap();
+    let bytes = [0_u32, 1_u32]
+        .into_iter()
+        .flat_map(u32::to_ne_bytes)
+        .collect::<Vec<_>>();
+    let groups = CudaBuffer::alloc(bytes.len(), ctx.device_id()).unwrap();
+    groups.copy_from_host(&bytes).unwrap();
+    let output = grouped(&ctx, &q, &k, &v, seq_len, n_heads, head_dim, &groups).unwrap();
+    assert_bf16_close_reduction(
+        &download_bf16_as_fp32(&output).unwrap(),
+        &values,
+    );
+}
+
+#[test]
+fn audio_im2col_and_average_pool_match_reference() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let input = upload_fp32_as_bf16(&ctx, &[1.0, 2.0, 3.0], vec![3, 1]).unwrap();
+    let columns = im2col1d_bf16(&ctx, &input, 3, 1, 1).unwrap();
+    assert_bf16_close_elementwise(
+        &download_bf16_as_fp32(&columns).unwrap(),
+        &[0.0, 1.0, 2.0, 1.0, 2.0, 3.0, 2.0, 3.0, 0.0],
+    );
+    let pooled = avg_pool1d_bf16(&ctx, &input, 2, 1).unwrap();
+    assert_bf16_close_elementwise(
+        &download_bf16_as_fp32(&pooled).unwrap(),
+        &[1.5, 2.5],
+    );
 }
 
 #[test]

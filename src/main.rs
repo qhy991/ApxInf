@@ -2,20 +2,25 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+#[cfg(feature = "cuda")]
 use std::time::Instant;
 
 use apxinf_core::{DType, Device, Tensor};
 #[cfg(feature = "cuda")]
 use apxinf_cuda::CudaContext;
+#[cfg(feature = "cuda")]
 use apxinf_loader::safetensors;
 #[cfg(feature = "cuda")]
 use apxinf_model::qwen35::{load_embedding_row, HybridUnit, HybridUnitMode, Qwen35LmHead};
 use apxinf_model::{
-    AutoModel, ImageInput, LlmInput, LoadOptions, Qwen35CheckpointReport, Qwen35Config,
+    AudioInput, AutoModel, ImageInput, LlmInput, LoadOptions, Qwen25OmniCheckpointReport,
+    Qwen25OmniConfig, Qwen35CheckpointReport, Qwen35Config,
 };
 use apxinf_tokenizer::{ChatMessage, Tokenizer};
 use clap::{Parser, Subcommand};
 
+#[cfg(feature = "cuda")]
+mod qwen25_omni_server;
 #[cfg(feature = "cuda")]
 mod qwen35_server;
 
@@ -44,6 +49,11 @@ enum Commands {
         /// prompt. Only for qwen3_vl models.
         #[arg(long)]
         image: Option<PathBuf>,
+
+        /// Path to one local WAV file for Qwen2.5-Omni audio understanding.
+        /// Mutually exclusive with --image in the first CLI deployment slice.
+        #[arg(long, conflicts_with = "image")]
+        audio: Option<PathBuf>,
 
         /// Maximum new tokens to generate
         #[arg(long, default_value = "50")]
@@ -108,6 +118,7 @@ fn main() {
             model,
             prompt,
             image,
+            audio,
             max_tokens,
             no_eos_stop,
             system,
@@ -116,10 +127,8 @@ fn main() {
         } => {
             let device = parse_device(&device);
             if read_model_type(&model).as_deref() == Some("qwen3_5") {
-                if image.is_some() {
-                    eprintln!(
-                        "Qwen3.8 image execution is not implemented yet; the unified LlmInput image boundary remains unsupported for this native runtime"
-                    );
+                if image.is_some() || audio.is_some() {
+                    eprintln!("Qwen3.8 does not accept the requested image/audio input");
                 } else {
                     #[cfg(feature = "cuda")]
                     run_generate_qwen35(
@@ -138,6 +147,7 @@ fn main() {
                     &model,
                     &prompt,
                     image.as_ref(),
+                    audio.as_ref(),
                     max_tokens,
                     !no_eos_stop,
                     system.as_deref(),
@@ -161,14 +171,24 @@ fn main() {
             enable_multimodal,
         } => {
             #[cfg(feature = "cuda")]
-            if let Err(error) = qwen35_server::serve(
-                &model,
-                &host,
-                port,
-                max_model_len,
-                enable_experimental_marlin_m64,
-                enable_multimodal,
-            ) {
+            if let Err(error) = if read_model_type(&model).as_deref() == Some("qwen2_5_omni") {
+                if !enable_multimodal {
+                    Err("Qwen2.5-Omni serve requires --enable-multimodal".into())
+                } else if enable_experimental_marlin_m64 {
+                    Err("Qwen2.5-Omni does not support the Qwen3.8 Marlin M64 option".into())
+                } else {
+                    qwen25_omni_server::serve(&model, &host, port, max_model_len)
+                }
+            } else {
+                qwen35_server::serve(
+                    &model,
+                    &host,
+                    port,
+                    max_model_len,
+                    enable_experimental_marlin_m64,
+                    enable_multimodal,
+                )
+            } {
                 eprintln!("Server failed: {error}");
                 std::process::exit(2);
             }
@@ -207,6 +227,7 @@ fn run_generate(
     model_dir: &PathBuf,
     prompt: &str,
     image_path: Option<&PathBuf>,
+    audio_path: Option<&PathBuf>,
     max_tokens: usize,
     eos_stop: bool,
     system_prompt: Option<&str>,
@@ -223,8 +244,14 @@ fn run_generate(
             return;
         }
     };
-    if image_path.is_some() && !matches!(model_name.as_str(), "qwen3_vl" | "qwen3vl") {
+    if image_path.is_some()
+        && !matches!(model_name.as_str(), "qwen3_vl" | "qwen3vl" | "qwen2_5_omni")
+    {
         eprintln!("Model `{model_name}` does not support image input");
+        return;
+    }
+    if audio_path.is_some() && model_name != "qwen2_5_omni" {
+        eprintln!("Model `{model_name}` does not support audio input");
         return;
     }
 
@@ -246,7 +273,7 @@ fn run_generate(
 
     // Model-specific processors turn raw media into tensors, while generation
     // itself always receives the model-neutral LlmInput request.
-    let (tokens, prepared_image) = if let Some(image_path) = image_path {
+    let (tokens, prepared_image, prepared_audio) = if let Some(image_path) = image_path {
         println!("Preprocessing image via the Hugging Face processor...");
         let (data, shape, grid, tokens) =
             match preprocess_image(model_dir, image_path, prompt, system_prompt) {
@@ -269,7 +296,36 @@ fn run_generate(
                 return;
             }
         };
-        (tokens, Some((pixels, vec![grid])))
+        (tokens, Some((pixels, vec![grid])), None)
+    } else if let Some(audio_path) = audio_path {
+        println!("Preprocessing WAV audio via the local Hugging Face processor...");
+        let (features, feature_shape, mask, mask_shape, length, token_count, tokens) =
+            match preprocess_audio(model_dir, audio_path, prompt, system_prompt) {
+                Ok(output) => output,
+                Err(error) => {
+                    eprintln!("Audio preprocessing failed: {error}");
+                    return;
+                }
+            };
+        let features = match Tensor::from_bf16(feature_shape, &features) {
+            Ok(features) => features,
+            Err(error) => {
+                eprintln!("Invalid audio features: {error}");
+                return;
+            }
+        };
+        let mask = match Tensor::from_bf16(mask_shape, &mask) {
+            Ok(mask) => mask,
+            Err(error) => {
+                eprintln!("Invalid audio attention mask: {error}");
+                return;
+            }
+        };
+        (
+            tokens,
+            None,
+            Some((features, mask, vec![length], vec![token_count])),
+        )
     } else {
         let tokens = match encode_prompt(&tok, prompt, system_prompt) {
             Ok(tokens) => tokens,
@@ -278,7 +334,7 @@ fn run_generate(
                 return;
             }
         };
-        (tokens, None)
+        (tokens, None, None)
     };
 
     let text_weight_dtype = match dtype.to_ascii_lowercase().as_str() {
@@ -306,9 +362,11 @@ fn run_generate(
             return;
         }
     };
-    if prepared_image.is_some() {
+    if prepared_image.is_some() || prepared_audio.is_some() {
         match model.text_capabilities() {
-            Ok(capabilities) if capabilities.image => {}
+            Ok(capabilities)
+                if (prepared_image.is_none() || capabilities.image)
+                    && (prepared_audio.is_none() || capabilities.audio) => {}
             Ok(_) => {
                 eprintln!("Model `{model_name}` does not support image input");
                 return;
@@ -321,9 +379,15 @@ fn run_generate(
     }
     println!("Model ready.");
 
-    let input = match prepared_image.as_ref() {
-        Some((pixels, grids)) => LlmInput::with_image(&tokens, ImageInput::new(pixels, grids)),
-        None => LlmInput::text(&tokens),
+    let input = match (prepared_image.as_ref(), prepared_audio.as_ref()) {
+        (Some((pixels, grids)), None) => {
+            LlmInput::with_image(&tokens, ImageInput::new(pixels, grids))
+        }
+        (None, Some((features, mask, lengths, counts))) => {
+            LlmInput::with_audio(&tokens, AudioInput::new(features, mask, lengths, counts))
+        }
+        (None, None) => LlmInput::text(&tokens),
+        (Some(_), Some(_)) => unreachable!("clap rejects simultaneous image and audio"),
     };
 
     println!();
@@ -662,6 +726,9 @@ fn read_model_type(model_dir: &PathBuf) -> Option<String> {
 fn run_inspect(model_dir: &PathBuf, json: bool) -> Result<(), String> {
     let model_type = read_model_type(model_dir)
         .ok_or_else(|| format!("missing model_type in {}/config.json", model_dir.display()))?;
+    if model_type == "qwen2_5_omni" {
+        return run_inspect_qwen25_omni(model_dir, json);
+    }
     if model_type != "qwen3_5" {
         return Err(format!(
             "inspection contract currently supports model_type `qwen3_5`, got `{model_type}`"
@@ -764,6 +831,84 @@ fn run_inspect(model_dir: &PathBuf, json: bool) -> Result<(), String> {
             "native_text_execution_ready: {} (M8 prefill and service ready; unified LlmInput image path remains unsupported)",
             cfg!(feature = "cuda")
         );
+    }
+    Ok(())
+}
+
+fn run_inspect_qwen25_omni(model_dir: &PathBuf, json: bool) -> Result<(), String> {
+    let config = Qwen25OmniConfig::from_model_dir(model_dir).map_err(|error| error.to_string())?;
+    let report = Qwen25OmniCheckpointReport::inspect(model_dir, &config)
+        .map_err(|error| error.to_string())?;
+    let dtype_counts = report
+        .dtype_counts
+        .iter()
+        .map(|(dtype, count)| (dtype.to_string(), serde_json::json!(count)))
+        .collect::<serde_json::Map<_, _>>();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status":"validated",
+                "native_execution_ready":cfg!(feature = "cuda"),
+                "model_type":config.model_type,
+                "architecture":config.architecture,
+                "precision":"bf16",
+                "input_modalities":["text","image","audio"],
+                "output_modalities":["text"],
+                "talker_disabled":true,
+                "video":false,
+                "text":{
+                    "layers":config.text.n_layers,
+                    "hidden_size":config.text.hidden_size,
+                    "intermediate_size":config.text.intermediate_size,
+                    "attention_heads":config.text.n_heads,
+                    "kv_heads":config.text.n_kv_heads,
+                    "head_dim":config.text.head_dim,
+                    "max_position_embeddings":config.text.max_position_embeddings,
+                },
+                "vision":{
+                    "depth":config.vision.depth,
+                    "hidden_size":config.vision.hidden_size,
+                    "output_hidden_size":config.vision.out_hidden_size,
+                },
+                "audio":{
+                    "layers":config.audio.n_layers,
+                    "hidden_size":config.audio.hidden_size,
+                    "mel_bins":config.audio.num_mel_bins,
+                    "sampling_rate":config.processor.sampling_rate,
+                    "output_hidden_size":config.audio.output_dim,
+                },
+                "checkpoint":{
+                    "shards":report.shard_count,
+                    "tensors":report.checkpoint_tensor_count,
+                    "tensor_bytes":report.checkpoint_tensor_bytes,
+                    "required_thinker_tensors":report.required_tensor_count,
+                    "required_thinker_bytes":report.required_tensor_bytes,
+                    "excluded_speech_tensors":report.excluded_tensor_count,
+                    "excluded_speech_bytes":report.excluded_tensor_bytes,
+                    "dtype_counts":dtype_counts,
+                },
+                "fallback_active":false,
+            }))
+            .map_err(|error| error.to_string())?
+        );
+    } else {
+        println!("ApxInf Qwen2.5-Omni checkpoint contract: VALID");
+        println!("model: {} ({})", config.model_type, config.architecture);
+        println!(
+            "Thinker: text={} layers, vision={} layers, audio={} layers, BF16",
+            config.text.n_layers, config.vision.depth, config.audio.n_layers
+        );
+        println!(
+            "checkpoint: {} shards, {} required Thinker tensors ({} bytes), {} speech-output tensors excluded ({} bytes)",
+            report.shard_count,
+            report.required_tensor_count,
+            report.required_tensor_bytes,
+            report.excluded_tensor_count,
+            report.excluded_tensor_bytes
+        );
+        println!("modalities: text,image,audio -> text; video=false; talker_disabled=true");
+        println!("native_execution_ready: {}", cfg!(feature = "cuda"));
     }
     Ok(())
 }
@@ -879,6 +1024,150 @@ with open(metadata_path, "w") as output:
     let _ = std::fs::remove_file(&pixel_path);
     let _ = std::fs::remove_file(&metadata_path);
     Ok((pixel_data, pixel_shape, grid, tokens))
+}
+
+type PreparedAudio = (
+    Vec<half::bf16>,
+    Vec<usize>,
+    Vec<half::bf16>,
+    Vec<usize>,
+    u32,
+    u32,
+    Vec<u32>,
+);
+
+/// Use only the pinned local processor for WAV decoding, chat templating and
+/// log-mel extraction. The helper never loads a model and never permits a
+/// remote model/media path.
+fn preprocess_audio(
+    model_dir: &PathBuf,
+    audio_path: &PathBuf,
+    prompt: &str,
+    system_prompt: Option<&str>,
+) -> Result<PreparedAudio, String> {
+    use std::process::Command;
+
+    if audio_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_none_or(|extension| !extension.eq_ignore_ascii_case("wav"))
+    {
+        return Err("audio input must be a local WAV file".into());
+    }
+    let suffix = std::process::id();
+    let feature_path = std::env::temp_dir().join(format!("apxinf-cli-{suffix}-audio.npy"));
+    let mask_path = std::env::temp_dir().join(format!("apxinf-cli-{suffix}-audio-mask.npy"));
+    let metadata_path =
+        std::env::temp_dir().join(format!("apxinf-cli-{suffix}-audio-metadata.json"));
+    let script = r#"
+import json
+import sys
+import numpy as np
+import soundfile as sf
+from scipy.signal import resample_poly
+from transformers import AutoProcessor
+
+model_dir, audio_path, prompt, system, feature_path, mask_path, metadata_path = sys.argv[1:]
+processor = AutoProcessor.from_pretrained(model_dir, local_files_only=True)
+audio, sampling_rate = sf.read(audio_path, dtype="float32", always_2d=False)
+if audio.ndim == 2:
+    audio = audio.mean(axis=1)
+if not np.isfinite(audio).all() or audio.size == 0:
+    raise ValueError("WAV must contain finite nonempty audio")
+if sampling_rate != 16000:
+    from math import gcd
+    divisor = gcd(int(sampling_rate), 16000)
+    audio = resample_poly(audio, 16000 // divisor, int(sampling_rate) // divisor).astype(np.float32)
+messages = []
+if system:
+    messages.append({"role":"system","content":[{"type":"text","text":system}]})
+messages.append({"role":"user","content":[
+    {"type":"audio","audio":audio},
+    {"type":"text","text":prompt},
+]})
+inputs = processor.apply_chat_template(
+    messages,
+    add_generation_prompt=True,
+    tokenize=True,
+    return_dict=True,
+    return_tensors="pt",
+    sampling_rate=16000,
+)
+features = inputs["input_features"][0].cpu().numpy().astype(np.float32)
+if features.shape[0] == 128:
+    features = features.T
+mask = inputs.get("feature_attention_mask")
+if mask is None:
+    mask = np.ones((features.shape[0],), dtype=np.float32)
+else:
+    mask = mask[0].cpu().numpy().astype(np.float32).reshape(-1)[:features.shape[0]]
+valid_frames = int(mask.sum())
+if valid_frames <= 0 or valid_frames > features.shape[0]:
+    raise ValueError("processor returned an invalid feature attention mask")
+features = features[:valid_frames]
+mask = np.ones((valid_frames,), dtype=np.float32)
+tokens = inputs["input_ids"][0].cpu().numpy().astype(np.int64).tolist()
+token_count = sum(token == 151646 for token in tokens)
+np.save(feature_path, features)
+np.save(mask_path, mask)
+with open(metadata_path, "w") as output:
+    json.dump({"tokens":tokens,"feature_length":int(features.shape[0]),"token_count":token_count}, output)
+"#;
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(script)
+        .arg(model_dir)
+        .arg(audio_path)
+        .arg(prompt)
+        .arg(system_prompt.unwrap_or(""))
+        .arg(&feature_path)
+        .arg(&mask_path)
+        .arg(&metadata_path)
+        .output()
+        .map_err(|error| format!("python3: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "python audio preprocessing failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let metadata_raw = std::fs::read_to_string(&metadata_path)
+        .map_err(|error| format!("read {}: {error}", metadata_path.display()))?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_raw)
+        .map_err(|error| format!("parse {}: {error}", metadata_path.display()))?;
+    let tokens = metadata["tokens"]
+        .as_array()
+        .ok_or_else(|| "audio processor returned no tokens".to_string())?
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|token| u32::try_from(token).ok())
+                .ok_or_else(|| "audio processor returned an invalid token".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let feature_length = metadata["feature_length"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "audio processor returned invalid feature_length".to_string())?;
+    let token_count = metadata["token_count"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "audio processor returned invalid token_count".to_string())?;
+    let (feature_shape, features) = read_npy_f32_to_bf16(&feature_path)?;
+    let (mask_shape, mask) = read_npy_f32_to_bf16(&mask_path)?;
+    let _ = std::fs::remove_file(&feature_path);
+    let _ = std::fs::remove_file(&mask_path);
+    let _ = std::fs::remove_file(&metadata_path);
+    Ok((
+        features,
+        feature_shape,
+        mask,
+        mask_shape,
+        feature_length,
+        token_count,
+        tokens,
+    ))
 }
 
 /// Read a NumPy v1 f32 array and convert it to bf16.

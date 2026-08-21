@@ -232,7 +232,7 @@ __global__ void attention_softmax_decode_bf16_kernel(
 //
 // Non-causal: every query attends to every key. One block per (head, query).
 // 32 threads (= 1 warp); each thread handles strided head_dim elements. The
-// current contract covers head_dim 64 and 72, so at most three values live in
+// current contract covers head dimensions through 128, so at most four values live in
 // registers per thread and the dot-product reduction still uses __shfl.
 //
 // IMPORTANT: all 32 threads must reach every __shfl_xor_sync call (full mask
@@ -245,13 +245,14 @@ __global__ void attention_softmax_decode_bf16_kernel(
 __global__ void vision_sdpa_bf16_kernel(
     const __nv_bfloat16* q, const __nv_bfloat16* k, const __nv_bfloat16* v,
     __nv_bfloat16* out,
-    uint32_t seq_len, uint32_t n_heads, uint32_t head_dim, float scale)
+    uint32_t seq_len, uint32_t n_heads, uint32_t head_dim, float scale,
+    const uint32_t* group_ids)
 {
     uint32_t head = blockIdx.y;
     uint32_t qi   = blockIdx.x;
     if (qi >= seq_len) return;
     int tid = threadIdx.x;       // 0..31
-    constexpr int kMaxElementsPerThread = 3;
+    constexpr int kMaxElementsPerThread = 4;
     int dimensions[kMaxElementsPerThread];
     float query_values[kMaxElementsPerThread];
     int dimension_count = 0;
@@ -269,6 +270,10 @@ __global__ void vision_sdpa_bf16_kernel(
     // Phase 1: scores[ki] = (Q[qi] · K[ki]) * scale. All threads iterate
     // every ki so the shfl reduction stays converged.
     for (uint32_t ki = 0; ki < seq_len; ki++) {
+        if (group_ids != nullptr && group_ids[qi] != group_ids[ki]) {
+            if (tid == 0) scores[ki] = -INFINITY;
+            continue;
+        }
         const __nv_bfloat16* k_row = k + ki * n_heads * head_dim + head * head_dim;
         float dot = 0.0f;
         for (int slot = 0; slot < dimension_count; slot++) {
@@ -309,7 +314,7 @@ __global__ void vision_sdpa_bf16_kernel(
 
     // Phase 3: out[qi, head, d] = sum_k scores[k] * V[k, head, d].
     // All threads iterate every ki; owned dimensions differ per thread.
-    float accumulators[kMaxElementsPerThread] = {0.0f, 0.0f, 0.0f};
+    float accumulators[kMaxElementsPerThread] = {0.0f, 0.0f, 0.0f, 0.0f};
     for (uint32_t ki = 0; ki < seq_len; ki++) {
         float s = scores[ki];
         const __nv_bfloat16* v_row = v + ki * n_heads * head_dim + head * head_dim;
@@ -881,5 +886,3 @@ __global__ void mha_bf16_kernel(
         __float2bfloat16(accumulator);
   }
 }
-
-

@@ -19,6 +19,37 @@ pub struct ImageInput<'a> {
     pub grid_thw: &'a [[u32; 3]],
 }
 
+/// Processor output for one or more audio clips in a generation prompt.
+///
+/// Features use the model-owned `[frames, mel_bins]` layout. The mask is the
+/// processor-produced frame mask, `feature_lengths` identifies the valid
+/// frames in each group, and `token_counts` maps each group to the expanded
+/// audio-placeholder run in `token_ids`. The model validates all four views
+/// before executing the audio tower.
+#[derive(Clone, Copy, Debug)]
+pub struct AudioInput<'a> {
+    pub input_features: &'a Tensor,
+    pub attention_mask: &'a Tensor,
+    pub feature_lengths: &'a [u32],
+    pub token_counts: &'a [u32],
+}
+
+impl<'a> AudioInput<'a> {
+    pub const fn new(
+        input_features: &'a Tensor,
+        attention_mask: &'a Tensor,
+        feature_lengths: &'a [u32],
+        token_counts: &'a [u32],
+    ) -> Self {
+        Self {
+            input_features,
+            attention_mask,
+            feature_lengths,
+            token_counts,
+        }
+    }
+}
+
 impl<'a> ImageInput<'a> {
     pub const fn new(pixel_values: &'a Tensor, grid_thw: &'a [[u32; 3]]) -> Self {
         Self {
@@ -37,6 +68,7 @@ impl<'a> ImageInput<'a> {
 pub struct LlmInput<'a> {
     pub token_ids: &'a [u32],
     pub image: Option<ImageInput<'a>>,
+    pub audio: Option<AudioInput<'a>>,
 }
 
 impl<'a> LlmInput<'a> {
@@ -44,6 +76,7 @@ impl<'a> LlmInput<'a> {
         Self {
             token_ids,
             image: None,
+            audio: None,
         }
     }
 
@@ -51,6 +84,27 @@ impl<'a> LlmInput<'a> {
         Self {
             token_ids,
             image: Some(image),
+            audio: None,
+        }
+    }
+
+    pub const fn with_audio(token_ids: &'a [u32], audio: AudioInput<'a>) -> Self {
+        Self {
+            token_ids,
+            image: None,
+            audio: Some(audio),
+        }
+    }
+
+    pub const fn with_media(
+        token_ids: &'a [u32],
+        image: Option<ImageInput<'a>>,
+        audio: Option<AudioInput<'a>>,
+    ) -> Self {
+        Self {
+            token_ids,
+            image,
+            audio,
         }
     }
 }
@@ -59,11 +113,22 @@ impl<'a> LlmInput<'a> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LlmCapabilities {
     pub image: bool,
+    pub audio: bool,
 }
 
 impl LlmCapabilities {
-    pub const TEXT_ONLY: Self = Self { image: false };
-    pub const VISION: Self = Self { image: true };
+    pub const TEXT_ONLY: Self = Self {
+        image: false,
+        audio: false,
+    };
+    pub const VISION: Self = Self {
+        image: true,
+        audio: false,
+    };
+    pub const OMNI: Self = Self {
+        image: true,
+        audio: true,
+    };
 }
 
 /// Common interface for all LLM implementations.
@@ -93,6 +158,11 @@ pub trait LlmTrait {
                 "this model does not support image input".into(),
             ));
         }
+        if input.audio.is_some() {
+            return Err(Error::Other(
+                "this model does not support audio input".into(),
+            ));
+        }
         self.forward(input.token_ids, 0)
     }
 
@@ -104,6 +174,17 @@ pub trait LlmTrait {
     /// decode graph use it to pre-capture every bucket they'll hit so the
     /// per-token TPOT stays at pure graph-replay cost. Default: no-op.
     fn prewarm_decode(&mut self, _prompt_len: usize, _max_new_tokens: usize) {}
+
+    /// Optional hard context capacity. The shared loop rejects combined
+    /// prompt+completion overflow before prewarm or cache mutation.
+    fn max_context_len(&self) -> Option<usize> {
+        None
+    }
+
+    /// Optional per-request generation limit owned by a deployed model.
+    fn max_new_tokens_limit(&self) -> Option<usize> {
+        None
+    }
 
     /// Greedy-decode one token directly to its id, skipping the full-logits
     /// D2H + CPU argmax. Returns `None` if the model has no GPU-argmax fast
@@ -164,10 +245,40 @@ where
     if prompt_tokens.is_empty() {
         return Err(Error::Other("generate_streaming: empty prompt".into()));
     }
+    if max_new_tokens == 0 {
+        return Err(Error::Other(
+            "generate_streaming: max_new_tokens must be positive".into(),
+        ));
+    }
+    if model
+        .max_new_tokens_limit()
+        .is_some_and(|limit| max_new_tokens > limit)
+    {
+        return Err(Error::Other(format!(
+            "generate_streaming: max_new_tokens {max_new_tokens} exceeds model limit {}",
+            model.max_new_tokens_limit().unwrap()
+        )));
+    }
+    if let Some(limit) = model.max_context_len() {
+        let required = prompt_tokens.len().checked_add(max_new_tokens).ok_or_else(|| {
+            Error::Other("generate_streaming: combined context length overflow".into())
+        })?;
+        if required > limit {
+            return Err(Error::Other(format!(
+                "generate_streaming: prompt {} + completion {max_new_tokens} exceeds context {limit}",
+                prompt_tokens.len()
+            )));
+        }
+    }
     // Reject unsupported media before graph prewarm or any model forward.
     if input.image.is_some() && !model.capabilities().image {
         return Err(Error::Other(
             "this model does not support image input".into(),
+        ));
+    }
+    if input.audio.is_some() && !model.capabilities().audio {
+        return Err(Error::Other(
+            "this model does not support audio input".into(),
         ));
     }
 
@@ -246,7 +357,14 @@ where
 /// `logits` shape: `[seq_len, vocab_size]`. Logits may live on any device — this
 /// helper moves to CPU if needed (callers' responsibility for now).
 fn argmax_last_row(logits: &Tensor, seq_len: usize, vocab_size: usize) -> Result<u32> {
-    let last_row_offset = (seq_len - 1) * vocab_size;
+    let dims = logits.shape().dims();
+    if dims.len() != 2 || dims[1] != vocab_size || dims[0] == 0 {
+        return Err(Error::Other(format!(
+            "argmax logits shape {dims:?}, expected [rows, {vocab_size}]"
+        )));
+    }
+    let _ = seq_len;
+    let last_row_offset = (dims[0] - 1) * vocab_size;
     // Fast path: scan bf16 directly (the decode graph returns a bf16 row).
     // Manual loop with `>` beats the iterator + partial_cmp (no NaN handling
     // overhead; logits don't contain NaN in practice).

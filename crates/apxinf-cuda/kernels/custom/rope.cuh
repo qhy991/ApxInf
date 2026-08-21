@@ -238,6 +238,36 @@ __global__ void rope_mrope_bf16_kernel(
     output[idx1] = __float2bfloat16(x0 * sin_val + x1 * cos_val);
 }
 
+// Qwen2.5-Omni TMRoPE: the full head dimension is split into contiguous
+// T/H/W sections of lengths 2*mrope_section. rotate_half is still evaluated
+// across the head midpoint, so the two members of a rotated pair may use
+// different modality axes exactly as in the Hugging Face reference.
+__global__ void rope_tmrope_bf16_kernel(
+    const __nv_bfloat16* input, __nv_bfloat16* output,
+    uint32_t head_dim, uint32_t n_heads, uint32_t seq_len,
+    float theta, const uint32_t* pos_ids,
+    uint32_t sec_t, uint32_t sec_h)
+{
+    uint32_t dimension = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t head_idx = blockIdx.y;
+    uint32_t seq_idx = blockIdx.z;
+    if (dimension >= head_dim) return;
+    uint32_t axis = dimension < 2 * sec_t ? 0u
+        : (dimension < 2 * (sec_t + sec_h) ? 1u : 2u);
+    uint32_t half = head_dim / 2;
+    uint32_t pair = dimension % half;
+    float frequency = 1.0f / powf(theta, 2.0f * (float)pair / (float)head_dim);
+    float angle = (float)pos_ids[seq_idx * 3 + axis] * frequency;
+    float cos_value = cosf(angle);
+    float sin_value = sinf(angle);
+    uint32_t base = seq_idx * n_heads * head_dim + head_idx * head_dim;
+    float value = __bfloat162float(input[base + dimension]);
+    float rotated = dimension < half
+        ? -__bfloat162float(input[base + dimension + half])
+        : __bfloat162float(input[base + dimension - half]);
+    output[base + dimension] = __float2bfloat16(value * cos_value + rotated * sin_value);
+}
+
 
 
 // Decode-position variant: seq_len is always 1, pos_ids is a [3] u32 buffer
@@ -311,7 +341,6 @@ __global__ void rope_vision_2d_bf16_kernel(
     output[idx0] = __float2bfloat16(x0 * cos_val - x1 * sin_val);
     output[idx1] = __float2bfloat16(x0 * sin_val + x1 * cos_val);
 }
-
 
 
 

@@ -1118,6 +1118,19 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_rope_tmrope_bf16(
+        input: *const c_void,
+        output: *mut c_void,
+        head_dim: u32,
+        n_heads: u32,
+        seq_len: u32,
+        theta: f32,
+        pos_ids: *const c_void,
+        sec_t: u32,
+        sec_h: u32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_vision_sdpa_bf16(
         q: *const c_void,
         k: *const c_void,
@@ -1127,6 +1140,42 @@ extern "C" {
         n_heads: u32,
         head_dim: u32,
         scale: f32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
+    pub fn apxinf_grouped_sdpa_bf16(
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        out: *mut c_void,
+        seq_len: u32,
+        n_heads: u32,
+        head_dim: u32,
+        scale: f32,
+        group_ids: *const c_void,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
+    pub fn apxinf_im2col1d_bf16(
+        input: *const c_void,
+        output: *mut c_void,
+        frames: i32,
+        channels: i32,
+        kernel: i32,
+        stride: i32,
+        padding: i32,
+        output_frames: i32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
+    pub fn apxinf_avg_pool1d_bf16(
+        input: *const c_void,
+        output: *mut c_void,
+        frames: i32,
+        channels: i32,
+        kernel: i32,
+        stride: i32,
+        output_frames: i32,
         stream: cudaStream_t,
     ) -> cudaError_t;
 }

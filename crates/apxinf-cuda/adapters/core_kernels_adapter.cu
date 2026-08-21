@@ -490,18 +490,49 @@ extern "C" cudaError_t apxinf_rope_vision_2d_bf16(
     return cudaGetLastError();
 }
 
+extern "C" cudaError_t apxinf_rope_tmrope_bf16(
+    const void* input, void* output,
+    uint32_t head_dim, uint32_t n_heads, uint32_t seq_len,
+    float theta, const void* pos_ids, uint32_t sec_t, uint32_t sec_h,
+    void* stream)
+{
+    dim3 grid((head_dim + BLOCK_SIZE - 1) / BLOCK_SIZE, n_heads, seq_len);
+    dim3 block(BLOCK_SIZE, 1, 1);
+    rope_tmrope_bf16_kernel<<<grid, block, 0, (cudaStream_t)stream>>>(
+        (const __nv_bfloat16*)input, (__nv_bfloat16*)output,
+        head_dim, n_heads, seq_len, theta, (const uint32_t*)pos_ids,
+        sec_t, sec_h);
+    return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_vision_sdpa_bf16(
     const void* q, const void* k, const void* v, void* out,
     uint32_t seq_len, uint32_t n_heads, uint32_t head_dim, float scale, void* stream)
 {
-    // Qwen3-VL uses 64; Qwen3.5/Qwen3.8 uses 72.
-    if (head_dim != 64 && head_dim != 72) return cudaErrorInvalidConfiguration;
+    if (head_dim == 0 || head_dim > 128) return cudaErrorInvalidConfiguration;
     dim3 grid(seq_len, n_heads, 1);
     dim3 block(32, 1, 1);
     size_t smem = (seq_len + 1) * sizeof(float);
     vision_sdpa_bf16_kernel<<<grid, block, smem, (cudaStream_t)stream>>>(
         (const __nv_bfloat16*)q, (const __nv_bfloat16*)k, (const __nv_bfloat16*)v,
-        (__nv_bfloat16*)out, seq_len, n_heads, head_dim, scale);
+        (__nv_bfloat16*)out, seq_len, n_heads, head_dim, scale, nullptr);
+    return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_grouped_sdpa_bf16(
+    const void* q, const void* k, const void* v, void* out,
+    uint32_t seq_len, uint32_t n_heads, uint32_t head_dim, float scale,
+    const void* group_ids, void* stream)
+{
+    if (head_dim == 0 || head_dim > 128 || group_ids == nullptr)
+        return cudaErrorInvalidConfiguration;
+    dim3 grid(seq_len, n_heads, 1);
+    dim3 block(32, 1, 1);
+    size_t smem = (seq_len + 1) * sizeof(float);
+    vision_sdpa_bf16_kernel<<<grid, block, smem, (cudaStream_t)stream>>>(
+        (const __nv_bfloat16*)q, (const __nv_bfloat16*)k, (const __nv_bfloat16*)v,
+        (__nv_bfloat16*)out, seq_len, n_heads, head_dim, scale,
+        (const uint32_t*)group_ids);
     return cudaGetLastError();
 }
 

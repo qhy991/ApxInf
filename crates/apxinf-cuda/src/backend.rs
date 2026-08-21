@@ -130,6 +130,31 @@ impl Backend for CudaBackend {
         )
     }
 
+    fn rope_tmrope(
+        &self,
+        input: &Tensor,
+        n_heads: usize,
+        head_dim: usize,
+        theta: f32,
+        sections: [usize; 3],
+        pos_ids: &[u32],
+    ) -> Result<Tensor> {
+        let dims = input.shape().dims();
+        let seq_len = if dims.len() == 2 { 1 } else { dims[0] };
+        if pos_ids.len() != seq_len * 3 {
+            return Err(Error::Other(format!(
+                "rope_tmrope: pos_ids len {} != seq_len {} * 3",
+                pos_ids.len(), seq_len
+            )));
+        }
+        let bytes = pos_ids.iter().flat_map(|value| value.to_ne_bytes()).collect::<Vec<_>>();
+        let ids = CudaBuffer::alloc(bytes.len(), self.ctx.device_id()).map_err(Error::Cuda)?;
+        ids.copy_from_host(&bytes).map_err(Error::Cuda)?;
+        kernels::rope::apply_tmrope(
+            &self.ctx, input, n_heads, head_dim, theta, sections, &ids,
+        )
+    }
+
     fn layer_norm(
         &self,
         input: &Tensor,
@@ -182,6 +207,42 @@ impl Backend for CudaBackend {
         head_dim: usize,
     ) -> Result<Tensor> {
         kernels::attention::vision(&self.ctx, q, k, v, seq_len, n_heads, head_dim)
+    }
+
+    fn grouped_sdpa(
+        &self,
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        seq_len: usize,
+        n_heads: usize,
+        head_dim: usize,
+        group_ids: &[u32],
+    ) -> Result<Tensor> {
+        if group_ids.len() != seq_len {
+            return Err(Error::Other(format!(
+                "grouped_sdpa: {} group ids for {seq_len} tokens",
+                group_ids.len()
+            )));
+        }
+        let bytes = group_ids.iter().flat_map(|value| value.to_ne_bytes()).collect::<Vec<_>>();
+        let ids = CudaBuffer::alloc(bytes.len(), self.ctx.device_id()).map_err(Error::Cuda)?;
+        ids.copy_from_host(&bytes).map_err(Error::Cuda)?;
+        kernels::attention::grouped(&self.ctx, q, k, v, seq_len, n_heads, head_dim, &ids)
+    }
+
+    fn im2col1d(
+        &self,
+        input: &Tensor,
+        kernel: usize,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Tensor> {
+        kernels::preprocess::im2col1d_bf16(&self.ctx, input, kernel, stride, padding)
+    }
+
+    fn avg_pool1d(&self, input: &Tensor, kernel: usize, stride: usize) -> Result<Tensor> {
+        kernels::preprocess::avg_pool1d_bf16(&self.ctx, input, kernel, stride)
     }
 
     fn concat_2d(&self, tensors: &[&Tensor]) -> Result<Tensor> {

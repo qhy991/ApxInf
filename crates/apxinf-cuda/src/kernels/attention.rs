@@ -368,7 +368,7 @@ pub fn softmax(ctx: &CudaContext, input: &Tensor) -> Result<Tensor> {
 
 /// Non-causal full attention for the vision tower. Q/K/V each
 /// `[seq, n_heads, head_dim]` bf16; returns `[seq, n_heads * head_dim]`.
-/// head_dim must be 64 (Qwen3-VL) or 72 (Qwen3.5/Qwen3.8).
+/// Supports head dimensions through 128, including Qwen2.5-Omni's 80.
 pub fn vision(
     ctx: &CudaContext,
     q: &Tensor,
@@ -381,45 +381,88 @@ pub fn vision(
     if q.dtype() != DType::BF16 || k.dtype() != DType::BF16 || v.dtype() != DType::BF16 {
         return Err(Error::Other("vision_sdpa: only BF16 supported".into()));
     }
-    if !matches!(head_dim, 64 | 72) {
+    if head_dim == 0 || head_dim > 128 {
         return Err(Error::Other(
-            "vision_sdpa: head_dim must be 64 or 72".into(),
+            "vision_sdpa: head_dim must be in 1..=128".into(),
         ));
     }
     #[cfg(apxinf_fa2_sm80)]
     {
-        return fa2_attention(
-            ctx, q, k, v, 1, seq_len, seq_len, n_heads, n_heads, head_dim,
-        )?
-        .reshape(vec![seq_len, n_heads * head_dim]);
-    }
-    #[cfg(not(apxinf_fa2_sm80))]
-    {
-        let device_id = ctx.device_id();
-        let out_bytes = seq_len * n_heads * head_dim * DType::BF16.size_in_bytes();
-        let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
-        let scale = 1.0f32 / (head_dim as f32).sqrt();
-        unsafe {
-            let res = ffi::apxinf_vision_sdpa_bf16(
-                gpu_ptr(q)?,
-                gpu_ptr(k)?,
-                gpu_ptr(v)?,
-                out_buf.ptr(),
-                seq_len as u32,
-                n_heads as u32,
-                head_dim as u32,
-                scale,
-                ctx.stream().handle(),
-            );
-            ffi::check_cuda(res).map_err(Error::Cuda)?;
+        if head_dim != 80 {
+            return fa2_attention(
+                ctx, q, k, v, 1, seq_len, seq_len, n_heads, n_heads, head_dim,
+            )?
+            .reshape(vec![seq_len, n_heads * head_dim]);
         }
-        Ok(make_gpu_tensor(
-            Shape::new(vec![seq_len, n_heads * head_dim]),
-            DType::BF16,
-            device_id,
-            out_buf,
-        ))
     }
+    let device_id = ctx.device_id();
+    let out_bytes = seq_len * n_heads * head_dim * DType::BF16.size_in_bytes();
+    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
+    let scale = 1.0f32 / (head_dim as f32).sqrt();
+    unsafe {
+        let res = ffi::apxinf_vision_sdpa_bf16(
+            gpu_ptr(q)?,
+            gpu_ptr(k)?,
+            gpu_ptr(v)?,
+            out_buf.ptr(),
+            seq_len as u32,
+            n_heads as u32,
+            head_dim as u32,
+            scale,
+            ctx.stream().handle(),
+        );
+        ffi::check_cuda(res).map_err(Error::Cuda)?;
+    }
+    Ok(make_gpu_tensor(
+        Shape::new(vec![seq_len, n_heads * head_dim]),
+        DType::BF16,
+        device_id,
+        out_buf,
+    ))
+}
+
+/// Non-causal BF16 attention limited to equal group identifiers.
+pub fn grouped(
+    ctx: &CudaContext,
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    seq_len: usize,
+    n_heads: usize,
+    head_dim: usize,
+    group_ids: &CudaBuffer,
+) -> Result<Tensor> {
+    if q.dtype() != DType::BF16 || k.dtype() != DType::BF16 || v.dtype() != DType::BF16 {
+        return Err(Error::Other("grouped_sdpa: only BF16 supported".into()));
+    }
+    if head_dim == 0 || head_dim > 128 || group_ids.len() != seq_len * 4 {
+        return Err(Error::Other("grouped_sdpa: invalid head dimension or group ids".into()));
+    }
+    let device_id = ctx.device_id();
+    let out_bytes = seq_len * n_heads * head_dim * DType::BF16.size_in_bytes();
+    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
+    let scale = 1.0 / (head_dim as f32).sqrt();
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_grouped_sdpa_bf16(
+            gpu_ptr(q)?,
+            gpu_ptr(k)?,
+            gpu_ptr(v)?,
+            out_buf.ptr(),
+            seq_len as u32,
+            n_heads as u32,
+            head_dim as u32,
+            scale,
+            group_ids.ptr(),
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+    Ok(make_gpu_tensor(
+        Shape::new(vec![seq_len, n_heads * head_dim]),
+        DType::BF16,
+        device_id,
+        out_buf,
+    ))
 }
 
 /// Causal attention mask on CUDA. Dispatches on dtype.
