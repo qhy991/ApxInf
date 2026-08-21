@@ -1,0 +1,21 @@
+warning: field `max_seq_len` is never read
+  --> crates/apxinf-core/src/kv_cache.rs:37:5
+   |
+33 | pub struct CpuKVCache {
+   |            ---------- field in this struct
+...
+37 |     max_seq_len: usize,
+   |     ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `apxinf-core` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (target/debug/deps/apxinf_model-f817c8db592b76cc)
+
+running 3 tests
+test pi05::schedule::tests::schedule_can_target_actual_short_prompt_shape ... ok
+test pi05::schedule::tests::thor_two_view_schedule_matches_kernel_contract ... ok
+test pi05::schedule::tests::thor_three_view_t10_has_complete_exact_gemm_set ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.00s

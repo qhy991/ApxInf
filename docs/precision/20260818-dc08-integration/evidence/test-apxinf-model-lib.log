@@ -1,0 +1,71 @@
+    Updating crates.io index
+     Locking 16 packages to latest compatible versions
+      Adding indoc v2.0.7
+      Adding matrixmultiply v0.3.11
+      Adding memoffset v0.9.1
+      Adding ndarray v0.16.1
+      Adding num-integer v0.1.47
+      Adding numpy v0.22.1 (available: v0.29.0)
+      Adding portable-atomic-util v0.2.7
+      Adding pyo3 v0.22.6 (available: v0.29.2)
+      Adding pyo3-build-config v0.22.6
+      Adding pyo3-ffi v0.22.6
+      Adding pyo3-macros v0.22.6
+      Adding pyo3-macros-backend v0.22.6
+      Adding rawpointer v0.2.1
+      Adding rustc-hash v1.1.0
+      Adding target-lexicon v0.12.16
+      Adding unindent v0.2.4
+warning: field `max_seq_len` is never read
+  --> crates/apxinf-core/src/kv_cache.rs:37:5
+   |
+33 | pub struct CpuKVCache {
+   |            ---------- field in this struct
+...
+37 |     max_seq_len: usize,
+   |     ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `apxinf-core` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.62s
+     Running unittests src/lib.rs (target/debug/deps/apxinf_model-f817c8db592b76cc)
+
+running 35 tests
+test debug::tests::test_crc32 ... ok
+test debug::tests::test_glob_match ... ok
+test debug::tests::test_list_all_activations ... ok
+test debug::tests::test_should_capture ... ok
+test pi05::config::tests::orin_fp8_emulation_scratch_is_largest_exact_gemm ... ok
+test pi05::bf16_weights::tests::packs_qkv_as_native_bf16 ... ok
+test pi05::config::tests::parses_lerobot_aliases ... ok
+test pi05::config::tests::rejects_invalid_horizon ... ok
+test pi05::fp8::tests::canonical_e4m3_values_match_cuda_layout ... ok
+test pi05::device_weights::tests::packs_qkv_before_quantization ... ok
+test pi05::fp8::tests::calibration_accepts_scales_and_amax ... ok
+test pi05::fp8::tests::absmax_quantization_preserves_shape_and_range ... ok
+test pi05::fp8::tests::encoding_saturates_and_rounds_ties_to_even ... ok
+test pi05::math::tests::euler_flow_uses_reverse_time_sign ... ok
+test llama::model::tests::test_kv_cache ... ok
+test pi05::config::tests::thor_graph_workspace_is_bounded ... ok
+test pi05::math::tests::padding_masks_queries_and_keys ... ok
+test pi05::math::tests::prefix_is_bidirectional_and_suffix_is_one_block ... ok
+test pi05::math::tests::state_discretization_and_prompt_match_pi05 ... ok
+test pi05::math::tests::timestep_embedding_matches_endpoints ... ok
+test pi05::schedule::tests::thor_two_view_schedule_matches_kernel_contract ... ok
+test pi05::weights::tests::gemma_norm_offset_is_finalized_once ... ok
+test pi05::schedule::tests::thor_three_view_t10_has_complete_exact_gemm_set ... ok
+test pi05::schedule::tests::schedule_can_target_actual_short_prompt_shape ... ok
+test pi05::weights::tests::missing_key_names_the_checkpoint_tensor ... ok
+test pi05::weights::tests::normalizes_lerobot_model_namespace ... ok
+test pi05::weights::tests::transpose_f32_is_physical ... ok
+test pi05::weights::tests::transpose_bf16_preserves_dtype ... ok
+test qwen3vl::config::tests::parses_qwen3vl_2b_config ... ok
+test llama::model::tests::test_model_construction ... ok
+test llama::general::tests::test_general_llama_forward_shape ... ok
+test llama::general::tests::test_general_llama_matches_legacy_cpu ... ok
+test llama::model::tests::test_generation ... ok
+test llama::general::tests::test_general_llama_multi_token_prefill ... ok
+test llama::general::tests::test_general_llama_multi_step_decode ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s

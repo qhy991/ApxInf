@@ -109,7 +109,7 @@ NVFP4 不在当前 ApxInf benchmark 中。ApxInf 目前没有 π0.5 NVFP4 execut
 
 ### 6.1 2026-08-13 Thor SM110 baseline
 
-下表是最新主干代码的 Thor BF16/FP8 baseline。每个延迟单元格为 **P50 / P95**，单位为 ms；每组均为 10 次 warm-up + 30 次正式采样。PASS 同时要求 eager/graph 一致并通过独立 BF16 reference，而不是 graph-only 检查。
+下表是最新主干代码的 Thor BF16/FP8 baseline。每个延迟单元格为 **P50 / P95**，单位为 ms；每组均为 10 次 warm-up + 30 次正式采样。PASS 同时要求 eager/graph 一致并通过独立 Mizar BF16 reference，而不是 graph-only 检查。
 
 | 路径 | Views | `T` | Graph replay P50 / P95 | Input update + graph P50 / P95 | 状态 |
 |---|---:|---:|---:|---:|---|
@@ -122,7 +122,7 @@ NVFP4 不在当前 ApxInf benchmark 中。ApxInf 目前没有 π0.5 NVFP4 execut
 | Thor SM110 FP8 native | 3 | 10 | **65.088 / 65.816** | 64.418 / 65.122 | PASS |
 | Thor SM110 FP8 native | 3 | 21 | **69.030 / 69.871** | 68.864 / 69.428 | PASS |
 
-独立 BF16 reference 的完整 `[10,32]` normalized-action 误差如下：
+独立 Mizar BF16 reference 的完整 `[10,32]` normalized-action 误差如下：
 
 | 路径 | Views | `T` | Cosine | Relative L2 | Max abs |
 |---|---:|---:|---:|---:|---:|
@@ -141,7 +141,7 @@ NVFP4 不在当前 ApxInf benchmark 中。ApxInf 目前没有 π0.5 NVFP4 execut
 
 ### 6.2 2026-08-13 Orin SM87 baseline
 
-Orin 使用与 Thor 完全相同的固定 LIBERO fixture、token IDs、NHWC `uint8` 图像、BF16 noise 和独立 BF16 reference。每个延迟单元格仍为 **P50 / P95**，单位为 ms；每组均为 10 次 warm-up + 30 次正式采样。
+Orin 使用与 Thor 完全相同的固定 LIBERO fixture、token IDs、NHWC `uint8` 图像、BF16 noise 和独立 Mizar BF16 reference。每个延迟单元格仍为 **P50 / P95**，单位为 ms；每组均为 10 次 warm-up + 30 次正式采样。
 
 | 路径 | Views | `T` | Graph replay P50 / P95 | Input update + graph P50 / P95 | 状态 |
 |---|---:|---:|---:|---:|---|
@@ -154,7 +154,7 @@ Orin 使用与 Thor 完全相同的固定 LIBERO fixture、token IDs、NHWC `uin
 | Orin SM87 INT8 W8A8 | 3 | 10 | **167.036 / 167.082** | 167.127 / 167.219 | FAIL |
 | Orin SM87 INT8 W8A8 | 3 | 21 | **167.823 / 167.930** | 167.939 / 168.009 | FAIL |
 
-独立 BF16 reference 的完整 `[10,32]` normalized-action 误差如下：
+独立 Mizar BF16 reference 的完整 `[10,32]` normalized-action 误差如下：
 
 | 路径 | Views | `T` | Cosine | Relative L2 | Max abs |
 |---|---:|---:|---:|---:|---:|
@@ -290,7 +290,7 @@ Nsight Systems 和 Nsight Compute 只用于定位瓶颈。Profiler 会改变时�
 
 ### 11.1 独立数学 baseline
 
-所有精度路径统一对比独立的 OpenPI-compatible BF16 数学参考：
+所有精度路径统一对比独立的 OpenPI/Mizar BF16 数学参考：
 
 ```text
 相同 checkpoint
@@ -300,17 +300,17 @@ Nsight Systems 和 Nsight Compute 只用于定位瓶颈。Profiler 会改变时�
   + H=10
   + 10 flow steps
           ↓
-独立 OpenPI-compatible BF16 reference
+独立 OpenPI/Mizar BF16 reference
           ↓
 normalized actions [10, 32]
 ```
 
 | 被测路径 | 主精度 baseline |
 |---|---|
-| Thor SM110 BF16 | 独立 OpenPI-compatible BF16 reference |
-| Thor SM110 FP8 native | 独立 OpenPI-compatible BF16 reference |
-| Orin SM87 BF16 | 独立 OpenPI-compatible BF16 reference |
-| Orin SM87 INT8 (W8A8) | 独立 OpenPI-compatible BF16 reference |
+| Thor SM110 BF16 | 独立 OpenPI/Mizar BF16 reference |
+| Thor SM110 FP8 native | 独立 OpenPI/Mizar BF16 reference |
+| Orin SM87 BF16 | 独立 OpenPI/Mizar BF16 reference |
+| Orin SM87 INT8 (W8A8) | 独立 OpenPI/Mizar BF16 reference |
 
 对比发生在 action 反归一化之前，并且使用完整的 `[10,32]` 输出，不先截取 LIBERO 的前 7 个 action 维度。
 
@@ -384,7 +384,7 @@ ApxInf eager 执行 ↔ ApxInf CUDA Graph replay
 | CPU / GPU GPC / GPU NVD / EMC | 2.601 / 1.575 / 1.692 / 4.266 GHz，全部锁频 |
 | 温度 | 测试前 41°C，测试后 44°C |
 | GPU 隔离 | 每条路径独立进程；独占锁与 compute-process 监测均通过 |
-| 独立 reference | OpenPI-compatible BF16 mathematical path |
+| 独立 reference | Mizar BF16 mathematical path，commit `a260835599e9406067196968cfe7a67bf8d13b4d` |
 | FP8 calibration SHA256 | `f819475714f6e6fa915ec00f7c34f98b0f1dbf15008e399effed6a1d023b4606` |
 | FP8 tactic DB SHA256 | `33f84be77558d919d44b6630377c28f3cd77ae1e9d42374f5f6f77571806a265` |
 
@@ -419,14 +419,14 @@ Orin BF16/INT8 的 exact-shape tactic JSON 和 T=50/200 autotune-only profile �
 
 ## 13. PyTorch baseline
 
-这一节记录迁移前 PyTorch 实现的性能和数值行为。它不是 ApxInf 的成绩，也不覆盖第 7 节的 ApxInf 结果；它的用途是给后续 Rust 实现提供可重复的迁移基线。
+这一节记录迁移前 PyTorch/Mizar 实现的性能和数值行为。它不是 ApxInf 的成绩，也不覆盖第 7 节的 ApxInf 结果；它的用途是给后续 Rust 实现提供可重复的迁移基线。
 
 
 ### 13.2 设备专用执行路径
 
-| 设备 | PyTorch 路径 | 说明 |
+| 设备 | Mizar 路径 | 说明 |
 |---|---|---|
-| Thor SM110 | FP8 native | Static FP8 V/L/A，使用预生成的 Thor tactic cache 和 calibration |
+| Thor SM110 | FP8 native | Static FP8 V/L/A，使用 Mizar 自带 Thor tactic cache 和 calibration |
 | Thor SM110 | BF16 | `compile-bf16-no-quant`，统一 CUDA Graph |
 | Orin SM87 | BF16 | 通用 H=10 attention，统一 CUDA Graph |
 | Orin SM87 | INT8 W8A8 | V/L/A 动态 INT8，BF16 output，统一 CUDA Graph |

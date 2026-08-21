@@ -7,8 +7,8 @@ adapters against only these repository-local operator sources and headers.
 
 ## Source snapshot
 
-The contents were imported without modification from an upstream snapshot at
-commit `7434950d5b3a73dcbf810a797e772cebdb869598`:
+The contents were imported without modification from the local Mizar-Robo
+snapshot at commit `7434950d5b3a73dcbf810a797e772cebdb869598`:
 
 - `include/` from `3rdparty/cutlass/include/`
 - `tools/util/include/` from

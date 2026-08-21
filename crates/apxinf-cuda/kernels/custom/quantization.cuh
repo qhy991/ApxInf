@@ -14,9 +14,8 @@ __global__ void quantize_f16_e4m3_kernel(
     output[index] = static_cast<__nv_fp8_e4m3>(value);
   }
 }
-
 // Four values per thread with one half2 pair per load and one uint32 store.
-// Adapted from an upstream quantize_fp8_static FP16 path at commit
+// Adapted from Mizar-Robo's quantize_fp8_static FP16 path at commit
 // a260835599e9406067196968cfe7a67bf8d13b4d (MIT). The scalar kernel above
 // remains the fallback for unaligned buffers and the final 0..3 values.
 __global__ void quantize_f16_e4m3_packed4_kernel(

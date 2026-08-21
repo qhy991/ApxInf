@@ -349,7 +349,7 @@ impl CublasHandle {
     ///
     /// `activation` is physical `[m,k]` row-major. `weight_output_major` is
     /// physical `[n,k]` row-major (equivalently a `[k,n]` column-major view),
-    /// matching the INT8 kernel contract. `output` is physical `[m,n]`
+    /// matching Mizar's INT8 kernel contract. `output` is physical `[m,n]`
     /// row-major. Scaling and conversion to BF16 are left to the following
     /// stream-ordered kernel.
     pub fn gemm_int8_i32(

@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(nvcc --version)",
+      "Bash(rustc --version)",
+      "Bash(cargo --version)",
+      "Bash(cargo)",
+      "Bash(cargo build*)",
+      "Bash(cargo update:*)",
+      "Bash(cargo test*)",
+      "Bash(cargo run*)",
+      "Bash(xcrun --sdk macosx metal --version)",
+      "Bash(xcrun --sdk macosx metallib --version)",
+      "Bash(./target/release/apxinf test:*)",
+      "Bash(./target/release/apxinf generate:*)",
+      "Bash(python3 scripts/pytorch_reference.py --model /hanjinchen/models/TinyLlama-1.1B-Chat-v1.0/ --tokens \"529,29989,1792,29989,29958,13,5618,338,278,7483,310,3444,29973,2,29871,13,29966,29989,465,22137,29989,29958,13\" --position 22 --output /tmp/pytorch_debug.npz)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:crates.io)",
+      "Bash(curl -sL \"https://api.github.com/repos/Dao-AILab/flash-attention/contents/csrc/flash_attn\")",
+      "Bash(python3 -c \"import sys,json; [print\\(x['name']\\) for x in json.load\\(sys.stdin\\)]\")",
+      "Bash(curl -sL \"https://api.github.com/repos/flashinfer-ai/flashinfer/contents/\")",
+      "Read(//usr/local/cuda-12.9/targets/x86_64-linux/lib/**)",
+      "Read(//usr/local/cuda-12.9/targets/x86_64-linux/include/**)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(cargo check *)"
+    ]
+  }
+}

@@ -1,0 +1,105 @@
+CUDA 0: NVIDIA Thor (compute 11.0, sm100-family, 20 SMs)
+tuning BF16 M=1 N=1024 K=1024: 2v/t10/time.mlp_in,2v/t10/time.mlp_out,2v/t21/time.mlp_in,2v/t21/time.mlp_out,2v/t50/time.mlp_in,2v/t50/time.mlp_out,2v/t200/time.mlp_in,2v/t200/time.mlp_out,3v/t10/time.mlp_in,3v/t10/time.mlp_out,3v/t21/time.mlp_in,3v/t21/time.mlp_out,3v/t50/time.mlp_in,3v/t50/time.mlp_out,3v/t200/time.mlp_in,3v/t200/time.mlp_out
+  winner=cublaslt:2 vendor=0.025716ms lt_default=0.025594ms lt_best=0.024844ms
+tuning BF16 M=1 N=3072 K=1024: 2v/t10/action.ada_style,2v/t21/action.ada_style,2v/t50/action.ada_style,2v/t200/action.ada_style,3v/t10/action.ada_style,3v/t21/action.ada_style,3v/t50/action.ada_style,3v/t200/action.ada_style
+  winner=cublaslt:1 vendor=0.045940ms lt_default=0.046529ms lt_best=0.043845ms
+tuning BF16 M=10 N=32 K=1024: 2v/t10/action.output,2v/t21/action.output,2v/t50/action.output,2v/t200/action.output,3v/t10/action.output,3v/t21/action.output,3v/t50/action.output,3v/t200/action.output
+  winner=cublaslt:0 vendor=0.010789ms lt_default=0.010745ms lt_best=0.010745ms
+tuning BF16 M=10 N=1024 K=32: 2v/t10/action.input,2v/t21/action.input,2v/t50/action.input,2v/t200/action.input,3v/t10/action.input,3v/t21/action.input,3v/t50/action.input,3v/t200/action.input
+  winner=vendor:0 vendor=0.006322ms lt_default=0.007162ms lt_best=0.007162ms
+tuning BF16 M=10 N=1024 K=2048: 2v/t10/action.attention_out,2v/t21/action.attention_out,2v/t50/action.attention_out,2v/t200/action.attention_out,3v/t10/action.attention_out,3v/t21/action.attention_out,3v/t50/action.attention_out,3v/t200/action.attention_out
+  winner=vendor:0 vendor=0.033293ms lt_default=0.035777ms lt_best=0.033735ms
+tuning BF16 M=10 N=1024 K=4096: 2v/t10/action.down,2v/t21/action.down,2v/t50/action.down,2v/t200/action.down,3v/t10/action.down,3v/t21/action.down,3v/t50/action.down,3v/t200/action.down
+  winner=cublaslt:1 vendor=0.066570ms lt_default=0.065773ms lt_best=0.050976ms
+tuning BF16 M=10 N=2560 K=1024: 2v/t10/action.qkv,2v/t21/action.qkv,2v/t50/action.qkv,2v/t200/action.qkv,3v/t10/action.qkv,3v/t21/action.qkv,3v/t50/action.qkv,3v/t200/action.qkv
+  winner=cublaslt:0 vendor=0.041552ms lt_default=0.040613ms lt_best=0.040613ms
+tuning BF16 M=10 N=8192 K=1024: 2v/t10/action.gate_up,2v/t21/action.gate_up,2v/t50/action.gate_up,2v/t200/action.gate_up,3v/t10/action.gate_up,3v/t21/action.gate_up,3v/t50/action.gate_up,3v/t200/action.gate_up
+  winner=vendor:0 vendor=0.097065ms lt_default=0.130868ms lt_best=0.121590ms
+tuning BF16 M=512 N=1152 K=588: 2v/t10/vision.patch,2v/t21/vision.patch,2v/t50/vision.patch,2v/t200/vision.patch
+  winner=cublaslt:5 vendor=0.042434ms lt_default=0.043001ms lt_best=0.036000ms
+tuning BF16 M=512 N=1152 K=1152: 2v/t10/vision.attention_out,2v/t21/vision.attention_out,2v/t50/vision.attention_out,2v/t200/vision.attention_out
+  winner=vendor:0 vendor=0.037726ms lt_default=0.038367ms lt_best=0.038367ms
+tuning BF16 M=512 N=1152 K=4304: 2v/t10/vision.fc2,2v/t21/vision.fc2,2v/t50/vision.fc2,2v/t200/vision.fc2
+  winner=vendor:0 vendor=0.085738ms lt_default=0.115796ms lt_best=0.111504ms
+tuning BF16 M=512 N=2048 K=1152: 2v/t10/vision.projector,2v/t21/vision.projector,2v/t50/vision.projector,2v/t200/vision.projector
+  winner=cublaslt:5 vendor=0.058829ms lt_default=0.058012ms lt_best=0.046948ms
+tuning BF16 M=512 N=3456 K=1152: 2v/t10/vision.qkv,2v/t21/vision.qkv,2v/t50/vision.qkv,2v/t200/vision.qkv
+  winner=cublaslt:3 vendor=0.078197ms lt_default=0.077735ms lt_best=0.075691ms
+tuning BF16 M=512 N=4304 K=1152: 2v/t10/vision.fc1,2v/t21/vision.fc1,2v/t50/vision.fc1,2v/t200/vision.fc1
+  winner=cublaslt:1 vendor=0.116855ms lt_default=0.128240ms lt_best=0.112626ms
+tuning BF16 M=522 N=2048 K=2048: 2v/t10/language.attention_out
+  winner=cublaslt:2 vendor=0.078559ms lt_default=0.078605ms lt_best=0.064452ms
+tuning BF16 M=522 N=2048 K=16384: 2v/t10/language.down
+  winner=vendor:0 vendor=0.397131ms lt_default=0.456091ms lt_best=0.446346ms
+tuning BF16 M=522 N=2560 K=2048: 2v/t10/language.qkv
+  winner=vendor:0 vendor=0.082876ms lt_default=0.094559ms lt_best=0.093222ms
+tuning BF16 M=522 N=32768 K=2048: 2v/t10/language.gate_up
+  winner=cublaslt:7 vendor=1.674283ms lt_default=1.730732ms lt_best=0.854878ms
+tuning BF16 M=533 N=2048 K=2048: 2v/t21/language.attention_out
+  winner=cublaslt:5 vendor=0.080177ms lt_default=0.080096ms lt_best=0.064525ms
+tuning BF16 M=533 N=2048 K=16384: 2v/t21/language.down
+  winner=vendor:0 vendor=0.388662ms lt_default=0.451250ms lt_best=0.445169ms
+tuning BF16 M=533 N=2560 K=2048: 2v/t21/language.qkv
+  winner=vendor:0 vendor=0.083654ms lt_default=0.096287ms lt_best=0.093887ms
+tuning BF16 M=533 N=32768 K=2048: 2v/t21/language.gate_up
+  winner=cublaslt:6 vendor=1.719902ms lt_default=1.759475ms lt_best=0.842572ms
+tuning BF16 M=562 N=2048 K=2048: 2v/t50/language.attention_out
+  winner=cublaslt:4 vendor=0.078448ms lt_default=0.080062ms lt_best=0.065903ms
+tuning BF16 M=562 N=2048 K=16384: 2v/t50/language.down
+  winner=vendor:0 vendor=0.399895ms lt_default=0.463068ms lt_best=0.457110ms
+tuning BF16 M=562 N=2560 K=2048: 2v/t50/language.qkv
+  winner=vendor:0 vendor=0.089892ms lt_default=0.101886ms lt_best=0.094895ms
+tuning BF16 M=562 N=32768 K=2048: 2v/t50/language.gate_up
+  winner=cublaslt:7 vendor=1.740078ms lt_default=1.740834ms lt_best=0.858042ms
+tuning BF16 M=712 N=2048 K=2048: 2v/t200/language.attention_out
+  winner=vendor:0 vendor=0.086533ms lt_default=0.087457ms lt_best=0.087457ms
+tuning BF16 M=712 N=2048 K=16384: 2v/t200/language.down
+  winner=cublaslt:5 vendor=0.948613ms lt_default=0.870188ms lt_best=0.657485ms
+tuning BF16 M=712 N=2560 K=2048: 2v/t200/language.qkv
+  winner=vendor:0 vendor=0.098215ms lt_default=0.115692ms lt_best=0.108918ms
+tuning BF16 M=712 N=32768 K=2048: 2v/t200/language.gate_up
+  winner=vendor:0 vendor=0.922666ms lt_default=0.929207ms lt_best=0.929076ms
+tuning BF16 M=768 N=1152 K=588: 3v/t10/vision.patch,3v/t21/vision.patch,3v/t50/vision.patch,3v/t200/vision.patch
+  winner=cublaslt:0 vendor=0.057431ms lt_default=0.056622ms lt_best=0.056622ms
+tuning BF16 M=768 N=1152 K=1152: 3v/t10/vision.attention_out,3v/t21/vision.attention_out,3v/t50/vision.attention_out,3v/t200/vision.attention_out
+  winner=cublaslt:7 vendor=0.046787ms lt_default=0.045083ms lt_best=0.042268ms
+tuning BF16 M=768 N=1152 K=4304: 3v/t10/vision.fc2,3v/t21/vision.fc2,3v/t50/vision.fc2,3v/t200/vision.fc2
+  winner=vendor:0 vendor=0.107988ms lt_default=0.157106ms lt_best=0.148860ms
+tuning BF16 M=768 N=2048 K=1152: 3v/t10/vision.projector,3v/t21/vision.projector,3v/t50/vision.projector,3v/t200/vision.projector
+  winner=vendor:0 vendor=0.058011ms lt_default=0.060141ms lt_best=0.060079ms
+tuning BF16 M=768 N=3456 K=1152: 3v/t10/vision.qkv,3v/t21/vision.qkv,3v/t50/vision.qkv,3v/t200/vision.qkv
+  winner=cublaslt:0 vendor=0.091406ms lt_default=0.090274ms lt_best=0.090274ms
+tuning BF16 M=768 N=4304 K=1152: 3v/t10/vision.fc1,3v/t21/vision.fc1,3v/t50/vision.fc1,3v/t200/vision.fc1
+  winner=cublaslt:3 vendor=0.133283ms lt_default=0.140435ms lt_best=0.128013ms
+tuning BF16 M=778 N=2048 K=2048: 3v/t10/language.attention_out
+  winner=vendor:0 vendor=0.085574ms lt_default=0.091425ms lt_best=0.091425ms
+tuning BF16 M=778 N=2048 K=16384: 3v/t10/language.down
+  winner=cublaslt:4 vendor=0.839831ms lt_default=0.865288ms lt_best=0.683535ms
+tuning BF16 M=778 N=2560 K=2048: 3v/t10/language.qkv
+  winner=vendor:0 vendor=0.091815ms lt_default=0.109983ms lt_best=0.107781ms
+tuning BF16 M=778 N=32768 K=2048: 3v/t10/language.gate_up
+  winner=cublaslt:6 vendor=1.011866ms lt_default=1.014127ms lt_best=1.007128ms
+tuning BF16 M=789 N=2048 K=2048: 3v/t21/language.attention_out
+  winner=vendor:0 vendor=0.086553ms lt_default=0.092809ms lt_best=0.089248ms
+tuning BF16 M=789 N=2048 K=16384: 3v/t21/language.down
+  winner=cublaslt:4 vendor=0.819534ms lt_default=0.875219ms lt_best=0.667148ms
+tuning BF16 M=789 N=2560 K=2048: 3v/t21/language.qkv
+  winner=vendor:0 vendor=0.095142ms lt_default=0.110978ms lt_best=0.108036ms
+tuning BF16 M=789 N=32768 K=2048: 3v/t21/language.gate_up
+  winner=cublaslt:6 vendor=1.000122ms lt_default=0.994163ms lt_best=0.985622ms
+tuning BF16 M=818 N=2048 K=2048: 3v/t50/language.attention_out
+  winner=vendor:0 vendor=0.090318ms lt_default=0.094685ms lt_best=0.093664ms
+tuning BF16 M=818 N=2048 K=16384: 3v/t50/language.down
+  winner=cublaslt:4 vendor=0.749463ms lt_default=0.819606ms lt_best=0.633430ms
+tuning BF16 M=818 N=2560 K=2048: 3v/t50/language.qkv
+  winner=vendor:0 vendor=0.102873ms lt_default=0.120780ms lt_best=0.113987ms
+tuning BF16 M=818 N=32768 K=2048: 3v/t50/language.gate_up
+  winner=cublaslt:7 vendor=2.666543ms lt_default=2.670810ms lt_best=0.977932ms
+tuning BF16 M=968 N=2048 K=2048: 3v/t200/language.attention_out
+  winner=vendor:0 vendor=0.094748ms lt_default=0.104482ms lt_best=0.104482ms
+tuning BF16 M=968 N=2048 K=16384: 3v/t200/language.down
+  winner=vendor:0 vendor=0.744446ms lt_default=0.859622ms lt_best=0.841907ms
+tuning BF16 M=968 N=2560 K=2048: 3v/t200/language.qkv
+  winner=vendor:0 vendor=0.103004ms lt_default=0.128290ms lt_best=0.123971ms
+tuning BF16 M=968 N=32768 K=2048: 3v/t200/language.gate_up
+  winner=cublaslt:4 vendor=1.067399ms lt_default=1.083330ms lt_best=1.059119ms

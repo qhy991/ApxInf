@@ -6,7 +6,8 @@ W8A8 INT8. Run the commands below from the repository root on the NVIDIA
 target machine.
 
 The CUDA kernels, CUTLASS, and FlashAttention sources needed by PI0.5 are
-vendored in this repository, so no external source checkout is required.
+vendored in this repository. A Docker image and an external Mizar checkout are
+not required.
 
 ## 1. NVIDIA build environment
 

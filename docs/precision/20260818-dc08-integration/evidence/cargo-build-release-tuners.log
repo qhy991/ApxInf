@@ -1,0 +1,54 @@
+warning: field `max_seq_len` is never read
+  --> crates/apxinf-core/src/kv_cache.rs:37:5
+   |
+33 | pub struct CpuKVCache {
+   |            ---------- field in this struct
+...
+37 |     max_seq_len: usize,
+   |     ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `apxinf-core` (lib) generated 1 warning
+   Compiling apxinf-cuda v0.1.0 (/home/wwxq/Projects/users/wwxq/rusin-master-dc08-integration-20260818/crates/apxinf-cuda)
+warning: constant `cudaHostAllocDefault` should have an upper case name
+  --> crates/apxinf-cuda/src/ffi/cuda.rs:40:11
+   |
+40 | pub const cudaHostAllocDefault: u32 = 0;
+   |           ^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper case: `CUDA_HOST_ALLOC_DEFAULT`
+   |
+   = note: `#[warn(non_upper_case_globals)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: constant `cudaHostAllocPortable` should have an upper case name
+  --> crates/apxinf-cuda/src/ffi/cuda.rs:41:11
+   |
+41 | pub const cudaHostAllocPortable: u32 = 1;
+   |           ^^^^^^^^^^^^^^^^^^^^^
+   |
+help: convert the identifier to upper case
+   |
+41 - pub const cudaHostAllocPortable: u32 = 1;
+41 + pub const CUDA_HOST_ALLOC_PORTABLE: u32 = 1;
+   |
+
+warning: constant `cudaHostAllocMapped` should have an upper case name
+  --> crates/apxinf-cuda/src/ffi/cuda.rs:42:11
+   |
+42 | pub const cudaHostAllocMapped: u32 = 2;
+   |           ^^^^^^^^^^^^^^^^^^^
+   |
+help: convert the identifier to upper case
+   |
+42 - pub const cudaHostAllocMapped: u32 = 2;
+42 + pub const CUDA_HOST_ALLOC_MAPPED: u32 = 2;
+   |
+
+warning: constant `cudaHostAllocWriteCombined` should have an upper case name
+  --> crates/apxinf-cuda/src/ffi/cuda.rs:43:11
+   |
+43 | pub const cudaHostAllocWriteCombined: u32 = 4;
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper case: `CUDA_HOST_ALLOC_WRITE_COMBINED`
+
+   Compiling apxinf-model v0.1.0 (/home/wwxq/Projects/users/wwxq/rusin-master-dc08-integration-20260818/crates/apxinf-model)
+warning: `apxinf-cuda` (lib) generated 4 warnings (run `cargo fix --lib -p apxinf-cuda` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 4.49s
