@@ -908,6 +908,49 @@ gates. The deployed binary SHA-256 is
 `881491b0de93a73c7e77b050c11a83436cdb5a0beb8b99b72d7871c777c5c035`;
 `767c36ad` is retained for rollback. Qwen3.8 remains down when unused.
 
+### Promoted single-kernel global exp cache
+
+Primary classification: **source/runtime graph with a custom CUDA operator**.
+The first global-cache implementation launched a fill kernel and a separate
+normalize kernel even though each decode row is owned by one CTA. The promoted
+kernel performs parallel numerator fill, block synchronization, scalar-order
+sum and parallel normalization in one CTA. It keeps the same bounded FP32
+workspace and arithmetic contract while deleting one launch and preserving
+numerator locality per layer.
+
+The fused production-header operator independently passes the same 32,768-column
+byte-exact scalar comparison under Broker job `gpuq-99792400416e`.
+
+| Prompt / output | Two-kernel TPOT p50 | Fused TPOT p50 | Change |
+|---|---:|---:|---:|
+| 11,264 + 32 | 19.422 ms | 17.722 ms deployed | 8.8% lower |
+| 12,288 + 32 | 20.304 ms | 18.475 ms deployed | 9.0% lower |
+| 32,760 + 8 | 37.892 ms | 37.773 ms | 0.3% lower |
+
+All trajectories and the 32K memory boundary remain exact. Short decode is
+8.256 ms and typed contract probes pass.
+
+The actual 11K+8 candidate report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-11264-fused-global-exp-cache.nsys-rep`,
+size 3,682,215 bytes, SHA-256
+`836fe2b93e15afb227d0642c83bbf859fde5f7743c355ba203a33489081757db`.
+The request loses 252 kernel launches. The two global kernels' combined
+60.975 ms becomes 49.604 ms in the fused kernel, while total summed kernel
+time falls by 14.890 ms and the traced request window by about 123 ms.
+No-profiler TPOT remains the admission authority.
+
+Candidate CUDA API/kernel/memory CSV hashes are
+`0c62da0853a6c285c6d003d94602ced16d3211989d8016643441e4d4d23a7e2c`,
+`c6dbf0e802196492fd03d469a639162c5ec9d7b7f43421237fe56006b563ac17`
+and `ed30f77d4eaa70d383e4e86d5e0dac496a441f6f4ed150965883378450e5b8a4`.
+
+**Decision: promote the single-kernel global exact numerator cache.** It
+passes fused-operator exactness, complete trajectories, repeated no-profiler
+materiality, 32K capacity/memory, interface, binary-custody and causal-profile
+gates. The deployed binary SHA-256 is
+`321e8a6db1e932e5138170070ae4bd27183e42cd3143128c75d477f10ccaba5e`;
+`881491b0` is retained for rollback. Qwen3.8 remains down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

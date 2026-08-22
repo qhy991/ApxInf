@@ -368,13 +368,9 @@ extern "C" cudaError_t apxinf_attention_softmax_bf16_global_exp_cache(
     dim3 grid = apxinf_row_split_grid(1, rows);
     dim3 block(BLOCK_SIZE, 1, 1);
     cudaStream_t s = (cudaStream_t)stream;
-    attention_softmax_bf16_exp_global_fill_kernel<<<grid, block, 0, s>>>(
-        (const __nv_bfloat16*)scores, (float*)numerators,
-        cols, rows, kv_offset, n_heads);
-    cudaError_t status = cudaGetLastError();
-    if (status != cudaSuccess) return status;
-    attention_softmax_bf16_exp_global_normalize_kernel<<<grid, block, 0, s>>>(
-        (const float*)numerators, (__nv_bfloat16*)output,
+    attention_softmax_bf16_exp_global_cache_kernel<<<grid, block, 0, s>>>(
+        (const __nv_bfloat16*)scores, (__nv_bfloat16*)output,
+        (float*)numerators,
         cols, rows, kv_offset, n_heads);
     return cudaGetLastError();
 }

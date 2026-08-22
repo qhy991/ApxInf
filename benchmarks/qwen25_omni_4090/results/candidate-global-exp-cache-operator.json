@@ -16,6 +16,12 @@
   "passed": true,
   "exact": true,
   "candidate_binary_sha256": "881491b0de93a73c7e77b050c11a83436cdb5a0beb8b99b72d7871c777c5c035",
+  "fused_candidate": {
+    "broker_job": "gpuq-99792400416e",
+    "binary_sha256": "321e8a6db1e932e5138170070ae4bd27183e42cd3143128c75d477f10ccaba5e",
+    "passed": true,
+    "exact": true
+  },
   "limitations": [
     "The operator test proves arithmetic equivalence, not end-to-end timing.",
     "The production model separately validates 16 decode rows and complete token trajectories."

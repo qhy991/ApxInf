@@ -28,7 +28,7 @@ python3 benchmarks/qwen25_omni_4090/benchmark_multimodal.py \
   --output benchmarks/qwen25_omni_4090/results/multimodal.json
 
 python3 benchmarks/qwen25_omni_4090/decode_roofline.py \
-  --tpot-ms 8.268432496062992 --kv-len 128 \
+  --tpot-ms 8.255564196850394 --kv-len 128 \
   --peak-bandwidth-gbps 1008
 ```
 

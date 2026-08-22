@@ -258,8 +258,8 @@ __global__ void attention_softmax_bf16_exp_cache_kernel(
 
 // Decode-only exact numerator cache backed by global memory. This preserves
 // the scalar max and summation order beyond the per-CTA shared-memory limit.
-__global__ void attention_softmax_bf16_exp_global_fill_kernel(
-    const __nv_bfloat16* scores, float* numerators,
+__global__ void attention_softmax_bf16_exp_global_cache_kernel(
+    const __nv_bfloat16* scores, __nv_bfloat16* output, float* numerators,
     uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads)
 {
     uint32_t row = apxinf_row_from_grid_yz();
@@ -281,18 +281,7 @@ __global__ void attention_softmax_bf16_exp_global_fill_kernel(
         numerators[row * cols + c] =
             expf(__bfloat162float(scores[row * cols + c]) - max_shared);
     }
-}
-
-__global__ void attention_softmax_bf16_exp_global_normalize_kernel(
-    const float* numerators, __nv_bfloat16* output,
-    uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads)
-{
-    uint32_t row = apxinf_row_from_grid_yz();
-    if (row >= rows) return;
-
-    uint32_t seq_pos = row / n_heads;
-    uint32_t valid_cols = min(seq_pos + kv_offset + 1, cols);
-    uint32_t lane = threadIdx.x;
+    __syncthreads();
     __shared__ float sum_shared;
     if (lane == 0) {
         float sum_exp = 0.0f;
