@@ -200,3 +200,108 @@ The first bounded follow-up is the now-dominant cuBLAS launch/control path at
 4K. Request-local H2D is already negligible. The WMMA families should only be
 replaced after exact model GEMM shapes are tied to the 8,192-launch bursts and
 a matched cuBLASLt counterfactual passes the complete trajectory gate.
+
+## Linear-GEMM counterfactual
+
+The first launch-count hypothesis was wrong: direct cold-L2 comparisons of the
+four 4K text-linear shapes found only 1.003× for Q/O, 1.009× for K/V, 1.005×
+for gate/up and 1.098× for down with the best of eight cuBLASLt heuristics.
+Those isolated shapes cannot explain the 8,192-launch bursts, so no tuning
+database or production-path change was made. The probe and its raw JSON are
+retained as negative evidence.
+
+Source inspection then identified the real owner in `attention::sdpa`. For
+every layer, scalar GQA launched one score GEMM for each of 4,096 query tokens
+and two KV heads, followed by the same 8,192-call loop for values. Across 36
+layers this produces the two 294,912-instance WMMA families; approximately
+295 thousand split-K reductions are secondary work from those calls.
+
+## Promoted strided-batched GQA candidate
+
+Primary classification: **source/runtime graph**. The candidate keeps the
+existing score tensor, scale, sequential-order causal softmax and value output
+layout. It only rewrites each per-token GEMM loop as one
+`cublasGemmStridedBatchedEx` call per KV head. K/V use zero batch stride for
+read-only broadcast; query, attention and output retain their original
+sequence strides. Each layer therefore uses two score and two value API calls
+instead of 16,384 scalar calls.
+
+The candidate is explicit and fail-closed. `APXINF_BATCHED_GQA_PREFILL=1`
+enables only multi-token GQA; unset or `0` preserves the scalar path, and any
+other value is rejected. Decode (`seq_len=1`) remains on the scalar path. A
+CUDA operator test compares scalar and batched BF16 GQA on the same query and
+KV cache and passes. The deployed SM89 binary SHA-256 is
+`8855ca4e7266e585dc06a5d1639e3bc241b1c2d44b66a0b32501dd066a1d274d`.
+
+### Correctness and capability
+
+| Workload | Result | Trajectory SHA-256 | Prior accepted agreement |
+|---|---:|---|---:|
+| 1,024 prompt + 32 output | 3/3 stable | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+| 128 prompt + 128 output | 3/3 stable | `a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039` | exact |
+| 4,096 prompt + 8 output | 3/3 stable | `edc940b80ff945971996ddf2b30534773258bb41d3d1812c38f36ba06eaabcbd` | exact |
+| 8,192 prompt + 8 output | 1/1 exploratory | `490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf` | exact |
+| 10,752 prompt + 8 output | 1/1 exploratory | `19478a6e232ab7479a2a8026f01096ab68a16f72d922be9695d807928125b02d` | exact |
+| 11,264 prompt + 8 output | CUDA OOM | n/a | same first failure |
+
+Real image and audio HTTP requests reproduce the exact prior output-token
+sequences with `fallback_active=false`: the PNG chart title is read correctly
+and the WAV is described as a continuous sine wave. The 11,264-token probe
+returns an explicit CUDA OOM as HTTP 503; the same Broker-owned service process
+remains healthy afterward. The proven capacity interval therefore remains
+10,752 pass / 11,264 fail.
+
+### No-profiler end-to-end result
+
+| Workload | Metric | Sequential-order | Batched GQA | Change |
+|---|---|---:|---:|---:|
+| 1,024 + 32 | TTFT p50 | 1.8733 s | 0.3459 s | 5.415× faster |
+| 1,024 + 32 | wall p50 | 2.5589 s | 1.0330 s | 2.477× faster |
+| 128 + 128 | TTFT p50 | 0.1837 s | 0.0829 s | 2.216× faster |
+| 128 + 128 | TPOT p50 | 17.612 ms | 17.621 ms | 0.05% slower |
+| 4,096 + 8 | TTFT p50 | 5.9641 s | 1.9661 s | 3.034× faster |
+| 4,096 + 8 | wall p50 | 6.2266 s | 2.2440 s | 2.775× faster |
+| 8,192 + 8 | TTFT, one trial | 12.2866 s | 6.3336 s | 1.940× faster |
+| 10,752 + 8 | TTFT, one trial | 20.3175 s | 13.4895 s | 1.506× faster |
+
+Against the original paired scalar-softmax baseline, 4K TTFT improves from
+18.3407 s to 1.9661 s, or 9.329×. The batched candidate's repeated 4K TTFT CV
+is 0.38%. A clean runit deployment repeats the 1K result at 0.3468 s TTFT and
+the exact baseline trajectory, proving the accepted service is not the
+default-off scalar path.
+
+### Batched-candidate attribution
+
+The actual candidate report remains on the GPU host at
+`/var/lib/agent-gpu-broker/profiles/omni-4k-batched-gqa.nsys-rep`, size
+1,611,010 bytes, SHA-256
+`9e9944ebb860bf4aa41342afab17b1c5f298b0ef721ff3667fa772a348386191`.
+The profiled request preserves the 4K trajectory; profiler timing is not used
+for admission.
+
+`cudaLaunchKernel` calls fall from 892,860 to 8,268 (108× fewer), and their
+host API time falls from 4.295 s to 53.1 ms. Stream-capture queries fall from
+1,774,188 to 4,716, and event records fall from 295,704 to 792. The split-K
+reduction family falls from about 295 thousand instances to 756. This is the
+predicted causal movement from batching the score/value calls.
+
+The next bottleneck is now explicit. In the request-filtered profile,
+`cudaFree` consumes 1.525 s across 7,096 calls and `cudaMalloc` consumes
+0.585 s across the same count. GPU kernel time is led by the unchanged
+sequential softmax at 248.3 ms (32.2%), followed by the batched GEMM families.
+Request-local H2D remains only 0.477 ms. The next bounded hypothesis is a
+request-lifetime allocator/workspace that removes these transient
+allocations; it must preserve aliasing, lifetimes, OOM behavior and the exact
+trajectory before it can replace this candidate.
+
+## Current promotion decision
+
+**Decision: promote strided-batched GQA for the tested single-request BF16
+cells.** It passes operator, exact complete-trajectory, repeated no-profiler,
+real multimodal, long-context boundary, explicit-path and causal-profile
+gates. The Broker-owned service uses the archived candidate binary and the
+checked-in runit reference with `APXINF_BATCHED_GQA_PREFILL=1`; the Qwen3.8
+resident service remains down.
+
+This result does not claim multi-request or continuous-batching performance,
+video or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.

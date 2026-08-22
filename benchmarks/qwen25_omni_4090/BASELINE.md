@@ -70,17 +70,16 @@ Evidence gates:
 
 ## Accepted successor
 
-The sequential-order one-CTA-per-row softmax candidate is accepted for the
-tested single-request BF16 cells. It preserves the complete token trajectory
-through the 10,752-token passing boundary, improves paired 4K TTFT from
-18.3407 s to 5.9641 s, and leaves final-screen decode TPOT within 0.26% of this
-baseline. See `PROFILE.md` and the structured raw results for the promotion
-record.
+The accepted path composes the sequential-order one-CTA-per-row softmax with
+strided-batched GQA prefill. It preserves complete trajectories through the
+10,752-token passing boundary, keeps the first failure at 11,264 tokens, and
+improves paired 4K TTFT from 18.3407 s to 1.9661 s (9.329×). Decode TPOT is
+unchanged within 0.05%. See `PROFILE.md` and the structured raw results for the
+promotion record.
 
-The actual candidate profile moves the bottleneck from softmax to WMMA,
-split-K reduction and 892,860 host kernel launches. A request-window filter
-shows only 0.475 ms of H2D time; the 2.07 s aggregate was model loading, not
-request execution. The next optimization question is which exact BF16 GEMM
-shapes select the observed 8,192-launch cuBLAS bursts and whether a matched
-cuBLASLt tactic removes them. The evidence still does not include a vLLM
-baseline, multi-request serving, or an MFU/BWU estimate.
+The actual candidate profile confirms that batching removes the launch
+explosion: `cudaLaunchKernel` calls fall from 892,860 to 8,268. The next
+bottleneck is 7,096 request-local `cudaMalloc`/`cudaFree` pairs, consuming
+about 2.11 s of profiled host API time. Request-local H2D remains negligible.
+The evidence still does not include a vLLM baseline, multi-request serving, or
+an MFU/BWU estimate.

@@ -1,0 +1,75 @@
+use apxinf_core::{Backend, DType, Tensor};
+use apxinf_cuda::{kernels::gemm::autotune_cublaslt_bf16, CudaBackend};
+
+fn env_usize(name: &str, default: usize) -> Result<usize, Box<dyn std::error::Error>> {
+    Ok(std::env::var(name)
+        .ok()
+        .map(|value| value.parse())
+        .transpose()?
+        .unwrap_or(default))
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let m = env_usize("APXINF_QWEN25_OMNI_TUNE_M", 4096)?;
+    let max_algorithms = env_usize("APXINF_QWEN25_OMNI_TUNE_MAX_ALGORITHMS", 8)?;
+    let warmup_iterations = env_usize("APXINF_QWEN25_OMNI_TUNE_WARMUP", 1)?;
+    let benchmark_iterations = env_usize("APXINF_QWEN25_OMNI_TUNE_ITERATIONS", 3)?;
+    if m == 0 || max_algorithms == 0 || max_algorithms > 64 || benchmark_iterations == 0 {
+        return Err("invalid Qwen2.5-Omni BF16 tuning budget".into());
+    }
+
+    let shapes = [
+        ("q_o", m, 2048usize, 2048usize),
+        ("k_v", m, 256usize, 2048usize),
+        ("gate_up", m, 11008usize, 2048usize),
+        ("down", m, 2048usize, 11008usize),
+    ];
+    let backend = CudaBackend::new(0)?;
+    let mut records = Vec::with_capacity(shapes.len());
+    for (name, m, n, k) in shapes {
+        eprintln!("tuning {name}: M={m} N={n} K={k}");
+        let activation = backend.to_device(&Tensor::zeros(vec![m, k], DType::BF16))?;
+        let weight = backend.to_device(&Tensor::zeros(vec![k, n], DType::BF16))?;
+        let timing = autotune_cublaslt_bf16(
+            backend.context(),
+            &activation,
+            &weight,
+            i32::try_from(max_algorithms)?,
+            warmup_iterations,
+            benchmark_iterations,
+        )?;
+        records.push(serde_json::json!({
+            "name": name,
+            "m": m,
+            "n": n,
+            "k": k,
+            "vendor_ms": timing.vendor_ms,
+            "cublaslt_default_ms": timing.cublaslt_default_ms,
+            "cublaslt_best_ms": timing.cublaslt_best_ms,
+            "cublaslt_best_rank": timing.heuristic_rank,
+            "cublaslt_returned_algorithms": timing.returned_algorithms,
+            "best_speedup_over_vendor": timing.vendor_ms / timing.cublaslt_best_ms,
+        }));
+    }
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "apxinf.qwen25_omni.bf16_tuning_probe.v1",
+            "gpu": backend.context().caps().device_name.as_str(),
+            "sm": backend.context().caps().sm,
+            "cuda": backend.context().library_versions().cuda.as_str(),
+            "cublas": backend.context().library_versions().cublas.as_str(),
+            "contract": {
+                "model": "Qwen/Qwen2.5-Omni-3B",
+                "prompt_rows": m,
+                "cache_state": "cold_l2",
+                "max_algorithms": max_algorithms,
+                "warmup_iterations": warmup_iterations,
+                "benchmark_iterations": benchmark_iterations,
+            },
+            "records": records,
+        }))?
+    );
+    Ok(())
+}

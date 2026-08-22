@@ -3,7 +3,9 @@ use apxinf_core::{DType, Error, Result, Shape, Tensor};
 use crate::buffer::{CudaBuffer, HostMappedBuffer};
 use crate::context::CudaContext;
 use crate::kernels::activation::{gelu_tanh, silu};
-use crate::kernels::attention::{causal_mask, grouped, softmax, softmax_causal, vision};
+use crate::kernels::attention::{
+    causal_mask, grouped, sdpa_with_batched_prefill, softmax, softmax_causal, vision,
+};
 use crate::kernels::cache::append;
 use crate::kernels::elementwise::{add, add_bias, mul, scale};
 use crate::kernels::embedding::lookup;
@@ -11,6 +13,7 @@ use crate::kernels::norm::{layer, rms};
 use crate::kernels::qwen35_attention;
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
 use crate::kernels::preprocess::{avg_pool1d_bf16, im2col1d_bf16};
+use crate::CudaKVCache;
 
 fn gpu_ptr(tensor: &Tensor) -> Result<*mut std::ffi::c_void> {
     Ok(CudaBuffer::from_tensor(tensor).map_err(Error::Cuda)?.ptr())
@@ -342,6 +345,81 @@ fn attention_softmax_bf16_crosses_legacy_grid_y_boundary() {
     let actual = download_bf16_as_fp32(&output).unwrap();
     assert_eq!(actual.len(), rows);
     assert!(actual.iter().all(|value| (*value - 1.0).abs() <= 1e-3));
+}
+
+#[test]
+fn gqa_batched_prefill_matches_scalar_bf16() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, n_kv_heads, head_dim, max_seq_len) =
+        (4usize, 4usize, 2usize, 16usize, 8usize);
+    let q_values = (0..seq_len * n_heads * head_dim)
+        .map(|index| ((index as f32 * 0.031) - 2.0).sin())
+        .collect::<Vec<_>>();
+    let k_values = (0..seq_len * n_kv_heads * head_dim)
+        .map(|index| ((index as f32 * 0.047) - 1.0).cos())
+        .collect::<Vec<_>>();
+    let v_values = (0..seq_len * n_kv_heads * head_dim)
+        .map(|index| (index as f32 * 0.013) - 0.75)
+        .collect::<Vec<_>>();
+    let q = upload_fp32_as_bf16(
+        &ctx,
+        &q_values,
+        vec![seq_len, n_heads, head_dim],
+    )
+    .unwrap();
+    let k = upload_fp32_as_bf16(
+        &ctx,
+        &k_values,
+        vec![seq_len, n_kv_heads, head_dim],
+    )
+    .unwrap();
+    let v = upload_fp32_as_bf16(
+        &ctx,
+        &v_values,
+        vec![seq_len, n_kv_heads, head_dim],
+    )
+    .unwrap();
+    let cache = CudaKVCache::new(
+        ctx.device_id(),
+        1,
+        n_kv_heads,
+        head_dim,
+        max_seq_len,
+    )
+    .unwrap();
+    cache.append(&ctx, 0, &k, &v, seq_len).unwrap();
+
+    let scalar = sdpa_with_batched_prefill(
+        &ctx,
+        &q,
+        &cache,
+        0,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        seq_len,
+        max_seq_len,
+        0,
+        false,
+    )
+    .unwrap();
+    let batched = sdpa_with_batched_prefill(
+        &ctx,
+        &q,
+        &cache,
+        0,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        seq_len,
+        max_seq_len,
+        0,
+        true,
+    )
+    .unwrap();
+    let scalar = download_bf16_as_fp32(&scalar).unwrap();
+    let batched = download_bf16_as_fp32(&batched).unwrap();
+    assert_bf16_close_reduction(&batched, &scalar);
 }
 
 // ── KV cache append ───────────────────────────────────────────────

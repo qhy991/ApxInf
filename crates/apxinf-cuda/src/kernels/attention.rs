@@ -1,5 +1,7 @@
 //! Model-neutral attention contracts and workspace orchestration.
 
+use std::sync::OnceLock;
+
 use apxinf_core::{DType, Device, Error, KvCache, Result, Shape, Tensor};
 
 use super::contracts::{
@@ -39,6 +41,40 @@ fn tensor_slice(
 
 fn buffer_slice(buffer: &CudaBuffer, byte_offset: usize, len: usize) -> Result<CudaBuffer> {
     buffer.view(byte_offset, len).map_err(Error::Cuda)
+}
+
+fn strided_batch_elements(batch: usize, stride: usize, matrix: usize) -> Result<usize> {
+    batch
+        .saturating_sub(1)
+        .checked_mul(stride)
+        .and_then(|offset| offset.checked_add(matrix))
+        .ok_or_else(|| Error::Other("strided GQA batch span overflow".into()))
+}
+
+fn element_stride(value: usize) -> Result<i64> {
+    i64::try_from(value).map_err(|_| Error::Other("strided GQA stride exceeds i64".into()))
+}
+
+fn batch_count(value: usize) -> Result<i32> {
+    i32::try_from(value).map_err(|_| Error::Other("strided GQA batch exceeds i32".into()))
+}
+
+fn batched_gqa_prefill_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| match std::env::var("APXINF_BATCHED_GQA_PREFILL") {
+            Err(std::env::VarError::NotPresent) => Ok(false),
+            Ok(value) if value == "0" => Ok(false),
+            Ok(value) if value == "1" => Ok(true),
+            Ok(value) => Err(format!(
+                "APXINF_BATCHED_GQA_PREFILL must be 0 or 1, got `{value}`"
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("APXINF_BATCHED_GQA_PREFILL must be UTF-8".into())
+            }
+        })
+        .clone()
+        .map_err(Error::Other)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -143,6 +179,127 @@ fn gqa_values(
         .map_err(Error::Cuda)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn gqa_scores_batched(
+    ctx: &CudaContext,
+    dtype: DType,
+    query: &Tensor,
+    query_offset: usize,
+    query_stride: usize,
+    key_cache: &CudaBuffer,
+    key_offset: usize,
+    scores: &CudaBuffer,
+    scores_offset: usize,
+    scores_stride: usize,
+    batch: usize,
+    gqa_ratio: usize,
+    kv_len: usize,
+    head_dim: usize,
+) -> Result<()> {
+    let element_bytes = dtype.size_in_bytes();
+    let query_elements = strided_batch_elements(batch, query_stride, gqa_ratio * head_dim)?;
+    let score_elements = strided_batch_elements(batch, scores_stride, gqa_ratio * kv_len)?;
+    let query = tensor_slice(
+        query,
+        query_offset * element_bytes,
+        query_elements * element_bytes,
+        ctx.device_id(),
+    )?;
+    let key = buffer_slice(
+        key_cache,
+        key_offset * element_bytes,
+        kv_len * head_dim * element_bytes,
+    )?;
+    let output = buffer_slice(
+        scores,
+        scores_offset * element_bytes,
+        score_elements * element_bytes,
+    )?;
+    ctx.cublas()
+        .batched_gemm_ex(
+            dtype,
+            CublasTranspose::None,
+            CublasTranspose::Transpose,
+            gqa_ratio,
+            kv_len,
+            head_dim,
+            1.0,
+            &query,
+            head_dim as i32,
+            element_stride(query_stride)?,
+            &key,
+            head_dim as i32,
+            0,
+            0.0,
+            &output,
+            kv_len as i32,
+            element_stride(scores_stride)?,
+            batch_count(batch)?,
+        )
+        .map_err(Error::Cuda)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gqa_values_batched(
+    ctx: &CudaContext,
+    dtype: DType,
+    attention: &Tensor,
+    attention_offset: usize,
+    attention_stride: usize,
+    value_cache: &CudaBuffer,
+    value_offset: usize,
+    output: &CudaBuffer,
+    output_offset: usize,
+    output_stride: usize,
+    batch: usize,
+    gqa_ratio: usize,
+    kv_len: usize,
+    head_dim: usize,
+) -> Result<()> {
+    let element_bytes = dtype.size_in_bytes();
+    let attention_elements =
+        strided_batch_elements(batch, attention_stride, gqa_ratio * kv_len)?;
+    let output_elements = strided_batch_elements(batch, output_stride, gqa_ratio * head_dim)?;
+    let attention = tensor_slice(
+        attention,
+        attention_offset * element_bytes,
+        attention_elements * element_bytes,
+        ctx.device_id(),
+    )?;
+    let value = buffer_slice(
+        value_cache,
+        value_offset * element_bytes,
+        kv_len * head_dim * element_bytes,
+    )?;
+    let output = buffer_slice(
+        output,
+        output_offset * element_bytes,
+        output_elements * element_bytes,
+    )?;
+    ctx.cublas()
+        .batched_gemm_ex(
+            dtype,
+            CublasTranspose::None,
+            CublasTranspose::None,
+            gqa_ratio,
+            head_dim,
+            kv_len,
+            1.0,
+            &attention,
+            kv_len as i32,
+            element_stride(attention_stride)?,
+            &value,
+            head_dim as i32,
+            0,
+            0.0,
+            &output,
+            head_dim as i32,
+            element_stride(output_stride)?,
+            batch_count(batch)?,
+        )
+        .map_err(Error::Cuda)
+}
+
 /// GQA scaled-dot-product attention over an existing CUDA KV cache.
 #[allow(clippy::too_many_arguments)]
 pub fn sdpa(
@@ -156,6 +313,35 @@ pub fn sdpa(
     kv_len: usize,
     max_seq_len: usize,
     kv_offset: u32,
+) -> Result<Tensor> {
+    sdpa_with_batched_prefill(
+        ctx,
+        query,
+        kv,
+        layer_idx,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        kv_len,
+        max_seq_len,
+        kv_offset,
+        batched_gqa_prefill_enabled()?,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sdpa_with_batched_prefill(
+    ctx: &CudaContext,
+    query: &Tensor,
+    kv: &dyn KvCache,
+    layer_idx: usize,
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    kv_len: usize,
+    max_seq_len: usize,
+    kv_offset: u32,
+    use_batched_prefill: bool,
 ) -> Result<Tensor> {
     if n_kv_heads == 0 || n_heads == 0 || n_heads % n_kv_heads != 0 {
         return Err(Error::Other(format!(
@@ -194,20 +380,39 @@ pub fn sdpa(
     let key_cache = cache.k_buffer(layer_idx);
 
     for kv_head in 0..n_kv_heads {
-        for sequence in 0..seq_len {
-            gqa_scores(
+        if use_batched_prefill && seq_len > 1 {
+            gqa_scores_batched(
                 ctx,
                 dtype,
                 query,
-                (sequence * n_heads + kv_head * gqa_ratio) * head_dim,
+                kv_head * gqa_ratio * head_dim,
+                n_heads * head_dim,
                 key_cache,
                 kv_head * max_seq_len * head_dim,
                 &scores,
-                (sequence * n_heads + kv_head * gqa_ratio) * kv_len,
+                kv_head * gqa_ratio * kv_len,
+                n_heads * kv_len,
+                seq_len,
                 gqa_ratio,
                 kv_len,
                 head_dim,
             )?;
+        } else {
+            for sequence in 0..seq_len {
+                gqa_scores(
+                    ctx,
+                    dtype,
+                    query,
+                    (sequence * n_heads + kv_head * gqa_ratio) * head_dim,
+                    key_cache,
+                    kv_head * max_seq_len * head_dim,
+                    &scores,
+                    (sequence * n_heads + kv_head * gqa_ratio) * kv_len,
+                    gqa_ratio,
+                    kv_len,
+                    head_dim,
+                )?;
+            }
         }
     }
 
@@ -222,20 +427,39 @@ pub fn sdpa(
     .map_err(Error::Cuda)?;
     let value_cache = cache.v_buffer(layer_idx);
     for kv_head in 0..n_kv_heads {
-        for sequence in 0..seq_len {
-            gqa_values(
+        if use_batched_prefill && seq_len > 1 {
+            gqa_values_batched(
                 ctx,
                 dtype,
                 &attention,
-                (sequence * n_heads + kv_head * gqa_ratio) * kv_len,
+                kv_head * gqa_ratio * kv_len,
+                n_heads * kv_len,
                 value_cache,
                 kv_head * max_seq_len * head_dim,
                 &output,
-                (sequence * n_heads + kv_head * gqa_ratio) * head_dim,
+                kv_head * gqa_ratio * head_dim,
+                n_heads * head_dim,
+                seq_len,
                 gqa_ratio,
                 kv_len,
                 head_dim,
             )?;
+        } else {
+            for sequence in 0..seq_len {
+                gqa_values(
+                    ctx,
+                    dtype,
+                    &attention,
+                    (sequence * n_heads + kv_head * gqa_ratio) * kv_len,
+                    value_cache,
+                    kv_head * max_seq_len * head_dim,
+                    &output,
+                    (sequence * n_heads + kv_head * gqa_ratio) * head_dim,
+                    gqa_ratio,
+                    kv_len,
+                    head_dim,
+                )?;
+            }
         }
     }
 
