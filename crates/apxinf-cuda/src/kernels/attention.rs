@@ -13,7 +13,7 @@ use crate::buffer::{CudaBuffer, CudaDeviceAddress};
 use crate::context::CudaContext;
 use crate::cublas::CublasTranspose;
 use crate::ffi;
-use crate::workspace::{may_prepare_native_resources, output_buffer};
+use crate::workspace::{may_prepare_native_resources, output_buffer, uninitialized_buffer};
 use crate::CudaKVCache;
 
 pub struct QkvTensors {
@@ -375,8 +375,7 @@ pub(crate) fn sdpa_with_batched_prefill(
     let gqa_ratio = n_heads / n_kv_heads;
     let dtype = query.dtype();
     let element_bytes = dtype.size_in_bytes();
-    let scores = CudaBuffer::alloc(seq_len * n_heads * kv_len * element_bytes, ctx.device_id())
-        .map_err(Error::Cuda)?;
+    let scores = uninitialized_buffer(ctx, seq_len * n_heads * kv_len * element_bytes)?;
     let key_cache = cache.k_buffer(layer_idx);
 
     for kv_head in 0..n_kv_heads {
@@ -420,11 +419,7 @@ pub(crate) fn sdpa_with_batched_prefill(
     let scores = super::elementwise::scale(ctx, &scores, 1.0 / (head_dim as f32).sqrt())?;
     let attention = softmax_causal(ctx, &scores, kv_offset, n_heads as u32)?;
 
-    let output = CudaBuffer::alloc(
-        seq_len * n_heads * head_dim * element_bytes,
-        ctx.device_id(),
-    )
-    .map_err(Error::Cuda)?;
+    let output = uninitialized_buffer(ctx, seq_len * n_heads * head_dim * element_bytes)?;
     let value_cache = cache.v_buffer(layer_idx);
     for kv_head in 0..n_kv_heads {
         if use_batched_prefill && seq_len > 1 {
@@ -559,7 +554,7 @@ pub fn softmax(ctx: &CudaContext, input: &Tensor) -> Result<Tensor> {
     let cols = *dims.last().unwrap();
 
     let out_bytes = input.size_in_bytes();
-    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
+    let out_buf = output_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = match input.dtype() {
@@ -621,7 +616,7 @@ pub fn vision(
     }
     let device_id = ctx.device_id();
     let out_bytes = seq_len * n_heads * head_dim * DType::BF16.size_in_bytes();
-    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
+    let out_buf = output_buffer(ctx, out_bytes)?;
     let scale = 1.0f32 / (head_dim as f32).sqrt();
     unsafe {
         let res = ffi::apxinf_vision_sdpa_bf16(
@@ -664,7 +659,7 @@ pub fn grouped(
     }
     let device_id = ctx.device_id();
     let out_bytes = seq_len * n_heads * head_dim * DType::BF16.size_in_bytes();
-    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
+    let out_buf = output_buffer(ctx, out_bytes)?;
     let scale = 1.0 / (head_dim as f32).sqrt();
     unsafe {
         ffi::check_cuda(ffi::apxinf_grouped_sdpa_bf16(
@@ -697,7 +692,7 @@ pub fn causal_mask(ctx: &CudaContext, input: &Tensor, kv_offset: u32) -> Result<
     let cols = *dims.last().unwrap();
 
     let out_bytes = input.size_in_bytes();
-    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
+    let out_buf = output_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = match input.dtype() {
@@ -743,7 +738,7 @@ pub fn softmax_causal(
     let cols = *dims.last().unwrap();
 
     let out_bytes = input.size_in_bytes();
-    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
+    let out_buf = output_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = match input.dtype() {

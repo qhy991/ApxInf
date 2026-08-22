@@ -294,7 +294,7 @@ request-lifetime allocator/workspace that removes these transient
 allocations; it must preserve aliasing, lifetimes, OOM behavior and the exact
 trajectory before it can replace this candidate.
 
-## Current promotion decision
+## Batched-GQA promotion decision
 
 **Decision: promote strided-batched GQA for the tested single-request BF16
 cells.** It passes operator, exact complete-trajectory, repeated no-profiler,
@@ -302,6 +302,107 @@ real multimodal, long-context boundary, explicit-path and causal-profile
 gates. The Broker-owned service uses the archived candidate binary and the
 checked-in runit reference with `APXINF_BATCHED_GQA_PREFILL=1`; the Qwen3.8
 resident service remains down.
+
+This result does not claim multi-request or continuous-batching performance,
+video or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.
+
+## Promoted stream-ordered allocation candidate
+
+Primary classification: **source/runtime graph**. The candidate adds an
+explicit `APXINF_STREAM_ORDERED_ALLOC=1` mode to the existing transient output
+buffer owner. Model-hot temporary buffers use matched
+`cudaMallocAsync`/`cudaFreeAsync` operations on the same inference stream;
+unset or `0` preserves synchronous allocation, and invalid values fail closed.
+Persistent weights, KV storage and host-upload buffers remain synchronously
+allocated. CUDA Graph workspaces keep their existing arena path.
+
+The final candidate also makes KV reset reuse and zero its existing buffers
+instead of reallocating all 72 K/V allocations. On a failed request, the model
+drains the backend stream before clearing state, and context synchronization
+consumes the thread-local CUDA error after preserving the original error for
+the current request. These are required failure semantics, not performance
+fallbacks. The deployed SM89 binary SHA-256 is
+`cee5ef02d5cf89b47ca4bd160103619037dfa7f2dba270254ff519c4b65a8f43`.
+Raw result prefixes record the iteration ladder: unqualified
+`candidate-streamalloc-*` is the first prototype, `recovery-*` adds a stream
+drain, `kvclear-*` adds in-place KV reset, and `v4-*` is the final sticky-error
+fix and promotion candidate.
+
+### Correctness, stability and recovery
+
+The final binary preserves every previously frozen trajectory:
+
+| Workload | Result | Trajectory SHA-256 | Prior accepted agreement |
+|---|---:|---|---:|
+| 1,024 prompt + 32 output | 5/5 stable | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+| 128 prompt + 128 output | 5/5 stable | `a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039` | exact |
+| 4,096 prompt + 8 output | 3/3 stable | `edc940b80ff945971996ddf2b30534773258bb41d3d1812c38f36ba06eaabcbd` | exact |
+| 8,192 prompt + 8 output | 1/1 exploratory | `490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf` | exact |
+| 10,752 prompt + 8 output | 1/1 exploratory | `19478a6e232ab7479a2a8026f01096ab68a16f72d922be9695d807928125b02d` | exact |
+
+Real PNG and WAV requests also reproduce the prior output-token sequences with
+no fallback. Ten consecutive 1K requests on the first allocator prototype were
+stable and returned resident memory to about 12.3 GiB.
+
+The first allocator prototype failed the OOM recovery gate: after the expected
+11,264-token OOM, pool memory remained near 20.2 GiB and the next 1K request
+also failed. A stream drain recovered memory but still left one sticky CUDA
+error; reallocating KV storage could also fail partway. The final candidate
+closes both issues. It reports 11,264 OOM as HTTP 503, immediately returns to
+12.27 GiB, and the next three 1K requests all pass with the exact trajectory.
+The raw negative and recovery screens are retained; only the final candidate
+is deployed.
+
+### No-profiler end-to-end result
+
+| Workload | Metric | Batched GQA | Final allocator | Change |
+|---|---|---:|---:|---:|
+| 1,024 + 32 | TTFT p50 | 0.3459 s | 0.0855 s | 4.047× faster |
+| 1,024 + 32 | wall p50 | 1.0330 s | 0.5150 s | 2.006× faster |
+| 128 + 128 | TTFT p50 | 0.0829 s | 0.0195 s | 4.259× faster |
+| 128 + 128 | TPOT p50 | 17.621 ms | 13.033 ms | 1.352× faster |
+| 4,096 + 8 | TTFT p50 | 1.9661 s | 0.8011 s | 2.454× faster |
+| 4,096 + 8 | wall p50 | 2.2440 s | 0.9215 s | 2.435× faster |
+| 8,192 + 8 | TTFT, one trial | 6.3336 s | 4.6841 s | 1.352× faster |
+| 10,752 + 8 | TTFT, one trial | 13.4895 s | 7.9156 s | 1.704× faster |
+
+Against the original paired baseline, 4K TTFT improves from 18.3407 s to
+0.8011 s (22.894×), while 1K TTFT improves from 2.0755 s to 0.0855 s
+(24.281×). Final 4K TTFT CV is 0.22%; final decode TPOT CV is 0.08%. The
+Broker-owned deployment repeats the 1K trajectory at 0.0860 s TTFT and returns
+to 12.27 GiB resident memory.
+
+### Final allocator attribution
+
+The actual final-candidate report remains on the GPU host at
+`/var/lib/agent-gpu-broker/profiles/omni-4k-streamalloc-v4.nsys-rep`, size
+1,534,333 bytes, SHA-256
+`ef6552ba918d175f610de05fe149b20c852b82603caa7c75978480717bc894c5`.
+The profiled request preserves the 4K trajectory; profiler timing is not used
+for admission.
+
+In prefill, synchronous `cudaMalloc`/`cudaFree` calls fall from 941/939 in the
+batched-GQA profile to 74/74; 795 transient allocations move to the ordered
+pool. Across seven decode steps, synchronous allocation/free falls from about
+6.1 thousand each to 518 each, with about 5.6 thousand operations becoming
+stream ordered. Launch count remains 8,268. Request-local H2D is 0.295 ms.
+
+The large 0.620 s profiled `cudaMemcpy` API interval is primarily the final
+synchronizing D2H copy waiting for already-enqueued GPU work, not 0.620 s of
+data movement; GPU H2D/D2H operation time is only about 8.8 ms. The leading GPU
+kernel remains sequential softmax at about 249 ms, followed by the two batched
+GEMM families. The next bounded opportunity is to upload TMRoPE positions once
+per forward instead of once per Q/K layer call, then reassess whether the
+remaining softmax arithmetic justifies a semantics-preserving kernel change.
+
+## Current promotion decision
+
+**Decision: promote stream-ordered transient allocation plus in-place KV
+reset, composed with strided-batched GQA and sequential-order softmax, for the
+tested single-request BF16 cells.** The final binary passes complete trajectory,
+repeated no-profiler, multimodal, long-context, OOM recovery, explicit-path and
+actual-candidate profile gates. Qwen3.8 remains down, and all GPU ownership is
+through the Broker.
 
 This result does not claim multi-request or continuous-batching performance,
 video or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.

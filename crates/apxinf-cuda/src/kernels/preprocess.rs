@@ -6,6 +6,7 @@ use super::contracts::{gpu_ptr, make_gpu_tensor};
 use crate::buffer::CudaBuffer;
 use crate::context::CudaContext;
 use crate::ffi;
+use crate::workspace::output_buffer;
 
 pub fn im2col1d_bf16(
     ctx: &CudaContext,
@@ -29,11 +30,10 @@ pub fn im2col1d_bf16(
     }
     let output_frames = (padded - kernel) / stride + 1;
     let shape = apxinf_core::Shape::new(vec![output_frames, channels * kernel]);
-    let output = CudaBuffer::alloc_zeros(
+    let output = output_buffer(
+        ctx,
         output_frames * channels * kernel * DType::BF16.size_in_bytes(),
-        ctx.device_id(),
-    )
-    .map_err(Error::Cuda)?;
+    )?;
     unsafe {
         ffi::check_cuda(ffi::apxinf_im2col1d_bf16(
             gpu_ptr(input)?,
@@ -73,11 +73,10 @@ pub fn avg_pool1d_bf16(
     }
     let (frames, channels) = (dims[0], dims[1]);
     let output_frames = (frames - kernel) / stride + 1;
-    let output = CudaBuffer::alloc_zeros(
+    let output = output_buffer(
+        ctx,
         output_frames * channels * DType::BF16.size_in_bytes(),
-        ctx.device_id(),
-    )
-    .map_err(Error::Cuda)?;
+    )?;
     unsafe {
         ffi::check_cuda(ffi::apxinf_avg_pool1d_bf16(
             gpu_ptr(input)?,

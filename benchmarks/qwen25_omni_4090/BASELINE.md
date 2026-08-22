@@ -70,16 +70,17 @@ Evidence gates:
 
 ## Accepted successor
 
-The accepted path composes the sequential-order one-CTA-per-row softmax with
-strided-batched GQA prefill. It preserves complete trajectories through the
-10,752-token passing boundary, keeps the first failure at 11,264 tokens, and
-improves paired 4K TTFT from 18.3407 s to 1.9661 s (9.329×). Decode TPOT is
-unchanged within 0.05%. See `PROFILE.md` and the structured raw results for the
-promotion record.
+The accepted path composes sequential-order one-CTA-per-row softmax,
+strided-batched GQA prefill, stream-ordered transient allocation and in-place
+KV reset. It preserves complete trajectories through the 10,752-token passing
+boundary, keeps the first failure at 11,264 tokens, and recovers the immediately
+following request after OOM. Paired 4K TTFT improves from 18.3407 s to
+0.8011 s (22.894×); decode TPOT improves from 17.567 ms to 13.033 ms. See
+`PROFILE.md` and the structured raw results for the promotion record.
 
-The actual candidate profile confirms that batching removes the launch
-explosion: `cudaLaunchKernel` calls fall from 892,860 to 8,268. The next
-bottleneck is 7,096 request-local `cudaMalloc`/`cudaFree` pairs, consuming
-about 2.11 s of profiled host API time. Request-local H2D remains negligible.
-The evidence still does not include a vLLM baseline, multi-request serving, or
-an MFU/BWU estimate.
+The final profile retains the 8,268-launch batched graph while moving most
+transient allocation to CUDA's ordered pool. Prefill synchronous allocation
+falls to 74 malloc/free pairs, largely from repeated position uploads. The
+next question is whether those positions can be uploaded once per forward;
+the leading GPU kernel is again softmax. The evidence still does not include a
+vLLM baseline, multi-request serving, or an MFU/BWU estimate.

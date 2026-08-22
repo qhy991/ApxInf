@@ -27,8 +27,9 @@ memory-controller utilization, clocks, and power. Context probing stops at the
 first failed case; service recovery is an operator action and must be recorded
 separately rather than hidden by the benchmark.
 
-The accepted deployment keeps the optimized GQA path explicit through
-`APXINF_BATCHED_GQA_PREFILL=1`. The Broker-owned runit reference is checked in
-at `service/apxinf-qwen25-omni-broker.run`; it is the environment and launch
+The accepted deployment keeps both optimized paths explicit through
+`APXINF_BATCHED_GQA_PREFILL=1` and `APXINF_STREAM_ORDERED_ALLOC=1`. The
+Broker-owned runit reference is checked in at
+`service/apxinf-qwen25-omni-broker.run`; it is the environment and launch
 authority for reproducing the promoted service. Unset or `0` preserves the
-scalar GQA path, while invalid values fail closed.
+corresponding native path, while invalid values fail closed.

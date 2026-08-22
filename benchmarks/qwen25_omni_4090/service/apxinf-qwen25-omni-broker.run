@@ -14,6 +14,7 @@ exec chpst -u gpuq:gpuq-users /usr/local/bin/gpu-run \
   TOKENIZERS_PARALLELISM=false \
   APXINF_DISABLE_TALKER=1 \
   APXINF_BATCHED_GQA_PREFILL=1 \
+  APXINF_STREAM_ORDERED_ALLOC=1 \
   /opt/apxinf/qwen25-omni-target/release/apxinf serve \
   --model /mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B \
   --host 127.0.0.1 --port 8001 \

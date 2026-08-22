@@ -494,6 +494,39 @@ fn kv_cache_append_bf16_writes_correct_slot() {
     }
 }
 
+#[test]
+fn kv_cache_clear_zeroes_in_place() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (n_kv_heads, head_dim, max_seq_len, append_len) = (2usize, 4usize, 8usize, 2usize);
+    let values = (0..append_len * n_kv_heads * head_dim)
+        .map(|index| index as f32 + 1.0)
+        .collect::<Vec<_>>();
+    let tensor = upload_fp32_as_bf16(
+        &ctx,
+        &values,
+        vec![append_len, n_kv_heads, head_dim],
+    )
+    .unwrap();
+    let mut cache = CudaKVCache::new(ctx.device_id(), 1, n_kv_heads, head_dim, max_seq_len)
+        .unwrap();
+    let key_ptr = cache.k_buffer(0).ptr();
+    let value_ptr = cache.v_buffer(0).ptr();
+    cache.append(&ctx, 0, &tensor, &tensor, append_len).unwrap();
+    ctx.synchronize().unwrap();
+    apxinf_core::KvCache::advance(&mut cache, append_len);
+    apxinf_core::KvCache::clear(&mut cache).unwrap();
+
+    assert_eq!(apxinf_core::KvCache::seq_len(&cache), 0);
+    assert_eq!(cache.k_buffer(0).ptr(), key_ptr);
+    assert_eq!(cache.v_buffer(0).ptr(), value_ptr);
+    let mut key = vec![1u8; cache.k_buffer(0).len()];
+    let mut value = vec![1u8; cache.v_buffer(0).len()];
+    cache.k_buffer(0).copy_to_host(&mut key).unwrap();
+    cache.v_buffer(0).copy_to_host(&mut value).unwrap();
+    assert!(key.iter().all(|byte| *byte == 0));
+    assert!(value.iter().all(|byte| *byte == 0));
+}
+
 // ── Decode-pos kernel variants (rope_decode, attn_softmax_decode, kv_cache_append_decode) ──
 
 #[test]

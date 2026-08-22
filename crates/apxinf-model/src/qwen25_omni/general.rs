@@ -317,6 +317,10 @@ impl GeneralQwen25Omni {
     }
 
     fn clear_state(&mut self) {
+        // An eager failure may leave stream-ordered frees queued behind the
+        // last successful kernel. Drain them before rebuilding the KV cache
+        // so an OOM request cannot poison the following request.
+        let _ = self.backend.synchronize();
         let _ = self.kv.clear();
         self.rope_delta = 0;
     }

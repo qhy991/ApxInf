@@ -105,7 +105,7 @@ pub fn add_bias(ctx: &CudaContext, input: &Tensor, bias: &Tensor) -> Result<Tens
     } else {
         dims[dims.len() - 1]
     };
-    let out_buf = CudaBuffer::alloc_zeros(input.size_in_bytes(), device_id).map_err(Error::Cuda)?;
+    let out_buf = output_buffer(ctx, input.size_in_bytes())?;
     unsafe {
         let res = ffi::apxinf_add_bias_bf16(
             gpu_ptr(input)?,
@@ -130,7 +130,7 @@ pub fn add(ctx: &CudaContext, a: &Tensor, b: &Tensor) -> Result<Tensor> {
     let count = a.numel() as u32;
 
     let out_bytes = a.size_in_bytes();
-    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
+    let out_buf = output_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = match a.dtype() {
@@ -167,7 +167,7 @@ pub fn mul(ctx: &CudaContext, a: &Tensor, b: &Tensor) -> Result<Tensor> {
     let count = a.numel() as u32;
 
     let out_bytes = a.size_in_bytes();
-    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
+    let out_buf = output_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = match a.dtype() {
@@ -204,7 +204,7 @@ pub fn scale(ctx: &CudaContext, input: &Tensor, scale_factor: f32) -> Result<Ten
     let count = input.numel() as u32;
 
     let out_bytes = input.size_in_bytes();
-    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
+    let out_buf = output_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = match input.dtype() {
