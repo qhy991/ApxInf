@@ -108,6 +108,50 @@ pub fn apply_mrope_bf16_into(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn apply_tmrope_bf16_into(
+    ctx: &CudaContext,
+    input: &CudaBuffer,
+    output: &CudaBuffer,
+    head_dim: usize,
+    heads: usize,
+    theta: f32,
+    sections: [usize; 3],
+    positions: CudaDeviceAddress,
+) -> Result<()> {
+    require_finite("decode TMRoPE", &[theta])?;
+    if head_dim == 0
+        || head_dim % 2 != 0
+        || sections.iter().sum::<usize>() != head_dim / 2
+        || theta <= 0.0
+    {
+        return Err(Error::Other(
+            "decode TMRoPE received invalid head dimension, sections, or theta".into(),
+        ));
+    }
+    let bytes = checked_bytes(DType::BF16, &[heads, head_dim], "decode TMRoPE")?;
+    require_buffers(
+        ctx,
+        "decode TMRoPE",
+        &[("input", input, bytes), ("output", output, bytes)],
+    )?;
+    require_address(ctx, "decode TMRoPE", "positions", positions, 12)?;
+    check_cuda(unsafe {
+        ffi::apxinf_rope_tmrope_bf16(
+            input.ptr(),
+            output.ptr(),
+            head_dim as u32,
+            heads as u32,
+            1,
+            theta,
+            positions.ptr(),
+            sections[0] as u32,
+            sections[1] as u32,
+            ctx.stream().handle(),
+        )
+    })
+}
+
 /// Apply BF16 RoPE to K and write it directly to KV cache.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_k_write_cache_bf16(

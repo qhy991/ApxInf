@@ -1,4 +1,9 @@
-# 4K prefill critical-path profile
+# Qwen2.5-Omni RTX 4090 optimization evidence
+
+`BASELINE.md` owns the current accepted deployment summary. This file retains
+the causal profiles, rejected branches and promotion evidence for each stage;
+the current promotion record is **Promoted short-KV CUDA Graph decode
+candidate** below.
 
 ## Contract
 
@@ -306,6 +311,143 @@ resident service remains down.
 This result does not claim multi-request or continuous-batching performance,
 video or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.
 
+## Promoted short-KV CUDA Graph decode candidate
+
+Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
+BF16 decode layer loop is captured once at model load and replayed with
+caller-owned workspaces, mapped token/TMRoPE/cache-position controls and the
+existing KV cache. It deliberately preserves the accepted separate Q/K/V
+biases, TMRoPE arithmetic, Gate and Up projections, SiLU, multiply and
+residual order. No weights are packed or duplicated.
+
+`APXINF_QWEN25_DECODE_GRAPH=1` is default-off and accepts only `0` or `1`.
+Enabling it on a non-CUDA backend or failing graph construction fails model
+load closed. The model selects graph replay only for one-token decode with
+`start_pos < 2048`; all prefill and longer-KV decode use the accepted ordinary
+path. The service remains single-request, BF16 and greedy under the frozen
+contract.
+
+### Rejected unrestricted graph and resulting selector
+
+The first graph candidate, binary SHA-256
+`fd1b29d4ea089cc013cee1325038e273efb53d21d481eb14dc60da23390d5820`,
+used graph replay at every decode position. It preserved every tested token
+trajectory but regressed long-KV TPOT even though TTFT remained unchanged:
+
+| Workload | Accepted TPOT | Unrestricted graph TPOT | Change |
+|---|---:|---:|---:|
+| 4,096 + 8 | 13.432 ms | 14.319 ms | 6.6% slower |
+| 8,192 + 8 | 15.620 ms | 19.649 ms | 25.8% slower |
+| 10,752 + 8 | 17.023 ms | 23.055 ms | 35.4% slower |
+
+This disproved a general graph policy. The bounded candidate therefore keeps
+graph replay only below position 2,048. Raw unrestricted results use the
+`candidate-decode-graph-preliminary-*` prefix; the first bounded screens and
+same-window pair use `candidate-decode-graph-short-*` and
+`paired-decode-graph-*`. They are retained as negative and iteration evidence,
+not presented as the promotion binary.
+
+### Clean build and binary custody
+
+The final source was rebuilt from zero under the independent target
+`/opt/apxinf/qwen25-omni-decode-graph-target-20260822a`. Before the build, the
+remote CUDA source was synchronized to the locally reverted tree and searched
+for the rejected exact-order packed-SwiGLU implementation. As a binary check,
+`strings` finds 50 `swiglu_bf16_exact` occurrences in the preliminary linked
+image and zero in the clean image. The promoted binary SHA-256 is
+`a8cb1be3e697a96642d0500e096b0d6749eb1adb482bf65f8f6f8793e81aa217`.
+The previous accepted binary is retained on the host as
+`apxinf-accepted-softmax-5a131f72` for rollback.
+
+### Complete-trajectory and failure-semantics gates
+
+| Workload | Result | Trajectory SHA-256 | Accepted agreement |
+|---|---:|---|---:|
+| 1,024 prompt + 32 output | 5/5 stable | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+| 128 prompt + 128 output | 5/5 stable | `a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039` | exact |
+| 4,096 prompt + 8 output | 7/7 stable | `edc940b80ff945971996ddf2b30534773258bb41d3d1812c38f36ba06eaabcbd` | exact |
+| 10,752 prompt + 8 output | 1/1 capacity probe | `19478a6e232ab7479a2a8026f01096ab68a16f72d922be9695d807928125b02d` | exact |
+| 11,264 prompt + 8 output | HTTP 503 CUDA OOM | n/a | same first failure |
+| Post-OOM 1,024 + 32 | 3/3 stable | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+
+After the expected OOM, resident memory returns to approximately 12.34 GiB,
+`/health` stays successful and all three immediate recovery requests pass.
+The graph workspace does not reduce the proven 10,752-token capacity or move
+the first failure.
+
+Real multimodal input is also covered by complete output IDs. A 1,760-token
+PNG chart request produces the exact 16-token baseline sequence and a
+52-token WAV request produces the exact nine-token baseline sequence; both
+report `fallback_active=false`. Their single-observation TPOT changes from
+12.934 to 10.846 ms and from 10.813 to 8.721 ms respectively. These are
+correctness and path-coverage observations, not independent performance
+admission samples. The structured record is
+`results/candidate-decode-graph-clean-multimodal.json`.
+
+### No-profiler end-to-end result
+
+The final B/A/B window used the clean graph binary, then the previous accepted
+binary, then the deployed clean binary. The table compares five-sample clean
+and accepted screens; the deployed three-sample repeat independently matches
+the clean result.
+
+| Workload | Metric | Previous accepted | Clean graph | Ratio / change |
+|---|---|---:|---:|---:|
+| 1,024 + 32 | wall p50 | 0.4408 s | 0.3894 s | 1.132× faster |
+| 1,024 + 32 | TPOT p50 | 11.605 ms | 9.922 ms | 1.170× faster |
+| 128 + 128 | wall p50 | 1.3935 s | 1.1381 s | 1.224× faster |
+| 128 + 128 | TPOT p50 | 10.809 ms | 8.799 ms | 1.228× faster |
+| 4,096 + 8 | TTFT p50 | 0.7297 s prior stable | 0.7296 s | unchanged |
+| 4,096 + 8 | TPOT p50 | 13.432 ms prior stable | 13.445 ms | unchanged |
+| 10,752 + 8 | TTFT, one trial | 7.8803 s | 7.8869 s | unchanged |
+
+Clean quick and decode wall-time CVs are 0.38% and 0.20%; TPOT CVs are 0.09%
+and 0.18%. The seven-sample graph-ineligible 4K screen has 0.64% TTFT CV. The
+deployed run repeats 9.913 ms quick TPOT and 8.800 ms decode TPOT with exact
+trajectories. Against the original baseline, decode TPOT improves from
+17.567 ms to 8.799 ms (1.997×), 4K TTFT improves from 18.3407 s to 0.7296 s
+(25.138×), and 1K wall time improves from 2.7737 s to 0.3894 s (7.123×).
+
+### Actual clean-binary attribution
+
+The actual promoted binary was profiled under Broker ownership. The exact
+128+128 trajectory passes under profiling at 8.874 ms TPOT; profiler timing is
+not used for admission. The report remains on the GPU host at
+`/var/lib/agent-gpu-broker/profiles/omni-decode128-graph-clean-v2.nsys-rep`,
+size 718,472 bytes, SHA-256
+`4a6c4ece0139605e71eea53bf3cce706dc06050632be6f552ff838cc7f71b141`.
+
+The CUDA API summary contains 127 `cudaGraphLaunch` calls, one for every
+decode step after the first token produced by prefill. They consume 8.628 ms
+of host API time in total, with a 57.2 microsecond median. The 131
+`cudaStreamSynchronize` calls consume 1.091 s in total, averaging 8.330 ms;
+the remaining critical interval is therefore GPU graph execution and its
+per-token synchronization, not graph-launch dispatch. Graph instantiation is
+a one-time 2.096 ms load cost. The 2,709 ordinary `cudaLaunchKernel` calls are
+from model load, prewarm and prefill; CUPTI kernel summaries undercount work
+replayed inside the graph, so they are not used to rank graph nodes. The
+checked-in API, kernel and memory CSV hashes are respectively
+`4482a2039711e9706622be532d41a55f78e70b8df755a44d300939c94f145058`,
+`d085136dd97530efd04e2b2047d61938bb57b4642bfd1af715dd3673849256bd`
+and `4f68de1366aa11d696100b8af128992b26117071a987d7138a66c3300aace4bc`.
+
+## Short-KV decode-graph decision
+
+**Decision: promote the start-position-bounded CUDA Graph, composed with the
+accepted softmax, batched GQA, stream-ordered allocation and decode TMRoPE
+cache, for the tested single-request BF16 cells.** It passes clean-build and
+binary-custody checks, exact complete trajectories, repeated no-profiler
+timing, long-context capacity, real image/audio input, OOM recovery,
+explicit-service configuration and actual-clean-binary profile gates. The
+Broker-owned RTX 4090 service runs the promoted SHA-256; Qwen3.8 remains down.
+
+This result does not claim a graph win at or above position 2,048,
+multi-request or continuous-batching performance, video or speech generation,
+vLLM parity, a larger OOM boundary, or MFU/BWU. The next bounded optimization
+question is whether exact logit readback and CPU token selection consume a
+material fraction of the new 8.8 ms decode interval; profile that boundary
+before implementing GPU argmax or another fusion.
+
 ## Promoted shape-specialized softmax exp cache
 
 Primary classification: **source/runtime graph**. The exact-order softmax
@@ -388,7 +530,7 @@ at about 162.4 ms and 132.1 ms, and launch count remains 8,268. This is the
 predicted causal result of deleting one exponential evaluation per valid
 score, not a launch or model-path change.
 
-## Newest promotion decision
+## Softmax decision at that stage
 
 **Decision: promote the shape-specialized FP32 numerator cache, composed with
 decode TMRoPE caching, stream-ordered allocation, batched GQA and exact-order

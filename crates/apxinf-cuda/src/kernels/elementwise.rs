@@ -91,6 +91,37 @@ pub fn mul_into(
     check_cuda(status)
 }
 
+pub fn add_bias_bf16_into(
+    ctx: &CudaContext,
+    input: &CudaBuffer,
+    bias: &CudaBuffer,
+    output: &CudaBuffer,
+    cols: usize,
+    rows: usize,
+) -> Result<()> {
+    let matrix = checked_bytes(DType::BF16, &[rows, cols], "decode bias")?;
+    let bias_bytes = checked_bytes(DType::BF16, &[cols], "decode bias")?;
+    require_buffers(
+        ctx,
+        "decode bias",
+        &[
+            ("input", input, matrix),
+            ("bias", bias, bias_bytes),
+            ("output", output, matrix),
+        ],
+    )?;
+    check_cuda(unsafe {
+        ffi::apxinf_add_bias_bf16(
+            input.ptr(),
+            bias.ptr(),
+            output.ptr(),
+            cols as u32,
+            rows as u32,
+            ctx.stream().handle(),
+        )
+    })
+}
+
 /// Broadcast-add a bias vector `[cols]` over rows of `input` `[rows, cols]`.
 /// bf16 only.
 pub fn add_bias(ctx: &CudaContext, input: &Tensor, bias: &Tensor) -> Result<Tensor> {

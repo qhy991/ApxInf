@@ -2,15 +2,27 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(feature = "cuda")]
+use std::sync::OnceLock;
 
 use apxinf_core::{Backend, Device, Error, KvCache, Result, Tensor};
 
+#[cfg(feature = "cuda")]
+use crate::accelerator::cuda::downcast as cuda_backend;
 use crate::llm_trait::{LlmCapabilities, LlmInput, LlmTrait};
 
 use super::audio::{self, Qwen25OmniAudioWeights};
 use super::config::Qwen25OmniConfig;
+#[cfg(feature = "cuda")]
+use super::decode_graph::{
+    Qwen25OmniDecodeGraph, Qwen25OmniDecodeGraphConfig, Qwen25OmniDecodeGraphWeights,
+    Qwen25OmniDecodeLayerWeights,
+};
 use super::vision::{self, Qwen25OmniVisionWeights};
 use super::weights::Qwen25OmniTextWeights;
+
+#[cfg(feature = "cuda")]
+const MAX_DECODE_GRAPH_POSITION: u32 = 2_048;
 
 pub struct GeneralQwen25Omni {
     config: Qwen25OmniConfig,
@@ -20,6 +32,27 @@ pub struct GeneralQwen25Omni {
     backend: Arc<dyn Backend>,
     kv: Box<dyn KvCache>,
     rope_delta: i64,
+    #[cfg(feature = "cuda")]
+    decode_graph: Option<Qwen25OmniDecodeGraph>,
+}
+
+#[cfg(feature = "cuda")]
+fn decode_graph_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| match std::env::var("APXINF_QWEN25_DECODE_GRAPH") {
+            Err(std::env::VarError::NotPresent) => Ok(false),
+            Ok(value) if value == "0" => Ok(false),
+            Ok(value) if value == "1" => Ok(true),
+            Ok(value) => Err(format!(
+                "APXINF_QWEN25_DECODE_GRAPH must be 0 or 1, got `{value}`"
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("APXINF_QWEN25_DECODE_GRAPH must be UTF-8".into())
+            }
+        })
+        .clone()
+        .map_err(Error::Other)
 }
 
 impl GeneralQwen25Omni {
@@ -47,7 +80,19 @@ impl GeneralQwen25Omni {
             config.text.head_dim,
             config.text.max_position_embeddings,
         );
-        Ok(Self {
+        #[cfg(feature = "cuda")]
+        let decode_graph = if decode_graph_enabled()? {
+            let cuda = cuda_backend(&*backend).ok_or_else(|| {
+                Error::Other("Qwen2.5-Omni decode graph requires CudaBackend".into())
+            })?;
+            Some(Qwen25OmniDecodeGraph::new(
+                cuda,
+                Self::decode_graph_config(&config),
+            )?)
+        } else {
+            None
+        };
+        let model = Self {
             config,
             text,
             vision,
@@ -55,11 +100,79 @@ impl GeneralQwen25Omni {
             backend,
             kv,
             rope_delta: 0,
-        })
+            #[cfg(feature = "cuda")]
+            decode_graph,
+        };
+        #[cfg(feature = "cuda")]
+        {
+            let mut model = model;
+            model.prewarm_decode_graph()?;
+            Ok(model)
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            Ok(model)
+        }
     }
 
     pub fn config(&self) -> &Qwen25OmniConfig {
         &self.config
+    }
+
+    #[cfg(feature = "cuda")]
+    fn decode_graph_config(config: &Qwen25OmniConfig) -> Qwen25OmniDecodeGraphConfig {
+        let text = &config.text;
+        Qwen25OmniDecodeGraphConfig {
+            n_layers: text.n_layers,
+            n_heads: text.n_heads,
+            n_kv_heads: text.n_kv_heads,
+            head_dim: text.head_dim,
+            hidden_size: text.hidden_size,
+            intermediate_size: text.intermediate_size,
+            vocab_size: text.vocab_size,
+            max_seq_len: text.max_position_embeddings,
+            rope_theta: text.rope_theta,
+            mrope_section: text.mrope_section,
+            rms_norm_eps: text.rms_norm_eps,
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    fn decode_graph_weights(text: &Qwen25OmniTextWeights) -> Qwen25OmniDecodeGraphWeights<'_> {
+        Qwen25OmniDecodeGraphWeights {
+            token_embedding: &text.token_embedding,
+            layers: text
+                .layers
+                .iter()
+                .map(|layer| Qwen25OmniDecodeLayerWeights {
+                    attn_norm: &layer.attn_norm,
+                    wq: &layer.wq,
+                    bq: &layer.bq,
+                    wk: &layer.wk,
+                    bk: &layer.bk,
+                    wv: &layer.wv,
+                    bv: &layer.bv,
+                    wo: &layer.wo,
+                    ffn_norm: &layer.ffn_norm,
+                    w_gate: &layer.w_gate,
+                    w_up: &layer.w_up,
+                    w_down: &layer.w_down,
+                })
+                .collect(),
+            output_norm: &text.output_norm,
+            lm_head: &text.lm_head,
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    fn prewarm_decode_graph(&mut self) -> Result<()> {
+        let Some(graph) = self.decode_graph.as_mut() else {
+            return Ok(());
+        };
+        let weights = Self::decode_graph_weights(&self.text);
+        let cuda =
+            cuda_backend(&*self.backend).expect("Qwen2.5-Omni decode graph owns a CudaBackend");
+        graph.prewarm(cuda, &weights, &mut *self.kv)
     }
 
     fn forward_inner(&mut self, token_ids: &[u32], start_pos: u32) -> Result<Tensor> {
@@ -78,6 +191,27 @@ impl GeneralQwen25Omni {
             ));
         }
         reject_video(token_ids, self.config.video_token_id)?;
+        #[cfg(feature = "cuda")]
+        if token_ids.len() == 1
+            && start_pos < MAX_DECODE_GRAPH_POSITION
+            && self.decode_graph.is_some()
+        {
+            let positions = linear_positions(1, start_pos, self.rope_delta)?;
+            let coordinates = [positions[0], positions[1], positions[2]];
+            let weights = Self::decode_graph_weights(&self.text);
+            let cuda =
+                cuda_backend(&*self.backend).expect("Qwen2.5-Omni decode graph owns a CudaBackend");
+            let logits = self.decode_graph.as_mut().unwrap().decode(
+                cuda,
+                &weights,
+                &mut *self.kv,
+                token_ids[0],
+                coordinates,
+                start_pos,
+            )?;
+            self.kv.advance(1);
+            return Ok(logits);
+        }
         let mut hidden = self
             .backend
             .embedding(&self.text.token_embedding, token_ids)?;

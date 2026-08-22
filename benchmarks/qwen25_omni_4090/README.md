@@ -29,8 +29,10 @@ separately rather than hidden by the benchmark.
 
 The accepted deployment keeps all optimized paths explicit through
 `APXINF_BATCHED_GQA_PREFILL=1`, `APXINF_STREAM_ORDERED_ALLOC=1` and
-`APXINF_TMROPE_POSITION_CACHE=1`, plus `APXINF_SOFTMAX_EXP_CACHE=1`. The
-Broker-owned runit reference is checked in at
+`APXINF_TMROPE_POSITION_CACHE=1`, `APXINF_SOFTMAX_EXP_CACHE=1` and
+`APXINF_QWEN25_DECODE_GRAPH=1`. The decode graph is deliberately restricted
+to one-token decode with `start_pos < 2048`; prefill and longer-KV decode keep
+the accepted ordinary path. The Broker-owned runit reference is checked in at
 `service/apxinf-qwen25-omni-broker.run`; it is the environment and launch
 authority for reproducing the promoted service. Unset or `0` preserves the
 corresponding native path, while invalid values fail closed.

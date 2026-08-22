@@ -72,15 +72,27 @@ Evidence gates:
 
 The accepted path composes sequential-order softmax with a shape-specialized
 FP32 numerator cache, strided-batched GQA prefill, stream-ordered transient
-allocation, in-place KV reset and decode-only TMRoPE position caching. It preserves complete
-trajectories through the 10,752-token passing boundary, keeps the first failure
-at 11,264 tokens, and recovers the immediately following request after OOM.
-Paired 4K TTFT improves from 18.3407 s to 0.7297 s (25.133×); decode TPOT
-improves from 17.567 ms to 10.822 ms. See `PROFILE.md` and the structured raw
-results for the promotion record.
+allocation, in-place KV reset, decode-only TMRoPE position caching and a
+short-KV CUDA Graph. The graph is selected only for one-token BF16 decode with
+`start_pos < 2048`; longer-KV decode and all prefill retain the accepted
+ordinary path. It preserves complete trajectories through the 10,752-token
+passing boundary, keeps the first failure at 11,264 tokens, and recovers the
+immediately following request after OOM. The deployed SM89 binary SHA-256 is
+`a8cb1be3e697a96642d0500e096b0d6749eb1adb482bf65f8f6f8793e81aa217`.
 
-The final profile retains the 8,268-launch batched graph. Shape-specialized
-softmax falls from 250.8 ms to 184.4 ms at 4K; during seven decode steps,
-synchronous malloc/free remains 14/14 and H2D operations 21. The next candidate
-is Gate/Up packing. The evidence still does not include a vLLM baseline,
-multi-request serving, or an MFU/BWU estimate.
+In the final same-window comparison, 1K+32 wall time improves from 0.4408 s to
+0.3894 s (1.132×) and 128+128 TPOT improves from 10.809 ms to 8.799 ms
+(1.228×). The graph-ineligible 4K screen remains at 0.7296 s TTFT with 0.64%
+CV. Against the original baseline, 4K TTFT improves from 18.3407 s to 0.7296 s
+(25.138×) and decode TPOT improves from 17.567 ms to 8.799 ms (1.997×). See
+`PROFILE.md` and the structured raw results for the promotion record.
+
+The actual clean-binary profile records 127 `cudaGraphLaunch` calls for the
+127 decode steps following the first prefill token. Graph-launch API time is
+8.628 ms total, while the 131 stream synchronizations total 1.091 s; remaining
+decode latency is therefore GPU replay work rather than host launch dispatch.
+Gate/Up packing was separately tested and reverted as a small end-to-end
+regression. The next bounded question is whether logit readback and CPU
+sampling are material enough to justify an exact GPU-side selection path. The
+evidence still does not include a vLLM baseline, multi-request serving, or an
+MFU/BWU estimate.

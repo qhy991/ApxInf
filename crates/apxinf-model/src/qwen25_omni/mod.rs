@@ -3,6 +3,8 @@
 pub mod audio;
 pub mod checkpoint;
 pub mod config;
+#[cfg(feature = "cuda")]
+pub mod decode_graph;
 pub mod general;
 pub mod vision;
 pub mod weights;
