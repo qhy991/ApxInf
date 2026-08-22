@@ -20,7 +20,7 @@ python3 benchmarks/qwen25_omni_4090/benchmark_service.py \
   --context-output-tokens 8 --warmups 1 --repeats 3 --timeout 300
 
 python3 benchmarks/qwen25_omni_4090/decode_roofline.py \
-  --tpot-ms 8.589121905511811 --kv-len 128 \
+  --tpot-ms 8.36274457480315 --kv-len 128 \
   --peak-bandwidth-gbps 1008
 ```
 
@@ -42,7 +42,8 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_QWEN25_DECODE_GRAPH=1`, plus `APXINF_QWEN25_GPU_ARGMAX=1`. The decode
 graph and exact two-stage GPU token selection are deliberately restricted to
 SM89 one-token decode with `start_pos < 3072`; prefill and longer-KV decode
-keep the accepted ordinary path. The Broker-owned runit reference is checked in at
+keep the accepted ordinary path. `APXINF_QWEN25_PACKED_QKV=1` selects one
+packed QKV owner shared by both paths. The Broker-owned runit reference is checked in at
 `service/apxinf-qwen25-omni-broker.run`; it is the environment and launch
 authority for reproducing the promoted service. Unset or `0` preserves the
 corresponding native path, while invalid values fail closed.

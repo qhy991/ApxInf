@@ -2,8 +2,7 @@
 
 `BASELINE.md` owns the current accepted deployment summary. This file retains
 the causal profiles, rejected branches and promotion evidence for each stage;
-the current promotion record is **Promoted 3,072-position graph crossover**
-below.
+the current promotion record is **Promoted single-owner packed QKV** below.
 
 ## Contract
 
@@ -661,6 +660,110 @@ This result does not claim graph benefit at or above position 3,072,
 multi-request or continuous-batching performance, non-SM89 portability,
 video or speech generation, vLLM parity, a larger OOM boundary, or a
 transaction-counter MFU/BWU measurement.
+
+## Promoted single-owner packed QKV
+
+The expanded decode DAG showed 0.411 ms/token in Q, 0.121 ms in K and
+0.122 ms in V. The two small K/V GEMVs were inefficient enough that an
+asymmetric packed projection had a measurable exact-semantics upper bound.
+`APXINF_QWEN25_PACKED_QKV=1` now chooses one packed `[hidden, hidden+2*kv]`
+weight and bias owner per layer. Short graph decode uses one packed GEMV and
+one packed bias operation with zero-copy buffer views. Ordinary decode and
+prefill use the same packed GEMM, followed by one model-neutral unequal-width
+BF16 GQA split/bias kernel. Unset or `0` retains separate Q/K/V weights;
+invalid values, non-SM89 use and use without the graph fail closed.
+
+### Ownership and migration ladder
+
+The first graph-only upper-bound probe deliberately retained both separate and
+packed weights. Candidate SHA-256
+`dd0fabf90248b151203303633cf9c79979faac44c7e1680a9f3e1825484e2756`
+raised resident memory from about 12,274 to 12,636 MiB. It preserved exact
+quick/decode trajectories and measured 9.504 ms quick TPOT and 8.366 ms
+decode TPOT. **Decision: useful upper bound, forbidden from promotion because
+weight authority was duplicated.**
+
+The first single-owner migration used three strided submatrix GEMMs against
+the packed row layout. It reduced resident memory to 12,276 MiB and kept the
+short win, but regressed ordinary 3K–4K TPOT by roughly 10–14%. Candidate
+SHA-256 was
+`751005ae2418d84d0e445a1a054bfa090f7b1c15830ca29372abb9e5a824b407`.
+**Decision: reject the strided adapter, retain the single-owner requirement.**
+
+The final migration consumes each separate layer while creating one packed
+layer, synchronizes the two packing copies before releasing their sources,
+and stores exactly one enum variant. Its resident 12,276 MiB proves that the
+362 MiB probe duplicate is gone. The deployed binary SHA-256 is
+`93e3a9bed77bc55eb341580798439e34283fe68e1acd9100f013d4e64f31e37b`;
+the prior accepted binary is retained as `apxinf-accepted-cutoff3072-e29b62bf`.
+
+### Correctness, capacity and multimodal gates
+
+| Workload | Result | Trajectory SHA-256 | Prior agreement |
+|---|---:|---|---:|
+| Unequal-width GQA split/bias operator | pass | n/a | BF16 reference |
+| 1,024 prompt + 32 output | 7/7 stable | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+| 128 prompt + 128 output | 7/7 stable | `a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039` | exact |
+| 2,048–4,096 prompt + 32 output | all stable | four frozen hashes | exact |
+| 10,752 prompt + 8 output | 1/1 capacity probe | `19478a6e232ab7479a2a8026f01096ab68a16f72d922be9695d807928125b02d` | exact |
+| 11,264 prompt + 8 output | HTTP 503 CUDA OOM | n/a | same first failure |
+| Post-OOM 1,024 + 32 | 3/3 stable | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+
+Packed prefill's extra temporary projection does not move the context
+boundary, and recovery returns to the healthy 12.3 GiB resident state. Real
+PNG and WAV inputs reproduce the complete accepted token sequences with
+`fallback_active=false`; their structured record is
+`results/candidate-packed-qkv-fused-split-multimodal.json`.
+
+### No-profiler end-to-end result
+
+| Workload | Metric | Prior accepted | Packed QKV | Ratio / change |
+|---|---|---:|---:|---:|
+| 1,024 + 32 | TPOT p50 | 9.707 ms | 9.485 ms | 1.023× faster |
+| 128 + 128 | TPOT p50 | 8.582 ms | 8.363 ms | 1.026× faster |
+| 2,560 + 32 | TPOT p50 | 11.737 ms | 11.523 ms | 1.019× faster |
+| 3,072 + 32 | TPOT p50 | 12.501 ms | 12.138 ms | 1.030× faster |
+| 3,584 + 32 | TPOT p50 | 12.798 ms | 12.386 ms | 1.033× faster |
+| 10,752 + 8 | TPOT, one trial | 17.148 ms | 16.719 ms | 1.026× faster |
+
+The stable short candidate screens have exact trajectories and sub-0.2% TPOT
+CV. The deployed service independently repeats 9.485 and 8.361 ms TPOT. The
+4K TTFT screen remains approximately 0.73 s. Against the original baseline,
+decode TPOT improves from 17.567 to 8.363 ms (2.101×). The updated weight-only
+effective bandwidth is about 738 GB/s, or 73.2% of the declared 1,008 GB/s
+peak.
+
+### Actual promoted-binary attribution
+
+The exact profiled 128+128 trajectory reports 8.453 ms TPOT; profiler timing
+is not used for admission. The report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-decode128-packed-qkv-fused-split.nsys-rep`,
+size 697,561 bytes, SHA-256
+`21c0b13c2972cd9cbeaec1e47d46e97b7befa0da0c35e63059967b7d30c6082e`.
+
+The request window contains 127 graph launches, zero logits D2H and 8.396 ms
+average stream synchronization, down from 8.609 ms before QKV packing. In the
+observable eager prewarm, one packed QKV GEMV takes roughly 17.7 microseconds
+per layer versus about 19.7 microseconds for separate Q/K/V; one packed bias
+takes about 1.2 microseconds versus about 3.5 microseconds for three biases.
+The checked-in API, kernel and memory CSV hashes are respectively
+`3a9323f59c2f61c182a27eea5cbbbf4919858872186ab4289def9822ad0d6c8d`,
+`a2c540ab6d19e3e2b2f16c51e9bcfafb68b773fefc91881a8bab4b8d5ac34b51`
+and `ef9f3d18af3e358c3d7884210a90638ac1ca67893984bf780328c7cf50dff790`.
+
+## Packed-QKV decision
+
+**Decision: promote the single-owner packed-QKV layout and fused unequal GQA
+split/bias adapter for the tested SM89 single-request BF16 cells.** It passes
+operator, ownership, exact trajectory, repeated no-profiler, graph/ordinary,
+long-context/OOM recovery, real multimodal, explicit Broker configuration and
+actual-binary profile gates. Qwen3.8 remains down.
+
+This result does not claim multi-request or continuous-batching performance,
+non-SM89 portability, video or speech generation, vLLM parity, a larger OOM
+boundary, or transaction-counter MFU/BWU. Remaining latency is dominated by
+the three near-bandwidth-roofline MLP projections; the previously rejected
+Gate/Up packing branch remains closed.
 
 ## Promoted shape-specialized softmax exp cache
 

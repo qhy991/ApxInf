@@ -14,14 +14,24 @@ pub struct Qwen25OmniTextWeights {
     pub lm_head: Tensor,
 }
 
+pub enum Qwen25OmniQkvWeights {
+    Separate {
+        wq: Tensor,
+        bq: Tensor,
+        wk: Tensor,
+        bk: Tensor,
+        wv: Tensor,
+        bv: Tensor,
+    },
+    Packed {
+        weight: Tensor,
+        bias: Tensor,
+    },
+}
+
 pub struct Qwen25OmniTextLayer {
     pub attn_norm: Tensor,
-    pub wq: Tensor,
-    pub bq: Tensor,
-    pub wk: Tensor,
-    pub bk: Tensor,
-    pub wv: Tensor,
-    pub bv: Tensor,
+    pub qkv: Qwen25OmniQkvWeights,
     pub wo: Tensor,
     pub ffn_norm: Tensor,
     pub w_gate: Tensor,
@@ -43,21 +53,23 @@ impl Qwen25OmniTextWeights {
             let prefix = format!("thinker.model.layers.{index}");
             layers.push(Qwen25OmniTextLayer {
                 attn_norm: take(&format!("{prefix}.input_layernorm.weight"), tensors)?,
-                wq: transpose_2d(&take(
-                    &format!("{prefix}.self_attn.q_proj.weight"),
-                    tensors,
-                )?)?,
-                bq: take(&format!("{prefix}.self_attn.q_proj.bias"), tensors)?,
-                wk: transpose_2d(&take(
-                    &format!("{prefix}.self_attn.k_proj.weight"),
-                    tensors,
-                )?)?,
-                bk: take(&format!("{prefix}.self_attn.k_proj.bias"), tensors)?,
-                wv: transpose_2d(&take(
-                    &format!("{prefix}.self_attn.v_proj.weight"),
-                    tensors,
-                )?)?,
-                bv: take(&format!("{prefix}.self_attn.v_proj.bias"), tensors)?,
+                qkv: Qwen25OmniQkvWeights::Separate {
+                    wq: transpose_2d(&take(
+                        &format!("{prefix}.self_attn.q_proj.weight"),
+                        tensors,
+                    )?)?,
+                    bq: take(&format!("{prefix}.self_attn.q_proj.bias"), tensors)?,
+                    wk: transpose_2d(&take(
+                        &format!("{prefix}.self_attn.k_proj.weight"),
+                        tensors,
+                    )?)?,
+                    bk: take(&format!("{prefix}.self_attn.k_proj.bias"), tensors)?,
+                    wv: transpose_2d(&take(
+                        &format!("{prefix}.self_attn.v_proj.weight"),
+                        tensors,
+                    )?)?,
+                    bv: take(&format!("{prefix}.self_attn.v_proj.bias"), tensors)?,
+                },
                 wo: transpose_2d(&take(
                     &format!("{prefix}.self_attn.o_proj.weight"),
                     tensors,
@@ -86,12 +98,29 @@ impl Qwen25OmniTextWeights {
             .map(|layer| {
                 Ok(Qwen25OmniTextLayer {
                     attn_norm: backend.to_device(&layer.attn_norm)?,
-                    wq: backend.to_device(&layer.wq)?,
-                    bq: backend.to_device(&layer.bq)?,
-                    wk: backend.to_device(&layer.wk)?,
-                    bk: backend.to_device(&layer.bk)?,
-                    wv: backend.to_device(&layer.wv)?,
-                    bv: backend.to_device(&layer.bv)?,
+                    qkv: match layer.qkv {
+                        Qwen25OmniQkvWeights::Separate {
+                            wq,
+                            bq,
+                            wk,
+                            bk,
+                            wv,
+                            bv,
+                        } => Qwen25OmniQkvWeights::Separate {
+                            wq: backend.to_device(&wq)?,
+                            bq: backend.to_device(&bq)?,
+                            wk: backend.to_device(&wk)?,
+                            bk: backend.to_device(&bk)?,
+                            wv: backend.to_device(&wv)?,
+                            bv: backend.to_device(&bv)?,
+                        },
+                        Qwen25OmniQkvWeights::Packed { weight, bias } => {
+                            Qwen25OmniQkvWeights::Packed {
+                                weight: backend.to_device(&weight)?,
+                                bias: backend.to_device(&bias)?,
+                            }
+                        }
+                    },
                     wo: backend.to_device(&layer.wo)?,
                     ffn_norm: backend.to_device(&layer.ffn_norm)?,
                     w_gate: backend.to_device(&layer.w_gate)?,
@@ -105,6 +134,56 @@ impl Qwen25OmniTextWeights {
             layers,
             output_norm: backend.to_device(&self.output_norm)?,
             lm_head: backend.to_device(&self.lm_head)?,
+        })
+    }
+
+    pub fn into_packed_qkv(self, backend: &dyn Backend) -> Result<Self> {
+        let layers = self
+            .layers
+            .into_iter()
+            .map(|layer| {
+                let qkv = match layer.qkv {
+                    Qwen25OmniQkvWeights::Separate {
+                        wq,
+                        bq,
+                        wk,
+                        bk,
+                        wv,
+                        bv,
+                    } => {
+                        let weight = backend.concat_2d(&[&wq, &wk, &wv])?;
+                        let bq = bq.reshape(vec![1, bq.numel()])?;
+                        let bk = bk.reshape(vec![1, bk.numel()])?;
+                        let bv = bv.reshape(vec![1, bv.numel()])?;
+                        let bias = backend.concat_2d(&[&bq, &bk, &bv])?;
+                        backend.synchronize()?;
+                        Qwen25OmniQkvWeights::Packed {
+                            weight,
+                            bias: bias.reshape(vec![bias.numel()])?,
+                        }
+                    }
+                    Qwen25OmniQkvWeights::Packed { .. } => {
+                        return Err(Error::Other(
+                            "Qwen2.5-Omni QKV weights were packed twice".into(),
+                        ))
+                    }
+                };
+                Ok(Qwen25OmniTextLayer {
+                    attn_norm: layer.attn_norm,
+                    qkv,
+                    wo: layer.wo,
+                    ffn_norm: layer.ffn_norm,
+                    w_gate: layer.w_gate,
+                    w_up: layer.w_up,
+                    w_down: layer.w_down,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            token_embedding: self.token_embedding,
+            layers,
+            output_norm: self.output_norm,
+            lm_head: self.lm_head,
         })
     }
 }

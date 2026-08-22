@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use apxinf_core::{Backend, Device, Error, KvCache, Result, Tensor};
 
 #[cfg(feature = "cuda")]
-use crate::accelerator::cuda::downcast as cuda_backend;
+use crate::accelerator::cuda::{downcast as cuda_backend, kernels as cuda_kernels};
 use crate::llm_trait::{LlmCapabilities, LlmInput, LlmTrait};
 
 use super::audio::{self, Qwen25OmniAudioWeights};
@@ -16,10 +16,10 @@ use super::config::Qwen25OmniConfig;
 #[cfg(feature = "cuda")]
 use super::decode_graph::{
     Qwen25OmniDecodeGraph, Qwen25OmniDecodeGraphConfig, Qwen25OmniDecodeGraphWeights,
-    Qwen25OmniDecodeLayerWeights,
+    Qwen25OmniDecodeLayerWeights, Qwen25OmniDecodeQkvWeights,
 };
 use super::vision::{self, Qwen25OmniVisionWeights};
-use super::weights::Qwen25OmniTextWeights;
+use super::weights::{Qwen25OmniQkvWeights, Qwen25OmniTextWeights};
 
 #[cfg(feature = "cuda")]
 const MAX_DECODE_GRAPH_POSITION: u32 = 3_072;
@@ -65,6 +65,15 @@ fn gpu_argmax_enabled() -> Result<bool> {
         .map_err(Error::Other)
 }
 
+#[cfg(feature = "cuda")]
+fn packed_qkv_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| parse_binary_env("APXINF_QWEN25_PACKED_QKV"))
+        .clone()
+        .map_err(Error::Other)
+}
+
 impl GeneralQwen25Omni {
     pub(crate) fn from_selected_weights(
         config: Qwen25OmniConfig,
@@ -72,6 +81,8 @@ impl GeneralQwen25Omni {
         backend: Arc<dyn Backend>,
     ) -> Result<Self> {
         let text = Qwen25OmniTextWeights::from_map(&config, &mut tensors)?.to_device(&*backend)?;
+        #[cfg(feature = "cuda")]
+        let mut text = text;
         let vision =
             Qwen25OmniVisionWeights::from_map(&config, &mut tensors)?.to_device(&*backend)?;
         let audio =
@@ -94,20 +105,29 @@ impl GeneralQwen25Omni {
         let decode_graph = {
             let graph_enabled = decode_graph_enabled()?;
             let select_token = gpu_argmax_enabled()?;
+            let packed_qkv = packed_qkv_enabled()?;
             if select_token && !graph_enabled {
                 return Err(Error::Other(
                     "APXINF_QWEN25_GPU_ARGMAX requires APXINF_QWEN25_DECODE_GRAPH=1".into(),
+                ));
+            }
+            if packed_qkv && !graph_enabled {
+                return Err(Error::Other(
+                    "APXINF_QWEN25_PACKED_QKV requires APXINF_QWEN25_DECODE_GRAPH=1".into(),
                 ));
             }
             if graph_enabled {
                 let cuda = cuda_backend(&*backend).ok_or_else(|| {
                     Error::Other("Qwen2.5-Omni decode graph requires CudaBackend".into())
                 })?;
-                if select_token && cuda.context().caps().sm != 89 {
+                if (select_token || packed_qkv) && cuda.context().caps().sm != 89 {
                     return Err(Error::Other(format!(
-                        "Qwen2.5-Omni GPU token selection requires SM89, got SM{}",
+                        "Qwen2.5-Omni graph probes require SM89, got SM{}",
                         cuda.context().caps().sm
                     )));
+                }
+                if packed_qkv {
+                    text = text.into_packed_qkv(&*backend)?;
                 }
                 Some(Qwen25OmniDecodeGraph::new(
                     cuda,
@@ -172,12 +192,26 @@ impl GeneralQwen25Omni {
                 .iter()
                 .map(|layer| Qwen25OmniDecodeLayerWeights {
                     attn_norm: &layer.attn_norm,
-                    wq: &layer.wq,
-                    bq: &layer.bq,
-                    wk: &layer.wk,
-                    bk: &layer.bk,
-                    wv: &layer.wv,
-                    bv: &layer.bv,
+                    qkv: match &layer.qkv {
+                        Qwen25OmniQkvWeights::Separate {
+                            wq,
+                            bq,
+                            wk,
+                            bk,
+                            wv,
+                            bv,
+                        } => Qwen25OmniDecodeQkvWeights::Separate {
+                            wq,
+                            bq,
+                            wk,
+                            bk,
+                            wv,
+                            bv,
+                        },
+                        Qwen25OmniQkvWeights::Packed { weight, bias } => {
+                            Qwen25OmniDecodeQkvWeights::Packed { weight, bias }
+                        }
+                    },
                     wo: &layer.wo,
                     ffn_norm: &layer.ffn_norm,
                     w_gate: &layer.w_gate,
@@ -370,15 +404,43 @@ impl GeneralQwen25Omni {
         let normalized = self
             .backend
             .rms_norm(hidden, &layer.attn_norm, text.rms_norm_eps)?;
-        let q = self
-            .backend
-            .add_bias(&self.backend.matmul(&normalized, &layer.wq)?, &layer.bq)?;
-        let k = self
-            .backend
-            .add_bias(&self.backend.matmul(&normalized, &layer.wk)?, &layer.bk)?;
-        let v = self
-            .backend
-            .add_bias(&self.backend.matmul(&normalized, &layer.wv)?, &layer.bv)?;
+        let (q, k, v) = match &layer.qkv {
+            Qwen25OmniQkvWeights::Separate {
+                wq,
+                bq,
+                wk,
+                bk,
+                wv,
+                bv,
+            } => (
+                self.backend
+                    .add_bias(&self.backend.matmul(&normalized, wq)?, bq)?,
+                self.backend
+                    .add_bias(&self.backend.matmul(&normalized, wk)?, bk)?,
+                self.backend
+                    .add_bias(&self.backend.matmul(&normalized, wv)?, bv)?,
+            ),
+            #[cfg(feature = "cuda")]
+            Qwen25OmniQkvWeights::Packed { weight, bias } => {
+                let packed = self.backend.matmul(&normalized, weight)?;
+                let cuda = cuda_backend(&*self.backend).ok_or_else(|| {
+                    Error::Other("Qwen2.5-Omni packed QKV requires CudaBackend".into())
+                })?;
+                let split = cuda_kernels::attention::split_gqa_qkv_bias_bf16(
+                    cuda.context(),
+                    &packed,
+                    Some(bias),
+                    text.n_heads,
+                    text.n_kv_heads,
+                    text.head_dim,
+                )?;
+                (split.q, split.k, split.v)
+            }
+            #[cfg(not(feature = "cuda"))]
+            Qwen25OmniQkvWeights::Packed { .. } => {
+                return Err(Error::Other("Qwen2.5-Omni packed QKV requires CUDA".into()))
+            }
+        };
         let q = q.reshape(vec![sequence, text.n_heads, text.head_dim])?;
         let k = k.reshape(vec![sequence, text.n_kv_heads, text.head_dim])?;
         let v = v.reshape(vec![sequence, text.n_kv_heads, text.head_dim])?;

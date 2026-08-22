@@ -877,6 +877,71 @@ pub fn split_qkv_bias_bf16(
     })
 }
 
+/// Split a biased packed GQA projection into unequal Q and K/V widths.
+pub fn split_gqa_qkv_bias_bf16(
+    ctx: &CudaContext,
+    qkv: &Tensor,
+    bias: Option<&Tensor>,
+    q_heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+) -> Result<QkvTensors> {
+    let (tokens, width) = matrix_shape(qkv, "GQA QKV split")?;
+    let q_width = q_heads
+        .checked_mul(head_dim)
+        .ok_or_else(|| Error::Other("GQA Q width overflow".into()))?;
+    let kv_width = kv_heads
+        .checked_mul(head_dim)
+        .ok_or_else(|| Error::Other("GQA KV width overflow".into()))?;
+    let expected = kv_width
+        .checked_mul(2)
+        .and_then(|packed_kv| q_width.checked_add(packed_kv))
+        .ok_or_else(|| Error::Other("GQA packed width overflow".into()))?;
+    if qkv.dtype() != DType::BF16
+        || width != expected
+        || bias.is_some_and(|value| value.dtype() != DType::BF16 || value.shape().dims() != [width])
+    {
+        return Err(Error::Other("BF16 packed GQA QKV shape mismatch".into()));
+    }
+    let q = bf16_output(ctx, tokens, q_width)?;
+    let k = bf16_output(ctx, tokens, kv_width)?;
+    let v = bf16_output(ctx, tokens, kv_width)?;
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_gqa_qkv_split_bias_bf16(
+            gpu_ptr(qkv)?,
+            optional_ptr(bias)?,
+            q.ptr(),
+            k.ptr(),
+            v.ptr(),
+            tokens as i32,
+            q_width as i32,
+            kv_width as i32,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+    Ok(QkvTensors {
+        q: make_gpu_tensor(
+            Shape::new(vec![tokens, q_heads, head_dim]),
+            DType::BF16,
+            ctx.device_id(),
+            q,
+        ),
+        k: make_gpu_tensor(
+            Shape::new(vec![tokens, kv_heads, head_dim]),
+            DType::BF16,
+            ctx.device_id(),
+            k,
+        ),
+        v: make_gpu_tensor(
+            Shape::new(vec![tokens, kv_heads, head_dim]),
+            DType::BF16,
+            ctx.device_id(),
+            v,
+        ),
+    })
+}
+
 #[cfg(apxinf_fa2_sm80)]
 #[allow(clippy::too_many_arguments)]
 fn fa2_attention(

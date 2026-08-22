@@ -5,10 +5,10 @@ from benchmarks.qwen25_omni_4090.decode_roofline import DecodeShape, estimate
 
 class DecodeRooflineTests(unittest.TestCase):
     def test_frozen_shape_reproduces_weight_lower_bound(self):
-        result = estimate(DecodeShape(), 8.589121905511811, 128, 1008.0, None)
+        result = estimate(DecodeShape(), 8.36274457480315, 128, 1008.0, None)
         self.assertEqual(result["weight_bytes_lower_bound"], 6_171_881_472)
-        self.assertAlmostEqual(result["effective_weight_bandwidth_gbps"], 718.5695511)
-        self.assertAlmostEqual(result["weight_bwu_pct"], 71.2866618)
+        self.assertAlmostEqual(result["effective_weight_bandwidth_gbps"], 738.0210428)
+        self.assertAlmostEqual(result["weight_bwu_pct"], 73.2163733)
         self.assertIsNone(result["linear_mfu_pct"])
 
     def test_mfu_requires_explicit_peak_and_invalid_inputs_fail(self):

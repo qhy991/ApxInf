@@ -73,23 +73,23 @@ Evidence gates:
 The accepted path composes sequential-order softmax with a shape-specialized
 FP32 numerator cache, strided-batched GQA prefill, stream-ordered transient
 allocation, in-place KV reset, decode-only TMRoPE position caching and a
-short-KV CUDA Graph with exact two-stage GPU token selection. The graph and
+single-owner packed QKV layout, plus a short-KV CUDA Graph with exact
+two-stage GPU token selection. The graph and
 selection path are selected only for SM89 one-token BF16 decode with
 `start_pos < 3072`; longer-KV decode and all prefill retain the accepted
 ordinary path. It preserves complete trajectories through the 10,752-token
 passing boundary, keeps the first failure at 11,264 tokens, and recovers the
 immediately following request after OOM. The deployed SM89 binary SHA-256 is
-`e29b62bfd035c280cf8342e77e0efe1f45e0194696e55ac4f9a0e3cf90daad93`.
+`93e3a9bed77bc55eb341580798439e34283fe68e1acd9100f013d4e64f31e37b`.
 
-Relative to the accepted graph-only service, 1K+32 TPOT improves from
-9.915 ms to 9.699 ms (1.022×) and 128+128 TPOT improves from 8.794 ms to
-8.589 ms (1.024×). Their final TPOT CVs are 0.19% and 0.05%. The
+Relative to the graph/token-selection service, packed QKV improves 1K+32 TPOT
+from 9.707 ms to 9.485 ms (1.023×) and 128+128 TPOT from 8.582 ms to
+8.363 ms (1.026×). The
 2,048 and 2,560-token TPOT rows additionally improve by 1.081× and 1.044×
-after extending the graph to its measured crossover; 3,072, 3,584 and 4K
-remain on the unchanged ordinary path. Against the original baseline, 4K TTFT
-remains 25.138× faster and decode TPOT improves from 17.567 ms to 8.589 ms
-(2.045×). See `PROFILE.md` and the structured raw results for the promotion
-record.
+after extending the graph to its measured crossover; packed ordinary decode
+then improves the 3,072 and 3,584 rows by 1.030× and 1.033×. Against the
+original baseline, decode TPOT improves from 17.567 ms to 8.363 ms (2.101×).
+See `PROFILE.md` and the structured raw results for the promotion record.
 
 The actual promoted-binary profile records 127 `cudaGraphLaunch` calls and no
 decode-step logits D2H. The 128-block partial argmax and one-block final
@@ -98,7 +98,7 @@ complete request profile reports 8.609 ms average stream synchronization.
 Gate/Up packing and one-block GPU argmax were separately retained as null and
 sub-threshold results. Remaining single-request decode latency is dominated
 by GPU graph compute: the BF16 text-weight read lower bound is 6.172 GB/token,
-equivalent to about 719 GB/s or 71.3% of the RTX 4090's 1,008 GB/s peak at the
-accepted 8.589 ms TPOT. The evidence still does not include a vLLM baseline
+equivalent to about 738 GB/s or 73.2% of the RTX 4090's 1,008 GB/s peak at the
+accepted 8.363 ms TPOT. The evidence still does not include a vLLM baseline
 or multi-request serving; the bandwidth figure is a weight-only lower-bound
 estimate, not a memory-transaction counter.

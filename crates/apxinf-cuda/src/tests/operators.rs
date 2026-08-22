@@ -5,7 +5,7 @@ use crate::context::CudaContext;
 use crate::kernels::activation::{gelu_tanh, silu};
 use crate::kernels::attention::{
     causal_mask, grouped, sdpa_with_batched_prefill, softmax, softmax_causal,
-    softmax_causal_with_exp_cache, vision,
+    softmax_causal_with_exp_cache, split_gqa_qkv_bias_bf16, vision,
 };
 use crate::kernels::cache::append;
 use crate::kernels::elementwise::{add, add_bias, mul, scale};
@@ -1355,6 +1355,36 @@ fn concat_2d_bf16_packs_qkv_correctly() {
         }
     }
     assert_bf16_close_elementwise(&out, &expected);
+}
+
+#[test]
+fn split_gqa_qkv_bias_bf16_handles_unequal_widths() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (tokens, q_heads, kv_heads, head_dim) = (2usize, 2usize, 1usize, 2usize);
+    let q_width = q_heads * head_dim;
+    let kv_width = kv_heads * head_dim;
+    let total = q_width + 2 * kv_width;
+    let values = (0..tokens * total).map(|i| i as f32).collect::<Vec<_>>();
+    let bias = (0..total).map(|i| 0.25 * i as f32).collect::<Vec<_>>();
+    let qkv = upload_fp32_as_bf16(&ctx, &values, vec![tokens, total]).unwrap();
+    let bias = upload_fp32_as_bf16(&ctx, &bias, vec![total]).unwrap();
+    let split =
+        split_gqa_qkv_bias_bf16(&ctx, &qkv, Some(&bias), q_heads, kv_heads, head_dim).unwrap();
+    let mut expected_q = Vec::new();
+    let mut expected_k = Vec::new();
+    let mut expected_v = Vec::new();
+    for token in 0..tokens {
+        let row = token * total;
+        expected_q.extend((0..q_width).map(|i| values[row + i] + 0.25 * i as f32));
+        expected_k
+            .extend((0..kv_width).map(|i| values[row + q_width + i] + 0.25 * (q_width + i) as f32));
+        expected_v.extend((0..kv_width).map(|i| {
+            values[row + q_width + kv_width + i] + 0.25 * (q_width + kv_width + i) as f32
+        }));
+    }
+    assert_bf16_close_elementwise(&download_bf16_as_fp32(&split.q).unwrap(), &expected_q);
+    assert_bf16_close_elementwise(&download_bf16_as_fp32(&split.k).unwrap(), &expected_k);
+    assert_bf16_close_elementwise(&download_bf16_as_fp32(&split.v).unwrap(), &expected_v);
 }
 
 #[test]

@@ -31,14 +31,24 @@ pub struct Qwen25OmniDecodeGraphWeights<'a> {
     pub lm_head: &'a Tensor,
 }
 
+pub enum Qwen25OmniDecodeQkvWeights<'a> {
+    Separate {
+        wq: &'a Tensor,
+        bq: &'a Tensor,
+        wk: &'a Tensor,
+        bk: &'a Tensor,
+        wv: &'a Tensor,
+        bv: &'a Tensor,
+    },
+    Packed {
+        weight: &'a Tensor,
+        bias: &'a Tensor,
+    },
+}
+
 pub struct Qwen25OmniDecodeLayerWeights<'a> {
     pub attn_norm: &'a Tensor,
-    pub wq: &'a Tensor,
-    pub bq: &'a Tensor,
-    pub wk: &'a Tensor,
-    pub bk: &'a Tensor,
-    pub wv: &'a Tensor,
-    pub bv: &'a Tensor,
+    pub qkv: Qwen25OmniDecodeQkvWeights<'a>,
     pub wo: &'a Tensor,
     pub ffn_norm: &'a Tensor,
     pub w_gate: &'a Tensor,
@@ -52,6 +62,7 @@ struct DecodeWorkspace {
     q: CudaBuffer,
     k: CudaBuffer,
     v: CudaBuffer,
+    qkv: CudaBuffer,
     q_rope: CudaBuffer,
     k_rope: CudaBuffer,
     attn_out: CudaBuffer,
@@ -84,6 +95,7 @@ impl DecodeWorkspace {
             q: allocate(hidden)?,
             k: allocate(kv)?,
             v: allocate(kv)?,
+            qkv: allocate(hidden + 2 * kv)?,
             q_rope: allocate(hidden)?,
             k_rope: allocate(kv)?,
             attn_out: allocate(hidden)?,
@@ -179,69 +191,127 @@ fn decode_forward_capturable(
             1,
             config.rms_norm_eps,
         )?;
-        kernels::gemm::write(
-            context,
-            DType::BF16,
-            1,
-            hidden,
-            hidden,
-            1.0,
-            &workspace.norm,
-            &weight_view(layer.wq, device)?,
-            0.0,
+        let packed_views = match &layer.qkv {
+            Qwen25OmniDecodeQkvWeights::Packed { weight, bias } => {
+                let total = hidden + 2 * kv_width;
+                kernels::gemm::write(
+                    context,
+                    DType::BF16,
+                    1,
+                    total,
+                    hidden,
+                    1.0,
+                    &workspace.norm,
+                    &weight_view(weight, device)?,
+                    0.0,
+                    &workspace.qkv,
+                )?;
+                kernels::elementwise::add_bias_bf16_into(
+                    context,
+                    &workspace.qkv,
+                    &weight_view(bias, device)?,
+                    &workspace.qkv,
+                    total,
+                    1,
+                )?;
+                let element_bytes = DType::BF16.size_in_bytes();
+                Some((
+                    workspace
+                        .qkv
+                        .view(0, hidden * element_bytes)
+                        .map_err(Error::Cuda)?,
+                    workspace
+                        .qkv
+                        .view(hidden * element_bytes, kv_width * element_bytes)
+                        .map_err(Error::Cuda)?,
+                    workspace
+                        .qkv
+                        .view(
+                            (hidden + kv_width) * element_bytes,
+                            kv_width * element_bytes,
+                        )
+                        .map_err(Error::Cuda)?,
+                ))
+            }
+            Qwen25OmniDecodeQkvWeights::Separate {
+                wq,
+                bq,
+                wk,
+                bk,
+                wv,
+                bv,
+            } => {
+                kernels::gemm::write(
+                    context,
+                    DType::BF16,
+                    1,
+                    hidden,
+                    hidden,
+                    1.0,
+                    &workspace.norm,
+                    &weight_view(wq, device)?,
+                    0.0,
+                    &workspace.q,
+                )?;
+                kernels::gemm::write(
+                    context,
+                    DType::BF16,
+                    1,
+                    kv_width,
+                    hidden,
+                    1.0,
+                    &workspace.norm,
+                    &weight_view(wk, device)?,
+                    0.0,
+                    &workspace.k,
+                )?;
+                kernels::gemm::write(
+                    context,
+                    DType::BF16,
+                    1,
+                    kv_width,
+                    hidden,
+                    1.0,
+                    &workspace.norm,
+                    &weight_view(wv, device)?,
+                    0.0,
+                    &workspace.v,
+                )?;
+                kernels::elementwise::add_bias_bf16_into(
+                    context,
+                    &workspace.q,
+                    &weight_view(bq, device)?,
+                    &workspace.q,
+                    hidden,
+                    1,
+                )?;
+                kernels::elementwise::add_bias_bf16_into(
+                    context,
+                    &workspace.k,
+                    &weight_view(bk, device)?,
+                    &workspace.k,
+                    kv_width,
+                    1,
+                )?;
+                kernels::elementwise::add_bias_bf16_into(
+                    context,
+                    &workspace.v,
+                    &weight_view(bv, device)?,
+                    &workspace.v,
+                    kv_width,
+                    1,
+                )?;
+                None
+            }
+        };
+        let (q, k, v) = packed_views.as_ref().map(|(q, k, v)| (q, k, v)).unwrap_or((
             &workspace.q,
-        )?;
-        kernels::gemm::write(
-            context,
-            DType::BF16,
-            1,
-            kv_width,
-            hidden,
-            1.0,
-            &workspace.norm,
-            &weight_view(layer.wk, device)?,
-            0.0,
             &workspace.k,
-        )?;
-        kernels::gemm::write(
-            context,
-            DType::BF16,
-            1,
-            kv_width,
-            hidden,
-            1.0,
-            &workspace.norm,
-            &weight_view(layer.wv, device)?,
-            0.0,
             &workspace.v,
-        )?;
-        kernels::elementwise::add_bias_bf16_into(
-            context,
-            &workspace.q,
-            &weight_view(layer.bq, device)?,
-            &workspace.q,
-            hidden,
-            1,
-        )?;
-        kernels::elementwise::add_bias_bf16_into(
-            context,
-            &workspace.k,
-            &weight_view(layer.bk, device)?,
-            &workspace.k,
-            kv_width,
-            1,
-        )?;
-        kernels::elementwise::add_bias_bf16_into(
-            context,
-            &workspace.v,
-            &weight_view(layer.bv, device)?,
-            &workspace.v,
-            kv_width,
-            1,
-        )?;
+        ));
         kernels::rope::apply_tmrope_bf16_into(
             context,
-            &workspace.q,
+            q,
             &workspace.q_rope,
             config.head_dim,
             config.n_heads,
@@ -251,7 +321,7 @@ fn decode_forward_capturable(
         )?;
         kernels::rope::apply_tmrope_bf16_into(
             context,
-            &workspace.k,
+            k,
             &workspace.k_rope,
             config.head_dim,
             config.n_kv_heads,
@@ -273,7 +343,7 @@ fn decode_forward_capturable(
             context,
             DType::BF16,
             cache.v_buffer(index),
-            &workspace.v,
+            v,
             config.n_kv_heads,
             config.head_dim,
             config.max_seq_len,
