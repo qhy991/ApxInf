@@ -72,8 +72,9 @@ Evidence gates:
 
 The accepted path composes sequential-order softmax with a shape-specialized
 FP32 numerator cache, strided-batched GQA prefill, stream-ordered transient
-allocation, in-place KV reset, decode-only TMRoPE position caching and a
-single-owner packed QKV layout, plus a short-KV CUDA Graph with exact
+allocation, in-place KV reset, decode TMRoPE position caching and a
+single-owner packed QKV layout, plus prefill TMRoPE position reuse and a
+short-KV CUDA Graph with exact
 two-stage GPU token selection and fused TMRoPE K/V cache publication. Text-only
 prompts longer than 1,024 tokens are evaluated as exact causal chunks against
 the same KV owner: 512 tokens through the measured 12,288-token crossover and
@@ -85,10 +86,10 @@ fallback; leaving that selector unset still fails closed.
 The graph and selection path remain restricted to SM89 one-token BF16 decode
 with `start_pos < 3072`; longer-KV decode keeps the ordinary path. The current
 deployed binary SHA-256 is
-`0fc97f78403cc8e0974f2c48f2267fc5d57dbe8e459ab3af48dc86a6a0c4460a`.
+`55283606f3ea88508e0bd9682c80c48edb13fa76fb638dad9ae1879d439e72ea`.
 The prior accepted fused-KV and chunked binaries remain archived by their
-`dcccfb7b`, `f6ba8836`, `c8e06b41`, `778066a3` and `ac8e2436` prefixes for
-rollback.
+`dcccfb7b`, `f6ba8836`, `c8e06b41`, `778066a3`, `ac8e2436` and `0fc97f78`
+prefixes for rollback.
 
 Relative to the graph/token-selection service, packed QKV improves 1K+32 TPOT
 from 9.707 ms to 9.485 ms (1.023×) and 128+128 TPOT from 8.582 ms to
@@ -97,8 +98,8 @@ from 9.707 ms to 9.485 ms (1.023×) and 128+128 TPOT from 8.582 ms to
 2,048 and 2,560-token TPOT rows additionally improve by 1.081× and 1.044×
 after extending the graph to its measured crossover; packed ordinary decode
 then improves the 3,072 and 3,584 rows by 1.030× and 1.033×. Against the
-original baseline, deployed decode TPOT improves from 17.567 ms to 8.276 ms
-(2.123×). Decode is statistically unchanged by chunked prefill. At 2,048,
+original baseline, deployed decode TPOT improves from 17.567 ms to 8.268 ms
+(2.125×). Decode is statistically unchanged by chunked prefill. At 2,048,
 2,560, 3,072 and 4,096 prompt tokens, chunking lowers TTFT by 12.7%, 14.8%,
 16.5% and 21.6%, respectively. At 10,752+8, TTFT falls from 7.930 s to
 5.525 s (1.435×). See `PROFILE.md` and the structured raw results for the
@@ -121,10 +122,15 @@ but improve a contiguous 4K–6K interval. Restricting them to 4,096–6,144
 lowers deployed 4K TTFT from 539.121 to 532.223 ms (1.28%) while 2K, 8K,
 11K and the 32K capacity path retain their accepted chunk sizes.
 
+Reusing one device TMRoPE position array per prefill slice then lowers 1K TTFT
+from 80.439 to 76.877 ms (4.43%), 4K from 532.223 to 506.916 ms (4.75%),
+11K from 5.152 to 5.106 s (0.88%) and 32K from 43.784 to 43.491 s (0.67%).
+It preserves the full context boundary and exact text/image/audio trajectories.
+
 The former 10,752-token memory ceiling is now historical. Exact trajectories
 pass at 11,264, 12,288, 16,384, 24,576 and 32,760 prompt tokens; the last case
 requests eight outputs and exactly fills the declared 32,768-token contract.
-Its current TTFT is 43.784 s. No legal single request now OOMs in the tested
+Its current TTFT is 43.491 s. No legal single request now OOMs in the tested
 gradient. A request exceeding the combined context, a 129-token completion,
 nonzero temperature and evaluation streaming all return typed HTTP 400
 `invalid_request` responses, and `/health` remains ready afterwards.
@@ -137,8 +143,8 @@ reports 8.276 ms average stream synchronization.
 Gate/Up packing, one-block GPU argmax and combined Q/K/V TMRoPE were retained
 as null or sub-threshold results. Remaining single-request decode latency is
 dominated by GPU graph compute: the BF16 text-weight read lower bound is
-6.172 GB/token, equivalent to about 745.7 GB/s or 73.98% of the RTX 4090's
-1,008 GB/s peak at the accepted 8.276 ms TPOT. In the 11,264-token request
+6.172 GB/token, equivalent to about 746.5 GB/s or 74.06% of the RTX 4090's
+1,008 GB/s peak at the accepted 8.268 ms TPOT. In the 11,264-token request
 profile, long-KV scalar softmax accounts for about 1.638 s and small-N GEMV for
 about 2.056 s of summed GPU kernel time, so long-prefill softmax is the next
 bounded target. The evidence still does not include a vLLM baseline or

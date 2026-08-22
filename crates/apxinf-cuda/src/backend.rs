@@ -54,6 +54,26 @@ fn tmrope_position_cache_enabled() -> Result<bool> {
         .map_err(Error::Other)
 }
 
+fn tmrope_prefill_position_cache_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(
+            || match std::env::var("APXINF_TMROPE_POSITION_CACHE_PREFILL") {
+                Err(std::env::VarError::NotPresent) => Ok(false),
+                Ok(value) if value == "0" => Ok(false),
+                Ok(value) if value == "1" => Ok(true),
+                Ok(value) => Err(format!(
+                    "APXINF_TMROPE_POSITION_CACHE_PREFILL must be 0 or 1, got `{value}`"
+                )),
+                Err(std::env::VarError::NotUnicode(_)) => {
+                    Err("APXINF_TMROPE_POSITION_CACHE_PREFILL must be UTF-8".into())
+                }
+            },
+        )
+        .clone()
+        .map_err(Error::Other)
+}
+
 impl CudaBackend {
     /// Create a CUDA backend for the given device.
     pub fn new(device_id: usize) -> Result<Self> {
@@ -178,7 +198,9 @@ impl Backend for CudaBackend {
                 seq_len
             )));
         }
-        if seq_len > 1 || !tmrope_position_cache_enabled()? {
+        let cache_positions = tmrope_position_cache_enabled()?
+            && (seq_len == 1 || tmrope_prefill_position_cache_enabled()?);
+        if !cache_positions {
             let bytes = pos_ids
                 .iter()
                 .flat_map(|value| value.to_ne_bytes())

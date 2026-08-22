@@ -651,6 +651,63 @@ appropriate above the measured 12,288-token crossover. The structured record
 is `candidate-long-chunk512-16k-24k.json`; production retains 1,024-token
 chunks for longer prompts.
 
+### Promoted prefill TMRoPE position cache
+
+Primary classification: **source/runtime graph**. Within one prefill slice,
+all 36 layers and both Q/K rotations consume the identical TMRoPE position
+array. The accepted backend nevertheless allocated and synchronously uploaded
+that array for every call. `APXINF_TMROPE_POSITION_CACHE_PREFILL=1` extends the
+existing content-keyed decode cache to multi-token slices: one stream-ordered
+allocation and asynchronous upload owns each distinct slice, and all 72
+rotations reuse it. Unset or `0` retains the accepted per-call path; invalid
+values fail closed. The base `APXINF_TMROPE_POSITION_CACHE=1` selector remains
+the single parent gate.
+
+This does not revive the rejected pre-chunk full-prompt cache blindly. Text
+chunks bound the cached input to 1,024 tokens (12 KiB of positions), while the
+real multimodal path is separately validated. Replaced buffers enqueue their
+free on the same stream after all prior consumers.
+
+| Workload | Tiered baseline TTFT p50 | Prefill cache TTFT p50 | Change |
+|---:|---:|---:|---:|
+| 1,024 + 32 | 80.439 ms | 76.877 ms deployed | 4.43% lower |
+| 4,096 + 8 | 532.223 ms | 506.916 ms deployed | 4.75% lower |
+| 11,264 + 8 | 5.152 s | 5.106 s deployed | 0.88% lower |
+| 32,760 + 8 | 43.784 s | 43.491 s | 0.67% lower |
+
+The candidate 11K stability screen passes 5/5 with 0.03% TTFT CV, and the
+deployed 4K/11K screens pass with at most 0.04% CV. Decode TPOT remains
+8.268 ms. Every text trajectory, the real PNG/WAV pair, the exact 32,768-token
+service boundary and all typed contract probes pass.
+
+The actual candidate profile remains at
+`/var/lib/agent-gpu-broker/profiles/omni-4096-prefill-tmrope-cache-v2.nsys-rep`,
+size 3,173,006 bytes, SHA-256
+`dd32aec3da2351c8252b6875522e7b1e126255a64cac68e04624fe0b831c4fb6`.
+Compared with the matched tiered-binary profile, request kernels remain
+19,011 and summed kernel time remains effectively unchanged. The control/data
+path changes exactly as predicted:
+
+- 3,072-byte position H2D copies fall from 1,152 to 16;
+- synchronous `cudaMalloc/cudaFree` calls fall from 1,182/1,183 to 30/31;
+- synchronous `cudaMemcpy` calls fall from 1,198 to 46;
+- 16 stream-ordered allocations and asynchronous uploads replace those
+  per-chunk position transfers.
+
+Profiler span is not admission evidence: traced `cudaMallocAsync` time is
+noisy and larger in the candidate capture. The repeated no-profiler service
+timing decides promotion. Candidate CUDA API/kernel/memory CSV hashes are
+`773842af394e7afdf41e34c335756138fca40b4ac43b9909f826f90eb701a8f0`,
+`75c1c9113edda6d43973f0843d0f1ee79c74f59531000e8f3501a2bfb81a4913`
+and `bf9653b785030a3842ce3b8869c25b88c552a2fc371bdbf106987659efafc091`.
+
+**Decision: promote prefill TMRoPE position reuse for tested text, image and
+audio BF16 cells.** It passes complete-trajectory, repeated no-profiler,
+32K-capacity, prior-OOM, multimodal, interface, binary-custody and causal
+profile gates. The deployed binary SHA-256 is
+`55283606f3ea88508e0bd9682c80c48edb13fa76fb638dad9ae1879d439e72ea`;
+`0fc97f78` is retained for rollback. Qwen3.8 remains down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

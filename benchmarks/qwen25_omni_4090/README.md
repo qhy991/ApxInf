@@ -28,7 +28,7 @@ python3 benchmarks/qwen25_omni_4090/benchmark_multimodal.py \
   --output benchmarks/qwen25_omni_4090/results/multimodal.json
 
 python3 benchmarks/qwen25_omni_4090/decode_roofline.py \
-  --tpot-ms 8.276138574803148 --kv-len 128 \
+  --tpot-ms 8.26770823622047 --kv-len 128 \
   --peak-bandwidth-gbps 1008
 ```
 
@@ -60,7 +60,8 @@ single observations are correctness coverage, not timing admission samples.
 
 The accepted deployment keeps all optimized paths explicit through
 `APXINF_BATCHED_GQA_PREFILL=1`, `APXINF_STREAM_ORDERED_ALLOC=1` and
-`APXINF_TMROPE_POSITION_CACHE=1`, `APXINF_SOFTMAX_EXP_CACHE=1`,
+`APXINF_TMROPE_POSITION_CACHE=1`,
+`APXINF_TMROPE_POSITION_CACHE_PREFILL=1`, `APXINF_SOFTMAX_EXP_CACHE=1`,
 `APXINF_SOFTMAX_EXP_CACHE_LONG_FALLBACK=1`,
 `APXINF_QWEN25_CHUNKED_PREFILL=1` and `APXINF_QWEN25_DECODE_GRAPH=1`, plus
 `APXINF_QWEN25_GPU_ARGMAX=1`. The decode
@@ -71,7 +72,9 @@ uses the explicitly selected exact scalar softmax; without that selector it
 fails closed. `APXINF_QWEN25_PACKED_QKV=1` selects one
 packed QKV owner shared by both paths. `APXINF_QWEN25_FUSED_TMROPE_KV=1`
 publishes rotated K and unchanged V directly to their caches during graph
-decode. The Broker-owned runit reference is checked in at
+decode. The prefill position-cache selector uploads one TMRoPE position array
+per text or multimodal prefill slice instead of once per Q/K layer call. The
+Broker-owned runit reference is checked in at
 `service/apxinf-qwen25-omni-broker.run`; it is the environment and launch
 authority for reproducing the promoted service. Unset or `0` preserves the
 corresponding native path, while invalid values fail closed.
