@@ -798,6 +798,52 @@ gates. The deployed binary SHA-256 is
 `bbf1b0b29396a546a55b3cb586fd4f4215438859790c805b322f78897159a201`;
 `55283606` is retained for rollback. Qwen3.8 remains down when unused.
 
+### Promoted eager GPU argmax
+
+Primary classification: **source/runtime graph**. GPU token selection was
+previously coupled to CUDA Graph eligibility, so positions at or above 3,072
+fell back to ordinary forward, a 303,872-byte logits D2H and CPU greedy scan.
+`APXINF_QWEN25_EAGER_GPU_ARGMAX=1` keeps the accepted ordinary long-KV layer
+compute, creates logits from the GPU final-row view, and reuses the exact
+128-block partial plus one-block final selector and mapped result already
+owned by the decode workspace. It requires the existing GPU argmax and GPU
+last-row selectors; unsupported combinations fail model load.
+
+Matched no-profiler 32-output screens preserve complete trajectories:
+
+| Prompt | CPU-selection TPOT p50 | Eager GPU TPOT p50 | Change |
+|---:|---:|---:|---:|
+| 4,096 | 12.616 ms | 12.390 ms | 1.80% lower |
+| 8,192 | 14.778 ms | 14.562 ms | 1.47% lower |
+| 11,264 | 20.967 ms | 20.742 ms | 1.07% lower |
+
+The deployed service independently repeats 12.395/14.544 ms at 4K/8K; short
+graph decode remains 8.245 ms. The 4K, 8K and 11K 32-token hashes match the
+accepted binary exactly. Prefill, KV ownership, multimodal processing and the
+combined-context contract are unchanged.
+
+The actual 4K+8 candidate report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-4096-eager-gpu-argmax.nsys-rep`, size
+3,178,646 bytes, SHA-256
+`aaeadc34d938078d003ed0a430c3d2d02c1409902e882583b85d4d4786776609`.
+Compared with the matched GPU-last-row baseline, seven decode-step full-logit
+D2H copies disappear; only the prefill logits copy remains. Fourteen argmax
+kernels are added—seven partial and seven final—and together consume only
+0.036 ms. CUPTI kernel sum and span fluctuate upward under tracing, so the
+matched no-profiler TPOT is the admission authority.
+
+Candidate CUDA API/kernel/memory CSV hashes are
+`67e7c936f8aa8163f8ce5ae28939088822ea2d43deead7214ecf2121e1f87b94`,
+`240b8384a287ef0ebf9421b2cd57a22068cb929589b349e31ff19c8c33bd37fa`
+and `c48631f7853b24465743a6e4eba96a91c30bbfd4aaddb87522d8112ee654545e`.
+
+**Decision: promote eager exact GPU selection for graph-ineligible SM89 BF16
+decode.** It passes exact complete trajectories, repeated no-profiler
+materiality at three KV lengths, unchanged short decode, interface,
+binary-custody and causal-profile gates. The deployed binary SHA-256 is
+`767c36ad6b7d1d3f65b372dd5e47ba27a9fdac8a76c2cbce536109b7878d7d37`;
+`bbf1b0b2` is retained for rollback. Qwen3.8 remains down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

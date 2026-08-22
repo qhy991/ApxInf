@@ -28,7 +28,7 @@ python3 benchmarks/qwen25_omni_4090/benchmark_multimodal.py \
   --output benchmarks/qwen25_omni_4090/results/multimodal.json
 
 python3 benchmarks/qwen25_omni_4090/decode_roofline.py \
-  --tpot-ms 8.27206496062992 --kv-len 128 \
+  --tpot-ms 8.244838968503936 --kv-len 128 \
   --peak-bandwidth-gbps 1008
 ```
 
@@ -64,7 +64,8 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_TMROPE_POSITION_CACHE_PREFILL=1`, `APXINF_SOFTMAX_EXP_CACHE=1`,
 `APXINF_SOFTMAX_EXP_CACHE_LONG_FALLBACK=1`,
 `APXINF_QWEN25_CHUNKED_PREFILL=1` and `APXINF_QWEN25_DECODE_GRAPH=1`, plus
-`APXINF_QWEN25_GPU_ARGMAX=1` and `APXINF_QWEN25_GPU_LAST_ROW=1`. The decode
+`APXINF_QWEN25_GPU_ARGMAX=1`, `APXINF_QWEN25_EAGER_GPU_ARGMAX=1` and
+`APXINF_QWEN25_GPU_LAST_ROW=1`. The decode
 graph and exact two-stage GPU token selection are deliberately restricted to
 SM89 one-token decode with `start_pos < 3072`; prefill and longer-KV decode
 keep the accepted ordinary path. Decode beyond the tested exp-cache range
@@ -76,6 +77,8 @@ decode. The prefill position-cache selector uploads one TMRoPE position array
 per text or multimodal prefill slice instead of once per Q/K layer call. The
 GPU last-row selector creates a view of the final hidden row before output
 normalization, avoiding a whole-slice D2H and row H2D round trip. The
+eager argmax selector applies the same exact two-stage GPU selection to
+graph-ineligible decode positions, leaving only the prefill logits on CPU. The
 Broker-owned runit reference is checked in at
 `service/apxinf-qwen25-omni-broker.run`; it is the environment and launch
 authority for reproducing the promoted service. Unset or `0` preserves the

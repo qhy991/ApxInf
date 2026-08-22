@@ -636,6 +636,27 @@ impl Qwen25OmniDecodeGraph {
         self.select_token
     }
 
+    pub fn select_logits(&self, backend: &CudaBackend, logits: &Tensor) -> Result<u32> {
+        if !self.select_token {
+            return Err(Error::Other(
+                "Qwen2.5-Omni GPU token selection is disabled".into(),
+            ));
+        }
+        let logits = CudaBuffer::from_tensor(logits).map_err(Error::Cuda)?;
+        kernels::selection::argmax_bf16_into(
+            backend.context(),
+            &logits,
+            &self.workspace.argmax_partials,
+            self.workspace.selected_token.address(),
+            self.config.vocab_size,
+        )?;
+        backend.synchronize()?;
+        self.workspace
+            .selected_token
+            .read_u32()
+            .map_err(Error::Cuda)
+    }
+
     pub fn decode_token(
         &mut self,
         backend: &CudaBackend,

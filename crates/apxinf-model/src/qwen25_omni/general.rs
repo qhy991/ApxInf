@@ -117,6 +117,15 @@ fn gpu_last_row_enabled() -> Result<bool> {
         .map_err(Error::Other)
 }
 
+#[cfg(feature = "cuda")]
+fn eager_gpu_argmax_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| parse_binary_env("APXINF_QWEN25_EAGER_GPU_ARGMAX"))
+        .clone()
+        .map_err(Error::Other)
+}
+
 impl GeneralQwen25Omni {
     pub(crate) fn from_selected_weights(
         config: Qwen25OmniConfig,
@@ -148,11 +157,18 @@ impl GeneralQwen25Omni {
         let decode_graph = {
             let graph_enabled = decode_graph_enabled()?;
             let select_token = gpu_argmax_enabled()?;
+            let eager_select_token = eager_gpu_argmax_enabled()?;
             let packed_qkv = packed_qkv_enabled()?;
             let fused_tmrope_kv = fused_tmrope_kv_enabled()?;
             if select_token && !graph_enabled {
                 return Err(Error::Other(
                     "APXINF_QWEN25_GPU_ARGMAX requires APXINF_QWEN25_DECODE_GRAPH=1".into(),
+                ));
+            }
+            if eager_select_token && (!select_token || !gpu_last_row_enabled()?) {
+                return Err(Error::Other(
+                    "APXINF_QWEN25_EAGER_GPU_ARGMAX requires GPU_ARGMAX and GPU_LAST_ROW"
+                        .into(),
                 ));
             }
             if packed_qkv && !graph_enabled {
@@ -287,21 +303,7 @@ impl GeneralQwen25Omni {
     }
 
     fn forward_inner(&mut self, token_ids: &[u32], start_pos: u32) -> Result<Tensor> {
-        if token_ids.is_empty() {
-            return Err(Error::Other("qwen2.5-omni forward: empty token_ids".into()));
-        }
-        let expected_start = self.kv.seq_len();
-        if start_pos as usize != expected_start {
-            return Err(Error::Other(format!(
-                "qwen2.5-omni cache position mismatch: start_pos={start_pos}, cache={expected_start}"
-            )));
-        }
-        if start_pos as usize + token_ids.len() > self.config.text.max_position_embeddings {
-            return Err(Error::Other(
-                "qwen2.5-omni forward exceeds context capacity".into(),
-            ));
-        }
-        reject_video(token_ids, self.config.video_token_id)?;
+        self.validate_forward_input(token_ids, start_pos)?;
         #[cfg(feature = "cuda")]
         if token_ids.len() == 1
             && start_pos < MAX_DECODE_GRAPH_POSITION
@@ -325,6 +327,25 @@ impl GeneralQwen25Omni {
         }
         let hidden = self.forward_text_hidden_validated(token_ids, start_pos)?;
         self.logits_last_row(&hidden)
+    }
+
+    fn validate_forward_input(&self, token_ids: &[u32], start_pos: u32) -> Result<()> {
+        if token_ids.is_empty() {
+            return Err(Error::Other("qwen2.5-omni forward: empty token_ids".into()));
+        }
+        let expected_start = self.kv.seq_len();
+        if start_pos as usize != expected_start {
+            return Err(Error::Other(format!(
+                "qwen2.5-omni cache position mismatch: start_pos={start_pos}, cache={expected_start}"
+            )));
+        }
+        if start_pos as usize + token_ids.len() > self.config.text.max_position_embeddings {
+            return Err(Error::Other(
+                "qwen2.5-omni forward exceeds context capacity".into(),
+            ));
+        }
+        reject_video(token_ids, self.config.video_token_id)?;
+        Ok(())
     }
 
     /// Run an already-validated ordinary text slice through KV publication.
@@ -649,6 +670,14 @@ impl GeneralQwen25Omni {
 
     #[cfg(feature = "cuda")]
     fn logits_last_row_cuda(&self, hidden: &Tensor) -> Result<Tensor> {
+        let logits = self.logits_last_row_cuda_device(hidden)?;
+        self.backend.synchronize()?;
+        let logits = self.backend.to_cpu(&logits)?;
+        Tensor::from_f32(vec![1, self.config.text.vocab_size], &logits.to_f32_vec()?)
+    }
+
+    #[cfg(feature = "cuda")]
+    fn logits_last_row_cuda_device(&self, hidden: &Tensor) -> Result<Tensor> {
         let dims = hidden.shape().dims();
         let width = self.config.text.hidden_size;
         if hidden.dtype() != apxinf_core::DType::BF16
@@ -680,10 +709,20 @@ impl GeneralQwen25Omni {
             &self.text.output_norm,
             self.config.text.rms_norm_eps,
         )?;
-        let logits = self.backend.matmul(&row, &self.text.lm_head)?;
-        self.backend.synchronize()?;
-        let logits = self.backend.to_cpu(&logits)?;
-        Tensor::from_f32(vec![1, self.config.text.vocab_size], &logits.to_f32_vec()?)
+        self.backend.matmul(&row, &self.text.lm_head)
+    }
+
+    #[cfg(feature = "cuda")]
+    fn eager_decode_token(&mut self, token: u32, pos: u32) -> Result<u32> {
+        self.validate_forward_input(&[token], pos)?;
+        let hidden = self.forward_text_hidden_validated(&[token], pos)?;
+        let logits = self.logits_last_row_cuda_device(&hidden)?;
+        let cuda =
+            cuda_backend(&*self.backend).expect("Qwen2.5-Omni eager selection owns CUDA logits");
+        self.decode_graph
+            .as_ref()
+            .expect("Qwen2.5-Omni eager selection owns decode workspace")
+            .select_logits(cuda, &logits)
     }
 
     fn clear_state(&mut self) {
@@ -736,13 +775,26 @@ impl LlmTrait for GeneralQwen25Omni {
 
     #[cfg(feature = "cuda")]
     fn decode_token(&mut self, token: u32, pos: u32) -> Option<Result<u32>> {
-        if pos >= MAX_DECODE_GRAPH_POSITION
-            || !self
-                .decode_graph
-                .as_ref()
-                .is_some_and(Qwen25OmniDecodeGraph::selects_token)
+        if !self
+            .decode_graph
+            .as_ref()
+            .is_some_and(Qwen25OmniDecodeGraph::selects_token)
         {
             return None;
+        }
+        if pos >= MAX_DECODE_GRAPH_POSITION {
+            let enabled = match eager_gpu_argmax_enabled() {
+                Ok(enabled) => enabled,
+                Err(error) => return Some(Err(error)),
+            };
+            if !enabled {
+                return None;
+            }
+            let result = self.eager_decode_token(token, pos);
+            if result.is_err() {
+                self.clear_state();
+            }
+            return Some(result);
         }
         let result = (|| {
             let expected_start = self.kv.seq_len();
