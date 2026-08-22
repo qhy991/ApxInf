@@ -311,6 +311,117 @@ resident service remains down.
 This result does not claim multi-request or continuous-batching performance,
 video or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.
 
+## Current promotion: text-only chunked prefill and full 32K contract
+
+Primary classification: **source/runtime graph**. The previous full-prompt
+prefill materialized quadratic score/output work for every token at once and
+first OOMed at 11,264 prompt + 8 output tokens. The promoted path applies only
+to reset, text-only requests longer than 1,024 tokens. It executes contiguous
+1,024-token causal chunks against one KV owner and returns logits from the
+final chunk. The existing prefill attention contract derives the causal offset
+from accumulated KV length, so no mask, position or cache ownership rule is
+changed. Image/audio requests retain the accepted processor-owned multimodal
+path.
+
+`APXINF_QWEN25_CHUNKED_PREFILL=1` selects the path; unset or `0` retains the
+full prompt and invalid values fail closed.
+`APXINF_SOFTMAX_EXP_CACHE_LONG_FALLBACK=1` explicitly selects exact scalar
+softmax once decode KV exceeds the tested 11,264-column numerator-cache limit.
+Without the flag, that shape returns an error instead of silently changing
+kernels. The deployed service records both selectors in
+`service/apxinf-qwen25-omni-broker.run`.
+
+### Correctness, capacity and interface gates
+
+| Workload | Result | Trajectory SHA-256 | Prior agreement |
+|---|---:|---|---:|
+| 1,024 prompt + 32 output | 7/7 candidate; 3/3 final binary | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+| 128 prompt + 128 output | 7/7 candidate | `a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039` | exact |
+| 2,048–4,096 prompt + 32 output | four stable repeated cells | four frozen hashes | exact |
+| 4,096 / 8,192 / 10,752 prompt + 8 output | all pass | three frozen hashes | exact |
+| 11,264 / 12,288 / 16,384 prompt + 8 output | all pass | three stable hashes | new capacity |
+| 24,576 prompt + 8 output | pass | `c06cdd72bea947c852bb91661789c17a59792f6eeb70675262cecdc363cf4eac` | new capacity |
+| 32,760 prompt + 8 output | candidate and deployed pass | `f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9` | exact contract limit |
+
+Real PNG and WAV inputs reproduce the complete accepted token sequences with
+`fallback_active=false`; the chunk selector is ineligible for both media
+paths. The reusable gate and record are `benchmark_multimodal.py` and
+`results/candidate-chunked-prefill-final-multimodal.json`.
+
+The new `benchmark_contract.py` gate exposed one interface defect: a combined
+context overflow was rejected before model work but initially surfaced as HTTP
+503 `runtime_error`. `results/deployed-chunked-prefill-contract-pre-fix.json`
+retains that failure. Chat and evaluation generation errors now share one
+mapping owner; the final report proves combined-context overflow,
+completion-limit overflow, non-greedy sampling and evaluation streaming all
+return HTTP 400 `invalid_request`. The service remains healthy after all four
+probes.
+
+### No-profiler end-to-end result
+
+| Workload | Metric | Fused-KV baseline | Chunked prefill | Change |
+|---|---|---:|---:|---:|
+| 2,048 + 32 | TTFT p50 | 232.765 ms | 203.196 ms | 12.7% lower |
+| 2,560 + 32 | TTFT p50 | 326.419 ms | 278.258 ms | 14.8% lower |
+| 3,072 + 32 | TTFT p50 | 440.834 ms | 368.269 ms | 16.5% lower |
+| 4,096 + 32 | TTFT p50 | 748.543 ms | 586.865 ms | 21.6% lower |
+| 10,752 + 8 | TTFT | 7.930 s | 5.525 s | 1.435× faster |
+| 32,760 + 8 | TTFT | OOM / untested | 45.426 s deployed | full contract |
+
+The four repeated short-context TTFT CVs are at most 0.82%, every trajectory
+is stable, and TPOT is unchanged. The final deployed binary measures
+9.377 ms TPOT at 1K+32 and the same complete trajectory. Its 128+128 screen
+measures 8.255 ms TPOT, versus 8.254 ms before chunking and 17.567 ms in the
+original baseline. The weight-only effective bandwidth remains about
+747.6 GB/s, or 74.17% of the declared 1,008 GB/s peak.
+
+### Causal profile and migrated bottleneck
+
+The exact 11,264+8 profile uses the same inference implementation as the final
+binary and reports 5.457 s TTFT; profiler timing is explanatory only. The
+report remains on the GPU host at
+`/var/lib/agent-gpu-broker/profiles/omni-11264-chunked-prefill.nsys-rep`, size
+2,581,652 bytes, SHA-256
+`dde5c03bda788202e01f57121dd005152c700cec6751c0bd3c469189b5b4c81a`.
+Its source binary SHA-256 is
+`f6ba88369c36fbe2eeff6b6aa780bc061ae93e54044a833ba58d8dc2d9f9138c`;
+the promoted `c8e06b41` binary differs only by the HTTP error-mapping fix and
+repeats the valid quick trajectory.
+
+The 8.221-second idle gap between graph prewarm and the first request kernel
+gives an unambiguous request window. That window spans 5.610 seconds and
+contains 18 embedding launches: 11 prefill chunks plus seven decode steps.
+Long-KV scalar softmax contributes 504 launches and 1.638 seconds; cached-exp
+softmax contributes 144 launches and 150 ms. Small-N GEMV contributes 504
+launches and 2.056 seconds. Synchronous D2H contains eleven 4 MiB final-hidden
+copies—one per prefill chunk—and eighteen 303,872-byte logits copies. The
+first ten chunk logits are dead outputs, but their removable GPU copy/head
+work is only about 10 ms, below 0.2% of this request; it is not the next
+priority. The next bounded hypothesis is extending or replacing the exact
+long-prefill softmax without exceeding SM89 dynamic-shared-memory limits.
+
+The checked-in full-capture CSV hashes for CUDA API, GPU kernel and memory
+time are respectively
+`20fbeb837d2724572e0e01569afa9213e395c9f4e1782bec320e275ca3a8be88`,
+`2aaf70c01d703b5efd627e7b569a1ea1447a380320e567c5c91a72f0bca3e654`
+and `706b9e5db3a9cfeb6ae1bdb641154088bc930ec2d5a41de4f4e6306cd991960e`.
+
+## Chunked-prefill decision
+
+**Decision: promote text-only 1,024-token chunked prefill and the explicit
+exact long-decode softmax fallback for the tested single-request SM89 BF16
+cells.** The candidate passes exact complete trajectories, repeated
+no-profiler timing, the complete 32,768-token service boundary, real image and
+audio requests, typed invalid-request handling, Broker configuration, binary
+custody and causal profile gates. The deployed binary SHA-256 is
+`c8e06b416c040505a837e5b07c50dc1177ab40189a31fa247d4ddee18196dc90`.
+Qwen3.8 remains down.
+
+This result does not claim multi-request or continuous-batching performance,
+video or speech generation, vLLM parity, exact softmax acceleration above
+4,096 prefill columns, or transaction-counter MFU/BWU. The old 11,264 OOM is
+historical evidence for full-prompt prefill, not the current service limit.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

@@ -234,14 +234,7 @@ fn handle_chat(runtime: &mut Runtime, stream: &mut TcpStream, raw: &[u8]) -> Res
     };
     let generation = match runtime.generate(&prepared, request.max_tokens, false) {
         Ok(generation) => generation,
-        Err(error) if error.contains("exceeds") => {
-            return send_json(
-                stream,
-                400,
-                &json!({"error":{"message":error,"type":"invalid_request"}}),
-            )
-        }
-        Err(error) => return Err(error),
+        Err(error) => return send_generation_error(stream, error),
     };
     let id = request_id("chatcmpl");
     if request.stream {
@@ -310,13 +303,16 @@ fn handle_evaluation(
         image: None,
         audio: None,
     };
-    let generation = runtime.generate(
+    let generation = match runtime.generate(
         &prepared,
         request.max_tokens,
         body.get("ignore_eos")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-    )?;
+    ) {
+        Ok(generation) => generation,
+        Err(error) => return send_generation_error(stream, error),
+    };
     send_json(
         stream,
         200,
@@ -331,6 +327,18 @@ fn handle_evaluation(
             "fallback_active":false
         }),
     )
+}
+
+fn send_generation_error(stream: &mut TcpStream, error: String) -> Result<(), String> {
+    if error.contains("exceeds") {
+        send_json(
+            stream,
+            400,
+            &json!({"error":{"message":error,"type":"invalid_request"}}),
+        )
+    } else {
+        Err(error)
+    }
 }
 
 #[derive(Debug)]

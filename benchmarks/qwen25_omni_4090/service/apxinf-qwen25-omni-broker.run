@@ -17,10 +17,12 @@ exec chpst -u gpuq:gpuq-users /usr/local/bin/gpu-run \
   APXINF_STREAM_ORDERED_ALLOC=1 \
   APXINF_TMROPE_POSITION_CACHE=1 \
   APXINF_SOFTMAX_EXP_CACHE=1 \
+  APXINF_SOFTMAX_EXP_CACHE_LONG_FALLBACK=1 \
   APXINF_QWEN25_DECODE_GRAPH=1 \
   APXINF_QWEN25_GPU_ARGMAX=1 \
   APXINF_QWEN25_PACKED_QKV=1 \
   APXINF_QWEN25_FUSED_TMROPE_KV=1 \
+  APXINF_QWEN25_CHUNKED_PREFILL=1 \
   /opt/apxinf/qwen25-omni-target/release/apxinf serve \
   --model /mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B \
   --host 127.0.0.1 --port 8001 \

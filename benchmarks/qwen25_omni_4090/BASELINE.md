@@ -74,13 +74,18 @@ The accepted path composes sequential-order softmax with a shape-specialized
 FP32 numerator cache, strided-batched GQA prefill, stream-ordered transient
 allocation, in-place KV reset, decode-only TMRoPE position caching and a
 single-owner packed QKV layout, plus a short-KV CUDA Graph with exact
-two-stage GPU token selection and fused TMRoPE K/V cache publication. The graph and
-selection path are selected only for SM89 one-token BF16 decode with
-`start_pos < 3072`; longer-KV decode and all prefill retain the accepted
-ordinary path. It preserves complete trajectories through the 10,752-token
-passing boundary, keeps the first failure at 11,264 tokens, and recovers the
-immediately following request after OOM. The deployed SM89 binary SHA-256 is
-`dcccfb7bc7c9ca8d634a09f2128028e9f86d770a3e1d6aa83fe238fba8bea4e2`.
+two-stage GPU token selection and fused TMRoPE K/V cache publication. Text-only
+prompts longer than 1,024 tokens are now evaluated as exact 1,024-token causal
+chunks against the same KV owner. Image and audio prefill remain unchunked.
+Decode beyond the 11,264-column exp-cache gate uses an explicit exact scalar
+fallback; leaving that selector unset still fails closed.
+
+The graph and selection path remain restricted to SM89 one-token BF16 decode
+with `start_pos < 3072`; longer-KV decode keeps the ordinary path. The current
+deployed binary SHA-256 is
+`c8e06b416c040505a837e5b07c50dc1177ab40189a31fa247d4ddee18196dc90`.
+The prior accepted fused-KV and chunked binaries remain archived by their
+`dcccfb7b` and `f6ba8836` prefixes for rollback.
 
 Relative to the graph/token-selection service, packed QKV improves 1K+32 TPOT
 from 9.707 ms to 9.485 ms (1.023×) and 128+128 TPOT from 8.582 ms to
@@ -89,8 +94,20 @@ from 9.707 ms to 9.485 ms (1.023×) and 128+128 TPOT from 8.582 ms to
 2,048 and 2,560-token TPOT rows additionally improve by 1.081× and 1.044×
 after extending the graph to its measured crossover; packed ordinary decode
 then improves the 3,072 and 3,584 rows by 1.030× and 1.033×. Against the
-original baseline, decode TPOT improves from 17.567 ms to 8.252 ms (2.129×).
-See `PROFILE.md` and the structured raw results for the promotion record.
+original baseline, deployed decode TPOT improves from 17.567 ms to 8.255 ms
+(2.128×). Decode is statistically unchanged by chunked prefill. At 2,048,
+2,560, 3,072 and 4,096 prompt tokens, chunking lowers TTFT by 12.7%, 14.8%,
+16.5% and 21.6%, respectively. At 10,752+8, TTFT falls from 7.930 s to
+5.525 s (1.435×). See `PROFILE.md` and the structured raw results for the
+complete promotion record.
+
+The former 10,752-token memory ceiling is now historical. Exact trajectories
+pass at 11,264, 12,288, 16,384, 24,576 and 32,760 prompt tokens; the last case
+requests eight outputs and exactly fills the declared 32,768-token contract.
+Its deployed TTFT is 45.426 s. No legal single request now OOMs in the tested
+gradient. A request exceeding the combined context, a 129-token completion,
+nonzero temperature and evaluation streaming all return typed HTTP 400
+`invalid_request` responses, and `/health` remains ready afterwards.
 
 The actual promoted-binary profile records 127 `cudaGraphLaunch` calls and no
 decode-step logits D2H. The 128-block partial argmax and one-block final
@@ -98,9 +115,12 @@ argmax take 2.69 and 2.40 microseconds in the observable eager prewarm; the
 fused TMRoPE K/V node takes 3.66 microseconds and the complete request profile
 reports 8.276 ms average stream synchronization.
 Gate/Up packing, one-block GPU argmax and combined Q/K/V TMRoPE were retained
-as null or sub-threshold results. Remaining single-request decode latency is dominated
-by GPU graph compute: the BF16 text-weight read lower bound is 6.172 GB/token,
-equivalent to about 748 GB/s or 74.2% of the RTX 4090's 1,008 GB/s peak at the
-accepted 8.252 ms TPOT. The evidence still does not include a vLLM baseline
-or multi-request serving; the bandwidth figure is a weight-only lower-bound
+as null or sub-threshold results. Remaining single-request decode latency is
+dominated by GPU graph compute: the BF16 text-weight read lower bound is
+6.172 GB/token, equivalent to about 747.6 GB/s or 74.17% of the RTX 4090's
+1,008 GB/s peak at the accepted 8.255 ms TPOT. In the 11,264-token request
+profile, long-KV scalar softmax accounts for about 1.638 s and small-N GEMV for
+about 2.056 s of summed GPU kernel time, so long-prefill softmax is the next
+bounded target. The evidence still does not include a vLLM baseline or
+multi-request serving; the bandwidth figure is a weight-only lower-bound
 estimate, not a memory-transaction counter.

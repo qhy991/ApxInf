@@ -98,6 +98,26 @@ fn softmax_exp_cache_enabled() -> Result<bool> {
         .map_err(Error::Other)
 }
 
+fn softmax_exp_cache_long_fallback_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(
+            || match std::env::var("APXINF_SOFTMAX_EXP_CACHE_LONG_FALLBACK") {
+                Err(std::env::VarError::NotPresent) => Ok(false),
+                Ok(value) if value == "0" => Ok(false),
+                Ok(value) if value == "1" => Ok(true),
+                Ok(value) => Err(format!(
+                    "APXINF_SOFTMAX_EXP_CACHE_LONG_FALLBACK must be 0 or 1, got `{value}`"
+                )),
+                Err(std::env::VarError::NotUnicode(_)) => {
+                    Err("APXINF_SOFTMAX_EXP_CACHE_LONG_FALLBACK must be UTF-8".into())
+                }
+            },
+        )
+        .clone()
+        .map_err(Error::Other)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn gqa_scores(
     ctx: &CudaContext,
@@ -780,14 +800,18 @@ pub(crate) fn softmax_causal_with_exp_cache(
                 "attention softmax exp cache supports only BF16".into(),
             ));
         }
-        if rows == n_heads as usize && cols > MAX_SOFTMAX_EXP_CACHE_COLS {
+        if rows == n_heads as usize
+            && cols > MAX_SOFTMAX_EXP_CACHE_COLS
+            && !softmax_exp_cache_long_fallback_enabled()?
+        {
             return Err(Error::Other(format!(
-                "attention softmax exp cache cols {cols} exceed tested limit {MAX_SOFTMAX_EXP_CACHE_COLS}"
+                "attention softmax exp cache cols {cols} exceed tested limit {MAX_SOFTMAX_EXP_CACHE_COLS}; set APXINF_SOFTMAX_EXP_CACHE_LONG_FALLBACK=1 for the exact scalar path"
             )));
         }
     }
     let use_exp_cache = use_exp_cache
-        && (rows == n_heads as usize || cols <= MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS);
+        && ((rows == n_heads as usize && cols <= MAX_SOFTMAX_EXP_CACHE_COLS)
+            || (rows != n_heads as usize && cols <= MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS));
 
     let out_bytes = input.size_in_bytes();
     let out_buf = output_buffer(ctx, out_bytes)?;

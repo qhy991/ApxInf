@@ -23,6 +23,10 @@ use super::weights::{Qwen25OmniQkvWeights, Qwen25OmniTextWeights};
 
 #[cfg(feature = "cuda")]
 const MAX_DECODE_GRAPH_POSITION: u32 = 3_072;
+#[cfg(feature = "cuda")]
+const CHUNKED_PREFILL_SIZE: usize = 1_024;
+#[cfg(feature = "cuda")]
+const CHUNKED_PREFILL_THRESHOLD: usize = 1_024;
 
 pub struct GeneralQwen25Omni {
     config: Qwen25OmniConfig,
@@ -79,6 +83,15 @@ fn fused_tmrope_kv_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
     ENABLED
         .get_or_init(|| parse_binary_env("APXINF_QWEN25_FUSED_TMROPE_KV"))
+        .clone()
+        .map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
+fn chunked_prefill_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| parse_binary_env("APXINF_QWEN25_CHUNKED_PREFILL"))
         .clone()
         .map_err(Error::Other)
 }
@@ -365,6 +378,15 @@ impl GeneralQwen25Omni {
             None
         };
 
+        #[cfg(feature = "cuda")]
+        if image_positions.is_none()
+            && audio_positions.is_none()
+            && input.token_ids.len() > CHUNKED_PREFILL_THRESHOLD
+            && chunked_prefill_enabled()?
+        {
+            return self.prefill_text_chunked(input.token_ids);
+        }
+
         // Every processor shape, placeholder count, and modality marker is
         // validated above so malformed media fails before any backend work.
         let mut hidden = self
@@ -407,6 +429,22 @@ impl GeneralQwen25Omni {
         }
         self.kv.advance(input.token_ids.len());
         self.logits_last_row(&hidden)
+    }
+
+    #[cfg(feature = "cuda")]
+    fn prefill_text_chunked(&mut self, token_ids: &[u32]) -> Result<Tensor> {
+        if self.rope_delta != 0 || self.kv.seq_len() != 0 {
+            return Err(Error::Other(
+                "Qwen2.5-Omni chunked prefill requires reset text-only state".into(),
+            ));
+        }
+        let mut logits = None;
+        for chunk in token_ids.chunks(CHUNKED_PREFILL_SIZE) {
+            let start = u32::try_from(self.kv.seq_len())
+                .map_err(|_| Error::Other("chunked prefill position exceeds u32".into()))?;
+            logits = Some(self.forward_inner(chunk, start)?);
+        }
+        logits.ok_or_else(|| Error::Other("chunked prefill received no tokens".into()))
     }
 
     fn forward_layer(
