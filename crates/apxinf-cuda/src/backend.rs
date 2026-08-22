@@ -1,5 +1,7 @@
 //! CUDA backend implementing the Backend trait.
 
+use std::sync::{Mutex, OnceLock};
+
 use apxinf_core::{Backend, Device, Error, Graph, KvCache, Result, Tensor};
 
 use crate::buffer::CudaBuffer;
@@ -24,7 +26,32 @@ impl Graph for CudaGraph {
 /// Implements the portable `Backend` trait. Also provides CUDA-specific
 /// extension methods via `CudaBackend` directly.
 pub struct CudaBackend {
+    tmrope_positions: Mutex<Option<TmropePositionCache>>,
     ctx: CudaContext,
+}
+
+struct TmropePositionCache {
+    values: Vec<u32>,
+    _source_bytes: Vec<u8>,
+    buffer: CudaBuffer,
+}
+
+fn tmrope_position_cache_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| match std::env::var("APXINF_TMROPE_POSITION_CACHE") {
+            Err(std::env::VarError::NotPresent) => Ok(false),
+            Ok(value) if value == "0" => Ok(false),
+            Ok(value) if value == "1" => Ok(true),
+            Ok(value) => Err(format!(
+                "APXINF_TMROPE_POSITION_CACHE must be 0 or 1, got `{value}`"
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("APXINF_TMROPE_POSITION_CACHE must be UTF-8".into())
+            }
+        })
+        .clone()
+        .map_err(Error::Other)
 }
 
 impl CudaBackend {
@@ -40,7 +67,10 @@ impl CudaBackend {
             ctx.caps().arch_family,
             ctx.caps().multiprocessor_count,
         );
-        Ok(Self { ctx })
+        Ok(Self {
+            tmrope_positions: Mutex::new(None),
+            ctx,
+        })
     }
 
     /// Access the CUDA context.
@@ -144,14 +174,52 @@ impl Backend for CudaBackend {
         if pos_ids.len() != seq_len * 3 {
             return Err(Error::Other(format!(
                 "rope_tmrope: pos_ids len {} != seq_len {} * 3",
-                pos_ids.len(), seq_len
+                pos_ids.len(),
+                seq_len
             )));
         }
-        let bytes = pos_ids.iter().flat_map(|value| value.to_ne_bytes()).collect::<Vec<_>>();
-        let ids = CudaBuffer::alloc(bytes.len(), self.ctx.device_id()).map_err(Error::Cuda)?;
-        ids.copy_from_host(&bytes).map_err(Error::Cuda)?;
+        if seq_len > 1 || !tmrope_position_cache_enabled()? {
+            let bytes = pos_ids
+                .iter()
+                .flat_map(|value| value.to_ne_bytes())
+                .collect::<Vec<_>>();
+            let ids = CudaBuffer::alloc(bytes.len(), self.ctx.device_id()).map_err(Error::Cuda)?;
+            ids.copy_from_host(&bytes).map_err(Error::Cuda)?;
+            return kernels::rope::apply_tmrope(
+                &self.ctx, input, n_heads, head_dim, theta, sections, &ids,
+            );
+        }
+
+        let mut cache = self
+            .tmrope_positions
+            .lock()
+            .map_err(|_| Error::Other("TMRoPE position cache lock poisoned".into()))?;
+        if cache
+            .as_ref()
+            .is_none_or(|cached| cached.values.as_slice() != pos_ids)
+        {
+            let bytes = pos_ids
+                .iter()
+                .flat_map(|value| value.to_ne_bytes())
+                .collect::<Vec<_>>();
+            let buffer = CudaBuffer::alloc_stream_ordered(
+                bytes.len(),
+                self.ctx.device_id(),
+                self.ctx.stream(),
+            )
+            .map_err(Error::Cuda)?;
+            buffer
+                .copy_from_host_async(&bytes, self.ctx.stream())
+                .map_err(Error::Cuda)?;
+            *cache = Some(TmropePositionCache {
+                values: pos_ids.to_vec(),
+                _source_bytes: bytes,
+                buffer,
+            });
+        }
+        let positions = &cache.as_ref().expect("position cache populated").buffer;
         kernels::rope::apply_tmrope(
-            &self.ctx, input, n_heads, head_dim, theta, sections, &ids,
+            &self.ctx, input, n_heads, head_dim, theta, sections, positions,
         )
     }
 

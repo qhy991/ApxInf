@@ -306,6 +306,95 @@ resident service remains down.
 This result does not claim multi-request or continuous-batching performance,
 video or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.
 
+## Promoted decode TMRoPE position cache
+
+Primary classification: **source/runtime graph**. Each Qwen2.5-Omni layer
+applies identical TMRoPE positions to Q and K. Before this candidate, the CUDA
+backend synchronously allocated and uploaded the same position array twice per
+layer. During decode that means 72 allocation/upload/free sequences for every
+generated token.
+
+`APXINF_TMROPE_POSITION_CACHE=1` now caches one decode-only GPU position
+buffer keyed by the complete `Vec<u32>` contents. The cache never uses host
+pointer identity. A changed decode position replaces the buffer with a
+stream-ordered allocation and copy whose source bytes stay alive until the
+stream reaches them; all 36 Q/K layer pairs for that token reuse it. Multi-token
+prefill deliberately retains the accepted v4 path. Unset or `0` preserves the
+uncached path, and invalid values fail closed. The deployed SM89 binary SHA-256
+is `342cb4bd2a4b4ab58102866e61656b4ab071fae8e9ceee9d0f54c19387526e95`.
+
+The decode-only boundary is the result of a negative iteration ladder. A
+full-prefill cache improved decode but made the 10,752-token passing point OOM.
+Moving its small buffer to the async pool did not recover capacity. Draining
+all 36 layers restored the trajectory but regressed 10,752 TTFT from 7.92 s to
+16.67 s; draining only layer 0 still OOMed. These branches are retained under
+the `candidate-tmrope-cache-*` result prefixes. They were rejected rather than
+hidden by a shorter-context score.
+
+### Correctness and coverage
+
+| Workload | Result | Trajectory SHA-256 | v4 agreement |
+|---|---:|---|---:|
+| 1,024 prompt + 32 output | 5/5 stable | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+| 128 prompt + 128 output | 5/5 stable | `a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039` | exact |
+| 4,096 prompt + 8 output | 3/3 stable | `edc940b80ff945971996ddf2b30534773258bb41d3d1812c38f36ba06eaabcbd` | exact |
+| 8,192 prompt + 8 output | 1/1 exploratory | `490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf` | exact |
+| 10,752 prompt + 8 output | 1/1 exploratory | `19478a6e232ab7479a2a8026f01096ab68a16f72d922be9695d807928125b02d` | exact |
+| 11,264 prompt + 8 output | CUDA OOM | n/a | same first failure |
+
+After the 11,264 OOM, resident memory is 12.31 GiB and the immediately
+following three 1K requests all pass with one stable trajectory. Real PNG and
+WAV inputs reproduce the prior exact output-token sequences and no fallback;
+their decode TPOT also improves. The model/API capability contract is
+unchanged.
+
+### No-profiler end-to-end result
+
+| Workload | Metric | Allocator v4 | Decode cache | Change |
+|---|---|---:|---:|---:|
+| 1,024 + 32 | TTFT p50 | 0.0855 s | 0.0845 s | unchanged |
+| 1,024 + 32 | TPOT p50 | 13.783 ms | 12.048 ms | 1.144× faster |
+| 1,024 + 32 | wall p50 | 0.5150 s | 0.4595 s | 1.121× faster |
+| 128 + 128 | TTFT p50 | 0.0195 s | 0.0191 s | unchanged |
+| 128 + 128 | TPOT p50 | 13.033 ms | 10.891 ms | 1.197× faster |
+| 128 + 128 | wall p50 | 1.6768 s | 1.4041 s | 1.194× faster |
+| 4,096 + 8 | TTFT p50 | 0.8011 s | 0.8031 s | 0.24% slower |
+| 4,096 + 8 | wall p50 | 0.9215 s | 0.9106 s | 1.012× faster |
+| 8,192 + 8 | TTFT, one trial | 4.6841 s | 4.6836 s | unchanged |
+| 10,752 + 8 | TTFT, one trial | 7.9156 s | 7.9655 s | 0.63% slower |
+
+Decode-cache TPOT CV is 0.05% in the 128+128 screen. Against the original
+paired baseline, decode TPOT improves from 17.567 ms to 10.891 ms (1.613×),
+and 4K TTFT remains 22.838× faster. The Broker-owned deployment repeats the
+128+128 result at 10.883 ms TPOT with the exact trajectory.
+
+### Decode-cache attribution
+
+The actual candidate report remains on the GPU host at
+`/var/lib/agent-gpu-broker/profiles/omni-4k-tmrope-decode-cache.nsys-rep`, size
+1,492,354 bytes, SHA-256
+`a5b4d3e6303775cb514a4a01c6fbdc2e9c237dba42cd1b82675f5e3268522290`.
+The profiled 4K request preserves its trajectory; profiler timing is not used
+for admission.
+
+Across seven decode steps, synchronous `cudaMalloc`/`cudaFree` falls from
+518/518 in allocator v4 to 14/14. H2D operations fall from 532 to 21, totaling
+only 9 microseconds of GPU copy time. Prefill API counts remain essentially
+unchanged, proving the optimized gate is decode-only. Kernel count stays at
+8,268 and the leading prefill GPU kernel remains sequential softmax.
+
+## Latest promotion decision
+
+**Decision: promote decode-only TMRoPE position caching, composed with the
+accepted allocator, batched GQA and exact-order softmax, for the tested
+single-request BF16 cells.** It passes complete trajectories, repeated
+no-profiler decode and prefill, long-context capacity, real multimodal, OOM
+recovery, explicit-path and actual-candidate profile gates. The RTX 4090
+service runs this binary under Broker ownership; Qwen3.8 remains down.
+
+This result does not claim multi-request or continuous-batching performance,
+video or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.
+
 ## Promoted stream-ordered allocation candidate
 
 Primary classification: **source/runtime graph**. The candidate adds an

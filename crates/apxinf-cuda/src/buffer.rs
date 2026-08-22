@@ -123,11 +123,7 @@ impl CudaBuffer {
         }
         let mut ptr: *mut c_void = std::ptr::null_mut();
         unsafe {
-            ffi::check_cuda(ffi::cudaMallocAsync(
-                &mut ptr,
-                num_bytes,
-                stream.handle(),
-            ))?;
+            ffi::check_cuda(ffi::cudaMallocAsync(&mut ptr, num_bytes, stream.handle()))?;
         }
         let owner: Arc<dyn std::any::Any + Send + Sync> = Arc::new(CudaAllocation {
             ptr,
@@ -183,6 +179,25 @@ impl CudaBuffer {
                 src.as_ptr() as *const c_void,
                 src.len(),
                 ffi::cudaMemcpyKind::cudaMemcpyHostToDevice,
+            ))
+        }
+    }
+
+    /// Enqueue a host-to-device copy on a caller-owned stream. The caller
+    /// must keep `src` alive until that stream reaches the copy.
+    pub fn copy_from_host_async(
+        &self,
+        src: &[u8],
+        stream: &crate::CudaStream,
+    ) -> Result<(), String> {
+        assert!(src.len() <= self.len, "source exceeds buffer size");
+        unsafe {
+            ffi::check_cuda(ffi::cudaMemcpyAsync(
+                self.ptr,
+                src.as_ptr() as *const c_void,
+                src.len(),
+                ffi::cudaMemcpyKind::cudaMemcpyHostToDevice,
+                stream.handle(),
             ))
         }
     }

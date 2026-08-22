@@ -71,16 +71,16 @@ Evidence gates:
 ## Accepted successor
 
 The accepted path composes sequential-order one-CTA-per-row softmax,
-strided-batched GQA prefill, stream-ordered transient allocation and in-place
-KV reset. It preserves complete trajectories through the 10,752-token passing
-boundary, keeps the first failure at 11,264 tokens, and recovers the immediately
-following request after OOM. Paired 4K TTFT improves from 18.3407 s to
-0.8011 s (22.894×); decode TPOT improves from 17.567 ms to 13.033 ms. See
-`PROFILE.md` and the structured raw results for the promotion record.
+strided-batched GQA prefill, stream-ordered transient allocation, in-place KV
+reset and decode-only TMRoPE position caching. It preserves complete
+trajectories through the 10,752-token passing boundary, keeps the first failure
+at 11,264 tokens, and recovers the immediately following request after OOM.
+Paired 4K TTFT improves from 18.3407 s to 0.8031 s (22.838×); decode TPOT
+improves from 17.567 ms to 10.891 ms. See `PROFILE.md` and the structured raw
+results for the promotion record.
 
-The final profile retains the 8,268-launch batched graph while moving most
-transient allocation to CUDA's ordered pool. Prefill synchronous allocation
-falls to 74 malloc/free pairs, largely from repeated position uploads. The
-next question is whether those positions can be uploaded once per forward;
-the leading GPU kernel is again softmax. The evidence still does not include a
-vLLM baseline, multi-request serving, or an MFU/BWU estimate.
+The final profile retains the 8,268-launch batched graph and leaves prefill
+unchanged. During seven decode steps, synchronous malloc/free falls to 14/14
+and H2D operations to 21. The leading prefill GPU kernel is again softmax. The
+evidence still does not include a vLLM baseline, multi-request serving, or an
+MFU/BWU estimate.
