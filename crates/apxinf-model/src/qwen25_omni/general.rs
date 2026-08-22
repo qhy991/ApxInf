@@ -24,7 +24,11 @@ use super::weights::{Qwen25OmniQkvWeights, Qwen25OmniTextWeights};
 #[cfg(feature = "cuda")]
 const MAX_DECODE_GRAPH_POSITION: u32 = 3_072;
 #[cfg(feature = "cuda")]
-const CHUNKED_PREFILL_SIZE: usize = 1_024;
+const CHUNKED_PREFILL_SMALL_SIZE: usize = 512;
+#[cfg(feature = "cuda")]
+const CHUNKED_PREFILL_LARGE_SIZE: usize = 1_024;
+#[cfg(feature = "cuda")]
+const CHUNKED_PREFILL_SMALL_MAX_PROMPT: usize = 12_288;
 #[cfg(feature = "cuda")]
 const CHUNKED_PREFILL_THRESHOLD: usize = 1_024;
 
@@ -438,8 +442,13 @@ impl GeneralQwen25Omni {
                 "Qwen2.5-Omni chunked prefill requires reset text-only state".into(),
             ));
         }
+        let chunk_size = if token_ids.len() <= CHUNKED_PREFILL_SMALL_MAX_PROMPT {
+            CHUNKED_PREFILL_SMALL_SIZE
+        } else {
+            CHUNKED_PREFILL_LARGE_SIZE
+        };
         let mut logits = None;
-        for chunk in token_ids.chunks(CHUNKED_PREFILL_SIZE) {
+        for chunk in token_ids.chunks(chunk_size) {
             let start = u32::try_from(self.kv.seq_len())
                 .map_err(|_| Error::Other("chunked prefill position exceeds u32".into()))?;
             logits = Some(self.forward_inner(chunk, start)?);

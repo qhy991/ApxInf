@@ -95,7 +95,7 @@ def estimate(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tpot-ms", type=float, default=8.25507525984252)
+    parser.add_argument("--tpot-ms", type=float, default=8.26493837007874)
     parser.add_argument("--kv-len", type=int, default=128)
     parser.add_argument("--peak-bandwidth-gbps", type=float, default=1008.0)
     parser.add_argument("--peak-tflops", type=float)

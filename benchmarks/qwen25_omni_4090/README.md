@@ -28,7 +28,7 @@ python3 benchmarks/qwen25_omni_4090/benchmark_multimodal.py \
   --output benchmarks/qwen25_omni_4090/results/multimodal.json
 
 python3 benchmarks/qwen25_omni_4090/decode_roofline.py \
-  --tpot-ms 8.25507525984252 --kv-len 128 \
+  --tpot-ms 8.26493837007874 --kv-len 128 \
   --peak-bandwidth-gbps 1008
 ```
 
@@ -45,7 +45,8 @@ first failed case; service recovery is an operator action and must be recorded
 separately rather than hidden by the benchmark.
 
 The promoted text-only path splits prompts longer than 1,024 tokens into
-1,024-token causal chunks. It reaches the complete service contract at
+512-token causal chunks through 12,288 prompt tokens and 1,024-token chunks
+above that measured crossover. It reaches the complete service contract at
 32,760 prompt + 8 output tokens on the 24 GiB RTX 4090. Image and audio
 requests deliberately retain their processor-owned, unchunked path.
 `benchmark_contract.py` verifies that over-context, over-completion,

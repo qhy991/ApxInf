@@ -311,7 +311,7 @@ resident service remains down.
 This result does not claim multi-request or continuous-batching performance,
 video or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.
 
-## Current promotion: text-only chunked prefill and full 32K contract
+## Initial chunked-prefill promotion and full 32K contract
 
 Primary classification: **source/runtime graph**. The previous full-prompt
 prefill materialized quadratic score/output work for every token at once and
@@ -406,11 +406,11 @@ time are respectively
 `2aaf70c01d703b5efd627e7b569a1ea1447a380320e567c5c91a72f0bca3e654`
 and `706b9e5db3a9cfeb6ae1bdb641154088bc930ec2d5a41de4f4e6306cd991960e`.
 
-## Chunked-prefill decision
+## Initial chunked-prefill decision
 
-**Decision: promote text-only 1,024-token chunked prefill and the explicit
-exact long-decode softmax fallback for the tested single-request SM89 BF16
-cells.** The candidate passes exact complete trajectories, repeated
+**Decision at that stage: promote text-only 1,024-token chunked prefill and
+the explicit exact long-decode softmax fallback for the tested single-request
+SM89 BF16 cells.** The candidate passes exact complete trajectories, repeated
 no-profiler timing, the complete 32,768-token service boundary, real image and
 audio requests, typed invalid-request handling, Broker configuration, binary
 custody and causal profile gates. The deployed binary SHA-256 is
@@ -447,6 +447,64 @@ policy helper and long-shape test were removed from the production source;
 the structured `baseline-long-prefill-exp-cache-*` and
 `candidate-long-prefill-exp-cache-*` records remain to close this branch.
 The accepted `c8e06b41` service is restored and healthy; Qwen3.8 remains down.
+
+### Promoted adaptive chunk size
+
+Primary classification: **source/runtime graph**. A causal chunk of width
+`C` computes scores for future positions inside that same chunk and masks them
+afterward. Reducing `C` therefore removes deterministic attention work, but it
+also increases chunk dispatches, synchronizing final-row copies and dead
+intermediate LM-head evaluations. The candidate first changed the fixed chunk
+from 1,024 to 512 without adding a new public selector.
+
+The constant-512 ladder preserved every complete trajectory and improved the
+target range, but found a clear length crossover:
+
+| Prompt | 1,024-chunk TTFT p50 | 512-chunk TTFT p50 | Change |
+|---:|---:|---:|---:|
+| 2,048 | 203.196 ms | 191.307 ms | 5.85% lower |
+| 4,096 | 586.865 ms | 571.149 ms | 2.68% lower |
+| 8,192 | 2.8461 s | 2.7549 s | 3.20% lower |
+| 11,264 | 5.4246 s | 5.3479 s | 1.41% lower |
+| 12,288 | 6.4414 s | 6.3842 s | 0.89% lower |
+| 16,384 | 11.4064 s | 11.4780 s | 0.63% higher |
+| 24,576 | 25.3042 s | 25.5571 s | 1.00% higher |
+| 32,760 | 45.4262 s deployed | 45.9741 s | 1.21% higher |
+
+The final rule is one static partial evaluation of prompt length: text-only
+prompts through 12,288 tokens use 512-token chunks, while longer prompts keep
+the accepted 1,024-token chunks. It introduces no second runtime mode or
+environment variable. The final binary repeats 5.357 s TTFT at 11,264 with
+0.24% CV, 45.345 s at 32,760, 8.265 ms decode TPOT and the exact frozen
+trajectories. Real PNG/WAV requests and all four typed contract probes pass.
+
+The actual adaptive-binary report remains on the GPU host at
+`/var/lib/agent-gpu-broker/profiles/omni-11264-adaptive-chunk.nsys-rep`, size
+3,825,650 bytes, SHA-256
+`05b710996ec9968b29769e563912e25a8fc933fc1cf93a752d8bc0f0dfb6afb6`.
+Profiler timing is not admission evidence: tracing 23,811 request kernels
+raises the measured TTFT to 7.446 s. Request-window kernel sums provide the
+causal comparison against the 1,024-chunk profile:
+
+- total summed kernel time falls from 5,141.495 to 5,070.062 ms;
+- small-N GEMV falls by 141.323 ms, from 2,055.659 to 1,914.336 ms;
+- scalar softmax grows by 27.532 ms and LM head grows by 7.507 ms because
+  there are 22 prefill chunks instead of 11;
+- the net 71.433 ms kernel reduction agrees with the 76.743 ms no-profiler
+  11,264-token TTFT reduction.
+
+The checked-in full-capture CUDA API, GPU-kernel and memory-time CSV hashes
+are respectively
+`6114a598536241b012dcd1ae73d2915ee68c2686cbcc27de30738a2bead865d5`,
+`703c62d3381ccc958ec44e267dbdbfc80cae4e5d3d2db84483ecbb935b6ef237`
+and `f420680e7639328a4d3be8b7a9e6e37df926a6937aee54a546f69182257e9241`.
+
+**Decision: promote the 512/1,024 adaptive chunk policy for the tested
+single-request SM89 BF16 text cells.** It passes exact trajectory, repeated
+no-profiler, 32K capacity, multimodal isolation, typed interface, binary
+custody and causal profile gates. The deployed binary SHA-256 is
+`778066a34e7df2c5c300db6bc4286f546d8c877ffa07987ae8ecc89460c08178`;
+`c8e06b41` is retained for rollback. Qwen3.8 remains down when unused.
 
 ## Promoted short-KV CUDA Graph decode candidate
 
