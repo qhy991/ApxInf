@@ -966,6 +966,19 @@ state and cross-request lifetime were not justified by the saving. The raw
 record is `candidate-global-exp-workspace-context.json`; production keeps
 stream-ordered request-local workspaces.
 
+#### Rejected 512-thread global-cache block
+
+A final geometry candidate doubled the fused global-cache block from 256 to
+512 threads. Binary SHA-256 was
+`723fa0d70d19579c92ee799f6ef875c77c80f39bc93f2f3b0572073149af6bc9`,
+and the 32K operator remained byte-exact under Broker job
+`gpuq-b0154308b191`.
+
+The 11K/12K TPOT medians moved from 17.722/18.475 to 17.657/18.348 ms:
+0.36% and 0.69%, below the 1% materiality gate. **Decision: revert without
+profiler budget.** Production keeps the 256-thread geometry; the structured
+record is `candidate-global-exp-cache-512t-context.json`.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
