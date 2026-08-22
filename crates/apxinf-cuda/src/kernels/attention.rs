@@ -77,6 +77,27 @@ fn batched_gqa_prefill_enabled() -> Result<bool> {
         .map_err(Error::Other)
 }
 
+const MAX_SOFTMAX_EXP_CACHE_COLS: usize = 11_264;
+const MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS: usize = 4_096;
+
+fn softmax_exp_cache_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| match std::env::var("APXINF_SOFTMAX_EXP_CACHE") {
+            Err(std::env::VarError::NotPresent) => Ok(false),
+            Ok(value) if value == "0" => Ok(false),
+            Ok(value) if value == "1" => Ok(true),
+            Ok(value) => Err(format!(
+                "APXINF_SOFTMAX_EXP_CACHE must be 0 or 1, got `{value}`"
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("APXINF_SOFTMAX_EXP_CACHE must be UTF-8".into())
+            }
+        })
+        .clone()
+        .map_err(Error::Other)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn gqa_scores(
     ctx: &CudaContext,
@@ -732,17 +753,48 @@ pub fn softmax_causal(
     kv_offset: u32,
     n_heads: u32,
 ) -> Result<Tensor> {
+    softmax_causal_with_exp_cache(
+        ctx,
+        input,
+        kv_offset,
+        n_heads,
+        softmax_exp_cache_enabled()?,
+    )
+}
+
+pub(crate) fn softmax_causal_with_exp_cache(
+    ctx: &CudaContext,
+    input: &Tensor,
+    kv_offset: u32,
+    n_heads: u32,
+    use_exp_cache: bool,
+) -> Result<Tensor> {
     let device_id = ctx.device_id();
     let dims = input.shape().dims();
     let rows = dims[dims.len() - 2];
     let cols = *dims.last().unwrap();
 
+    if use_exp_cache {
+        if input.dtype() != DType::BF16 {
+            return Err(Error::Other(
+                "attention softmax exp cache supports only BF16".into(),
+            ));
+        }
+        if rows == n_heads as usize && cols > MAX_SOFTMAX_EXP_CACHE_COLS {
+            return Err(Error::Other(format!(
+                "attention softmax exp cache cols {cols} exceed tested limit {MAX_SOFTMAX_EXP_CACHE_COLS}"
+            )));
+        }
+    }
+    let use_exp_cache = use_exp_cache
+        && (rows == n_heads as usize || cols <= MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS);
+
     let out_bytes = input.size_in_bytes();
     let out_buf = output_buffer(ctx, out_bytes)?;
 
     unsafe {
-        let res = match input.dtype() {
-            DType::F32 => ffi::apxinf_attention_softmax_f32(
+        let res = if use_exp_cache {
+            ffi::apxinf_attention_softmax_bf16_exp_cache(
                 gpu_ptr(input)?,
                 out_buf.ptr(),
                 cols as u32,
@@ -750,17 +802,29 @@ pub fn softmax_causal(
                 kv_offset,
                 n_heads,
                 ctx.stream().handle(),
-            ),
-            DType::BF16 => ffi::apxinf_attention_softmax_bf16(
-                gpu_ptr(input)?,
-                out_buf.ptr(),
-                cols as u32,
-                rows as u32,
-                kv_offset,
-                n_heads,
-                ctx.stream().handle(),
-            ),
-            dtype => return unsupported_dtype("attention_softmax", dtype),
+            )
+        } else {
+            match input.dtype() {
+                DType::F32 => ffi::apxinf_attention_softmax_f32(
+                    gpu_ptr(input)?,
+                    out_buf.ptr(),
+                    cols as u32,
+                    rows as u32,
+                    kv_offset,
+                    n_heads,
+                    ctx.stream().handle(),
+                ),
+                DType::BF16 => ffi::apxinf_attention_softmax_bf16(
+                    gpu_ptr(input)?,
+                    out_buf.ptr(),
+                    cols as u32,
+                    rows as u32,
+                    kv_offset,
+                    n_heads,
+                    ctx.stream().handle(),
+                ),
+                dtype => return unsupported_dtype("attention_softmax", dtype),
+            }
         };
         ffi::check_cuda(res).map_err(Error::Cuda)?;
     }

@@ -70,17 +70,17 @@ Evidence gates:
 
 ## Accepted successor
 
-The accepted path composes sequential-order one-CTA-per-row softmax,
-strided-batched GQA prefill, stream-ordered transient allocation, in-place KV
-reset and decode-only TMRoPE position caching. It preserves complete
+The accepted path composes sequential-order softmax with a shape-specialized
+FP32 numerator cache, strided-batched GQA prefill, stream-ordered transient
+allocation, in-place KV reset and decode-only TMRoPE position caching. It preserves complete
 trajectories through the 10,752-token passing boundary, keeps the first failure
 at 11,264 tokens, and recovers the immediately following request after OOM.
-Paired 4K TTFT improves from 18.3407 s to 0.8031 s (22.838×); decode TPOT
-improves from 17.567 ms to 10.891 ms. See `PROFILE.md` and the structured raw
+Paired 4K TTFT improves from 18.3407 s to 0.7297 s (25.133×); decode TPOT
+improves from 17.567 ms to 10.822 ms. See `PROFILE.md` and the structured raw
 results for the promotion record.
 
-The final profile retains the 8,268-launch batched graph and leaves prefill
-unchanged. During seven decode steps, synchronous malloc/free falls to 14/14
-and H2D operations to 21. The leading prefill GPU kernel is again softmax. The
-evidence still does not include a vLLM baseline, multi-request serving, or an
-MFU/BWU estimate.
+The final profile retains the 8,268-launch batched graph. Shape-specialized
+softmax falls from 250.8 ms to 184.4 ms at 4K; during seven decode steps,
+synchronous malloc/free remains 14/14 and H2D operations 21. The next candidate
+is Gate/Up packing. The evidence still does not include a vLLM baseline,
+multi-request serving, or an MFU/BWU estimate.

@@ -209,6 +209,54 @@ __global__ void attention_softmax_bf16_kernel(
 }
 
 
+// Preserve the scalar maximum and summation order while caching each FP32
+// exponential once. Dynamic shared memory stores `cols` numerators.
+__global__ void attention_softmax_bf16_exp_cache_kernel(
+    const __nv_bfloat16* scores, __nv_bfloat16* output,
+    uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads)
+{
+    uint32_t row = apxinf_row_from_grid_yz();
+    if (row >= rows) return;
+
+    uint32_t seq_pos = row / n_heads;
+    uint32_t valid_cols = min(seq_pos + kv_offset + 1, cols);
+    uint32_t lane = threadIdx.x;
+    extern __shared__ float numerators[];
+    __shared__ float reduction[2];
+
+    if (lane == 0) {
+        float max_val = -INFINITY;
+        for (uint32_t c = 0; c < valid_cols; c++) {
+            max_val = fmaxf(max_val, __bfloat162float(scores[row * cols + c]));
+        }
+        reduction[0] = max_val;
+    }
+    __syncthreads();
+    float max_val = reduction[0];
+
+    for (uint32_t c = lane; c < valid_cols; c += blockDim.x) {
+        numerators[c] = expf(__bfloat162float(scores[row * cols + c]) - max_val);
+    }
+    __syncthreads();
+
+    if (lane == 0) {
+        float sum_exp = 0.0f;
+        for (uint32_t c = 0; c < valid_cols; c++) {
+            sum_exp += numerators[c];
+        }
+        reduction[1] = sum_exp;
+    }
+    __syncthreads();
+    float sum_exp = reduction[1];
+
+    for (uint32_t c = lane; c < cols; c += blockDim.x) {
+        output[row * cols + c] = c < valid_cols
+            ? __float2bfloat16(numerators[c] / sum_exp)
+            : __float2bfloat16(0.0f);
+    }
+}
+
+
 
 __global__ void attention_softmax_decode_bf16_kernel(
     const __nv_bfloat16* scores, __nv_bfloat16* output,

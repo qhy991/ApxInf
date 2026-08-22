@@ -306,6 +306,103 @@ resident service remains down.
 This result does not claim multi-request or continuous-batching performance,
 video or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.
 
+## Promoted shape-specialized softmax exp cache
+
+Primary classification: **source/runtime graph**. The exact-order softmax
+previously evaluated `exp(score - max)` twice: once for the sequential sum and
+again for the output numerator. The candidate computes each FP32 numerator
+once in parallel, caches it in dynamic shared memory, lets lane 0 add those
+unchanged FP32 values in the original column order, then performs the original
+parallel division. Max order, sum order and BF16 output conversion therefore
+remain unchanged.
+
+`APXINF_SOFTMAX_EXP_CACHE=1` selects two explicit shape regimes. Multi-token
+prefill uses the shared cache only through 4,096 columns; longer prefill uses
+the accepted sequential kernel because larger per-CTA shared memory reduces
+occupancy. Single-token decode uses the shared cache through the tested 11,264
+column limit. Invalid flag values and unsupported BF16 cache shapes fail
+closed. The deployed SM89 binary SHA-256 is
+`5a131f72e6d04a439545bec8ab8c7893da7c499b0cacf8378bc9594a58063f68`.
+
+The shape split was selected from negative evidence, not post-hoc omission.
+Enabling the cache for every prefill length kept exact trajectories and
+improved 4K, but regressed 10,752 TTFT from about 7.97 s to 8.88 s. The final
+hybrid retains the 4K and decode wins while its independent 8K/10,752 retries
+match or slightly improve the accepted path. Both the full-cache and hybrid
+raw results are retained.
+
+### Operator, resource and correctness gates
+
+The candidate output is bit-exact to the scalar BF16 kernel in a direct CUDA
+test; a second candidate-specific test crosses 65,535 logical rows. The final
+binary reports 36 registers, 16 bytes static shared memory, zero local memory
+and zero stack. Dynamic shared memory is 16,384 bytes at 4K and 43,040 bytes at
+the longest generated 10,760-column decode step.
+
+| Workload | Result | Trajectory SHA-256 | Prior accepted agreement |
+|---|---:|---|---:|
+| 1,024 prompt + 32 output | 5/5 stable | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+| 128 prompt + 128 output | 5/5 stable | `a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039` | exact |
+| 4,096 prompt + 8 output | 3/3 stable | `edc940b80ff945971996ddf2b30534773258bb41d3d1812c38f36ba06eaabcbd` | exact |
+| 8,192 prompt + 8 output | 1/1 retry | `490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf` | exact |
+| 10,752 prompt + 8 output | 1/1 retry | `19478a6e232ab7479a2a8026f01096ab68a16f72d922be9695d807928125b02d` | exact |
+| 11,264 prompt + 8 output | CUDA OOM | n/a | same first failure |
+
+The immediately following three 1K requests recover with one stable
+trajectory and 12.31 GiB resident memory. Real PNG and WAV requests reproduce
+their prior exact output-token sequences with no fallback. The model and API
+capability contract is unchanged.
+
+### No-profiler end-to-end result
+
+| Workload | Metric | Decode-cache baseline | Hybrid exp cache | Change |
+|---|---|---:|---:|---:|
+| 1,024 + 32 | TTFT p50 | 0.0845 s | 0.0794 s | 1.064× faster |
+| 1,024 + 32 | TPOT p50 | 12.048 ms | 11.613 ms | 1.037× faster |
+| 1,024 + 32 | wall p50 | 0.4595 s | 0.4411 s | 1.042× faster |
+| 128 + 128 | TPOT p50 | 10.891 ms | 10.822 ms | 0.6% faster |
+| 128 + 128 | wall p50 | 1.4041 s | 1.3952 s | 0.6% faster |
+| 4,096 + 8 | TTFT p50 | 0.8031 s | 0.7297 s | 1.100× faster |
+| 4,096 + 8 | wall p50 | 0.9106 s | 0.8262 s | 1.102× faster |
+| 8,192 + 8 | TTFT, retry | 4.6836 s | 4.6286 s | 1.012× faster |
+| 10,752 + 8 | TTFT, retry | 7.9655 s | 7.8803 s | 1.011× faster |
+
+Hybrid 4K TTFT CV is 0.03% and decode TPOT CV is 0.07%. Against the original
+paired baseline, 4K TTFT improves from 18.3407 s to 0.7297 s (25.133×) and
+decode TPOT from 17.567 ms to 10.822 ms (1.623×). The Broker-owned deployment
+repeats the exact 1K trajectory with 0.0793 s TTFT and 11.613 ms TPOT.
+
+### Causal profile
+
+The actual hybrid-candidate report remains on the GPU host at
+`/var/lib/agent-gpu-broker/profiles/omni-4k-softmax-exp-cache.nsys-rep`, size
+1,487,341 bytes, SHA-256
+`1d0957cf164fa6a35d282eff742550f479202425d870d7636af7adf8f7676da2`.
+The profiled request preserves the 4K trajectory; profiler timing is not used
+for admission.
+
+Across the same 288 softmax launches, summed kernel time falls from
+250.759 ms to 184.393 ms (26.5% lower, 1.360× faster). The softmax share falls
+from 32.3% to 25.9%. The two leading packed-GEMM candidates remain unchanged
+at about 162.4 ms and 132.1 ms, and launch count remains 8,268. This is the
+predicted causal result of deleting one exponential evaluation per valid
+score, not a launch or model-path change.
+
+## Newest promotion decision
+
+**Decision: promote the shape-specialized FP32 numerator cache, composed with
+decode TMRoPE caching, stream-ordered allocation, batched GQA and exact-order
+softmax, for the tested single-request BF16 cells.** It passes bit-exact and
+launch-boundary operator gates, complete trajectories, repeated no-profiler
+timing, long-context capacity, real multimodal, OOM recovery, explicit-path
+and actual-candidate profile gates. The RTX 4090 service runs this binary under
+Broker ownership; Qwen3.8 remains down.
+
+The next bounded opportunity is load-time Gate/Up packing: replace two GEMMs
+with one wider GEMM and a fused SwiGLU without duplicating GPU weights. This
+result does not claim multi-request or continuous-batching performance, video
+or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.
+
 ## Promoted decode TMRoPE position cache
 
 Primary classification: **source/runtime graph**. Each Qwen2.5-Omni layer
@@ -383,7 +480,7 @@ only 9 microseconds of GPU copy time. Prefill API counts remain essentially
 unchanged, proving the optimized gate is decode-only. Kernel count stays at
 8,268 and the leading prefill GPU kernel remains sequential softmax.
 
-## Latest promotion decision
+## Decode-cache decision at that stage
 
 **Decision: promote decode-only TMRoPE position caching, composed with the
 accepted allocator, batched GQA and exact-order softmax, for the tested
@@ -395,7 +492,7 @@ service runs this binary under Broker ownership; Qwen3.8 remains down.
 This result does not claim multi-request or continuous-batching performance,
 video or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.
 
-## Promoted stream-ordered allocation candidate
+## Earlier promoted stream-ordered allocation candidate
 
 Primary classification: **source/runtime graph**. The candidate adds an
 explicit `APXINF_STREAM_ORDERED_ALLOC=1` mode to the existing transient output
@@ -484,7 +581,7 @@ GEMM families. The next bounded opportunity is to upload TMRoPE positions once
 per forward instead of once per Q/K layer call, then reassess whether the
 remaining softmax arithmetic justifies a semantics-preserving kernel change.
 
-## Current promotion decision
+## Allocator decision at that stage
 
 **Decision: promote stream-ordered transient allocation plus in-place KV
 reset, composed with strided-batched GQA and sequential-order softmax, for the

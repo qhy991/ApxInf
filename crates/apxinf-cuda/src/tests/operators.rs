@@ -4,7 +4,8 @@ use crate::buffer::{CudaBuffer, HostMappedBuffer};
 use crate::context::CudaContext;
 use crate::kernels::activation::{gelu_tanh, silu};
 use crate::kernels::attention::{
-    causal_mask, grouped, sdpa_with_batched_prefill, softmax, softmax_causal, vision,
+    causal_mask, grouped, sdpa_with_batched_prefill, softmax, softmax_causal,
+    softmax_causal_with_exp_cache, vision,
 };
 use crate::kernels::cache::append;
 use crate::kernels::elementwise::{add, add_bias, mul, scale};
@@ -334,6 +335,25 @@ fn attention_softmax_bf16_matches_fp32_reference() {
 }
 
 #[test]
+fn attention_softmax_exp_cache_bf16_is_bit_exact() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, cols) = (3usize, 2usize, 257usize);
+    let rows = seq_len * n_heads;
+    let input = (0..rows * cols)
+        .map(|index| ((index as f32 * 0.019) - 4.0).sin())
+        .collect::<Vec<_>>();
+    let tensor = upload_fp32_as_bf16(&ctx, &input, vec![rows, cols]).unwrap();
+    let scalar = softmax_causal_with_exp_cache(&ctx, &tensor, 4, n_heads as u32, false)
+        .unwrap();
+    let cached = softmax_causal_with_exp_cache(&ctx, &tensor, 4, n_heads as u32, true)
+        .unwrap();
+    assert_eq!(
+        download_bf16_as_fp32(&cached).unwrap(),
+        download_bf16_as_fp32(&scalar).unwrap()
+    );
+}
+
+#[test]
 fn attention_softmax_bf16_crosses_legacy_grid_y_boundary() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     let rows = 65_536usize;
@@ -342,6 +362,18 @@ fn attention_softmax_bf16_crosses_legacy_grid_y_boundary() {
     let input = vec![0.0; rows * cols];
     let tensor = upload_fp32_as_bf16(&ctx, &input, vec![rows, cols]).unwrap();
     let output = softmax_causal(&ctx, &tensor, 0, n_heads).unwrap();
+    let actual = download_bf16_as_fp32(&output).unwrap();
+    assert_eq!(actual.len(), rows);
+    assert!(actual.iter().all(|value| (*value - 1.0).abs() <= 1e-3));
+}
+
+#[test]
+fn attention_softmax_exp_cache_crosses_legacy_grid_y_boundary() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let rows = 65_536usize;
+    let cols = 1usize;
+    let tensor = upload_fp32_as_bf16(&ctx, &vec![0.0; rows], vec![rows, cols]).unwrap();
+    let output = softmax_causal_with_exp_cache(&ctx, &tensor, 0, 16, true).unwrap();
     let actual = download_bf16_as_fp32(&output).unwrap();
     assert_eq!(actual.len(), rows);
     assert!(actual.iter().all(|value| (*value - 1.0).abs() <= 1e-3));
