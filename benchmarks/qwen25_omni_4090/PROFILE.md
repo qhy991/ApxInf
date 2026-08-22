@@ -846,9 +846,27 @@ actual-binary profile gates. Qwen3.8 remains down.
 
 This result does not claim multi-request or continuous-batching performance,
 non-SM89 portability, video or speech generation, vLLM parity, a larger OOM
-boundary, or transaction-counter MFU/BWU. The next exact graph-local boundary
-is whether Q TMRoPE can share the same launch without increasing the fused
-kernel's critical path.
+boundary, or transaction-counter MFU/BWU.
+
+## Rejected combined Q/K/V TMRoPE launch
+
+The next candidate placed the 16 Q-head TMRoPE blocks and two fused K/V cache
+blocks in one launch. Candidate binary SHA-256 was
+`bee2ec7b4e1a37fd285e508f99d23066db4ead542ff00637c60396c98996d5a6`.
+A direct CUDA test compared Q output plus complete K/V cache allocations
+byte-for-byte with the two accepted nodes and passed; quick and decode token
+trajectories were also exact and stable.
+
+| Workload | Accepted TPOT | Combined launch TPOT | Improvement |
+|---|---:|---:|---:|
+| 1,024 + 32 | 9.383 ms | 9.321 ms | 0.66% |
+| 128 + 128 | 8.254 ms | 8.188 ms | 0.80% |
+
+Both changes exceed measurement noise but miss the predeclared 1% materiality
+gate. Long-context, OOM, multimodal and profiler budgets were therefore not
+spent. **Decision: revert and remove the combined kernel/selector.** The raw
+no-profiler evidence is retained; direct K/V publication remains the accepted
+boundary.
 
 ## Promoted shape-specialized softmax exp cache
 

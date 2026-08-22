@@ -97,8 +97,8 @@ decode-step logits D2H. The 128-block partial argmax and one-block final
 argmax take 2.69 and 2.40 microseconds in the observable eager prewarm; the
 fused TMRoPE K/V node takes 3.66 microseconds and the complete request profile
 reports 8.276 ms average stream synchronization.
-Gate/Up packing and one-block GPU argmax were separately retained as null and
-sub-threshold results. Remaining single-request decode latency is dominated
+Gate/Up packing, one-block GPU argmax and combined Q/K/V TMRoPE were retained
+as null or sub-threshold results. Remaining single-request decode latency is dominated
 by GPU graph compute: the BF16 text-weight read lower bound is 6.172 GB/token,
 equivalent to about 748 GB/s or 74.2% of the RTX 4090's 1,008 GB/s peak at the
 accepted 8.252 ms TPOT. The evidence still does not include a vLLM baseline
