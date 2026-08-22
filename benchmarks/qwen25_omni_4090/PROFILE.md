@@ -506,6 +506,68 @@ custody and causal profile gates. The deployed binary SHA-256 is
 `778066a34e7df2c5c300db6bc4286f546d8c877ffa07987ae8ecc89460c08178`;
 `c8e06b41` is retained for rollback. Qwen3.8 remains down when unused.
 
+### Promoted final-chunk-only logits
+
+Primary classification: **source/runtime graph**. Every non-final chunk used
+to run output normalization, synchronously copy its complete final hidden
+tensor to CPU, upload the selected hidden row, run the LM head and copy logits
+back to CPU. No consumer observed those logits; only the last chunk determines
+the first generated token. The promoted path now ends intermediate chunks
+immediately after their KV state is published. The final chunk still calls the
+ordinary validated forward path, including the existing one-token graph rule
+for a one-token tail, so cache, position and final-logit semantics are
+unchanged.
+
+| Workload | Adaptive TTFT p50 | Final-only TTFT p50 | Change |
+|---:|---:|---:|---:|
+| 2,048 + 32 | 191.307 ms | 183.692 ms | 3.98% lower |
+| 4,096 + 32 | 571.149 ms | 539.671 ms | 5.51% lower |
+| 8,192 + 8 | 2.7551 s | 2.6477 s | 3.90% lower |
+| 11,264 + 8 | 5.3570 s | 5.1495 s deployed | 3.87% lower |
+| 16,384 + 8 | 11.4457 s | 11.0517 s | 3.44% lower |
+| 32,760 + 8 | 45.3449 s | 43.7842 s | 3.44% lower |
+
+The 11,264 candidate stability screen passes 5/5 with 0.16% TTFT CV; the
+deployed screen passes 3/3 with 0.09% CV. Every trajectory is byte-identical
+to the accepted adaptive path. The 1K path remains 0.0801 s TTFT and
+9.390 ms TPOT; deployed decode remains 8.276 ms TPOT. Real PNG/WAV requests
+and all typed contract probes pass.
+
+The first 75-second profile budget expired six seconds into the request and
+is retained as `candidate-chunk-final-logits-11264-profile-timeout.json`; it
+is a measurement-window failure, not model evidence. The valid 120-second
+report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-11264-chunk-final-logits-v2.nsys-rep`,
+size 3,775,568 bytes, SHA-256
+`4ac44472c9e9c2b00ee5e78bf87d828fe677227109ddaaa669f9a4925304f984`.
+Profiler timing is explanatory only.
+
+At 11,264 tokens, the request-window profile changes exactly the predicted
+edges:
+
+- final-hidden D2H copies fall from 22 to 1 and logits D2H copies from 29 to
+  8; corresponding hidden-row H2D copies also fall from 29 to 8;
+- output-normalization and LM-head kernels fall from 29 to 8; LM-head kernel
+  time falls from 19.775 to 5.385 ms;
+- stream synchronizations fall from 30 to 9 and synchronous `cudaMemcpy`
+  calls from 1,699 to 1,636;
+- total summed GPU kernel time falls by 24.935 ms, from 5,070.062 to
+  5,045.126 ms. The larger 207 ms no-profiler TTFT reduction includes the
+  removed host synchronization/control gaps; profiler span is not used to
+  quantify that effect.
+
+The checked-in CUDA API, GPU-kernel and memory-time CSV hashes are respectively
+`dc4fe602886949a2e98af500a334636cedbde0b2a03d4a653aa31687df3df51b`,
+`182179afbbc1e9a603d134e363d882270141fb37ee8d908bfc5189189bee75ff`
+and `37b149a20704e888ddbac206aa50f7207148399e5fb26f86518f12c8c89ee74e`.
+
+**Decision: promote final-chunk-only logits for all chunked text-prefill
+cells.** It passes complete-trajectory, repeated no-profiler, 32K capacity,
+multimodal isolation, interface, binary-custody and causal-profile gates. The
+deployed binary SHA-256 is
+`ac8e2436d8aca552b713de5b0cb7ed1a12b320e510a4c5f1aae63d116a33cc17`;
+`778066a3` is retained for rollback. Qwen3.8 remains down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

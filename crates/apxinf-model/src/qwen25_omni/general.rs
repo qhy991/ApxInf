@@ -306,6 +306,17 @@ impl GeneralQwen25Omni {
             self.kv.advance(1);
             return Ok(logits);
         }
+        let hidden = self.forward_text_hidden_validated(token_ids, start_pos)?;
+        self.logits_last_row(&hidden)
+    }
+
+    /// Run an already-validated ordinary text slice through KV publication.
+    /// The caller decides whether the final hidden row needs an LM-head result.
+    fn forward_text_hidden_validated(
+        &mut self,
+        token_ids: &[u32],
+        start_pos: u32,
+    ) -> Result<Tensor> {
         let mut hidden = self
             .backend
             .embedding(&self.text.token_embedding, token_ids)?;
@@ -314,7 +325,7 @@ impl GeneralQwen25Omni {
             hidden = self.forward_layer(&hidden, index, &positions)?;
         }
         self.kv.advance(token_ids.len());
-        self.logits_last_row(&hidden)
+        Ok(hidden)
     }
 
     fn prefill_inner(&mut self, input: LlmInput<'_>) -> Result<Tensor> {
@@ -447,13 +458,16 @@ impl GeneralQwen25Omni {
         } else {
             CHUNKED_PREFILL_LARGE_SIZE
         };
-        let mut logits = None;
-        for chunk in token_ids.chunks(chunk_size) {
+        let chunks = token_ids.len().div_ceil(chunk_size);
+        for (index, chunk) in token_ids.chunks(chunk_size).enumerate() {
             let start = u32::try_from(self.kv.seq_len())
                 .map_err(|_| Error::Other("chunked prefill position exceeds u32".into()))?;
-            logits = Some(self.forward_inner(chunk, start)?);
+            if index + 1 == chunks {
+                return self.forward_inner(chunk, start);
+            }
+            self.forward_text_hidden_validated(chunk, start)?;
         }
-        logits.ok_or_else(|| Error::Other("chunked prefill received no tokens".into()))
+        Err(Error::Other("chunked prefill received no tokens".into()))
     }
 
     fn forward_layer(
