@@ -422,6 +422,32 @@ video or speech generation, vLLM parity, exact softmax acceleration above
 4,096 prefill columns, or transaction-counter MFU/BWU. The old 11,264 OOM is
 historical evidence for full-prompt prefill, not the current service limit.
 
+### Rejected long-prefill exp-cache extension
+
+The next bounded candidate raised the exact FP32 numerator-cache prefill gate
+from 4,096 to 11,264 columns. Its SM89 operator test compared the full BF16
+output at 11,264 columns byte-for-byte with scalar softmax and passed. Quick
+and decode trajectories also remained exact. Candidate binary SHA-256 was
+`5b886f7b487883f145322870e90ecacc852aeb02e5f63491082760cec754f563`.
+
+Matched no-profiler measurements exposed a shared-memory residency crossover:
+
+| Prompt + 8 output | Scalar TTFT p50 | Extended cache TTFT p50 | Change |
+|---:|---:|---:|---:|
+| 5,120 | 1.0250 s | 1.0099 s | 1.48% faster |
+| 6,144 | 1.5470 s | 1.5530 s | 0.39% slower |
+| 7,168 | 2.1517 s | 2.1910 s | 1.82% slower |
+| 8,192 | 2.8461 s | 2.9062 s | 2.11% slower |
+| 11,264 | 5.4246 s | 5.9987 s | 10.58% slower |
+
+The 5,120-only gain removes about 15 ms but does not survive the standard 8K
+cell, while dynamic shared memory grows with KV length and progressively
+reduces CTA residency. **Decision: revert.** The experimental selector,
+policy helper and long-shape test were removed from the production source;
+the structured `baseline-long-prefill-exp-cache-*` and
+`candidate-long-prefill-exp-cache-*` records remain to close this branch.
+The accepted `c8e06b41` service is restored and healthy; Qwen3.8 remains down.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
