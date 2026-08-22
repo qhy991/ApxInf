@@ -2,8 +2,8 @@
 
 `BASELINE.md` owns the current accepted deployment summary. This file retains
 the causal profiles, rejected branches and promotion evidence for each stage;
-the current promotion record is **Promoted short-KV CUDA Graph decode
-candidate** below.
+the current promotion record is **Promoted two-stage GPU token selection**
+below.
 
 ## Contract
 
@@ -443,10 +443,138 @@ Broker-owned RTX 4090 service runs the promoted SHA-256; Qwen3.8 remains down.
 
 This result does not claim a graph win at or above position 2,048,
 multi-request or continuous-batching performance, video or speech generation,
-vLLM parity, a larger OOM boundary, or MFU/BWU. The next bounded optimization
-question is whether exact logit readback and CPU token selection consume a
-material fraction of the new 8.8 ms decode interval; profile that boundary
-before implementing GPU argmax or another fusion.
+vLLM parity, a larger OOM boundary, or MFU/BWU. The following experiment
+resolves its bounded logit-readback and CPU-selection question.
+
+## Promoted two-stage GPU token selection
+
+Primary classification: **source/runtime graph**. The graph-only service
+copied one 151,936-element BF16 logit row (303,872 bytes) to the CPU after
+every short-KV decode step, converted it to F32, cloned it once more and ran a
+strict-`>` greedy scan. Existing `APXINF_PERF=1` instrumentation measured
+8.68 ms/token in forward, 0.109 ms/token in CPU argmax and effectively zero in
+the callback. In the actual graph-only Nsight request window, 126 observable
+D2H transfers total 38,287,872 bytes, each `cudaMemcpy` call averages
+49.2 microseconds, graph launch averages 67.9 microseconds and stream
+synchronization averages 8.581 ms. This bounded the removable host selection
+surface at about 0.23 ms/token.
+
+`APXINF_QWEN25_GPU_ARGMAX=1` now selects an exact SM89-only path and requires
+`APXINF_QWEN25_DECODE_GRAPH=1`; missing flags preserve the CPU path, invalid
+values fail closed, and a non-SM89 request fails model load. The selector is
+used only for one-token decode with `start_pos < 2048`. It performs 128
+independent CTA reductions into a 1 KiB persistent workspace, then one final
+CTA writes the lowest-index maximum to a four-byte host-mapped result. Equal
+values, signed-zero ties and NaNs follow the canonical CPU scan. A fast-path
+error is propagated instead of silently falling back to another forward pass.
+
+### Rejected one-block iteration
+
+The first end-to-end candidate used one 256-thread CTA for the full vocabulary.
+Its binary SHA-256 was
+`149b2b268bd10e99151a47896530fe54665ec926905511e6666a2f9024b58aa8`.
+It preserved every quick, decode, 2,040-boundary and 4K trajectory and removed
+decode-step D2H, but failed the predeclared 1% materiality gate in the main
+decode cell:
+
+| Workload | Graph-only TPOT | One-block TPOT | Improvement |
+|---|---:|---:|---:|
+| 1,024 + 32 | 9.943 ms | 9.844 ms | 1.00% |
+| 128 + 128 | 8.794 ms | 8.716 ms | 0.89% |
+
+Its actual report remains on the GPU host at
+`/var/lib/agent-gpu-broker/profiles/omni-decode128-gpu-argmax-oneblock.nsys-rep`,
+size 706,140 bytes, SHA-256
+`b55c55144e90df655a683eed7b631cf5a8c68d3c1cc61251c605c1b62b0698a0`.
+The observable eager argmax kernel takes 143.1 microseconds and decode stream
+synchronization averages 8.737 ms. **Decision: continue, do not promote the
+one-block implementation.**
+
+The production-header microbenchmark then compared both exact kernels over
+1,000 full-vocabulary iterations with the same host-mapped output. One block
+takes 83.855 microseconds; the two-stage path takes 5.607 microseconds
+(14.96× faster), and both select the expected lowest index 17. This operator
+evidence justified one final end-to-end iteration but did not itself promote
+it.
+
+### Correctness, boundary and failure gates
+
+| Workload | Result | Trajectory SHA-256 | Graph-only agreement |
+|---|---:|---|---:|
+| GPU operator: ties, signed zero, NaN, full vocab | pass | n/a | exact CPU contract |
+| 1,024 prompt + 32 output | 10/10 stable | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+| 128 prompt + 128 output | 12/12 stable | `a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039` | exact |
+| 2,040 prompt + 16 output | 3/3 stable | `50857ada86058d751e96a27b9f943025c41da1b2b8c856812e45f1ab00024498` | exact |
+| 4,096 prompt + 8 output | 3/3 stable | `edc940b80ff945971996ddf2b30534773258bb41d3d1812c38f36ba06eaabcbd` | exact |
+| 10,752 prompt + 8 output | 1/1 capacity probe | `19478a6e232ab7479a2a8026f01096ab68a16f72d922be9695d807928125b02d` | exact |
+| 11,264 prompt + 8 output | HTTP 503 CUDA OOM | n/a | same first failure |
+| Post-OOM 1,024 + 32 | 3/3 stable | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+
+The 2,040 case crosses the selector boundary during generation: positions
+below 2,048 use graph selection and later positions use the ordinary path.
+Its exact trajectory proves mixed-path KV ownership. After the expected OOM,
+the service remains healthy, resident memory returns to about 12.3 GiB and
+the next three requests pass. A real 1,760-token PNG request and 52-token WAV
+request reproduce the complete graph-only output IDs with no fallback. The
+structured multimodal record is
+`results/candidate-gpu-argmax-two-stage-multimodal.json`.
+
+### No-profiler end-to-end result
+
+The stable candidate screens are compared with the nearest stable graph-only
+screens; all performance rows are client/service timing without a profiler.
+
+| Workload | Metric | Graph only | Two stage | Ratio / change |
+|---|---|---:|---:|---:|
+| 1,024 + 32 | wall p50 | 0.3893 s | 0.3820 s | 1.019× faster |
+| 1,024 + 32 | TPOT p50 | 9.915 ms | 9.699 ms | 1.022× faster |
+| 128 + 128 | wall p50 | 1.1385 s | 1.1122 s | 1.024× faster |
+| 128 + 128 | TPOT p50 | 8.794 ms | 8.589 ms | 1.024× faster |
+| 2,040 + 16 | TPOT p50 | 11.632 ms | 11.549 ms | 0.7% faster |
+| 4,096 + 8 | TTFT p50 | 0.7497 s | 0.7490 s | unchanged |
+| 4,096 + 8 | TPOT p50 | 13.438 ms | 13.429 ms | unchanged |
+
+Candidate quick and decode TPOT CVs are 0.19% and 0.05%. The deployed service
+repeats exact trajectories at 9.706 ms quick TPOT and 8.580 ms decode TPOT.
+Against the original baseline, decode TPOT improves from 17.567 ms to
+8.589 ms (2.045×); the accepted 4K TTFT improvement remains 25.138×.
+
+### Actual promoted-binary attribution
+
+The deployed binary SHA-256 is
+`ba1d82933b68506832c75ed63bf7c95d07f865329402bfe97293f84240577944`.
+The actual-candidate report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-decode128-gpu-argmax-two-stage.nsys-rep`,
+size 706,500 bytes, SHA-256
+`cb0c61cbc927606c4192256dbd683450a40b3062adc672c149330e3a7fdf9e96`.
+Its exact profiled trajectory reports 8.676 ms TPOT; profiler timing is not an
+admission result.
+
+The request window contains 127 graph launches and zero logits D2H transfers.
+Graph-launch API time averages 64.1 microseconds and the 127 stream
+synchronizations average 8.609 ms. CUPTI undercounts graph-replayed nodes, but
+the eager prewarm records the partial and final argmax kernels at 2.688 and
+2.400 microseconds. The checked-in API, kernel and memory CSV hashes are
+respectively
+`133df8f574feec8b6d657e8187f730601a577c0cec46d67fe5e3880f9048ea73`,
+`1f1ea33f02f591c8700fd8ad2cdb0d1a849db1de6135136a3006c9191137da4e`
+and `e571f3aa0676c78ad08b8cc6ff43bb70536c9026df8e6e4e037f16a7c68e5794`.
+
+## GPU token-selection decision
+
+**Decision: promote two-stage exact GPU token selection, composed with the
+accepted short-KV CUDA Graph, softmax, batched GQA, allocator and TMRoPE
+cache, for the tested SM89 single-request BF16 cells.** It passes exact
+operator semantics, complete trajectories, mixed-boundary behavior, repeated
+no-profiler materiality, long-context/OOM recovery, real image/audio input,
+explicit Broker configuration and actual-binary profile gates. Qwen3.8
+remains down.
+
+This result does not claim benefit at or above position 2,048, multi-request
+or continuous-batching performance, non-SM89 portability, video or speech
+generation, vLLM parity, a larger OOM boundary, or MFU/BWU. The serial greedy
+loop now has no full-logit D2H during short decode; the next bounded target
+must come from GPU graph compute rather than host token selection.
 
 ## Promoted shape-specialized softmax exp cache
 

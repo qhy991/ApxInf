@@ -65,6 +65,8 @@ struct DecodeWorkspace {
     logits: CudaBuffer,
     token: HostMappedBuffer,
     positions: HostMappedBuffer,
+    selected_token: HostMappedBuffer,
+    argmax_partials: CudaBuffer,
 }
 
 impl DecodeWorkspace {
@@ -96,6 +98,12 @@ impl DecodeWorkspace {
             token: HostMappedBuffer::alloc(4, device).map_err(Error::Cuda)?,
             // [tmrope_t, tmrope_h, tmrope_w, linear_cache_position]
             positions: HostMappedBuffer::alloc(16, device).map_err(Error::Cuda)?,
+            selected_token: HostMappedBuffer::alloc(4, device).map_err(Error::Cuda)?,
+            argmax_partials: CudaBuffer::alloc_zeros(
+                kernels::selection::ARGMAX_PARTIAL_BYTES,
+                device,
+            )
+            .map_err(Error::Cuda)?,
         })
     }
 }
@@ -132,6 +140,7 @@ fn decode_forward_capturable(
     weights: &Qwen25OmniDecodeGraphWeights<'_>,
     cache: &mut dyn KvCache,
     config: &Qwen25OmniDecodeGraphConfig,
+    select_token: bool,
 ) -> Result<()> {
     if weights.layers.len() != config.n_layers || config.n_layers == 0 {
         return Err(Error::Other(
@@ -396,17 +405,32 @@ fn decode_forward_capturable(
         &weight_view(weights.lm_head, device)?,
         0.0,
         &workspace.logits,
-    )
+    )?;
+    if select_token {
+        kernels::selection::argmax_bf16_into(
+            context,
+            &workspace.logits,
+            &workspace.argmax_partials,
+            workspace.selected_token.address(),
+            config.vocab_size,
+        )?;
+    }
+    Ok(())
 }
 
 pub struct Qwen25OmniDecodeGraph {
     config: Qwen25OmniDecodeGraphConfig,
     workspace: DecodeWorkspace,
     graph: Option<Box<dyn Graph>>,
+    select_token: bool,
 }
 
 impl Qwen25OmniDecodeGraph {
-    pub fn new(backend: &CudaBackend, config: Qwen25OmniDecodeGraphConfig) -> Result<Self> {
+    pub fn new(
+        backend: &CudaBackend,
+        config: Qwen25OmniDecodeGraphConfig,
+        select_token: bool,
+    ) -> Result<Self> {
         if config.n_layers == 0
             || config.n_heads == 0
             || config.n_kv_heads == 0
@@ -421,6 +445,7 @@ impl Qwen25OmniDecodeGraph {
             workspace: DecodeWorkspace::new(backend.device_id(), &config)?,
             config,
             graph: None,
+            select_token,
         })
     }
 
@@ -444,6 +469,7 @@ impl Qwen25OmniDecodeGraph {
             weights,
             cache,
             &self.config,
+            self.select_token,
         )?;
         backend.synchronize()?;
         cache.clear()?;
@@ -455,6 +481,7 @@ impl Qwen25OmniDecodeGraph {
             weights,
             cache,
             &self.config,
+            self.select_token,
         );
         let graph = backend.end_capture()?;
         capture?;
@@ -462,7 +489,7 @@ impl Qwen25OmniDecodeGraph {
         Ok(())
     }
 
-    pub fn decode(
+    fn execute(
         &mut self,
         backend: &CudaBackend,
         weights: &Qwen25OmniDecodeGraphWeights<'_>,
@@ -470,7 +497,7 @@ impl Qwen25OmniDecodeGraph {
         token: u32,
         positions: [u32; 3],
         cache_position: u32,
-    ) -> Result<Tensor> {
+    ) -> Result<()> {
         let graph = self
             .graph
             .as_ref()
@@ -490,11 +517,49 @@ impl Qwen25OmniDecodeGraph {
                 weights,
                 cache,
                 &self.config,
+                self.select_token,
             )?;
         } else {
             graph.replay()?;
         }
-        backend.synchronize()?;
+        backend.synchronize()
+    }
+
+    pub fn decode(
+        &mut self,
+        backend: &CudaBackend,
+        weights: &Qwen25OmniDecodeGraphWeights<'_>,
+        cache: &mut dyn KvCache,
+        token: u32,
+        positions: [u32; 3],
+        cache_position: u32,
+    ) -> Result<Tensor> {
+        self.execute(backend, weights, cache, token, positions, cache_position)?;
         read_logits(&self.workspace, self.config.vocab_size)
+    }
+
+    pub fn selects_token(&self) -> bool {
+        self.select_token
+    }
+
+    pub fn decode_token(
+        &mut self,
+        backend: &CudaBackend,
+        weights: &Qwen25OmniDecodeGraphWeights<'_>,
+        cache: &mut dyn KvCache,
+        token: u32,
+        positions: [u32; 3],
+        cache_position: u32,
+    ) -> Result<u32> {
+        if !self.select_token {
+            return Err(Error::Other(
+                "Qwen2.5-Omni GPU token selection is disabled".into(),
+            ));
+        }
+        self.execute(backend, weights, cache, token, positions, cache_position)?;
+        self.workspace
+            .selected_token
+            .read_u32()
+            .map_err(Error::Cuda)
     }
 }

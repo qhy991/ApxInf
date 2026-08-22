@@ -294,8 +294,8 @@ where
     for i in 0..max_new_tokens.saturating_sub(1) {
         let pos = (prompt_len + i) as u32;
         // GPU-argmax fast path: skip full-logits D2H + CPU scan.
-        if let Some(Ok(tok)) = model.decode_token(current_token, pos) {
-            current_token = tok;
+        if let Some(result) = model.decode_token(current_token, pos) {
+            current_token = result?;
             generated.push(current_token);
             on_token(current_token);
             if eos_token_id == Some(current_token) {
@@ -414,7 +414,42 @@ fn argmax_last_row(logits: &Tensor, seq_len: usize, vocab_size: usize) -> Result
 
 #[cfg(test)]
 mod tests {
-    use super::validate_generation_limits;
+    use std::collections::HashMap;
+
+    use apxinf_core::{Device, Error, Result, Tensor};
+    use apxinf_loader::ModelConfig;
+
+    use super::{validate_generation_limits, LlmInput, LlmTrait};
+
+    struct DecodeErrorModel {
+        forward_calls: usize,
+    }
+
+    impl LlmTrait for DecodeErrorModel {
+        fn load(
+            _config: ModelConfig,
+            _weights: HashMap<String, Tensor>,
+            _device: Device,
+        ) -> Result<Self> {
+            Ok(Self { forward_calls: 0 })
+        }
+
+        fn forward(&mut self, _token_ids: &[u32], _start_pos: u32) -> Result<Tensor> {
+            self.forward_calls += 1;
+            assert_eq!(self.forward_calls, 1, "decode error fell back to forward");
+            Tensor::from_f32(vec![1, 2], &[0.0, 1.0])
+        }
+
+        fn reset(&mut self) {}
+
+        fn decode_token(&mut self, _token: u32, _pos: u32) -> Option<Result<u32>> {
+            Some(Err(Error::Other("GPU token selection failed".into())))
+        }
+
+        fn vocab_size(&self) -> usize {
+            2
+        }
+    }
 
     #[test]
     fn combined_context_contract_is_checked_and_fail_closed() {
@@ -425,5 +460,16 @@ mod tests {
         assert!(validate_generation_limits(usize::MAX, 1, Some(128), Some(usize::MAX)).is_err());
         assert!(validate_generation_limits(0, 1, Some(128), Some(32_768)).is_err());
         assert!(validate_generation_limits(1, 0, Some(128), Some(32_768)).is_err());
+    }
+
+    #[test]
+    fn decode_token_error_fails_closed_without_forward_fallback() {
+        let mut model = DecodeErrorModel { forward_calls: 0 };
+        let error = model
+            .generate_streaming(LlmInput::text(&[1]), 2, |_| {}, None)
+            .err()
+            .expect("GPU token-selection error must fail generation");
+        assert!(error.to_string().contains("GPU token selection failed"));
+        assert_eq!(model.forward_calls, 1);
     }
 }

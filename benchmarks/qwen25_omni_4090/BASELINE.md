@@ -73,26 +73,27 @@ Evidence gates:
 The accepted path composes sequential-order softmax with a shape-specialized
 FP32 numerator cache, strided-batched GQA prefill, stream-ordered transient
 allocation, in-place KV reset, decode-only TMRoPE position caching and a
-short-KV CUDA Graph. The graph is selected only for one-token BF16 decode with
+short-KV CUDA Graph with exact two-stage GPU token selection. The graph and
+selection path are selected only for SM89 one-token BF16 decode with
 `start_pos < 2048`; longer-KV decode and all prefill retain the accepted
 ordinary path. It preserves complete trajectories through the 10,752-token
 passing boundary, keeps the first failure at 11,264 tokens, and recovers the
 immediately following request after OOM. The deployed SM89 binary SHA-256 is
-`a8cb1be3e697a96642d0500e096b0d6749eb1adb482bf65f8f6f8793e81aa217`.
+`ba1d82933b68506832c75ed63bf7c95d07f865329402bfe97293f84240577944`.
 
-In the final same-window comparison, 1K+32 wall time improves from 0.4408 s to
-0.3894 s (1.132×) and 128+128 TPOT improves from 10.809 ms to 8.799 ms
-(1.228×). The graph-ineligible 4K screen remains at 0.7296 s TTFT with 0.64%
-CV. Against the original baseline, 4K TTFT improves from 18.3407 s to 0.7296 s
-(25.138×) and decode TPOT improves from 17.567 ms to 8.799 ms (1.997×). See
-`PROFILE.md` and the structured raw results for the promotion record.
+Relative to the accepted graph-only service, 1K+32 TPOT improves from
+9.915 ms to 9.699 ms (1.022×) and 128+128 TPOT improves from 8.794 ms to
+8.589 ms (1.024×). Their final TPOT CVs are 0.19% and 0.05%. The
+graph-ineligible 4K screen is unchanged. Against the original baseline, 4K
+TTFT remains 25.138× faster and decode TPOT improves from 17.567 ms to
+8.589 ms (2.045×). See `PROFILE.md` and the structured raw results for the
+promotion record.
 
-The actual clean-binary profile records 127 `cudaGraphLaunch` calls for the
-127 decode steps following the first prefill token. Graph-launch API time is
-8.628 ms total, while the 131 stream synchronizations total 1.091 s; remaining
-decode latency is therefore GPU replay work rather than host launch dispatch.
-Gate/Up packing was separately tested and reverted as a small end-to-end
-regression. The next bounded question is whether logit readback and CPU
-sampling are material enough to justify an exact GPU-side selection path. The
-evidence still does not include a vLLM baseline, multi-request serving, or an
-MFU/BWU estimate.
+The actual promoted-binary profile records 127 `cudaGraphLaunch` calls and no
+decode-step logits D2H. The 128-block partial argmax and one-block final
+argmax take 2.69 and 2.40 microseconds in the observable eager prewarm; the
+complete request profile reports 8.609 ms average stream synchronization.
+Gate/Up packing and one-block GPU argmax were separately retained as null and
+sub-threshold results. Remaining single-request decode latency is dominated
+by GPU graph compute. The evidence still does not include a vLLM baseline,
+multi-request serving, or an MFU/BWU estimate.

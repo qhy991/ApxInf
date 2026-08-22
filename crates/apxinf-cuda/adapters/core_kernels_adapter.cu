@@ -593,11 +593,13 @@ extern "C" cudaError_t apxinf_flash_attn_decode_bf16(
 }
 
 extern "C" cudaError_t apxinf_argmax_bf16(
-    const void* logits, uint32_t n, void* out, void* stream)
+    const void* logits, uint32_t n, void* partials, void* out, void* stream)
 {
     cudaStream_t s = (cudaStream_t)stream;
-    // One block of 256 threads — vocab (32k) / 256 = 128 elems/thread.
-    argmax_bf16_kernel<<<1, 256, 0, s>>>(
-        (const __nv_bfloat16*)logits, n, (uint32_t*)out);
+    argmax_bf16_partials_kernel<<<APXINF_ARGMAX_PARTIAL_BLOCKS, 256, 0, s>>>(
+        (const __nv_bfloat16*)logits, n, (ArgmaxPair*)partials);
+    argmax_pair_final_kernel<<<1, 256, 0, s>>>(
+        (const ArgmaxPair*)partials, APXINF_ARGMAX_PARTIAL_BLOCKS,
+        (uint32_t*)out);
     return cudaGetLastError();
 }

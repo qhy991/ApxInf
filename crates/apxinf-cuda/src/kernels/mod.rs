@@ -19,6 +19,7 @@ pub mod quantization;
 pub mod qwen35_attention;
 pub mod qwen35_common;
 pub mod rope;
+pub mod selection;
 
 pub use crate::workspace::GraphWorkspace;
 

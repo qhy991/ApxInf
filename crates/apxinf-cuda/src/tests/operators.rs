@@ -11,9 +11,10 @@ use crate::kernels::cache::append;
 use crate::kernels::elementwise::{add, add_bias, mul, scale};
 use crate::kernels::embedding::lookup;
 use crate::kernels::norm::{layer, rms};
+use crate::kernels::preprocess::{avg_pool1d_bf16, im2col1d_bf16};
 use crate::kernels::qwen35_attention;
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
-use crate::kernels::preprocess::{avg_pool1d_bf16, im2col1d_bf16};
+use crate::kernels::selection::argmax_bf16_into;
 use crate::CudaKVCache;
 
 fn gpu_ptr(tensor: &Tensor) -> Result<*mut std::ffi::c_void> {
@@ -30,6 +31,41 @@ use crate::test_util::{
 
 fn silu_ref(x: f32) -> f32 {
     x / (1.0f32 + (-x).exp())
+}
+
+#[test]
+fn argmax_bf16_matches_lowest_index_cpu_contract() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let run = |values: &[f32]| {
+        let tensor = upload_fp32_as_bf16(&ctx, values, vec![values.len()]).unwrap();
+        let logits = CudaBuffer::from_tensor(&tensor).unwrap();
+        let partials = CudaBuffer::alloc_zeros(
+            crate::kernels::selection::ARGMAX_PARTIAL_BYTES,
+            ctx.device_id(),
+        )
+        .unwrap();
+        let output = HostMappedBuffer::alloc(4, ctx.device_id()).unwrap();
+        argmax_bf16_into(
+            &ctx,
+            &logits,
+            &partials,
+            output.address(),
+            values.len(),
+        )
+        .unwrap();
+        ctx.synchronize().unwrap();
+        output.read_u32().unwrap()
+    };
+
+    assert_eq!(run(&[1.0, 5.0, 5.0, 4.0]), 1);
+    assert_eq!(run(&[-0.0, 0.0]), 0);
+    assert_eq!(run(&[f32::NAN, 3.0, 3.0]), 1);
+    assert_eq!(run(&[f32::NAN, f32::NAN]), 0);
+
+    let mut full_vocab = vec![-4.0; 151_936];
+    full_vocab[17] = 8.0;
+    full_vocab[150_000] = 8.0;
+    assert_eq!(run(&full_vocab), 17);
 }
 
 #[test]

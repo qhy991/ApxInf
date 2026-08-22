@@ -37,20 +37,30 @@ pub struct GeneralQwen25Omni {
 }
 
 #[cfg(feature = "cuda")]
+fn parse_binary_env(name: &str) -> std::result::Result<bool, String> {
+    match std::env::var(name) {
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Ok(value) if value == "0" => Ok(false),
+        Ok(value) if value == "1" => Ok(true),
+        Ok(value) => Err(format!("{name} must be 0 or 1, got `{value}`")),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} must be UTF-8")),
+    }
+}
+
+#[cfg(feature = "cuda")]
 fn decode_graph_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
     ENABLED
-        .get_or_init(|| match std::env::var("APXINF_QWEN25_DECODE_GRAPH") {
-            Err(std::env::VarError::NotPresent) => Ok(false),
-            Ok(value) if value == "0" => Ok(false),
-            Ok(value) if value == "1" => Ok(true),
-            Ok(value) => Err(format!(
-                "APXINF_QWEN25_DECODE_GRAPH must be 0 or 1, got `{value}`"
-            )),
-            Err(std::env::VarError::NotUnicode(_)) => {
-                Err("APXINF_QWEN25_DECODE_GRAPH must be UTF-8".into())
-            }
-        })
+        .get_or_init(|| parse_binary_env("APXINF_QWEN25_DECODE_GRAPH"))
+        .clone()
+        .map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
+fn gpu_argmax_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| parse_binary_env("APXINF_QWEN25_GPU_ARGMAX"))
         .clone()
         .map_err(Error::Other)
 }
@@ -81,16 +91,32 @@ impl GeneralQwen25Omni {
             config.text.max_position_embeddings,
         );
         #[cfg(feature = "cuda")]
-        let decode_graph = if decode_graph_enabled()? {
-            let cuda = cuda_backend(&*backend).ok_or_else(|| {
-                Error::Other("Qwen2.5-Omni decode graph requires CudaBackend".into())
-            })?;
-            Some(Qwen25OmniDecodeGraph::new(
-                cuda,
-                Self::decode_graph_config(&config),
-            )?)
-        } else {
-            None
+        let decode_graph = {
+            let graph_enabled = decode_graph_enabled()?;
+            let select_token = gpu_argmax_enabled()?;
+            if select_token && !graph_enabled {
+                return Err(Error::Other(
+                    "APXINF_QWEN25_GPU_ARGMAX requires APXINF_QWEN25_DECODE_GRAPH=1".into(),
+                ));
+            }
+            if graph_enabled {
+                let cuda = cuda_backend(&*backend).ok_or_else(|| {
+                    Error::Other("Qwen2.5-Omni decode graph requires CudaBackend".into())
+                })?;
+                if select_token && cuda.context().caps().sm != 89 {
+                    return Err(Error::Other(format!(
+                        "Qwen2.5-Omni GPU token selection requires SM89, got SM{}",
+                        cuda.context().caps().sm
+                    )));
+                }
+                Some(Qwen25OmniDecodeGraph::new(
+                    cuda,
+                    Self::decode_graph_config(&config),
+                    select_token,
+                )?)
+            } else {
+                None
+            }
         };
         let model = Self {
             config,
@@ -496,6 +522,51 @@ impl LlmTrait for GeneralQwen25Omni {
 
     fn reset(&mut self) {
         self.clear_state();
+    }
+
+    #[cfg(feature = "cuda")]
+    fn decode_token(&mut self, token: u32, pos: u32) -> Option<Result<u32>> {
+        if pos >= MAX_DECODE_GRAPH_POSITION
+            || !self
+                .decode_graph
+                .as_ref()
+                .is_some_and(Qwen25OmniDecodeGraph::selects_token)
+        {
+            return None;
+        }
+        let result = (|| {
+            let expected_start = self.kv.seq_len();
+            if pos as usize != expected_start {
+                return Err(Error::Other(format!(
+                    "qwen2.5-omni cache position mismatch: start_pos={pos}, cache={expected_start}"
+                )));
+            }
+            if pos as usize + 1 > self.config.text.max_position_embeddings {
+                return Err(Error::Other(
+                    "qwen2.5-omni forward exceeds context capacity".into(),
+                ));
+            }
+            reject_video(&[token], self.config.video_token_id)?;
+            let positions = linear_positions(1, pos, self.rope_delta)?;
+            let coordinates = [positions[0], positions[1], positions[2]];
+            let weights = Self::decode_graph_weights(&self.text);
+            let cuda =
+                cuda_backend(&*self.backend).expect("Qwen2.5-Omni decode graph owns a CudaBackend");
+            let selected = self.decode_graph.as_mut().unwrap().decode_token(
+                cuda,
+                &weights,
+                &mut *self.kv,
+                token,
+                coordinates,
+                pos,
+            )?;
+            self.kv.advance(1);
+            Ok(selected)
+        })();
+        if result.is_err() {
+            self.clear_state();
+        }
+        Some(result)
     }
 
     fn vocab_size(&self) -> usize {

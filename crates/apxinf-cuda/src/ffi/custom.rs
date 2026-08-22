@@ -1069,11 +1069,12 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
-    /// Argmax over [n] bf16 logits → writes the winning index to `out` (u32).
-    /// Typically `out` is a host-mapped u32 so the CPU reads it zero-copy.
+    /// Two-stage argmax over [n] BF16 logits. `partials` owns the fixed
+    /// 128-pair workspace and `out` is typically a host-mapped u32.
     pub fn apxinf_argmax_bf16(
         logits: *const c_void,
         n: u32,
+        partials: *mut c_void,
         out: *mut c_void,
         stream: cudaStream_t,
     ) -> cudaError_t;

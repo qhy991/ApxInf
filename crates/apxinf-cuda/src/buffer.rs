@@ -433,6 +433,21 @@ impl HostMappedBuffer {
         Ok(())
     }
 
+    /// Read one device-published u32 after the owning CUDA stream has been
+    /// synchronized. The volatile load prevents the compiler from reusing a
+    /// value written by the host before graph replay.
+    pub fn read_u32(&self) -> Result<u32, String> {
+        if self.len < std::mem::size_of::<u32>() {
+            return Err(format!(
+                "mapped buffer is {} bytes, need {}",
+                self.len,
+                std::mem::size_of::<u32>()
+            ));
+        }
+        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+        Ok(unsafe { std::ptr::read_volatile(self.host_ptr as *const u32) })
+    }
+
     pub fn address_at(&self, byte_offset: usize, len: usize) -> Result<CudaDeviceAddress, String> {
         let end = byte_offset
             .checked_add(len)
