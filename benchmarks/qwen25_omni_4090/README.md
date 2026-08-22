@@ -18,7 +18,16 @@ python3 benchmarks/qwen25_omni_4090/benchmark_service.py \
   --suite context \
   --lengths 1024,2048,4096,8192,12288,16384,24576,32760 \
   --context-output-tokens 8 --warmups 1 --repeats 3 --timeout 300
+
+python3 benchmarks/qwen25_omni_4090/decode_roofline.py \
+  --tpot-ms 8.589121905511811 --kv-len 128 \
+  --peak-bandwidth-gbps 1008
 ```
+
+`decode_roofline.py` reports algorithmic weight/KV byte lower bounds and an
+effective BWU estimate. MFU is emitted only when the caller also supplies an
+explicit dense-peak convention through `--peak-tflops`; neither estimate is a
+replacement for profiler memory transactions or no-profiler endpoint timing.
 
 Every request is greedy, non-streaming, `ignore_eos=true`, concurrency one,
 and uses deterministic pre-tokenized IDs. Raw trials retain output-trajectory
@@ -32,7 +41,7 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_TMROPE_POSITION_CACHE=1`, `APXINF_SOFTMAX_EXP_CACHE=1` and
 `APXINF_QWEN25_DECODE_GRAPH=1`, plus `APXINF_QWEN25_GPU_ARGMAX=1`. The decode
 graph and exact two-stage GPU token selection are deliberately restricted to
-SM89 one-token decode with `start_pos < 2048`; prefill and longer-KV decode
+SM89 one-token decode with `start_pos < 3072`; prefill and longer-KV decode
 keep the accepted ordinary path. The Broker-owned runit reference is checked in at
 `service/apxinf-qwen25-omni-broker.run`; it is the environment and launch
 authority for reproducing the promoted service. Unset or `0` preserves the

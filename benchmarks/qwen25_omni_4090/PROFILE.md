@@ -2,7 +2,7 @@
 
 `BASELINE.md` owns the current accepted deployment summary. This file retains
 the causal profiles, rejected branches and promotion evidence for each stage;
-the current promotion record is **Promoted two-stage GPU token selection**
+the current promotion record is **Promoted 3,072-position graph crossover**
 below.
 
 ## Contract
@@ -575,6 +575,92 @@ or continuous-batching performance, non-SM89 portability, video or speech
 generation, vLLM parity, a larger OOM boundary, or MFU/BWU. The serial greedy
 loop now has no full-logit D2H during short decode; the next bounded target
 must come from GPU graph compute rather than host token selection.
+
+## Promoted 3,072-position graph crossover
+
+The initial 2,048 selector was a conservative boundary chosen after the
+unrestricted graph regressed 4K and longer decode. GPU token selection changed
+the short-graph cost, so the crossover was remeasured rather than assumed.
+The graph-only deployment was compared with a 4,096 candidate over four
+32-output context cells:
+
+| Prompt | Ordinary TPOT | Graph TPOT | Graph change |
+|---:|---:|---:|---:|
+| 2,048 | 11.959 ms | 11.069 ms | 1.080× faster |
+| 2,560 | 12.250 ms | 11.729 ms | 1.044× faster |
+| 3,072 | 12.484 ms | 12.387 ms | 0.8% faster |
+| 3,584 | 12.793 ms | 13.096 ms | 2.4% slower |
+
+The 4,096 selector was rejected because it admitted a repeatable 3,584-token
+regression. The final constant is 3,072: positions below it use graph replay
+and exact GPU selection, while positions 3,072 and above use the ordinary
+path. The deployed result reproduces all four reference trajectories:
+
+| Prompt | Deployed TPOT | Relative to ordinary | Path |
+|---:|---:|---:|---|
+| 2,048 | 11.058 ms | 1.081× faster | graph |
+| 2,560 | 11.737 ms | 1.044× faster | graph |
+| 3,072 | 12.501 ms | unchanged | ordinary |
+| 3,584 | 12.798 ms | unchanged | ordinary |
+
+A 3,064 prompt + 16 output request crosses the new boundary within one
+generation and reproduces the ordinary reference trajectory SHA-256
+`a23d632e4073ed3d8f11890a011e3e4be520644827d54a25044d82c96f224675`.
+The final binary also repeats the accepted 1K and 128+128 trajectories at
+9.707 and 8.582 ms TPOT. Its SHA-256 is
+`e29b62bfd035c280cf8342e77e0efe1f45e0194696e55ac4f9a0e3cf90daad93`;
+the prior 2,048 binary is retained as `apxinf-accepted-gpu-argmax-ba1d8293`.
+
+**Decision: promote the 3,072 crossover.** It adds no API mode, workspace,
+kernel or weight representation; it only widens the already accepted graph
+selector through the last cell with material benefit and excludes the first
+sub-threshold and regressing cells.
+
+### Post-promotion GPU compute attribution
+
+To expose graph-replayed nodes, the deployed arithmetic was profiled once
+with `APXINF_NO_GRAPH=1` for seven decode steps. This preserves weights,
+workspace, KV, kernels and two-stage selection while paying ordinary launch
+overhead; it is attribution evidence only. The exact request trajectory is
+`649905ec73afb193907d2f0439834dd96975d7af84958d5f3fa85a0a84bbba63`.
+The report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-decode8-eager-attribution.nsys-rep`,
+size 990,741 bytes, SHA-256
+`c978720395669116f9cfd253d06a4e6683efd80735e9533d0393d03832e7250b`.
+
+Six complete device-visible steps average 8.905 ms of GPU kernel time:
+
+| Node group | Time / token | Share / interpretation |
+|---|---:|---|
+| Gate projection | 1.886 ms | large BF16 weight stream |
+| Up projection | 1.885 ms | large BF16 weight stream |
+| Down projection | 1.914 ms | large BF16 weight stream |
+| LM head | 0.664 ms | 151,936-vocab weight stream |
+| Q + O projections | 0.820 ms | two dense attention projections |
+| K + V projections | 0.243 ms | small, under-utilized GEMVs |
+| Attention | 0.330 ms | not the dominant short-KV node |
+| Norm/RoPE/cache/bias/residual/activation | 1.153 ms | remaining elementwise state path |
+| Two-stage argmax | 0.005 ms | no longer material |
+
+The exact BF16 text-weight lower bound is 6.172 GB/token from the frozen model
+shapes. At the accepted 8.589 ms no-profiler TPOT this is about 719 GB/s, or
+71.3% of the RTX 4090's 1,008 GB/s peak. This is a weight-only lower-bound BWU
+estimate, not a measured memory-transaction ratio. Gate/Up/Down already imply
+about 850 GB/s each, consistent with the rejected Gate/Up packing result. The
+next bounded exact-semantics candidate is asymmetric Q/K/V packing: it may
+amortize the two poorly utilized K/V GEMVs without reducing precision or
+revisiting the closed MLP branch.
+
+The checked-in eager-attribution API, kernel and memory CSV hashes are
+respectively
+`bfae6eb0407e66cd038191bcf6ba157d6e220b11c68cd437c22544a0e498cdd4`,
+`1b6d1242ea1890e301cdb047dd84e2a658c8d45d8966d816fc722bab6fcc9754`
+and `1bde091904f872d8cadd6f13b91ae1c2d4e077006cfdab61cdc34434b56d567e`.
+
+This result does not claim graph benefit at or above position 3,072,
+multi-request or continuous-batching performance, non-SM89 portability,
+video or speech generation, vLLM parity, a larger OOM boundary, or a
+transaction-counter MFU/BWU measurement.
 
 ## Promoted shape-specialized softmax exp cache
 

@@ -22,7 +22,7 @@ use super::vision::{self, Qwen25OmniVisionWeights};
 use super::weights::Qwen25OmniTextWeights;
 
 #[cfg(feature = "cuda")]
-const MAX_DECODE_GRAPH_POSITION: u32 = 2_048;
+const MAX_DECODE_GRAPH_POSITION: u32 = 3_072;
 
 pub struct GeneralQwen25Omni {
     config: Qwen25OmniConfig,
