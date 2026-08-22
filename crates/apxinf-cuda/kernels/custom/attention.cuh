@@ -256,6 +256,59 @@ __global__ void attention_softmax_bf16_exp_cache_kernel(
     }
 }
 
+// Decode-only exact numerator cache backed by global memory. This preserves
+// the scalar max and summation order beyond the per-CTA shared-memory limit.
+__global__ void attention_softmax_bf16_exp_global_fill_kernel(
+    const __nv_bfloat16* scores, float* numerators,
+    uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads)
+{
+    uint32_t row = apxinf_row_from_grid_yz();
+    if (row >= rows) return;
+
+    uint32_t seq_pos = row / n_heads;
+    uint32_t valid_cols = min(seq_pos + kv_offset + 1, cols);
+    uint32_t lane = threadIdx.x;
+    __shared__ float max_shared;
+    if (lane == 0) {
+        float max_val = -INFINITY;
+        for (uint32_t c = 0; c < valid_cols; c++) {
+            max_val = fmaxf(max_val, __bfloat162float(scores[row * cols + c]));
+        }
+        max_shared = max_val;
+    }
+    __syncthreads();
+    for (uint32_t c = lane; c < valid_cols; c += blockDim.x) {
+        numerators[row * cols + c] =
+            expf(__bfloat162float(scores[row * cols + c]) - max_shared);
+    }
+}
+
+__global__ void attention_softmax_bf16_exp_global_normalize_kernel(
+    const float* numerators, __nv_bfloat16* output,
+    uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads)
+{
+    uint32_t row = apxinf_row_from_grid_yz();
+    if (row >= rows) return;
+
+    uint32_t seq_pos = row / n_heads;
+    uint32_t valid_cols = min(seq_pos + kv_offset + 1, cols);
+    uint32_t lane = threadIdx.x;
+    __shared__ float sum_shared;
+    if (lane == 0) {
+        float sum_exp = 0.0f;
+        for (uint32_t c = 0; c < valid_cols; c++) {
+            sum_exp += numerators[row * cols + c];
+        }
+        sum_shared = sum_exp;
+    }
+    __syncthreads();
+    for (uint32_t c = lane; c < cols; c += blockDim.x) {
+        output[row * cols + c] = c < valid_cols
+            ? __float2bfloat16(numerators[row * cols + c] / sum_shared)
+            : __float2bfloat16(0.0f);
+    }
+}
+
 
 
 __global__ void attention_softmax_decode_bf16_kernel(

@@ -118,6 +118,24 @@ fn softmax_exp_cache_long_fallback_enabled() -> Result<bool> {
         .map_err(Error::Other)
 }
 
+fn softmax_global_exp_cache_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| match std::env::var("APXINF_SOFTMAX_GLOBAL_EXP_CACHE") {
+            Err(std::env::VarError::NotPresent) => Ok(false),
+            Ok(value) if value == "0" => Ok(false),
+            Ok(value) if value == "1" => Ok(true),
+            Ok(value) => Err(format!(
+                "APXINF_SOFTMAX_GLOBAL_EXP_CACHE must be 0 or 1, got `{value}`"
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("APXINF_SOFTMAX_GLOBAL_EXP_CACHE must be UTF-8".into())
+            }
+        })
+        .clone()
+        .map_err(Error::Other)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn gqa_scores(
     ctx: &CudaContext,
@@ -794,6 +812,14 @@ pub(crate) fn softmax_causal_with_exp_cache(
     let rows = dims[dims.len() - 2];
     let cols = *dims.last().unwrap();
 
+    if use_exp_cache
+        && rows == n_heads as usize
+        && cols > MAX_SOFTMAX_EXP_CACHE_COLS
+        && softmax_global_exp_cache_enabled()?
+    {
+        return softmax_causal_with_global_exp_cache(ctx, input, kv_offset, n_heads);
+    }
+
     if use_exp_cache {
         if input.dtype() != DType::BF16 {
             return Err(Error::Other(
@@ -857,6 +883,50 @@ pub(crate) fn softmax_causal_with_exp_cache(
         input.shape().clone(),
         input.dtype(),
         device_id,
+        out_buf,
+    ))
+}
+
+pub(crate) fn softmax_causal_with_global_exp_cache(
+    ctx: &CudaContext,
+    input: &Tensor,
+    kv_offset: u32,
+    n_heads: u32,
+) -> Result<Tensor> {
+    let dims = input.shape().dims();
+    if input.dtype() != DType::BF16
+        || dims.len() < 2
+        || dims[dims.len() - 2] != n_heads as usize
+    {
+        return Err(Error::Other(
+            "global softmax exp cache requires BF16 decode rows".into(),
+        ));
+    }
+    let rows = dims[dims.len() - 2];
+    let cols = dims[dims.len() - 1];
+    let out_buf = output_buffer(ctx, input.size_in_bytes())?;
+    let numerator_bytes = rows
+        .checked_mul(cols)
+        .and_then(|value| value.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| Error::Other("global softmax numerator size overflow".into()))?;
+    let numerators = uninitialized_buffer(ctx, numerator_bytes)?;
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_attention_softmax_bf16_global_exp_cache(
+            gpu_ptr(input)?,
+            out_buf.ptr(),
+            numerators.ptr(),
+            cols as u32,
+            rows as u32,
+            kv_offset,
+            n_heads,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+    Ok(make_gpu_tensor(
+        input.shape().clone(),
+        DType::BF16,
+        ctx.device_id(),
         out_buf,
     ))
 }

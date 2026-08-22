@@ -5,7 +5,8 @@ use crate::context::CudaContext;
 use crate::kernels::activation::{gelu_tanh, silu};
 use crate::kernels::attention::{
     causal_mask, grouped, sdpa_with_batched_prefill, softmax, softmax_causal,
-    softmax_causal_with_exp_cache, split_gqa_qkv_bias_bf16, vision,
+    softmax_causal_with_exp_cache, softmax_causal_with_global_exp_cache,
+    split_gqa_qkv_bias_bf16, vision,
 };
 use crate::kernels::cache::append;
 use crate::kernels::elementwise::{add, add_bias, mul, scale};
@@ -383,6 +384,35 @@ fn attention_softmax_exp_cache_bf16_is_bit_exact() {
         .unwrap();
     let cached = softmax_causal_with_exp_cache(&ctx, &tensor, 4, n_heads as u32, true)
         .unwrap();
+    assert_eq!(
+        download_bf16_as_fp32(&cached).unwrap(),
+        download_bf16_as_fp32(&scalar).unwrap()
+    );
+}
+
+#[test]
+fn attention_softmax_global_exp_cache_decode_is_bit_exact_at_32k() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (n_heads, cols) = (2usize, 32_768usize);
+    let input = (0..n_heads * cols)
+        .map(|index| ((index as f32 * 0.019) - 4.0).sin())
+        .collect::<Vec<_>>();
+    let tensor = upload_fp32_as_bf16(&ctx, &input, vec![n_heads, cols]).unwrap();
+    let scalar = softmax_causal_with_exp_cache(
+        &ctx,
+        &tensor,
+        (cols - 1) as u32,
+        n_heads as u32,
+        false,
+    )
+    .unwrap();
+    let cached = softmax_causal_with_global_exp_cache(
+        &ctx,
+        &tensor,
+        (cols - 1) as u32,
+        n_heads as u32,
+    )
+    .unwrap();
     assert_eq!(
         download_bf16_as_fp32(&cached).unwrap(),
         download_bf16_as_fp32(&scalar).unwrap()

@@ -993,6 +993,17 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_attention_softmax_bf16_global_exp_cache(
+        scores: *const c_void,
+        output: *mut c_void,
+        numerators: *mut c_void,
+        cols: u32,
+        rows: u32,
+        kv_offset: u32,
+        n_heads: u32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_kv_cache_append_bf16(
         cache: *mut c_void,
         new_data: *const c_void,

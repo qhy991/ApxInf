@@ -859,6 +859,55 @@ further blind bisection was outside the stopping rule. Production retains the
 verified 11,264 limit. The three Broker job receipts and requested byte counts
 are recorded in `candidate-softmax-exp-cache-decode-boundary.json`.
 
+### Promoted global exact numerator cache for long decode
+
+Primary classification: **source/runtime graph with a custom CUDA operator**.
+Shared-memory boundary
+tests proved that the existing exact numerator cache could not simply grow
+beyond 11,264 columns. `APXINF_SOFTMAX_GLOBAL_EXP_CACHE=1` therefore selects a
+decode-only two-kernel path above that limit: the first kernel preserves the
+scalar max order and writes each FP32 exponential once to a bounded global
+workspace; the second preserves scalar column-order summation and normalizes
+to BF16. Disabled mode retains the explicit scalar fallback.
+
+The SM89 operator gate compares the complete BF16 output against scalar
+softmax at 32,768 columns and passes byte-for-byte. Its Broker receipt is
+`gpuq-b8f5e05cdb75`, recorded in
+`candidate-global-exp-cache-operator.json`.
+
+| Prompt / output | Scalar TPOT p50 | Global-cache TPOT p50 | Change |
+|---|---:|---:|---:|
+| 11,264 + 32 | 20.742 ms candidate reference | 19.422 ms deployed | 6.3% lower |
+| 12,288 + 32 | 21.724 ms | 20.304 ms deployed | 6.5% lower |
+| 32,760 + 8 | 41.075 ms | 37.892 ms | 7.8% lower |
+
+All complete trajectories match exactly. The 32K candidate peaks at 16,061
+MiB—identical to the accepted service—with 8,503 MiB headroom. Short decode
+remains 8.268 ms and all typed contract probes pass.
+
+The actual 11K+8 candidate profile remains at
+`/var/lib/agent-gpu-broker/profiles/omni-11264-global-exp-cache.nsys-rep`, size
+3,677,984 bytes, SHA-256
+`93c7ad5ee80d51c33301399bfcf6431f65506d9bc1f2fce8deb96ac941ed65bc`.
+Across seven decode steps, 252 scalar-softmax launches are replaced by 252
+global-fill and 252 global-normalize launches. Relative to the closest
+accepted scalar profile, that decode contribution falls from about 70.6 to
+61.0 ms, or roughly 1.37 ms per generated token, matching the no-profiler
+TPOT movement. Total profiled kernel span remains noisy and is not admission
+evidence.
+
+Candidate CUDA API/kernel/memory CSV hashes are
+`aac0112e78d5215c76ac4e1df7357c1e48aee16b3730623e0d4964c6125f8b5c`,
+`08d19177c56e497123f0bfda68a60a9403aa457f826af88b011262469e306568`
+and `8cc3f464ed89481fd8977dc1bfa618ad0ce01ad8ea0035470ffefb446fa98cda`.
+
+**Decision: promote the global exact numerator cache for tested long-decode
+BF16 cells.** It passes 32K bit-exact operator, complete-trajectory, repeated
+no-profiler, capacity/memory, interface, binary-custody and causal-profile
+gates. The deployed binary SHA-256 is
+`881491b0de93a73c7e77b050c11a83436cdb5a0beb8b99b72d7871c777c5c035`;
+`767c36ad` is retained for rollback. Qwen3.8 remains down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

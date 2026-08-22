@@ -28,7 +28,7 @@ python3 benchmarks/qwen25_omni_4090/benchmark_multimodal.py \
   --output benchmarks/qwen25_omni_4090/results/multimodal.json
 
 python3 benchmarks/qwen25_omni_4090/decode_roofline.py \
-  --tpot-ms 8.244838968503936 --kv-len 128 \
+  --tpot-ms 8.268432496062992 --kv-len 128 \
   --peak-bandwidth-gbps 1008
 ```
 
@@ -62,6 +62,7 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_BATCHED_GQA_PREFILL=1`, `APXINF_STREAM_ORDERED_ALLOC=1` and
 `APXINF_TMROPE_POSITION_CACHE=1`,
 `APXINF_TMROPE_POSITION_CACHE_PREFILL=1`, `APXINF_SOFTMAX_EXP_CACHE=1`,
+`APXINF_SOFTMAX_GLOBAL_EXP_CACHE=1`,
 `APXINF_SOFTMAX_EXP_CACHE_LONG_FALLBACK=1`,
 `APXINF_QWEN25_CHUNKED_PREFILL=1` and `APXINF_QWEN25_DECODE_GRAPH=1`, plus
 `APXINF_QWEN25_GPU_ARGMAX=1`, `APXINF_QWEN25_EAGER_GPU_ARGMAX=1` and
@@ -79,7 +80,9 @@ GPU last-row selector creates a view of the final hidden row before output
 normalization, avoiding a whole-slice D2H and row H2D round trip. The
 eager argmax selector applies the same exact two-stage GPU selection to
 graph-ineligible decode positions, leaving only the prefill logits on CPU. The
-Broker-owned runit reference is checked in at
+global exp-cache selector preserves scalar max/sum order beyond the shared
+numerator-cache limit by staging FP32 numerators in a bounded decode workspace.
+The Broker-owned runit reference is checked in at
 `service/apxinf-qwen25-omni-broker.run`; it is the environment and launch
 authority for reproducing the promoted service. Unset or `0` preserves the
 corresponding native path, while invalid values fail closed.

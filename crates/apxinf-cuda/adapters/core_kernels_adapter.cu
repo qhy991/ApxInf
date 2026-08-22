@@ -360,6 +360,25 @@ extern "C" cudaError_t apxinf_attention_softmax_bf16_exp_cache(
     return cudaGetLastError();
 }
 
+extern "C" cudaError_t apxinf_attention_softmax_bf16_global_exp_cache(
+    const void* scores, void* output, void* numerators,
+    uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads,
+    void* stream)
+{
+    dim3 grid = apxinf_row_split_grid(1, rows);
+    dim3 block(BLOCK_SIZE, 1, 1);
+    cudaStream_t s = (cudaStream_t)stream;
+    attention_softmax_bf16_exp_global_fill_kernel<<<grid, block, 0, s>>>(
+        (const __nv_bfloat16*)scores, (float*)numerators,
+        cols, rows, kv_offset, n_heads);
+    cudaError_t status = cudaGetLastError();
+    if (status != cudaSuccess) return status;
+    attention_softmax_bf16_exp_global_normalize_kernel<<<grid, block, 0, s>>>(
+        (const float*)numerators, (__nv_bfloat16*)output,
+        cols, rows, kv_offset, n_heads);
+    return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_kv_cache_append_bf16(
     void* cache, const void* new_data,
     uint32_t n_kv_heads, uint32_t head_dim,
