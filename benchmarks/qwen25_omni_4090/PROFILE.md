@@ -844,6 +844,21 @@ binary-custody and causal-profile gates. The deployed binary SHA-256 is
 `767c36ad6b7d1d3f65b372dd5e47ba27a9fdac8a76c2cbce536109b7878d7d37`;
 `bbf1b0b2` is retained for rollback. Qwen3.8 remains down when unused.
 
+#### Rejected decode exp-cache shared-memory boundary
+
+The historical 11,264-column decode numerator-cache limit was tested against
+the apparent SM89 48 KiB shared-memory ceiling. Bit-exact operator candidates
+at 12,286, 12,284 and 12,280 columns requested 49,144, 49,136 and 49,120 bytes
+of dynamic shared memory. All three failed before arithmetic with CUDA error 1
+(`invalid argument`), including attempts that reserved 16 and 32 bytes for the
+compiler-aligned static reduction region.
+
+**Decision: revert without model timing.** Source-visible arrays are not a
+sufficient contract for the runtime's effective dynamic-shared allowance, and
+further blind bisection was outside the stopping rule. Production retains the
+verified 11,264 limit. The three Broker job receipts and requested byte counts
+are recorded in `candidate-softmax-exp-cache-decode-boundary.json`.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
