@@ -621,6 +621,21 @@ and matched causal-profile gates. The deployed binary SHA-256 is
 `0fc97f78403cc8e0974f2c48f2267fc5d57dbe8e459ab3af48dc86a6a0c4460a`;
 `ac8e2436` is retained for rollback. Qwen3.8 remains down when unused.
 
+#### Rejected 384-token midrange counterfactual
+
+One final bounded search replaced the 256-token midrange chunk with 384.
+Candidate binary SHA-256 was
+`2b3cf381f977f68270924234a426da480b9c3223c843e30916538797dc5799b8`.
+All trajectories remained exact. Relative to the promoted 256 policy, 384
+changed 4K/5K/6K TTFT from 532.223/862.307/1,375.587 ms to
+533.143/854.242/1,360.461 ms: 0.17% slower, 0.94% faster and 1.10% faster.
+
+**Decision: revert.** It missed the preregistered all-cell direction gate and
+does not improve the public 4K gradient point. Splitting another policy range
+only for nonstandard 5K/6K cells would add more selection authority than the
+measured benefit justifies. The no-profiler record is retained as
+`candidate-chunk384-midrange.json`; production source remains unchanged.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
