@@ -1152,6 +1152,21 @@ extern "C" {
         sec_h: u32,
         stream: cudaStream_t,
     ) -> cudaError_t;
+    pub fn apxinf_rope_tmrope_kv_write_bf16(
+        k_in: *const c_void,
+        v_in: *const c_void,
+        k_cache: *mut c_void,
+        v_cache: *mut c_void,
+        head_dim: u32,
+        n_kv_heads: u32,
+        max_seq_len: u32,
+        theta: f32,
+        pos_ids: *const c_void,
+        sec_t: u32,
+        sec_h: u32,
+        cache_pos: *const c_void,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
 
     pub fn apxinf_vision_sdpa_bf16(
         q: *const c_void,

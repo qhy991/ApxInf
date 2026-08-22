@@ -74,6 +74,15 @@ fn packed_qkv_enabled() -> Result<bool> {
         .map_err(Error::Other)
 }
 
+#[cfg(feature = "cuda")]
+fn fused_tmrope_kv_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| parse_binary_env("APXINF_QWEN25_FUSED_TMROPE_KV"))
+        .clone()
+        .map_err(Error::Other)
+}
+
 impl GeneralQwen25Omni {
     pub(crate) fn from_selected_weights(
         config: Qwen25OmniConfig,
@@ -106,6 +115,7 @@ impl GeneralQwen25Omni {
             let graph_enabled = decode_graph_enabled()?;
             let select_token = gpu_argmax_enabled()?;
             let packed_qkv = packed_qkv_enabled()?;
+            let fused_tmrope_kv = fused_tmrope_kv_enabled()?;
             if select_token && !graph_enabled {
                 return Err(Error::Other(
                     "APXINF_QWEN25_GPU_ARGMAX requires APXINF_QWEN25_DECODE_GRAPH=1".into(),
@@ -116,11 +126,17 @@ impl GeneralQwen25Omni {
                     "APXINF_QWEN25_PACKED_QKV requires APXINF_QWEN25_DECODE_GRAPH=1".into(),
                 ));
             }
+            if fused_tmrope_kv && !graph_enabled {
+                return Err(Error::Other(
+                    "APXINF_QWEN25_FUSED_TMROPE_KV requires APXINF_QWEN25_DECODE_GRAPH=1".into(),
+                ));
+            }
             if graph_enabled {
                 let cuda = cuda_backend(&*backend).ok_or_else(|| {
                     Error::Other("Qwen2.5-Omni decode graph requires CudaBackend".into())
                 })?;
-                if (select_token || packed_qkv) && cuda.context().caps().sm != 89 {
+                if (select_token || packed_qkv || fused_tmrope_kv) && cuda.context().caps().sm != 89
+                {
                     return Err(Error::Other(format!(
                         "Qwen2.5-Omni graph probes require SM89, got SM{}",
                         cuda.context().caps().sm
@@ -133,6 +149,7 @@ impl GeneralQwen25Omni {
                     cuda,
                     Self::decode_graph_config(&config),
                     select_token,
+                    fused_tmrope_kv,
                 )?)
             } else {
                 None

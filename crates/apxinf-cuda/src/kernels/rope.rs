@@ -152,6 +152,80 @@ pub fn apply_tmrope_bf16_into(
     })
 }
 
+/// Apply decode TMRoPE to K while publishing K and unchanged V directly to
+/// their persistent cache slot.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_tmrope_kv_write_bf16(
+    ctx: &CudaContext,
+    k: &CudaBuffer,
+    v: &CudaBuffer,
+    k_cache: &CudaBuffer,
+    v_cache: &CudaBuffer,
+    head_dim: usize,
+    kv_heads: usize,
+    max_seq_len: usize,
+    theta: f32,
+    sections: [usize; 3],
+    positions: CudaDeviceAddress,
+    cache_position: CudaDeviceAddress,
+) -> Result<()> {
+    require_finite("decode TMRoPE KV write", &[theta])?;
+    if head_dim == 0
+        || head_dim % 2 != 0
+        || sections.iter().sum::<usize>() != head_dim / 2
+        || theta <= 0.0
+    {
+        return Err(Error::Other(
+            "decode TMRoPE KV write received invalid dimensions, sections, or theta".into(),
+        ));
+    }
+    let input_bytes = checked_bytes(
+        DType::BF16,
+        &[kv_heads, head_dim],
+        "decode TMRoPE KV write",
+    )?;
+    let cache_bytes = checked_bytes(
+        DType::BF16,
+        &[kv_heads, max_seq_len, head_dim],
+        "decode TMRoPE KV write",
+    )?;
+    require_buffers(
+        ctx,
+        "decode TMRoPE KV write",
+        &[
+            ("K", k, input_bytes),
+            ("V", v, input_bytes),
+            ("K cache", k_cache, cache_bytes),
+            ("V cache", v_cache, cache_bytes),
+        ],
+    )?;
+    require_address(ctx, "decode TMRoPE KV write", "positions", positions, 12)?;
+    require_address(
+        ctx,
+        "decode TMRoPE KV write",
+        "cache position",
+        cache_position,
+        4,
+    )?;
+    check_cuda(unsafe {
+        ffi::apxinf_rope_tmrope_kv_write_bf16(
+            k.ptr(),
+            v.ptr(),
+            k_cache.ptr(),
+            v_cache.ptr(),
+            head_dim as u32,
+            kv_heads as u32,
+            max_seq_len as u32,
+            theta,
+            positions.ptr(),
+            sections[0] as u32,
+            sections[1] as u32,
+            cache_position.ptr(),
+            ctx.stream().handle(),
+        )
+    })
+}
+
 /// Apply BF16 RoPE to K and write it directly to KV cache.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_k_write_cache_bf16(

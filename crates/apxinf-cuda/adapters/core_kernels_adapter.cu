@@ -528,6 +528,23 @@ extern "C" cudaError_t apxinf_rope_tmrope_bf16(
     return cudaGetLastError();
 }
 
+extern "C" cudaError_t apxinf_rope_tmrope_kv_write_bf16(
+    const void* k_in, const void* v_in, void* k_cache, void* v_cache,
+    uint32_t head_dim, uint32_t n_kv_heads, uint32_t max_seq_len,
+    float theta, const void* pos_ids, uint32_t sec_t, uint32_t sec_h,
+    const void* cache_pos, void* stream)
+{
+    dim3 grid((head_dim + BLOCK_SIZE - 1) / BLOCK_SIZE, n_kv_heads, 1);
+    dim3 block(BLOCK_SIZE, 1, 1);
+    rope_tmrope_kv_write_bf16_kernel<<<grid, block, 0, (cudaStream_t)stream>>>(
+        (const __nv_bfloat16*)k_in, (const __nv_bfloat16*)v_in,
+        (__nv_bfloat16*)k_cache, (__nv_bfloat16*)v_cache,
+        head_dim, n_kv_heads, max_seq_len, theta,
+        (const uint32_t*)pos_ids, sec_t, sec_h,
+        (const uint32_t*)cache_pos);
+    return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_vision_sdpa_bf16(
     const void* q, const void* k, const void* v, void* out,
     uint32_t seq_len, uint32_t n_heads, uint32_t head_dim, float scale, void* stream)

@@ -2,7 +2,8 @@
 
 `BASELINE.md` owns the current accepted deployment summary. This file retains
 the causal profiles, rejected branches and promotion evidence for each stage;
-the current promotion record is **Promoted single-owner packed QKV** below.
+the current promotion record is **Promoted fused TMRoPE K/V publication**
+below.
 
 ## Contract
 
@@ -764,6 +765,90 @@ non-SM89 portability, video or speech generation, vLLM parity, a larger OOM
 boundary, or transaction-counter MFU/BWU. Remaining latency is dominated by
 the three near-bandwidth-roofline MLP projections; the previously rejected
 Gate/Up packing branch remains closed.
+
+## Promoted fused TMRoPE K/V publication
+
+`APXINF_QWEN25_FUSED_TMROPE_KV=1` replaces three short-graph nodes per layer:
+K TMRoPE materialization, rotated-K cache append and unchanged-V cache append.
+One decode-only kernel evaluates the identical per-dimension T/H/W rotation
+and writes rotated K plus BF16 V directly into the caller-owned cache slot. Q
+keeps its independent TMRoPE output because attention consumes it. Unset or
+`0` preserves the three-node path; invalid values, non-SM89 use and use
+without the graph fail closed.
+
+The direct CUDA operator test compares the complete K and V cache allocations
+byte-for-byte against separate TMRoPE plus two cache appends, including
+non-equal T/H/W positions and a nonzero cache slot. It passes exactly. The
+model screens preserve all frozen trajectories:
+
+| Workload | Result | Trajectory SHA-256 | Prior agreement |
+|---|---:|---|---:|
+| 1,024 prompt + 32 output | 10/10 stable | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+| 128 prompt + 128 output | 12/12 stable | `a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039` | exact |
+| 2,048–4,096 prompt + 32 output | all stable | four frozen hashes | exact |
+| 10,752 prompt + 8 output | retry passes | `19478a6e232ab7479a2a8026f01096ab68a16f72d922be9695d807928125b02d` | exact |
+| 11,264 prompt + 8 output | HTTP 503 CUDA OOM | n/a | same first failure |
+| Post-OOM 1,024 + 32 | 3/3 stable | `bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea` | exact |
+
+The first 10,752 observation had 8.458 s TTFT despite being graph-ineligible;
+an immediate independent retry measured 7.930 s and did not reproduce the
+regression. Capacity, OOM recovery and resident memory remain unchanged. Real
+PNG and WAV requests reproduce their complete accepted token IDs with no
+fallback; the structured record is
+`results/candidate-fused-tmrope-kv-multimodal.json`.
+
+### No-profiler result
+
+| Workload | Metric | Packed QKV | Fused KV write | Ratio / change |
+|---|---|---:|---:|---:|
+| 1,024 + 32 | TPOT p50 | 9.485 ms | 9.384 ms | 1.011× faster |
+| 128 + 128 | TPOT p50 | 8.363 ms | 8.252 ms | 1.013× faster |
+| 2,048 + 32 | TPOT p50 | 10.863 ms | 10.754 ms | 1.010× faster |
+| 2,560 + 32 | TPOT p50 | 11.503 ms | 11.426 ms | 0.7% faster |
+| 3,072 + 32 | TPOT p50 | 12.178 ms | 12.155 ms | unchanged ordinary path |
+| 4,096 + 32 | TPOT p50 | 12.691 ms | 12.701 ms | unchanged ordinary path |
+
+Quick and decode TPOT CVs are 0.06% and 0.10%. The deployed service repeats
+9.383 and 8.254 ms TPOT with exact trajectories. Against the original
+baseline, decode TPOT improves from 17.567 to 8.252 ms (2.129×). The weight
+lower-bound effective bandwidth is now about 748 GB/s, or 74.2% of the
+declared RTX 4090 peak.
+
+### Actual promoted-binary attribution
+
+The deployed binary SHA-256 is
+`dcccfb7bc7c9ca8d634a09f2128028e9f86d770a3e1d6aa83fe238fba8bea4e2`.
+The exact profiled request reports 8.327 ms TPOT; profiler timing is not used
+for admission. Its report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-decode128-fused-tmrope-kv.nsys-rep`,
+size 692,357 bytes, SHA-256
+`7845d92901bcb2cfa91db84703f75ecb6b0b2434bb1ba05ab4fb5f4cd4d7cd80`.
+
+The request window contains 127 graph launches, zero logits D2H and 8.276 ms
+average stream synchronization, down from 8.396 ms. In the observable eager
+prewarm, separate K TMRoPE plus K/V appends total about 9.4 microseconds per
+layer; the fused node takes 3.66 microseconds. Kernel accounting changes from
+one Q and one K TMRoPE plus two cache appends to one Q TMRoPE plus one fused
+K/V publication node. The checked-in API, kernel and memory CSV hashes are
+respectively
+`7792c917c4c0534d32b2c9dc5899fd4a369fcc10815eef86c7ae2877cfd66411`,
+`4e94b20accc2d62cd88e02a7af520457e140feefd41349d3bee77933a741625f`
+and `ebb0c8b4238d43733322114fdbcdea9277ca95cedf58c6b25559dcdd82143e9d`.
+
+## Fused TMRoPE K/V decision
+
+**Decision: promote direct TMRoPE K/V cache publication, composed with the
+accepted single-owner packed QKV, graph crossover and GPU token selection, for
+the tested SM89 single-request BF16 cells.** It passes exact operator/cache,
+complete trajectory, no-profiler materiality, graph/ordinary isolation,
+long-context/OOM recovery, real multimodal, explicit Broker configuration and
+actual-binary profile gates. Qwen3.8 remains down.
+
+This result does not claim multi-request or continuous-batching performance,
+non-SM89 portability, video or speech generation, vLLM parity, a larger OOM
+boundary, or transaction-counter MFU/BWU. The next exact graph-local boundary
+is whether Q TMRoPE can share the same launch without increasing the fused
+kernel's critical path.
 
 ## Promoted shape-specialized softmax exp cache
 

@@ -647,6 +647,96 @@ fn rope_decode_bf16_matches_rope_bf16() {
 }
 
 #[test]
+fn tmrope_kv_write_matches_separate_rope_and_cache_appends() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (kv_heads, head_dim, max_seq_len) = (2usize, 128usize, 8usize);
+    let sections = [16usize, 24usize, 24usize];
+    let theta = 1_000_000.0f32;
+    let k_values = (0..kv_heads * head_dim)
+        .map(|index| (index as f32 * 0.007) - 0.5)
+        .collect::<Vec<_>>();
+    let v_values = (0..kv_heads * head_dim)
+        .map(|index| (index as f32 * -0.005) + 0.75)
+        .collect::<Vec<_>>();
+    let k_tensor = upload_fp32_as_bf16(&ctx, &k_values, vec![kv_heads, head_dim]).unwrap();
+    let v_tensor = upload_fp32_as_bf16(&ctx, &v_values, vec![kv_heads, head_dim]).unwrap();
+    let k = CudaBuffer::from_tensor(&k_tensor).unwrap();
+    let v = CudaBuffer::from_tensor(&v_tensor).unwrap();
+    let positions = HostMappedBuffer::alloc(16, ctx.device_id()).unwrap();
+    positions.write_u32s(&[7, 11, 13, 5]).unwrap();
+    let tmrope_positions = positions.address_at(0, 12).unwrap();
+    let cache_position = positions.address_at(12, 4).unwrap();
+    let input_bytes = kv_heads * head_dim * DType::BF16.size_in_bytes();
+    let cache_bytes = kv_heads * max_seq_len * head_dim * DType::BF16.size_in_bytes();
+    let rotated = CudaBuffer::alloc_zeros(input_bytes, ctx.device_id()).unwrap();
+    let reference_k = CudaBuffer::alloc_zeros(cache_bytes, ctx.device_id()).unwrap();
+    let reference_v = CudaBuffer::alloc_zeros(cache_bytes, ctx.device_id()).unwrap();
+    crate::kernels::rope::apply_tmrope_bf16_into(
+        &ctx,
+        &k,
+        &rotated,
+        head_dim,
+        kv_heads,
+        theta,
+        sections,
+        tmrope_positions,
+    )
+    .unwrap();
+    crate::kernels::cache::append_at(
+        &ctx,
+        DType::BF16,
+        &reference_k,
+        &rotated,
+        kv_heads,
+        head_dim,
+        max_seq_len,
+        cache_position,
+    )
+    .unwrap();
+    crate::kernels::cache::append_at(
+        &ctx,
+        DType::BF16,
+        &reference_v,
+        &v,
+        kv_heads,
+        head_dim,
+        max_seq_len,
+        cache_position,
+    )
+    .unwrap();
+
+    let fused_k = CudaBuffer::alloc_zeros(cache_bytes, ctx.device_id()).unwrap();
+    let fused_v = CudaBuffer::alloc_zeros(cache_bytes, ctx.device_id()).unwrap();
+    crate::kernels::rope::apply_tmrope_kv_write_bf16(
+        &ctx,
+        &k,
+        &v,
+        &fused_k,
+        &fused_v,
+        head_dim,
+        kv_heads,
+        max_seq_len,
+        theta,
+        sections,
+        tmrope_positions,
+        cache_position,
+    )
+    .unwrap();
+    ctx.synchronize().unwrap();
+
+    let mut reference_k_bytes = vec![0u8; cache_bytes];
+    let mut reference_v_bytes = vec![0u8; cache_bytes];
+    let mut fused_k_bytes = vec![0u8; cache_bytes];
+    let mut fused_v_bytes = vec![0u8; cache_bytes];
+    reference_k.copy_to_host(&mut reference_k_bytes).unwrap();
+    reference_v.copy_to_host(&mut reference_v_bytes).unwrap();
+    fused_k.copy_to_host(&mut fused_k_bytes).unwrap();
+    fused_v.copy_to_host(&mut fused_v_bytes).unwrap();
+    assert_eq!(fused_k_bytes, reference_k_bytes);
+    assert_eq!(fused_v_bytes, reference_v_bytes);
+}
+
+#[test]
 fn attention_softmax_decode_bf16_matches_full() {
     // Decode variant is a special case of attention_softmax with rows=n_heads.
     let ctx = CudaContext::new(0).expect("CUDA device required");

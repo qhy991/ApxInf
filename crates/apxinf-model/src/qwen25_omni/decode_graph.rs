@@ -153,6 +153,7 @@ fn decode_forward_capturable(
     cache: &mut dyn KvCache,
     config: &Qwen25OmniDecodeGraphConfig,
     select_token: bool,
+    fuse_tmrope_kv: bool,
 ) -> Result<()> {
     if weights.layers.len() != config.n_layers || config.n_layers == 0 {
         return Err(Error::Other(
@@ -319,36 +320,53 @@ fn decode_forward_capturable(
             config.mrope_section,
             positions,
         )?;
-        kernels::rope::apply_tmrope_bf16_into(
-            context,
-            k,
-            &workspace.k_rope,
-            config.head_dim,
-            config.n_kv_heads,
-            config.rope_theta,
-            config.mrope_section,
-            positions,
-        )?;
-        kernels::cache::append_at(
-            context,
-            DType::BF16,
-            cache.k_buffer(index),
-            &workspace.k_rope,
-            config.n_kv_heads,
-            config.head_dim,
-            config.max_seq_len,
-            cache_position,
-        )?;
-        kernels::cache::append_at(
-            context,
-            DType::BF16,
-            cache.v_buffer(index),
-            v,
-            config.n_kv_heads,
-            config.head_dim,
-            config.max_seq_len,
-            cache_position,
-        )?;
+        if fuse_tmrope_kv {
+            kernels::rope::apply_tmrope_kv_write_bf16(
+                context,
+                k,
+                v,
+                cache.k_buffer(index),
+                cache.v_buffer(index),
+                config.head_dim,
+                config.n_kv_heads,
+                config.max_seq_len,
+                config.rope_theta,
+                config.mrope_section,
+                positions,
+                cache_position,
+            )?;
+        } else {
+            kernels::rope::apply_tmrope_bf16_into(
+                context,
+                k,
+                &workspace.k_rope,
+                config.head_dim,
+                config.n_kv_heads,
+                config.rope_theta,
+                config.mrope_section,
+                positions,
+            )?;
+            kernels::cache::append_at(
+                context,
+                DType::BF16,
+                cache.k_buffer(index),
+                &workspace.k_rope,
+                config.n_kv_heads,
+                config.head_dim,
+                config.max_seq_len,
+                cache_position,
+            )?;
+            kernels::cache::append_at(
+                context,
+                DType::BF16,
+                cache.v_buffer(index),
+                v,
+                config.n_kv_heads,
+                config.head_dim,
+                config.max_seq_len,
+                cache_position,
+            )?;
+        }
         kernels::attention::flash_bf16_into(
             context,
             &workspace.q_rope,
@@ -493,6 +511,7 @@ pub struct Qwen25OmniDecodeGraph {
     workspace: DecodeWorkspace,
     graph: Option<Box<dyn Graph>>,
     select_token: bool,
+    fuse_tmrope_kv: bool,
 }
 
 impl Qwen25OmniDecodeGraph {
@@ -500,6 +519,7 @@ impl Qwen25OmniDecodeGraph {
         backend: &CudaBackend,
         config: Qwen25OmniDecodeGraphConfig,
         select_token: bool,
+        fuse_tmrope_kv: bool,
     ) -> Result<Self> {
         if config.n_layers == 0
             || config.n_heads == 0
@@ -516,6 +536,7 @@ impl Qwen25OmniDecodeGraph {
             config,
             graph: None,
             select_token,
+            fuse_tmrope_kv,
         })
     }
 
@@ -540,6 +561,7 @@ impl Qwen25OmniDecodeGraph {
             cache,
             &self.config,
             self.select_token,
+            self.fuse_tmrope_kv,
         )?;
         backend.synchronize()?;
         cache.clear()?;
@@ -552,6 +574,7 @@ impl Qwen25OmniDecodeGraph {
             cache,
             &self.config,
             self.select_token,
+            self.fuse_tmrope_kv,
         );
         let graph = backend.end_capture()?;
         capture?;
@@ -588,6 +611,7 @@ impl Qwen25OmniDecodeGraph {
                 cache,
                 &self.config,
                 self.select_token,
+                self.fuse_tmrope_kv,
             )?;
         } else {
             graph.replay()?;
