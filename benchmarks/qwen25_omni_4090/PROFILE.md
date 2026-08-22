@@ -951,6 +951,21 @@ gates. The deployed binary SHA-256 is
 `321e8a6db1e932e5138170070ae4bd27183e42cd3143128c75d477f10ccaba5e`;
 `881491b0` is retained for rollback. Qwen3.8 remains down when unused.
 
+#### Rejected persistent global-exp workspace
+
+The fused kernel still allocates one numerator buffer per layer/token. A
+bounded candidate reused one thread-local, device/stream-keyed power-of-two
+buffer (at most 2 MiB for this service) under
+`APXINF_SOFTMAX_GLOBAL_EXP_WORKSPACE=1`. Candidate binary SHA-256 was
+`1457cba891a015533247e727b2904f57c76454c349e1760de955bb09ae2a55f8`.
+
+All trajectories remained exact, but 11K/12K TPOT moved only from
+17.734/18.456 to 17.704/18.396 ms: 0.17% and 0.32%, below the 1% materiality
+gate. **Decision: revert without profiler budget.** The added thread-local
+state and cross-request lifetime were not justified by the saving. The raw
+record is `candidate-global-exp-workspace-context.json`; production keeps
+stream-ordered request-local workspaces.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
