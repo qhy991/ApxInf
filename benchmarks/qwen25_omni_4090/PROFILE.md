@@ -636,6 +636,21 @@ only for nonstandard 5K/6K cells would add more selection authority than the
 measured benefit justifies. The no-profiler record is retained as
 `candidate-chunk384-midrange.json`; production source remains unchanged.
 
+#### Rejected long-context 512-token retry
+
+After dead intermediate logits were removed, the earlier long-context chunk
+crossover was retested rather than assumed. Candidate binary SHA-256 was
+`90fd0627766addfcd253e110a95af8fcdf445a8378574f312e2dbef29f799192`.
+The 16,384-token trajectory remained exact, but TTFT regressed from the
+accepted 11.052 s to 12.346 s (11.7%). A 24,576-token request also completed
+at 24.672 s, but the 16K regression already triggered the stopping rule, so a
+32K trial was not spent.
+
+**Decision: revert.** Removing dead logits did not make 512-token chunks
+appropriate above the measured 12,288-token crossover. The structured record
+is `candidate-long-chunk512-16k-24k.json`; production retains 1,024-token
+chunks for longer prompts.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
