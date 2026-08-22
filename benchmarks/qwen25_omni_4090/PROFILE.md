@@ -708,6 +708,43 @@ profile gates. The deployed binary SHA-256 is
 `55283606f3ea88508e0bd9682c80c48edb13fa76fb638dad9ae1879d439e72ea`;
 `0fc97f78` is retained for rollback. Qwen3.8 remains down when unused.
 
+### Rejected stride-aware causal FA2 GQA prefill
+
+Primary classification: **source/runtime graph with a vendored CUDA
+operator**. The candidate added one bottom-right causal FA2 entry for
+`head_dim=128`, GQA 16/2 heads and the existing head-major KV-cache strides.
+It bypassed score materialization, exact-order softmax and the value GEMM under
+`APXINF_FA2_GQA_PREFILL=1`; unsupported builds failed closed.
+
+The first ordinary build, SHA-256
+`1e927031894e1ed32710894b03327cbfa0a9e94b21a6e0f4372b7d96c1c9cc72`,
+correctly rejected the selector because that target did not contain the SM89
+FA2 conditional. An isolated explicit-SM89 target then produced binary
+`6c28e72668404ead5c8014e53792c9d0a7684ee5fa5ef6cbcb92ead91a0eb1bd`.
+The generic causal template was stopped after 15 minutes of compilation; a
+single SM89 64x64/no-dropout/causal instance completed, while the existing
+build still spent substantial time on unrelated FP16 FA2 instances. This
+build cost is part of the candidate's maintenance evidence.
+
+The explicit binary was fast but failed the predeclared complete-trajectory
+gate at the first token:
+
+| Workload | Accepted TTFT / hash | FA2 TTFT / hash | Result |
+|---|---|---|---|
+| 1,024 + 32 | 76.877 ms / `bf1da0…` | 55.761 ms / `ce1397…` | reject |
+| 4,096 + 8 | 506.916 ms / `edc940…` | 298.365 ms / `00774e…` | reject |
+
+The 1K first token changed from the frozen sequence's `1004` to `1003`; the
+4K first token changed from `1016` to `1015`. This is consistent with the
+known reduction-order sensitivity already exposed by the rejected cooperative
+softmax, regardless of the large 27%/41% TTFT reductions.
+
+**Decision: revert before long-context or profiler budget.** Exact model
+behavior is the promotion boundary, so a faster stable but different
+trajectory is not admissible. The unavailable-build and explicit-SM89 smoke
+records are retained under `candidate-fa2-gqa-prefill*`; the C ABI, kernel
+instance, selector and runtime branch were removed from production source.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
