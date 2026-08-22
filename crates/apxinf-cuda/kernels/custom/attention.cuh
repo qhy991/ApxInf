@@ -52,7 +52,7 @@ __global__ void causal_mask_f32_kernel(
 
 
 
-// ── Attention Softmax (fused causal mask + softmax, no sync) ──────────────
+// ── Attention Softmax (fused causal mask + one CTA per row) ────────────────
 //
 // Input: scores [rows, cols] where rows=seq_len*n_heads, cols=kv_len
 // The causal mask is based on sequence position: row s*stride can attend to
@@ -64,32 +64,32 @@ __global__ void attention_softmax_f32_kernel(
     uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads)
 {
     uint32_t row = apxinf_row_from_grid_yz();
-    uint32_t col = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= rows) return;
 
-    // Map row index to sequence position: each position has n_heads rows
     uint32_t seq_pos = row / n_heads;
     uint32_t valid_cols = min(seq_pos + kv_offset + 1, cols);
-
-    // Find max over valid positions
-    float max_val = -INFINITY;
-    for (uint32_t c = 0; c < valid_cols; c++) {
-        max_val = fmaxf(max_val, scores[row * cols + c]);
-    }
-
-    // Compute exp sum over valid positions
-    float sum_exp = 0.0f;
-    for (uint32_t c = 0; c < valid_cols; c++) {
-        sum_exp += expf(scores[row * cols + c] - max_val);
-    }
-
-    // Write output
-    if (col < cols) {
-        if (col < valid_cols) {
-            output[row * cols + col] = expf(scores[row * cols + col] - max_val) / sum_exp;
-        } else {
-            output[row * cols + col] = 0.0f;
+    uint32_t lane = threadIdx.x;
+    __shared__ float reduction[2];
+    if (lane == 0) {
+        float max_val = -INFINITY;
+        for (uint32_t c = 0; c < valid_cols; c++) {
+            max_val = fmaxf(max_val, scores[row * cols + c]);
         }
+        float sum_exp = 0.0f;
+        for (uint32_t c = 0; c < valid_cols; c++) {
+            sum_exp += expf(scores[row * cols + c] - max_val);
+        }
+        reduction[0] = max_val;
+        reduction[1] = sum_exp;
+    }
+    __syncthreads();
+    float max_val = reduction[0];
+    float sum_exp = reduction[1];
+
+    for (uint32_t c = lane; c < cols; c += blockDim.x) {
+        output[row * cols + c] = c < valid_cols
+            ? expf(scores[row * cols + c] - max_val) / sum_exp
+            : 0.0f;
     }
 }
 
@@ -176,26 +176,34 @@ __global__ void attention_softmax_bf16_kernel(
     uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads)
 {
     uint32_t row = apxinf_row_from_grid_yz();
-    uint32_t col = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= rows) return;
 
     uint32_t seq_pos = row / n_heads;
     uint32_t valid_cols = min(seq_pos + kv_offset + 1, cols);
+    uint32_t lane = threadIdx.x;
+    __shared__ float reduction[2];
+    if (lane == 0) {
+        float max_val = -INFINITY;
+        for (uint32_t c = 0; c < valid_cols; c++) {
+            max_val = fmaxf(max_val, __bfloat162float(scores[row * cols + c]));
+        }
+        float sum_exp = 0.0f;
+        for (uint32_t c = 0; c < valid_cols; c++) {
+            sum_exp += expf(__bfloat162float(scores[row * cols + c]) - max_val);
+        }
+        reduction[0] = max_val;
+        reduction[1] = sum_exp;
+    }
+    __syncthreads();
+    float max_val = reduction[0];
+    float sum_exp = reduction[1];
 
-    float max_val = -INFINITY;
-    for (uint32_t c = 0; c < valid_cols; c++) {
-        max_val = fmaxf(max_val, __bfloat162float(scores[row * cols + c]));
-    }
-    float sum_exp = 0.0f;
-    for (uint32_t c = 0; c < valid_cols; c++) {
-        sum_exp += expf(__bfloat162float(scores[row * cols + c]) - max_val);
-    }
-    if (col < cols) {
-        if (col < valid_cols) {
-            float x = __bfloat162float(scores[row * cols + col]);
-            output[row * cols + col] = __float2bfloat16(expf(x - max_val) / sum_exp);
+    for (uint32_t c = lane; c < cols; c += blockDim.x) {
+        if (c < valid_cols) {
+            float x = __bfloat162float(scores[row * cols + c]);
+            output[row * cols + c] = __float2bfloat16(expf(x - max_val) / sum_exp);
         } else {
-            output[row * cols + col] = __float2bfloat16(0.0f);
+            output[row * cols + c] = __float2bfloat16(0.0f);
         }
     }
 }
