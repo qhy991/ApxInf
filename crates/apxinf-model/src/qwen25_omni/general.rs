@@ -8,7 +8,9 @@ use std::sync::OnceLock;
 use apxinf_core::{Backend, Device, Error, KvCache, Result, Tensor};
 
 #[cfg(feature = "cuda")]
-use crate::accelerator::cuda::{downcast as cuda_backend, kernels as cuda_kernels};
+use crate::accelerator::cuda::{
+    downcast as cuda_backend, kernels as cuda_kernels, DeviceBuffer,
+};
 use crate::llm_trait::{LlmCapabilities, LlmInput, LlmTrait};
 
 use super::audio::{self, Qwen25OmniAudioWeights};
@@ -102,6 +104,15 @@ fn chunked_prefill_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
     ENABLED
         .get_or_init(|| parse_binary_env("APXINF_QWEN25_CHUNKED_PREFILL"))
+        .clone()
+        .map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
+fn gpu_last_row_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| parse_binary_env("APXINF_QWEN25_GPU_LAST_ROW"))
         .clone()
         .map_err(Error::Other)
 }
@@ -591,6 +602,15 @@ impl GeneralQwen25Omni {
     }
 
     fn logits_last_row(&self, hidden: &Tensor) -> Result<Tensor> {
+        #[cfg(feature = "cuda")]
+        if gpu_last_row_enabled()? {
+            if cuda_backend(&*self.backend).is_none() {
+                return Err(Error::Other(
+                    "Qwen2.5-Omni GPU last-row path requires CUDA".into(),
+                ));
+            }
+            return self.logits_last_row_cuda(hidden);
+        }
         let hidden = self.backend.rms_norm(
             hidden,
             &self.text.output_norm,
@@ -621,6 +641,45 @@ impl GeneralQwen25Omni {
             }
         };
         let row = self.backend.to_device(&row)?;
+        let logits = self.backend.matmul(&row, &self.text.lm_head)?;
+        self.backend.synchronize()?;
+        let logits = self.backend.to_cpu(&logits)?;
+        Tensor::from_f32(vec![1, self.config.text.vocab_size], &logits.to_f32_vec()?)
+    }
+
+    #[cfg(feature = "cuda")]
+    fn logits_last_row_cuda(&self, hidden: &Tensor) -> Result<Tensor> {
+        let dims = hidden.shape().dims();
+        let width = self.config.text.hidden_size;
+        if hidden.dtype() != apxinf_core::DType::BF16
+            || dims.len() != 2
+            || dims[0] == 0
+            || dims[1] != width
+        {
+            return Err(Error::Other(format!(
+                "Qwen2.5-Omni GPU last row expected nonempty BF16 [rows,{width}], got {:?} {}",
+                dims,
+                hidden.dtype()
+            )));
+        }
+        let row_bytes = width
+            .checked_mul(apxinf_core::DType::BF16.size_in_bytes())
+            .ok_or_else(|| Error::Other("Qwen2.5-Omni last-row byte size overflow".into()))?;
+        let byte_offset = (dims[0] - 1)
+            .checked_mul(row_bytes)
+            .ok_or_else(|| Error::Other("Qwen2.5-Omni last-row offset overflow".into()))?;
+        let row = DeviceBuffer::from_tensor(hidden)
+            .and_then(|buffer| buffer.view(byte_offset, row_bytes))
+            .map_err(Error::Cuda)?
+            .into_tensor(
+                apxinf_core::Shape::new(vec![1, width]),
+                apxinf_core::DType::BF16,
+            );
+        let row = self.backend.rms_norm(
+            &row,
+            &self.text.output_norm,
+            self.config.text.rms_norm_eps,
+        )?;
         let logits = self.backend.matmul(&row, &self.text.lm_head)?;
         self.backend.synchronize()?;
         let logits = self.backend.to_cpu(&logits)?;

@@ -745,6 +745,59 @@ trajectory is not admissible. The unavailable-build and explicit-SM89 smoke
 records are retained under `candidate-fa2-gqa-prefill*`; the C ABI, kernel
 instance, selector and runtime branch were removed from production source.
 
+### Promoted GPU final-hidden-row view
+
+Primary classification: **source/runtime graph**. The final-logit path used to
+normalize every row in the last prefill slice, synchronously copy that whole
+hidden tensor to CPU, convert all rows to F32, select one row, rebuild BF16 and
+upload the row to GPU before the LM head. `APXINF_QWEN25_GPU_LAST_ROW=1` now
+creates a bounds-checked view of the final BF16 GPU row first, then runs the
+same per-row RMSNorm and LM head. Logits still synchronize and return through
+the accepted CPU boundary, so greedy selection semantics are unchanged. The
+flag is CUDA-only, default-off and fail-closed.
+
+The main 10-sample paired screens are exact and stable:
+
+| Workload | Accepted TTFT p50 | GPU-row TTFT p50 | Change |
+|---:|---:|---:|---:|
+| 1,024 + 32 | 76.871 ms | 75.802 ms | 1.39% lower |
+| 4,096 + 8 | 506.916 ms | 507.212 ms deployed | unchanged |
+| 11,264 + 8 | 5.106 s | 5.110 s | unchanged |
+| 32,760 + 8 | 43.491 s | 43.569 s hot retry | unchanged |
+
+The first 32K candidate observation was a 44.863-second outlier; the immediate
+same-service retry measured 43.569 seconds with the exact frozen trajectory.
+The outlier and retry are both retained. Deployed 1K TTFT is 75.677 ms and
+decode TPOT is 8.272 ms. Real PNG/WAV requests and all typed contract probes
+pass exactly.
+
+The actual candidate report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-4096-gpu-last-row.nsys-rep`, size
+3,178,376 bytes, SHA-256
+`1a748772d09fda64796e60090c2ed70b56b3aff414ccdd79cc5e10ea922e9625`.
+Against the matched prefill-position-cache profile, request kernel count stays
+19,011 and summed kernel time stays effectively unchanged. The data edges
+change exactly as intended:
+
+- one 1 MiB final-hidden D2H disappears;
+- eight 4 KiB hidden-row H2D copies disappear, covering prefill plus seven
+  graph-ineligible eager decode steps;
+- seven 4 KiB eager hidden-row D2H copies also disappear;
+- the eight full-logit D2H copies remain, preserving the accepted CPU greedy
+  boundary for this path.
+
+The candidate CUDA API/kernel/memory CSV hashes are
+`21fc1c1067e27af9ddf56ef85ab721f52312563d6bd17a51998ecc7ac09fb669`,
+`4e1e2590424d1e96ff0cc7bb4cd1959d81bae17485000babf859eb40df088d1e`
+and `f5e5016aa832d697697535a30459525e192d058ec7ed5fc9b6c3b853732bdeba`.
+
+**Decision: promote the GPU final-row view for tested BF16 text/image/audio
+cells.** It passes exact trajectory, paired 1K materiality, unchanged long
+cells, 32K capacity, multimodal, interface, binary-custody and causal-profile
+gates. The deployed binary SHA-256 is
+`bbf1b0b29396a546a55b3cb586fd4f4215438859790c805b322f78897159a201`;
+`55283606` is retained for rollback. Qwen3.8 remains down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
