@@ -44,10 +44,11 @@ memory-controller utilization, clocks, and power. Context probing stops at the
 first failed case; service recovery is an operator action and must be recorded
 separately rather than hidden by the benchmark.
 
-The promoted text-only path splits prompts longer than 1,024 tokens into
-512-token causal chunks through 12,288 prompt tokens and 1,024-token chunks
-above that measured crossover. It reaches the complete service contract at
-32,760 prompt + 8 output tokens on the 24 GiB RTX 4090. Image and audio
+The promoted text-only path uses 256-token causal chunks from 4,096 through
+6,144 prompt tokens, 512-token chunks for the other prompts through 12,288,
+and 1,024-token chunks above that measured crossover. It reaches the complete
+service contract at 32,760 prompt + 8 output tokens on the 24 GiB RTX 4090.
+Image and audio
 requests deliberately retain their processor-owned, unchunked path. Only the
 final text chunk runs output normalization and the LM head; earlier chunks
 publish KV state directly without synchronizing unused logits through CPU.

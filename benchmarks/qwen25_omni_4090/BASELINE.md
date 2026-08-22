@@ -77,16 +77,18 @@ single-owner packed QKV layout, plus a short-KV CUDA Graph with exact
 two-stage GPU token selection and fused TMRoPE K/V cache publication. Text-only
 prompts longer than 1,024 tokens are evaluated as exact causal chunks against
 the same KV owner: 512 tokens through the measured 12,288-token crossover and
-1,024 tokens above it. Image and audio prefill remain unchunked.
+1,024 tokens above it, with a 256-token specialization from 4,096 through
+6,144. Image and audio prefill remain unchunked.
 Decode beyond the 11,264-column exp-cache gate uses an explicit exact scalar
 fallback; leaving that selector unset still fails closed.
 
 The graph and selection path remain restricted to SM89 one-token BF16 decode
 with `start_pos < 3072`; longer-KV decode keeps the ordinary path. The current
 deployed binary SHA-256 is
-`ac8e2436d8aca552b713de5b0cb7ed1a12b320e510a4c5f1aae63d116a33cc17`.
+`0fc97f78403cc8e0974f2c48f2267fc5d57dbe8e459ab3af48dc86a6a0c4460a`.
 The prior accepted fused-KV and chunked binaries remain archived by their
-`dcccfb7b`, `f6ba8836`, `c8e06b41` and `778066a3` prefixes for rollback.
+`dcccfb7b`, `f6ba8836`, `c8e06b41`, `778066a3` and `ac8e2436` prefixes for
+rollback.
 
 Relative to the graph/token-selection service, packed QKV improves 1K+32 TPOT
 from 9.707 ms to 9.485 ms (1.023×) and 128+128 TPOT from 8.582 ms to
@@ -113,6 +115,11 @@ from every non-final chunk lowers the adaptive TTFT by another 3.98% at 2K,
 5.51% at 4K, 3.90% at 8K, 3.87% at 11K and 3.44% at both 16K and 32K. Only
 the final chunk produces logits; KV semantics and complete trajectories remain
 unchanged.
+
+A final chunk-size screen found that 256-token chunks regress 2K/3K and 11K,
+but improve a contiguous 4K–6K interval. Restricting them to 4,096–6,144
+lowers deployed 4K TTFT from 539.121 to 532.223 ms (1.28%) while 2K, 8K,
+11K and the 32K capacity path retain their accepted chunk sizes.
 
 The former 10,752-token memory ceiling is now historical. Exact trajectories
 pass at 11,264, 12,288, 16,384, 24,576 and 32,760 prompt tokens; the last case

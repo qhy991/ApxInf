@@ -568,6 +568,59 @@ deployed binary SHA-256 is
 `ac8e2436d8aca552b713de5b0cb7ed1a12b320e510a4c5f1aae63d116a33cc17`;
 `778066a3` is retained for rollback. Qwen3.8 remains down when unused.
 
+### Promoted 4K–6K chunk specialization
+
+After final-chunk-only logits removed the dominant per-chunk synchronization,
+the chunk crossover was remeasured. A global 256-token candidate preserved all
+trajectories but was not generally better:
+
+| Prompt | Accepted TTFT p50 | Global 256 TTFT p50 | Change |
+|---:|---:|---:|---:|
+| 2,048 | 183.692 ms | 205.542 ms | 11.89% slower |
+| 3,072 | 339.291 ms | 351.480 ms | 3.59% slower |
+| 4,096 | 539.671 ms | 531.772 ms | 1.46% faster |
+| 5,120 | 893.739 ms | 862.307 ms | 3.52% faster |
+| 6,144 | 1.3988 s | 1.3756 s | 1.66% faster |
+| 8,192 | 2.6477 s | 2.6455 s | unchanged |
+| 11,264 | 5.1495 s | 5.2033 s | 1.04% slower |
+
+The promoted static policy therefore uses 256-token chunks only for prompt
+lengths 4,096 through 6,144, 512 for the other eligible prompts through
+12,288, and 1,024 above 12,288. This is one closed shape policy, not a public
+mode. Deployed 4K+8 TTFT is 532.223 ms with 0.06% CV, down 1.28% from the
+accepted 539.121 ms. Deployed 2K, 8K and 11K checks repeat the accepted paths,
+all trajectories remain exact, and typed contract probes pass.
+
+Matched actual-binary 4K profiles are retained at
+`/var/lib/agent-gpu-broker/profiles/omni-4096-chunk512-final-logits.nsys-rep`
+(2,237,942 bytes, SHA-256
+`1feb9151af6b9d9b2653bb001b51b9f22337d2c50f405208f29db882a140af2a`)
+and `/var/lib/agent-gpu-broker/profiles/omni-4096-tiered-chunk.nsys-rep`
+(3,227,581 bytes, SHA-256
+`735b22918c182bb13a2ed4d1cb5e618cd35d41076d3c33ab1430ca5da8cdde85`).
+Profiler timing is explanatory only.
+
+The 256-token path raises request kernel count from 12,667 to 19,011, but
+reduces summed kernel time from 569.149 to 547.199 ms. Cached-softmax time
+falls by 35.892 ms, from 155.197 to 119.305 ms. Several GEMM algorithms change
+at the smaller row shape and recover part of that saving; the final
+no-profiler service result, not the profiler span, decides promotion.
+
+The checked-in baseline CUDA API/kernel/memory CSV hashes are
+`7d2f09aa5a162af278baf3697630ad70e7615848cf680bd612d681a6880987e2`,
+`444deaedae6901add2ca3252df05154f545d452629e0be91cb7ab50856e6b4c8`
+and `1b562114a40ba5bc22da6360adb3476bcb3aa76d931c9b3328a1cf2d7a9ad056`.
+The candidate hashes are
+`4272d3d14e5b49dc4f5bc2b4c87e3d00cfbcd2641d20f5e105765e9edf4d5ab0`,
+`0f5dcb2a31f872db119377a020bd0bfe8966846ae347b205f0f7079440f08e31`
+and `c18a0099704cf909d0932047db91ee6d17d9378795486bd8597c93054a02a367`.
+
+**Decision: promote the 4K–6K 256-token specialization.** It passes exact
+trajectory, repeated no-profiler, unchanged-cell, interface, binary-custody
+and matched causal-profile gates. The deployed binary SHA-256 is
+`0fc97f78403cc8e0974f2c48f2267fc5d57dbe8e459ab3af48dc86a6a0c4460a`;
+`ac8e2436` is retained for rollback. Qwen3.8 remains down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

@@ -24,11 +24,17 @@ use super::weights::{Qwen25OmniQkvWeights, Qwen25OmniTextWeights};
 #[cfg(feature = "cuda")]
 const MAX_DECODE_GRAPH_POSITION: u32 = 3_072;
 #[cfg(feature = "cuda")]
+const CHUNKED_PREFILL_MID_SIZE: usize = 256;
+#[cfg(feature = "cuda")]
 const CHUNKED_PREFILL_SMALL_SIZE: usize = 512;
 #[cfg(feature = "cuda")]
-const CHUNKED_PREFILL_LARGE_SIZE: usize = 1_024;
-#[cfg(feature = "cuda")]
 const CHUNKED_PREFILL_SMALL_MAX_PROMPT: usize = 12_288;
+#[cfg(feature = "cuda")]
+const CHUNKED_PREFILL_MID_MIN_PROMPT: usize = 4_096;
+#[cfg(feature = "cuda")]
+const CHUNKED_PREFILL_MID_MAX_PROMPT: usize = 6_144;
+#[cfg(feature = "cuda")]
+const CHUNKED_PREFILL_LARGE_SIZE: usize = 1_024;
 #[cfg(feature = "cuda")]
 const CHUNKED_PREFILL_THRESHOLD: usize = 1_024;
 
@@ -453,7 +459,12 @@ impl GeneralQwen25Omni {
                 "Qwen2.5-Omni chunked prefill requires reset text-only state".into(),
             ));
         }
-        let chunk_size = if token_ids.len() <= CHUNKED_PREFILL_SMALL_MAX_PROMPT {
+        let chunk_size = if (CHUNKED_PREFILL_MID_MIN_PROMPT
+            ..=CHUNKED_PREFILL_MID_MAX_PROMPT)
+            .contains(&token_ids.len())
+        {
+            CHUNKED_PREFILL_MID_SIZE
+        } else if token_ids.len() <= CHUNKED_PREFILL_SMALL_MAX_PROMPT {
             CHUNKED_PREFILL_SMALL_SIZE
         } else {
             CHUNKED_PREFILL_LARGE_SIZE
