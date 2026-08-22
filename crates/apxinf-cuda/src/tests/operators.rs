@@ -330,6 +330,20 @@ fn attention_softmax_bf16_matches_fp32_reference() {
     assert_bf16_close_reduction(&download_bf16_as_fp32(&out).unwrap(), &expected);
 }
 
+#[test]
+fn attention_softmax_bf16_crosses_legacy_grid_y_boundary() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let rows = 65_536usize;
+    let cols = 1usize;
+    let n_heads = 16u32;
+    let input = vec![0.0; rows * cols];
+    let tensor = upload_fp32_as_bf16(&ctx, &input, vec![rows, cols]).unwrap();
+    let output = softmax_causal(&ctx, &tensor, 0, n_heads).unwrap();
+    let actual = download_bf16_as_fp32(&output).unwrap();
+    assert_eq!(actual.len(), rows);
+    assert!(actual.iter().all(|value| (*value - 1.0).abs() <= 1e-3));
+}
+
 // ── KV cache append ───────────────────────────────────────────────
 
 #[test]

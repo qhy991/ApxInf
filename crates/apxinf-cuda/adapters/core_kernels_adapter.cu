@@ -22,6 +22,16 @@
 #include "../kernels/custom/selection.cuh"
 #include "../kernels/custom/fused.cuh"
 
+static dim3 apxinf_row_split_grid(uint32_t x_blocks, uint32_t rows)
+{
+    constexpr uint32_t kMaxGridY = 65535;
+    uint32_t grid_z = static_cast<uint32_t>(
+        (static_cast<uint64_t>(rows) + kMaxGridY - 1) / kMaxGridY);
+    uint32_t grid_y = static_cast<uint32_t>(
+        (static_cast<uint64_t>(rows) + grid_z - 1) / grid_z);
+    return dim3(x_blocks, grid_y, grid_z);
+}
+
 extern "C" cudaError_t apxinf_rms_norm_f32(
     const void* input, const void* weight, void* output,
     uint32_t cols, uint32_t rows, float eps, void* stream)
@@ -127,7 +137,8 @@ extern "C" cudaError_t apxinf_attention_softmax_f32(
     const void* scores, void* output,
     uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads, void* stream)
 {
-    dim3 grid((cols + BLOCK_SIZE - 1) / BLOCK_SIZE, rows, 1);
+    dim3 grid = apxinf_row_split_grid(
+        (cols + BLOCK_SIZE - 1) / BLOCK_SIZE, rows);
     dim3 block(BLOCK_SIZE, 1, 1);
     attention_softmax_f32_kernel<<<grid, block, 0, (cudaStream_t)stream>>>(
         (const float*)scores, (float*)output, cols, rows, kv_offset, n_heads);
@@ -329,7 +340,8 @@ extern "C" cudaError_t apxinf_attention_softmax_bf16(
     const void* scores, void* output,
     uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads, void* stream)
 {
-    dim3 grid((cols + BLOCK_SIZE - 1) / BLOCK_SIZE, rows, 1);
+    dim3 grid = apxinf_row_split_grid(
+        (cols + BLOCK_SIZE - 1) / BLOCK_SIZE, rows);
     dim3 block(BLOCK_SIZE, 1, 1);
     attention_softmax_bf16_kernel<<<grid, block, 0, (cudaStream_t)stream>>>(
         (const __nv_bfloat16*)scores, (__nv_bfloat16*)output,

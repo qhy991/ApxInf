@@ -3,6 +3,12 @@
 // Copyright 2026 apxinf contributors.
 // Pure CUDA operators grouped by physical operation; launch policy lives under adapters/.
 
+__device__ __forceinline__ uint32_t apxinf_row_from_grid_yz()
+{
+    return static_cast<uint32_t>(blockIdx.y)
+        + static_cast<uint32_t>(blockIdx.z) * static_cast<uint32_t>(gridDim.y);
+}
+
 // ── Softmax ───────────────────────────────────────────────────────────────
 
 __global__ void softmax_f32_kernel(
@@ -57,7 +63,7 @@ __global__ void attention_softmax_f32_kernel(
     const float* scores, float* output,
     uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads)
 {
-    uint32_t row = blockIdx.y;
+    uint32_t row = apxinf_row_from_grid_yz();
     uint32_t col = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= rows) return;
 
@@ -169,7 +175,7 @@ __global__ void attention_softmax_bf16_kernel(
     const __nv_bfloat16* scores, __nv_bfloat16* output,
     uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads)
 {
-    uint32_t row = blockIdx.y;
+    uint32_t row = apxinf_row_from_grid_yz();
     uint32_t col = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= rows) return;
 
