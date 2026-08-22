@@ -398,10 +398,40 @@ timing, long-context capacity, real multimodal, OOM recovery, explicit-path
 and actual-candidate profile gates. The RTX 4090 service runs this binary under
 Broker ownership; Qwen3.8 remains down.
 
-The next bounded opportunity is load-time Gate/Up packing: replace two GEMMs
-with one wider GEMM and a fused SwiGLU without duplicating GPU weights. This
-result does not claim multi-request or continuous-batching performance, video
-or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.
+This result does not claim multi-request or continuous-batching performance,
+video or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.
+
+## Rejected load-time Gate/Up packing
+
+Primary classification: **source/runtime graph**. The candidate selected one
+of two weight layouts at load time: either the accepted separate Gate and Up
+matrices, or one row-major `[hidden, 2*intermediate]` matrix. It never kept both
+GPU representations. Packed mode replaced two GEMMs, SiLU and Mul with one
+wider GEMM and one SwiGLU kernel. The fused kernel explicitly rounded the SiLU
+intermediate to BF16 before multiplication, and its CUDA operator test was
+bit-exact to the two-kernel reference. Resident VRAM was 12,190 MiB versus the
+accepted service's approximately 12,309 MiB, confirming there was no hidden
+weight duplicate. Candidate binary SHA-256 was
+`4940704818480a7a457fa71ae6350795a0ee218317fc2cd6fbe26bdbc96970cb`.
+
+Complete trajectories remained exact for all admission screens, but no
+end-to-end win existed:
+
+| Workload | Metric | Accepted | Packed MLP | Change |
+|---|---|---:|---:|---:|
+| 1,024 + 32 | wall p50 | 0.4411 s | 0.4428 s | 0.4% slower |
+| 1,024 + 32 | TPOT p50 | 11.613 ms | 11.730 ms | 1.0% slower |
+| 128 + 128 | wall p50 | 1.3952 s | 1.4085 s | 1.0% slower |
+| 128 + 128 | TPOT p50 | 10.822 ms | 10.936 ms | 1.1% slower |
+| 4,096 + 8 | TTFT p50 | 0.7297 s | 0.7354 s | 0.8% slower |
+| 4,096 + 8 | wall p50 | 0.8262 s | 0.8311 s | 0.6% slower |
+
+**Decision: revert.** The wide GEMM saved launches but did not shorten any
+tested service envelope, so long-context and profiler budgets were not spent.
+The implementation was removed; the bit-exact operator, layout and structured
+E2E evidence are retained to close this branch. The next bounded direction is
+a Qwen2.5-Omni decode graph that preserves the accepted kernels but removes the
+roughly one thousand host launches per generated token.
 
 ## Promoted decode TMRoPE position cache
 
