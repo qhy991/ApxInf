@@ -107,6 +107,8 @@ shapes before execution; unmatched shapes remain on vendor cuBLAS. The
 `APXINF_SOFTMAX_INPLACE_SCALE=1` selector lets flattened BF16 prefill chunks
 of at most 256 query tokens scale and normalize their single-consumer score
 buffer in place. Larger chunks retain the accepted non-mutating softmax. The
+shared-memory numerator cache parallelizes only the exact maximum; its FP32
+sum remains in original column order. The
 GPU last-row selector creates a view of the final hidden row before output
 normalization, avoiding a whole-slice D2H and row H2D round trip. The
 eager argmax selector applies the same exact two-stage GPU selection to

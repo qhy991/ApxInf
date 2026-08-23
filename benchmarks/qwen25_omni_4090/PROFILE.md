@@ -2,7 +2,7 @@
 
 `BASELINE.md` owns the current accepted deployment summary. This file retains
 the causal profiles, rejected branches and promotion evidence for each stage;
-the current promotion record is **Promoted bounded in-place scaled softmax**
+the current promotion record is **Promoted shared-cache parallel maximum**
 below.
 
 ## Contract
@@ -1693,6 +1693,50 @@ The deployed binary SHA-256 is
 
 **Decision: promote the bounded in-place path.** It composes a stable 8K/12K
 gain while excluding the measured 32K regression.
+
+## Promoted shared-cache parallel maximum
+
+Primary classification: **PTX/SASS-directed CUDA**. The shared-memory exact
+numerator-cache softmax still assigned its maximum scan to lane 0 even though
+all 256 threads were resident. The promoted kernel gives each lane strided
+columns and reduces 256 local maxima through a fixed shared-memory tree. The
+maximum value is unchanged for finite BF16 inputs; numerator generation,
+lane-0 FP32 summation order, division and output layout are untouched.
+
+The existing `APXINF_SOFTMAX_EXP_CACHE=1` selector remains the owner. No new
+flag or dispatch branch is added. Direct tests require bit-exact output at the
+257-column small case, the 4,096-column prefill boundary and the 11,264-column
+decode limit.
+
+No-profiler results against bounded in-place softmax are:
+
+| Prompt / output | Prior TTFT p50 | Parallel-max TTFT p50 | Change | Repeats |
+|---|---:|---:|---:|---:|
+| 1,024 + 32 | 70.09 ms | 67.18 ms | 4.15% lower | 5 |
+| 8,192 + 8 | 0.878 s | 0.822 s | 6.39% lower | 5 |
+| 12,288 + 8 | 1.439 s | 1.386 s | 3.69% lower | 5 |
+| 32,760 + 8 | 5.859 s | 5.765 s | 1.62% lower | 3 |
+
+At 8K, decode TPOT additionally falls from 13.689 ms to 10.697 ms because the
+shared cache remains active below its 11,264-column limit. The 128+128 and 32K
+decode controls remain near 8.254 ms and 35.220 ms. All trajectories are exact;
+the 47-test CUDA operator suite, typed request recovery, real PNG/WAV and full
+32K capacity gates pass.
+
+The 12K profile attributes the gain directly: 576 shared-cache launches fall
+from 92.740 ms to 32.772 ms (64.7% lower), while the in-place long-softmax and
+leading GEMM families are unchanged. Profile TTFT falls from 1.473 s to 1.414
+s. The report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-12288-shared-cache-parallel-interactive.nsys-rep`,
+SHA-256
+`051459cdf75f93bb750dc6a1ac2247b99db4567924298918bb96eca10a9c67e2`.
+
+The deployed binary SHA-256 is
+`487915bac1df5c81bb9c754ba42944b0735f7b029c146b9177348ca731ea4af8`;
+`2a70b977...e649a8` is the immediate rollback artifact.
+
+**Decision: promote shared-cache parallel maximum.** It is exact, removes a
+serial critical interval and improves every measured context cell.
 
 ### Rejected split-buffer FP32 numerator cache
 

@@ -438,6 +438,41 @@ fn attention_softmax_parallel_max_is_bit_exact_at_prefill_cache_boundary() {
 }
 
 #[test]
+fn attention_softmax_parallel_max_is_bit_exact_at_decode_cache_limit() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (n_heads, cols) = (2usize, 11_264usize);
+    let input = (0..n_heads * cols)
+        .map(|index| {
+            let bits = (index as u32)
+                .wrapping_mul(1_664_525)
+                .wrapping_add(1_013_904_223);
+            (bits & 0xffff) as f32 / 4_096.0 - 8.0
+        })
+        .collect::<Vec<_>>();
+    let tensor = upload_fp32_as_bf16(&ctx, &input, vec![n_heads, cols]).unwrap();
+    let scalar = softmax_causal_with_exp_cache(
+        &ctx,
+        &tensor,
+        (cols - 1) as u32,
+        n_heads as u32,
+        false,
+    )
+    .unwrap();
+    let cached = softmax_causal_with_exp_cache(
+        &ctx,
+        &tensor,
+        (cols - 1) as u32,
+        n_heads as u32,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        download_bf16_as_fp32(&cached).unwrap(),
+        download_bf16_as_fp32(&scalar).unwrap()
+    );
+}
+
+#[test]
 fn attention_softmax_fused_scale_is_bit_exact_across_long_prefill() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     let (seq_len, n_heads, head_dim) = (3usize, 2usize, 128usize);
