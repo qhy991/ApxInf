@@ -1316,6 +1316,47 @@ iteration remains explicit in `candidate-prefill-tiled-exp-sum-racecheck.json`;
 fixed raw evidence uses the `candidate-prefill-tiled-exp-sum-fixed-*` prefix.
 Qwen3.8 and Omni remain down when unused.
 
+#### Promoted post-softmax chunk retuning
+
+After the exact softmax rewrites, small-N GEMM became the primary prefill
+cost, so the old chunk crossover was remeasured. A 1,024-token candidate for
+prompts through 12K reduced launches but increased masked attention work:
+8K, 11K and 12K TTFT regressed by about 6%, 4% and 3%. Its SHA-256 was
+`69e8ea618c549681b1eda351140bcdee809cf590649627ab10c5cf997a8f2690`;
+the raw record is `candidate-chunk1024-retune-context.json`.
+
+A global 256-token arm then improved 8K–12K but regressed the short range.
+The final closed policy therefore uses 512-token chunks below 4,096 prompt
+tokens, 256 from 4,096 through 12,288, and 1,024 above 12,288. Final SHA-256
+is `7c52ad66e7dcfc4de27c1e46019facfee4533bbe72e712c83998dcf052be4b00`.
+
+| Prompt / output | 512-chunk TTFT p50 | Final policy TTFT p50 | Change |
+|---|---:|---:|---:|
+| 2,048 + 8 | retained 512 path | 0.174 s | path control |
+| 3,072 + 8 | retained 512 path | 0.325 s | path control |
+| 8,192 + 8 | 2.023 s | 1.969 s | 2.65% lower |
+| 11,264 + 32 | 3.788 s | 3.745 s | 1.15% lower |
+| 12,288 + 32 | 4.497 s | 4.448 s | 1.10% lower |
+
+Every cell has one exact stable trajectory; final 11K/12K TTFT CV is 0.18%
+and 0.03%. Prompts above 12K retain the already-validated 1,024 path.
+
+At 12K, interactive profile changes the leading small-N GEMM family from
+2.342 seconds over 1,080 launches to 2.264 seconds over 2,088 launches; the
+average launch duration roughly halves. Plain softmax grows from 342.3 to
+363.5 ms because chunk count doubles, and other GEMM algorithms recover part
+of the saving. Complete profile TTFT still falls from 4.525 to 4.497 seconds;
+no-profiler timing remains the admission authority. The final report remains
+at `/var/lib/agent-gpu-broker/profiles/omni-12288-chunk256-4k12k-interactive.nsys-rep`,
+size 6,787,116 bytes, SHA-256
+`d3c6b9c5f7d11e768c8ca4a59dc60e365a3ea9ae4cee1d0bab1e2bcff5c2e0ad`.
+
+**Decision: promote the 512/256/1,024 post-softmax chunk policy.** Raw evidence
+is `candidate-chunk256-retune-context.json`,
+`candidate-chunk256-4k12k-context.json` and
+`candidate-chunk256-4k12k-11k-12k.json`; small profiler exports are checked in.
+Qwen3.8 and Omni remain down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
