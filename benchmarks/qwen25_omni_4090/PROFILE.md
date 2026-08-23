@@ -1274,6 +1274,48 @@ scores.** Raw request evidence uses the `candidate-prefill-parallel-max-*`
 prefix; small profiler exports are checked in under `profiles/`. Qwen3.8 and
 Omni remain down when unused.
 
+#### Promoted tiled exact exponentials with ordered summation
+
+The next candidate reuses the same 1 KiB shared array in 256-column tiles.
+Every CTA lane computes one `expf` in parallel, then lane 0 consumes the FP32
+values in original column order. This preserves the exact maximum, exponential,
+summation and division contracts while eliminating serial transcendental work;
+two CTA barriers are paid per tile.
+
+The first binary, SHA-256
+`285f683cf8b693452a9e408b46755108aebf1f047d7ffe0c45d3a930d3df2a97`,
+missed a barrier between reading `max_values[0]` and reusing the array. One of
+five 12K trials emitted all-zero token IDs. `compute-sanitizer racecheck`
+reported 24 hazards under `gpuq-0f390357b1c6`. Adding the missing CTA barrier
+produced final SHA-256
+`bc05d88e0c04061b4562b7e599578576bcad018f1d579922039c8f65a1d3fea0`;
+racecheck then reports zero hazards under `gpuq-c29bdaaf002c`.
+
+| Prompt / output | Parallel-max TTFT p50 | Fixed tiled-exp TTFT p50 | Change |
+|---|---:|---:|---:|
+| 11,264 + 32 | 4.429 s | 3.788 s | 14.47% lower |
+| 12,288 + 32 | 5.276 s | 4.497 s | 14.75% lower |
+| 32,760 + 8 | 37.181 s | 29.968 s | 19.40% lower, one trial |
+
+The fixed 12K binary produces one exact trajectory across ten consecutive
+trials; 11K is exact across five. Short text, typed interface, real PNG/WAV and
+32K gates all pass. The 32K sample retains 8,567 MiB measured headroom.
+Relative to the native-core prefill state before both exact rewrites, TTFT is
+now 25.73% lower at 11K, 26.46% lower at 12K and 30.96% lower at 32K.
+
+Interactive profile attribution compares the fixed candidate against the
+already-promoted parallel-max profile. Plain prefill softmax falls from 1.110
+seconds to 342.3 ms, 69.15% lower; profiler TTFT falls from 5.289 to 4.525
+seconds, 14.43%. The fixed report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-12288-prefill-tiled-exp-fixed-interactive.nsys-rep`,
+size 3,666,730 bytes, SHA-256
+`12eb8e789402559e5e13ac28433e5157f45ee1afe3162716edfe166b574540dc`.
+
+**Decision: promote the race-free tiled exponential schedule.** The unsafe
+iteration remains explicit in `candidate-prefill-tiled-exp-sum-racecheck.json`;
+fixed raw evidence uses the `candidate-prefill-tiled-exp-sum-fixed-*` prefix.
+Qwen3.8 and Omni remain down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

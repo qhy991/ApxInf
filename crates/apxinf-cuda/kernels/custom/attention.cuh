@@ -195,17 +195,29 @@ __global__ void attention_softmax_bf16_kernel(
         __syncthreads();
     }
     float max_val = max_values[0];
+    __syncthreads();
 
     __shared__ float sum_shared;
-    if (lane == 0) {
-        float sum_exp = 0.0f;
-        for (uint32_t c = 0; c < valid_cols; c++) {
-            sum_exp += expf(__bfloat162float(scores[row * cols + c]) - max_val);
+    float sum_exp = 0.0f;
+    for (uint32_t base = 0; base < valid_cols; base += blockDim.x) {
+        uint32_t c = base + lane;
+        max_values[lane] = c < valid_cols
+            ? expf(__bfloat162float(scores[row * cols + c]) - max_val)
+            : 0.0f;
+        __syncthreads();
+        if (lane == 0) {
+            uint32_t count = min(blockDim.x, valid_cols - base);
+            for (uint32_t index = 0; index < count; index++) {
+                sum_exp += max_values[index];
+            }
         }
+        __syncthreads();
+    }
+    if (lane == 0) {
         sum_shared = sum_exp;
     }
     __syncthreads();
-    float sum_exp = sum_shared;
+    sum_exp = sum_shared;
 
     for (uint32_t c = lane; c < cols; c += blockDim.x) {
         if (c < valid_cols) {
