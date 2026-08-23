@@ -1,6 +1,6 @@
-// Copyright 2025 ApxInf contributors.
+// Copyright 2025 SGLang Team and Mizar contributors.
 // SPDX-License-Identifier: Apache-2.0
-// Raw-pointer adaptation of an upstream CUTLASS SM100 FP8 rowwise GEMM.
+// Raw-pointer adaptation of Mizar's CUTLASS SM100 FP8 rowwise GEMM.
 
 #if defined(__CUDA_ARCH_FEAT_SM101_ALL)
 #define CUTLASS_ARCH_MMA_SM100A_ENABLED 1
@@ -122,8 +122,8 @@ struct Fp8Gemm {
   using ElementOutput = cutlass::half_t;
   using ElementAccumulator = float;
   using LayoutA = cutlass::layout::RowMajor;
-  // ApxInf stores linear weights physically as contiguous [K, N]. The original
-  // wrapper passed a non-contiguous PyTorch transpose whose same
+  // ApxInf stores linear weights physically as contiguous [K, N].  Mizar's
+  // original wrapper passed a non-contiguous PyTorch transpose whose same
   // logical [K, N] tensor was physically [N, K], so its ColumnMajor tag was
   // correct there but transposed ApxInf weights a second time.  Keep the
   // shared ApxInf/cuBLASLt [K, N] allocation and describe it as RowMajor.
@@ -335,12 +335,12 @@ int fp8_gemm_f16(
       return launch<Fp8Gemm<Shape<_256, _128, _128>, Shape<_2, _2, _1>>>(
           activation, weight, output, m, n, k, alpha, stream);
     case 6:
-      // Safe tall-N auto-scheduled candidate. Unlike the former
+      // Mizar's safe tall-N auto-scheduled candidate. Unlike the former
       // tactic 6, this is a regular one-SM schedule and is graph-replay safe.
       return launch<Fp8Gemm<Shape<_128, _256, _128>, Shape<_1, _2, _1>>>(
           activation, weight, output, m, n, k, alpha, stream);
     case 7:
-      // Alternate wide auto-scheduled candidate. Keep the 2x1
+      // Mizar's alternate wide auto-scheduled candidate. Keep the 2x1
       // cluster while avoiding the explicit two-SM epilogue that wedges the
       // current Thor-U driver during graph replay.
       return launch<Fp8Gemm<Shape<_256, _128, _128>, Shape<_2, _1, _1>>>(

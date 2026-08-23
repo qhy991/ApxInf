@@ -1,0 +1,116 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "model": "Qwen/Qwen2.5-Omni-3B",
+  "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "base_revision": "09880ec",
+  "classification": "source/runtime graph and data materialization",
+  "base_binary_sha256": "fbad7e2359f0e34cfb95112f01dad00fffdc36ad1ea6c17dc63e2ed8217291f8",
+  "candidate_binary_sha256": "b07642c15372ed769bf2a6cde443df157cf6191c927e27bec474f4c4150e140b",
+  "change": {
+    "description": "allocate complete-write pointwise, norm, RoPE, embedding and QKV-split outputs without redundant zero fills",
+    "new_selector": false,
+    "data_layout_changed": false,
+    "kernel_arithmetic_changed": false,
+    "excluded_contracts": [
+      "KV cache",
+      "prefix reserve",
+      "partial-write outputs",
+      "accumulators"
+    ]
+  },
+  "correctness": {
+    "full_operator_job": "gpuq-e174ca17eb34",
+    "operator_tests_passed": 45,
+    "operator_tests_failed": 0,
+    "text_trajectories_exact": true,
+    "real_png_exact": true,
+    "real_wav_exact": true,
+    "invalid_request_recovery_passed": true,
+    "reports": [
+      "candidate-nozero-pointwise-quick.json",
+      "candidate-nozero-pointwise-decode.json",
+      "candidate-nozero-pointwise-8k12k.json",
+      "candidate-nozero-pointwise-32k.json",
+      "candidate-nozero-pointwise-contract.json",
+      "candidate-nozero-pointwise-multimodal.json"
+    ]
+  },
+  "no_profiler_p50": [
+    {
+      "prompt_tokens": 1024,
+      "output_tokens": 32,
+      "base_ttft_seconds": 0.074178283,
+      "candidate_ttft_seconds": 0.071488429,
+      "ttft_reduction_percent": 3.63,
+      "candidate_tpot_seconds": 0.009362217838709677,
+      "repeats": 5
+    },
+    {
+      "prompt_tokens": 8192,
+      "output_tokens": 8,
+      "base_ttft_seconds": 0.92702458,
+      "candidate_ttft_seconds": 0.891396049,
+      "ttft_reduction_percent": 3.84,
+      "candidate_tpot_seconds": 0.013697937714285714,
+      "repeats": 5
+    },
+    {
+      "prompt_tokens": 12288,
+      "output_tokens": 8,
+      "base_ttft_seconds": 1.522917635,
+      "candidate_ttft_seconds": 1.478759211,
+      "ttft_reduction_percent": 2.90,
+      "candidate_tpot_seconds": 0.016708046,
+      "repeats": 5
+    },
+    {
+      "prompt_tokens": 32760,
+      "output_tokens": 8,
+      "base_ttft_seconds": 5.968776771,
+      "candidate_ttft_seconds": 5.90717716,
+      "ttft_reduction_percent": 1.03,
+      "candidate_tpot_seconds": 0.03523313971428571,
+      "repeats": 3
+    }
+  ],
+  "decode_control": {
+    "prompt_tokens": 128,
+    "output_tokens": 128,
+    "tpot_seconds": 0.008257916433070866,
+    "repeats": 5,
+    "trajectory_sha256": "a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039"
+  },
+  "profile_attribution": {
+    "workload": "12288 prompt + 8 output",
+    "base_report_sha256": "def09f7f22f319dd82838bf9603c6af9400a1429b824aaf54e676b46faeffbc9",
+    "candidate_report_sha256": "ccae673f613793d9b9d782bc8650d6c8519819912a75c9f6d5bbac9d613478fa",
+    "base_memset_count": 29727,
+    "candidate_memset_count": 7056,
+    "base_memset_gpu_ms": 49.565137,
+    "candidate_memset_gpu_ms": 12.440253,
+    "base_ttft_seconds": 1.584177693,
+    "candidate_ttft_seconds": 1.526040344
+  },
+  "capacity": {
+    "prompt_tokens": 32760,
+    "output_tokens": 8,
+    "passed": true,
+    "trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9",
+    "peak_memory_mib": 14973,
+    "minimum_sampled_headroom_mib": 9591
+  },
+  "deployment": {
+    "formal_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf",
+    "rollback_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf.fbad7e2359f0e34cfb95112f01dad00fffdc36ad1ea6c17dc63e2ed8217291f8",
+    "formal_reports": [
+      "deployed-nozero-pointwise-quick.json",
+      "deployed-nozero-pointwise-context.json",
+      "deployed-nozero-pointwise-contract.json"
+    ],
+    "formal_health_passed": true,
+    "service_stopped_when_unused": true,
+    "gpu_idle_after_validation": true
+  },
+  "decision": "promote"
+}

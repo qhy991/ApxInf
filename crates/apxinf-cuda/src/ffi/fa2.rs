@@ -39,7 +39,7 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
-    #[cfg(apxinf_fa2_sm80)]
+    #[cfg(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80))]
     pub fn apxinf_static_fa2_bf16(
         q: *const c_void,
         k: *const c_void,

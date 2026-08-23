@@ -1,0 +1,278 @@
+{
+  "schema": "apxinf.qwen25_omni.vllm_omni_benchmark.v1",
+  "started_at": "2026-08-23T14:04:30.715900+00:00",
+  "completed_at": "2026-08-23T14:04:35.528692+00:00",
+  "engine": "vLLM-Omni",
+  "engine_version": {
+    "version": "0.26.0"
+  },
+  "base_url": "http://127.0.0.1:8003",
+  "model": "/mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B",
+  "models_response": {
+    "object": "list",
+    "data": [
+      {
+        "id": "/mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B",
+        "object": "model",
+        "created": 1787493870,
+        "owned_by": "vllm",
+        "root": "/mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B",
+        "parent": null,
+        "max_model_len": 32768,
+        "permission": [
+          {
+            "id": "modelperm-a0c4d985919adce4",
+            "object": "model_permission",
+            "created": 1787493870,
+            "allow_create_engine": false,
+            "allow_sampling": true,
+            "allow_logprobs": true,
+            "allow_search_indices": false,
+            "allow_view": true,
+            "allow_fine_tuning": false,
+            "organization": "*",
+            "group": null,
+            "is_blocking": false
+          }
+        ]
+      }
+    ]
+  },
+  "suite": "quick",
+  "contract": {
+    "api": "/v1/chat/completions",
+    "single_request": true,
+    "sampling": "greedy",
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 42,
+    "repetition_penalty": 1.0,
+    "ignore_eos": true,
+    "stream": true,
+    "output_modalities": [
+      "text"
+    ],
+    "prompt_pattern": "Qwen2.5-Omni chat template over 'x ' repetitions",
+    "chat_template_overhead": 20,
+    "usage_token_count_must_match": true,
+    "warmups": 1,
+    "repeats": 5,
+    "timeout_seconds": 300.0,
+    "sample_interval_ms": 100
+  },
+  "raw_cases": [
+    {
+      "case": {
+        "case_id": "prefill_1k_decode_32",
+        "prompt_tokens": 1024,
+        "output_tokens": 32,
+        "family": "fixed"
+      },
+      "warmup_failure": null,
+      "trials": [
+        {
+          "passed": true,
+          "error": null,
+          "wall_seconds": 0.7716280668973923,
+          "ttft_seconds": 0.06991545855998993,
+          "tpot_seconds": 0.022632927904205936,
+          "prefill_tokens_per_second_proxy": 14646.260227577166,
+          "decode_tokens_per_second": 44.18341295622505,
+          "e2e_output_tokens_per_second": 41.47075692654298,
+          "prompt_token_count": 1024,
+          "output_token_count": 32,
+          "stream_token_event_count": 32,
+          "trajectory_sha256": "078318fb899e559ea9c7ed2a586e84c631bceec472cb1c4b4987fdb5d2df9799",
+          "output_text": "The image you provided is a blank white canvas. If you have a specific question or task related to this image, please let me know, and I'll be",
+          "hardware": {
+            "sample_count": 8,
+            "gpu_util_mean_pct": 35.0,
+            "gpu_util_max_pct": 35.0,
+            "memory_util_mean_pct": 34.0,
+            "memory_util_max_pct": 34.0,
+            "memory_used_peak_mib": 12953.0,
+            "memory_total_mib": 24564.0,
+            "memory_headroom_min_mib": 11611.0,
+            "power_mean_w": 119.045,
+            "power_max_w": 159.84,
+            "sm_clock_mean_mhz": 2595.0,
+            "memory_clock_mean_mhz": 10251.0
+          }
+        },
+        {
+          "passed": true,
+          "error": null,
+          "wall_seconds": 0.7713655158877373,
+          "ttft_seconds": 0.06811981648206711,
+          "tpot_seconds": 0.022682363948514386,
+          "prefill_tokens_per_second_proxy": 15032.336446026293,
+          "decode_tokens_per_second": 44.087115534776366,
+          "e2e_output_tokens_per_second": 41.484872399529465,
+          "prompt_token_count": 1024,
+          "output_token_count": 32,
+          "stream_token_event_count": 32,
+          "trajectory_sha256": "078318fb899e559ea9c7ed2a586e84c631bceec472cb1c4b4987fdb5d2df9799",
+          "output_text": "The image you provided is a blank white canvas. If you have a specific question or task related to this image, please let me know, and I'll be",
+          "hardware": {
+            "sample_count": 8,
+            "gpu_util_mean_pct": 62.125,
+            "gpu_util_max_pct": 66.0,
+            "memory_util_mean_pct": 35.75,
+            "memory_util_max_pct": 36.0,
+            "memory_used_peak_mib": 12953.0,
+            "memory_total_mib": 24564.0,
+            "memory_headroom_min_mib": 11611.0,
+            "power_mean_w": 175.67875,
+            "power_max_w": 178.93,
+            "sm_clock_mean_mhz": 2670.0,
+            "memory_clock_mean_mhz": 10251.0
+          }
+        },
+        {
+          "passed": true,
+          "error": null,
+          "wall_seconds": 0.7678510844707489,
+          "ttft_seconds": 0.06769805401563644,
+          "tpot_seconds": 0.022582383165436405,
+          "prefill_tokens_per_second_proxy": 15125.988699224403,
+          "decode_tokens_per_second": 44.28230593175638,
+          "e2e_output_tokens_per_second": 41.67474741805751,
+          "prompt_token_count": 1024,
+          "output_token_count": 32,
+          "stream_token_event_count": 32,
+          "trajectory_sha256": "078318fb899e559ea9c7ed2a586e84c631bceec472cb1c4b4987fdb5d2df9799",
+          "output_text": "The image you provided is a blank white canvas. If you have a specific question or task related to this image, please let me know, and I'll be",
+          "hardware": {
+            "sample_count": 7,
+            "gpu_util_mean_pct": 48.285714285714285,
+            "gpu_util_max_pct": 66.0,
+            "memory_util_mean_pct": 34.857142857142854,
+            "memory_util_max_pct": 36.0,
+            "memory_used_peak_mib": 12953.0,
+            "memory_total_mib": 24564.0,
+            "memory_headroom_min_mib": 11611.0,
+            "power_mean_w": 182.37285714285716,
+            "power_max_w": 187.55,
+            "sm_clock_mean_mhz": 2670.0,
+            "memory_clock_mean_mhz": 10251.0
+          }
+        },
+        {
+          "passed": true,
+          "error": null,
+          "wall_seconds": 0.7623853161931038,
+          "ttft_seconds": 0.06829691678285599,
+          "tpot_seconds": 0.022385186966388457,
+          "prefill_tokens_per_second_proxy": 14993.356189939255,
+          "decode_tokens_per_second": 44.67239882791724,
+          "e2e_output_tokens_per_second": 41.97352614264511,
+          "prompt_token_count": 1024,
+          "output_token_count": 32,
+          "stream_token_event_count": 32,
+          "trajectory_sha256": "078318fb899e559ea9c7ed2a586e84c631bceec472cb1c4b4987fdb5d2df9799",
+          "output_text": "The image you provided is a blank white canvas. If you have a specific question or task related to this image, please let me know, and I'll be",
+          "hardware": {
+            "sample_count": 8,
+            "gpu_util_mean_pct": 35.0,
+            "gpu_util_max_pct": 35.0,
+            "memory_util_mean_pct": 34.0,
+            "memory_util_max_pct": 34.0,
+            "memory_used_peak_mib": 12953.0,
+            "memory_total_mib": 24564.0,
+            "memory_headroom_min_mib": 11611.0,
+            "power_mean_w": 184.01,
+            "power_max_w": 187.55,
+            "sm_clock_mean_mhz": 2670.0,
+            "memory_clock_mean_mhz": 10251.0
+          }
+        },
+        {
+          "passed": true,
+          "error": null,
+          "wall_seconds": 0.7702370882034302,
+          "ttft_seconds": 0.06902347505092621,
+          "tpot_seconds": 0.022616674582804402,
+          "prefill_tokens_per_second_proxy": 14835.53239306602,
+          "decode_tokens_per_second": 44.21516506941769,
+          "e2e_output_tokens_per_second": 41.54564937224674,
+          "prompt_token_count": 1024,
+          "output_token_count": 32,
+          "stream_token_event_count": 32,
+          "trajectory_sha256": "078318fb899e559ea9c7ed2a586e84c631bceec472cb1c4b4987fdb5d2df9799",
+          "output_text": "The image you provided is a blank white canvas. If you have a specific question or task related to this image, please let me know, and I'll be",
+          "hardware": {
+            "sample_count": 8,
+            "gpu_util_mean_pct": 35.0,
+            "gpu_util_max_pct": 35.0,
+            "memory_util_mean_pct": 34.0,
+            "memory_util_max_pct": 34.0,
+            "memory_used_peak_mib": 12953.0,
+            "memory_total_mib": 24564.0,
+            "memory_headroom_min_mib": 11611.0,
+            "power_mean_w": 183.05875,
+            "power_max_w": 187.3,
+            "sm_clock_mean_mhz": 2670.0,
+            "memory_clock_mean_mhz": 10251.0
+          }
+        }
+      ]
+    }
+  ],
+  "summaries": [
+    {
+      "case_id": "prefill_1k_decode_32",
+      "prompt_tokens": 1024,
+      "output_tokens": 32,
+      "family": "fixed",
+      "trial_count": 5,
+      "passed_trials": 5,
+      "failed_trials": 0,
+      "wall_seconds": {
+        "mean": 0.7686934143304824,
+        "p50": 0.7702370882034302,
+        "p90": 0.7715230464935303,
+        "cv": 0.0049808356132509885
+      },
+      "ttft_seconds": {
+        "mean": 0.06861074417829513,
+        "p50": 0.06829691678285599,
+        "p90": 0.06955866515636444,
+        "cv": 0.012716880938093141
+      },
+      "tpot_seconds": {
+        "mean": 0.022579907313469916,
+        "p50": 0.022616674582804402,
+        "p90": 0.022662589530791005,
+        "cv": 0.005077717671642293
+      },
+      "prefill_tokens_per_second_proxy": {
+        "mean": 14926.694791166627,
+        "p50": 14993.356189939255,
+        "p90": 15088.527797945158,
+        "cv": 0.012634914659161552
+      },
+      "decode_tokens_per_second": {
+        "mean": 44.28807966401855,
+        "p50": 44.21516506941769,
+        "p90": 44.5163616694529,
+        "cv": 0.005104062053346666
+      },
+      "e2e_output_tokens_per_second": {
+        "mean": 41.62991045180436,
+        "p50": 41.54564937224674,
+        "p90": 41.85401465281007,
+        "cv": 0.005003503618390333
+      },
+      "trajectory_sha256s": [
+        "078318fb899e559ea9c7ed2a586e84c631bceec472cb1c4b4987fdb5d2df9799"
+      ],
+      "trajectory_stable": true
+    }
+  ],
+  "passed": true,
+  "limitations": [
+    "TTFT/TPOT are client-observed from true vLLM SSE token events",
+    "ApxInf comparison uses its server-emitted model timing because its current SSE response is buffered",
+    "Prefill tokens/s remains a proxy because TTFT includes first-token and service overhead"
+  ]
+}

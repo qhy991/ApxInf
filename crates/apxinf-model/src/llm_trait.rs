@@ -19,6 +19,37 @@ pub struct ImageInput<'a> {
     pub grid_thw: &'a [[u32; 3]],
 }
 
+/// Processor output for one or more audio clips in a generation prompt.
+///
+/// Features use the model-owned `[frames, mel_bins]` layout. The mask is the
+/// processor-produced frame mask, `feature_lengths` identifies the valid
+/// frames in each group, and `token_counts` maps each group to the expanded
+/// audio-placeholder run in `token_ids`. The model validates all four views
+/// before executing the audio tower.
+#[derive(Clone, Copy, Debug)]
+pub struct AudioInput<'a> {
+    pub input_features: &'a Tensor,
+    pub attention_mask: &'a Tensor,
+    pub feature_lengths: &'a [u32],
+    pub token_counts: &'a [u32],
+}
+
+impl<'a> AudioInput<'a> {
+    pub const fn new(
+        input_features: &'a Tensor,
+        attention_mask: &'a Tensor,
+        feature_lengths: &'a [u32],
+        token_counts: &'a [u32],
+    ) -> Self {
+        Self {
+            input_features,
+            attention_mask,
+            feature_lengths,
+            token_counts,
+        }
+    }
+}
+
 impl<'a> ImageInput<'a> {
     pub const fn new(pixel_values: &'a Tensor, grid_thw: &'a [[u32; 3]]) -> Self {
         Self {
@@ -37,6 +68,7 @@ impl<'a> ImageInput<'a> {
 pub struct LlmInput<'a> {
     pub token_ids: &'a [u32],
     pub image: Option<ImageInput<'a>>,
+    pub audio: Option<AudioInput<'a>>,
 }
 
 impl<'a> LlmInput<'a> {
@@ -44,6 +76,7 @@ impl<'a> LlmInput<'a> {
         Self {
             token_ids,
             image: None,
+            audio: None,
         }
     }
 
@@ -51,6 +84,27 @@ impl<'a> LlmInput<'a> {
         Self {
             token_ids,
             image: Some(image),
+            audio: None,
+        }
+    }
+
+    pub const fn with_audio(token_ids: &'a [u32], audio: AudioInput<'a>) -> Self {
+        Self {
+            token_ids,
+            image: None,
+            audio: Some(audio),
+        }
+    }
+
+    pub const fn with_media(
+        token_ids: &'a [u32],
+        image: Option<ImageInput<'a>>,
+        audio: Option<AudioInput<'a>>,
+    ) -> Self {
+        Self {
+            token_ids,
+            image,
+            audio,
         }
     }
 }
@@ -59,11 +113,22 @@ impl<'a> LlmInput<'a> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LlmCapabilities {
     pub image: bool,
+    pub audio: bool,
 }
 
 impl LlmCapabilities {
-    pub const TEXT_ONLY: Self = Self { image: false };
-    pub const VISION: Self = Self { image: true };
+    pub const TEXT_ONLY: Self = Self {
+        image: false,
+        audio: false,
+    };
+    pub const VISION: Self = Self {
+        image: true,
+        audio: false,
+    };
+    pub const OMNI: Self = Self {
+        image: true,
+        audio: true,
+    };
 }
 
 /// Common interface for all LLM implementations.
@@ -93,6 +158,11 @@ pub trait LlmTrait {
                 "this model does not support image input".into(),
             ));
         }
+        if input.audio.is_some() {
+            return Err(Error::Other(
+                "this model does not support audio input".into(),
+            ));
+        }
         self.forward(input.token_ids, 0)
     }
 
@@ -104,6 +174,17 @@ pub trait LlmTrait {
     /// decode graph use it to pre-capture every bucket they'll hit so the
     /// per-token TPOT stays at pure graph-replay cost. Default: no-op.
     fn prewarm_decode(&mut self, _prompt_len: usize, _max_new_tokens: usize) {}
+
+    /// Optional hard context capacity. The shared loop rejects combined
+    /// prompt+completion overflow before prewarm or cache mutation.
+    fn max_context_len(&self) -> Option<usize> {
+        None
+    }
+
+    /// Optional per-request generation limit owned by a deployed model.
+    fn max_new_tokens_limit(&self) -> Option<usize> {
+        None
+    }
 
     /// Greedy-decode one token directly to its id, skipping the full-logits
     /// D2H + CPU argmax. Returns `None` if the model has no GPU-argmax fast
@@ -161,13 +242,21 @@ where
     F: FnMut(u32),
 {
     let prompt_tokens = input.token_ids;
-    if prompt_tokens.is_empty() {
-        return Err(Error::Other("generate_streaming: empty prompt".into()));
-    }
+    validate_generation_limits(
+        prompt_tokens.len(),
+        max_new_tokens,
+        model.max_new_tokens_limit(),
+        model.max_context_len(),
+    )?;
     // Reject unsupported media before graph prewarm or any model forward.
     if input.image.is_some() && !model.capabilities().image {
         return Err(Error::Other(
             "this model does not support image input".into(),
+        ));
+    }
+    if input.audio.is_some() && !model.capabilities().audio {
+        return Err(Error::Other(
+            "this model does not support audio input".into(),
         ));
     }
 
@@ -205,8 +294,8 @@ where
     for i in 0..max_new_tokens.saturating_sub(1) {
         let pos = (prompt_len + i) as u32;
         // GPU-argmax fast path: skip full-logits D2H + CPU scan.
-        if let Some(Ok(tok)) = model.decode_token(current_token, pos) {
-            current_token = tok;
+        if let Some(result) = model.decode_token(current_token, pos) {
+            current_token = result?;
             generated.push(current_token);
             on_token(current_token);
             if eos_token_id == Some(current_token) {
@@ -242,11 +331,58 @@ where
     Ok((generated, profile))
 }
 
+/// Validate the one canonical autoregressive capacity contract.
+///
+/// Prompt and completion limits are not independent allocation promises: a
+/// request must satisfy both the completion cap and `prompt + completion <=
+/// context`. The checked addition makes oversized input fail before model,
+/// cache, or backend work.
+pub fn validate_generation_limits(
+    prompt_tokens: usize,
+    max_new_tokens: usize,
+    max_new_tokens_limit: Option<usize>,
+    context_limit: Option<usize>,
+) -> Result<()> {
+    if prompt_tokens == 0 {
+        return Err(Error::Other("generate_streaming: empty prompt".into()));
+    }
+    if max_new_tokens == 0 {
+        return Err(Error::Other(
+            "generate_streaming: max_new_tokens must be positive".into(),
+        ));
+    }
+    if let Some(limit) = max_new_tokens_limit {
+        if max_new_tokens > limit {
+            return Err(Error::Other(format!(
+                "generate_streaming: max_new_tokens {max_new_tokens} exceeds model limit {limit}"
+            )));
+        }
+    }
+    if let Some(limit) = context_limit {
+        let required = prompt_tokens.checked_add(max_new_tokens).ok_or_else(|| {
+            Error::Other("generate_streaming: combined context length overflow".into())
+        })?;
+        if required > limit {
+            return Err(Error::Other(format!(
+                "generate_streaming: prompt {prompt_tokens} + completion {max_new_tokens} exceeds context {limit}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Extract logits for the last row and return its argmax token.
 /// `logits` shape: `[seq_len, vocab_size]`. Logits may live on any device — this
 /// helper moves to CPU if needed (callers' responsibility for now).
 fn argmax_last_row(logits: &Tensor, seq_len: usize, vocab_size: usize) -> Result<u32> {
-    let last_row_offset = (seq_len - 1) * vocab_size;
+    let dims = logits.shape().dims();
+    if dims.len() != 2 || dims[1] != vocab_size || dims[0] == 0 {
+        return Err(Error::Other(format!(
+            "argmax logits shape {dims:?}, expected [rows, {vocab_size}]"
+        )));
+    }
+    let _ = seq_len;
+    let last_row_offset = (dims[0] - 1) * vocab_size;
     // Fast path: scan bf16 directly (the decode graph returns a bf16 row).
     // Manual loop with `>` beats the iterator + partial_cmp (no NaN handling
     // overhead; logits don't contain NaN in practice).
@@ -274,4 +410,66 @@ fn argmax_last_row(logits: &Tensor, seq_len: usize, vocab_size: usize) -> Result
         }
     }
     Ok(best_i)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use apxinf_core::{Device, Error, Result, Tensor};
+    use apxinf_loader::ModelConfig;
+
+    use super::{validate_generation_limits, LlmInput, LlmTrait};
+
+    struct DecodeErrorModel {
+        forward_calls: usize,
+    }
+
+    impl LlmTrait for DecodeErrorModel {
+        fn load(
+            _config: ModelConfig,
+            _weights: HashMap<String, Tensor>,
+            _device: Device,
+        ) -> Result<Self> {
+            Ok(Self { forward_calls: 0 })
+        }
+
+        fn forward(&mut self, _token_ids: &[u32], _start_pos: u32) -> Result<Tensor> {
+            self.forward_calls += 1;
+            assert_eq!(self.forward_calls, 1, "decode error fell back to forward");
+            Tensor::from_f32(vec![1, 2], &[0.0, 1.0])
+        }
+
+        fn reset(&mut self) {}
+
+        fn decode_token(&mut self, _token: u32, _pos: u32) -> Option<Result<u32>> {
+            Some(Err(Error::Other("GPU token selection failed".into())))
+        }
+
+        fn vocab_size(&self) -> usize {
+            2
+        }
+    }
+
+    #[test]
+    fn combined_context_contract_is_checked_and_fail_closed() {
+        assert!(validate_generation_limits(32_640, 128, Some(128), Some(32_768)).is_ok());
+        assert!(validate_generation_limits(32_767, 1, Some(128), Some(32_768)).is_ok());
+        assert!(validate_generation_limits(32_768, 1, Some(128), Some(32_768)).is_err());
+        assert!(validate_generation_limits(1, 129, Some(128), Some(32_768)).is_err());
+        assert!(validate_generation_limits(usize::MAX, 1, Some(128), Some(usize::MAX)).is_err());
+        assert!(validate_generation_limits(0, 1, Some(128), Some(32_768)).is_err());
+        assert!(validate_generation_limits(1, 0, Some(128), Some(32_768)).is_err());
+    }
+
+    #[test]
+    fn decode_token_error_fails_closed_without_forward_fallback() {
+        let mut model = DecodeErrorModel { forward_calls: 0 };
+        let error = model
+            .generate_streaming(LlmInput::text(&[1]), 2, |_| {}, None)
+            .err()
+            .expect("GPU token-selection error must fail generation");
+        assert!(error.to_string().contains("GPU token selection failed"));
+        assert_eq!(model.forward_calls, 1);
+    }
 }

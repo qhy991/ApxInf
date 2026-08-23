@@ -1,0 +1,29 @@
+{
+  "schema": "apxinf.qwen25_omni.candidate.v1",
+  "evidence_level": "source_report_transcription",
+  "base_revision": "8e8c1a5",
+  "classification": "source/runtime graph",
+  "hypothesis": "compute exact prefill exponentials in 256-column CTA tiles while preserving lane-0 summation order",
+  "unsafe_candidate": {
+    "binary_sha256": "285f683cf8b693452a9e408b46755108aebf1f047d7ffe0c45d3a930d3df2a97",
+    "operator_job": "gpuq-ff001379c3ce",
+    "operator_passed_without_sanitizer": true,
+    "racecheck_job": "gpuq-0f390357b1c6",
+    "racecheck_hazards": 24,
+    "first_observed_operator_mismatch_index": 4096,
+    "service_trajectory_stable": false,
+    "bad_service_output_head": [0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  "fix": "add a CTA barrier after every thread reads max_values[0] and before the shared array is reused for exponentials",
+  "fixed_candidate": {
+    "binary_sha256": "bc05d88e0c04061b4562b7e599578576bcad018f1d579922039c8f65a1d3fea0",
+    "racecheck_job": "gpuq-c29bdaaf002c",
+    "racecheck_hazards": 0,
+    "stability_repeats": 10,
+    "trajectory_stable": true
+  },
+  "decision": "promote_fixed_candidate",
+  "limitations": [
+    "The compute-sanitizer transcripts were observed in the terminal but not archived as raw files"
+  ]
+}

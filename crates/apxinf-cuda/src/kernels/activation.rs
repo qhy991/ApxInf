@@ -9,6 +9,7 @@ use super::contracts::{
 use crate::buffer::CudaBuffer;
 use crate::context::CudaContext;
 use crate::ffi;
+use crate::workspace::uninitialized_buffer;
 
 /// Allocation-free SiLU into caller-owned decode storage.
 pub fn silu_into(
@@ -81,13 +82,52 @@ pub fn silu_mul_bf16_into(
     })
 }
 
+/// Exact fused BF16 SiLU(gate) * up for separate, shape-identical tensors.
+pub fn silu_mul(ctx: &CudaContext, gate: &Tensor, up: &Tensor) -> Result<Tensor> {
+    if gate.dtype() != DType::BF16 || up.dtype() != DType::BF16 || gate.shape() != up.shape() {
+        return Err(Error::Other(
+            "separate SiLU multiply requires shape-identical BF16 tensors".into(),
+        ));
+    }
+    let count = u32::try_from(gate.numel())
+        .map_err(|_| Error::Other("separate SiLU multiply exceeds u32 elements".into()))?;
+    let bytes = checked_bytes(DType::BF16, &[gate.numel()], "separate SiLU multiply")?;
+    let gate_buffer = CudaBuffer::from_tensor(gate).map_err(Error::Cuda)?;
+    let up_buffer = CudaBuffer::from_tensor(up).map_err(Error::Cuda)?;
+    let output = uninitialized_buffer(ctx, bytes)?;
+    require_buffers(
+        ctx,
+        "separate SiLU multiply",
+        &[
+            ("gate", &gate_buffer, bytes),
+            ("up", &up_buffer, bytes),
+            ("output", &output, bytes),
+        ],
+    )?;
+    check_cuda(unsafe {
+        ffi::apxinf_silu_mul_separate_bf16(
+            gate_buffer.ptr(),
+            up_buffer.ptr(),
+            output.ptr(),
+            count,
+            ctx.stream().handle(),
+        )
+    })?;
+    Ok(make_gpu_tensor(
+        gate.shape().clone(),
+        DType::BF16,
+        ctx.device_id(),
+        output,
+    ))
+}
+
 /// SiLU (Swish) activation on CUDA.
 pub fn silu(ctx: &CudaContext, input: &Tensor) -> Result<Tensor> {
     let device_id = ctx.device_id();
     let count = input.numel() as u32;
 
     let out_bytes = input.size_in_bytes();
-    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
+    let out_buf = uninitialized_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = match input.dtype() {
@@ -117,7 +157,7 @@ pub fn gelu_tanh(ctx: &CudaContext, input: &Tensor) -> Result<Tensor> {
     }
     let device_id = ctx.device_id();
     let count = input.numel() as u32;
-    let out_buf = CudaBuffer::alloc_zeros(input.size_in_bytes(), device_id).map_err(Error::Cuda)?;
+    let out_buf = uninitialized_buffer(ctx, input.size_in_bytes())?;
     unsafe {
         let res =
             ffi::apxinf_gelu_tanh_bf16(gpu_ptr(input)?, out_buf.ptr(), count, ctx.stream().handle());

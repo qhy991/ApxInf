@@ -1,0 +1,93 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "model": "Qwen/Qwen2.5-Omni-3B",
+  "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "base_revision": "71864ad",
+  "classification": "source/runtime graph",
+  "base_binary_sha256": "2296e9b3010d8174902f7ec6b2ffb22f7a046121bb4beb21f364d67eb1468374",
+  "candidate_binary_sha256": "432ac73ef573f36fa47b8c2112abc7f1b5b561a79816ed60f57c16f0d06adb18",
+  "change": {
+    "description": "replace full-sequence masked K/V scans in 28 windowed vision blocks with cached ascending group key-index plans",
+    "selector": "APXINF_VISION_GROUPED_SPARSE",
+    "default_enabled": false,
+    "full_attention_blocks_changed": false,
+    "original_key_order_retained": true,
+    "max_sum_lane_assignment_retained": true,
+    "bf16_output_bit_exact": true,
+    "group_plan_cached_per_complete_value_vector": true
+  },
+  "correctness": {
+    "full_operator_job": "gpuq-efc6c19821ce",
+    "operator_tests_passed": 50,
+    "operator_tests_failed": 0,
+    "indexed_group_operator_bit_exact": true,
+    "real_png_exact": true,
+    "real_wav_exact": true,
+    "text_trajectories_exact": true,
+    "thirty_two_k_exact": true,
+    "invalid_request_recovery_passed": true
+  },
+  "real_png_repeated": {
+    "prompt_tokens": 1760,
+    "output_tokens": 16,
+    "baseline_ttft_seconds": 33.382141159,
+    "candidate_ttft_p50_seconds": 6.73259325,
+    "ttft_reduction_percent": 79.83,
+    "ttft_speedup": 4.9583,
+    "candidate_ttft_cv": 0.0009614233549015666,
+    "baseline_wall_seconds": 39.55512563884258,
+    "candidate_wall_p50_seconds": 12.845330119132996,
+    "wall_reduction_percent": 67.53,
+    "wall_speedup": 3.0793,
+    "candidate_wall_cv": 0.005870253691065825,
+    "candidate_tpot_p50_seconds": 0.010382592866666667,
+    "repeats": 5,
+    "exact_token_agreement": true,
+    "reports": [
+      "candidate-vision-grouped-sparse-multimodal-1.json",
+      "candidate-vision-grouped-sparse-multimodal-2.json",
+      "candidate-vision-grouped-sparse-multimodal-3.json",
+      "candidate-vision-grouped-sparse-multimodal-4.json",
+      "candidate-vision-grouped-sparse-multimodal-5.json"
+    ]
+  },
+  "profile_attribution": {
+    "workload": "real PNG, 1760 prompt + 16 output",
+    "baseline_report_sha256": "f64f18205128280cd0781fd439608721609a2a7daf5d990c550891ee6cf74c10",
+    "candidate_report_sha256": "f74c0b929ffb40f540cb06a6fdad3e68cb194c6438cccfdcfe6d50f18ffcf954",
+    "baseline_total_gpu_kernel_seconds": 33.145976778,
+    "candidate_total_gpu_kernel_seconds": 6.692171768,
+    "total_gpu_kernel_reduction_percent": 79.81,
+    "full_attention_instances": 4,
+    "candidate_full_attention_seconds": 5.974953547,
+    "grouped_attention_instances": 28,
+    "baseline_grouped_attention_seconds_inferred_from_matched_full_launches": 26.957570656,
+    "candidate_grouped_attention_seconds": 0.503099172,
+    "grouped_attention_reduction_percent": 98.13,
+    "grouped_attention_speedup": 53.583,
+    "candidate_grouped_kernel_median_ms": 17.746413
+  },
+  "formal_validation": {
+    "quick_ttft_p50_seconds": 0.065851358,
+    "quick_tpot_p50_seconds": 0.009377445548387096,
+    "decode_128_tpot_p50_seconds": 0.008243917496062991,
+    "context_32760_ttft_p50_seconds": 5.698187968999999,
+    "context_32760_tpot_p50_seconds": 0.024325546142857143,
+    "context_32760_trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9",
+    "real_png_ttft_seconds": 6.7730690860000005,
+    "real_png_wall_seconds": 12.863979816436768,
+    "real_wav_ttft_seconds": 0.022905653,
+    "real_wav_wall_seconds": 5.966033659875393
+  },
+  "deployment": {
+    "formal_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf",
+    "rollback_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf.2296e9b3010d8174902f7ec6b2ffb22f7a046121bb4beb21f364d67eb1468374",
+    "formal_health_passed": true,
+    "formal_contract_passed": true,
+    "service_stopped_when_unused": true,
+    "gpu_idle_after_validation": true
+  },
+  "decision": "promote",
+  "next_bottleneck": "the four unchanged full-attention vision blocks consume 5.975 seconds, 89.3% of candidate GPU kernel time"
+}
