@@ -391,6 +391,52 @@ fn attention_softmax_exp_cache_bf16_is_bit_exact() {
 }
 
 #[test]
+fn attention_softmax_parallel_max_is_bit_exact_at_prefill_cache_boundary() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, cols) = (3usize, 2usize, 4_096usize);
+    let rows = seq_len * n_heads;
+    let input = (0..rows * cols)
+        .map(|index| {
+            let bits = (index as u32)
+                .wrapping_mul(22_695_477)
+                .wrapping_add(1);
+            (bits & 0xffff) as f32 / 4_096.0 - 8.0
+        })
+        .collect::<Vec<_>>();
+    let tensor = upload_fp32_as_bf16(&ctx, &input, vec![rows, cols]).unwrap();
+    let parallel = softmax_causal_with_exp_cache(
+        &ctx,
+        &tensor,
+        (cols - seq_len) as u32,
+        n_heads as u32,
+        false,
+    )
+    .unwrap();
+    let sequential = softmax_causal_with_exp_cache(
+        &ctx,
+        &tensor,
+        (cols - seq_len) as u32,
+        n_heads as u32,
+        true,
+    )
+    .unwrap();
+    let parallel = download_bf16_as_fp32(&parallel).unwrap();
+    let sequential = download_bf16_as_fp32(&sequential).unwrap();
+    assert_eq!(parallel.len(), sequential.len());
+    if let Some((index, (parallel, sequential))) = parallel
+        .iter()
+        .zip(&sequential)
+        .enumerate()
+        .find(|(_, (parallel, sequential))| parallel != sequential)
+    {
+        panic!(
+            "parallel max differed at index {index}: \
+             parallel={parallel:?}, sequential={sequential:?}"
+        );
+    }
+}
+
+#[test]
 fn attention_softmax_global_exp_cache_decode_is_bit_exact_at_32k() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     let (n_heads, cols) = (2usize, 32_768usize);

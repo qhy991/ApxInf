@@ -181,22 +181,31 @@ __global__ void attention_softmax_bf16_kernel(
     uint32_t seq_pos = row / n_heads;
     uint32_t valid_cols = min(seq_pos + kv_offset + 1, cols);
     uint32_t lane = threadIdx.x;
-    __shared__ float reduction[2];
-    if (lane == 0) {
-        float max_val = -INFINITY;
-        for (uint32_t c = 0; c < valid_cols; c++) {
-            max_val = fmaxf(max_val, __bfloat162float(scores[row * cols + c]));
+    __shared__ float max_values[256];
+    float local_max = -INFINITY;
+    for (uint32_t c = lane; c < valid_cols; c += blockDim.x) {
+        local_max = fmaxf(local_max, __bfloat162float(scores[row * cols + c]));
+    }
+    max_values[lane] = local_max;
+    __syncthreads();
+    for (uint32_t offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+        if (lane < offset) {
+            max_values[lane] = fmaxf(max_values[lane], max_values[lane + offset]);
         }
+        __syncthreads();
+    }
+    float max_val = max_values[0];
+
+    __shared__ float sum_shared;
+    if (lane == 0) {
         float sum_exp = 0.0f;
         for (uint32_t c = 0; c < valid_cols; c++) {
             sum_exp += expf(__bfloat162float(scores[row * cols + c]) - max_val);
         }
-        reduction[0] = max_val;
-        reduction[1] = sum_exp;
+        sum_shared = sum_exp;
     }
     __syncthreads();
-    float max_val = reduction[0];
-    float sum_exp = reduction[1];
+    float sum_exp = sum_shared;
 
     for (uint32_t c = lane; c < cols; c += blockDim.x) {
         if (c < valid_cols) {

@@ -1228,6 +1228,52 @@ budget.** The intended load-width reduction was already present, so the Inline
 PTX added no mechanism. The structured record is
 `candidate-global-exp-cache-forced-u32-load.json`.
 
+#### Promoted exact parallel prefill maximum
+
+Primary classification: **source/runtime graph with a custom CUDA operator**.
+The plain causal softmax used after the 4K shared-cache boundary left 255
+threads idle while lane 0 scanned every score twice. The promoted kernel has
+all 256 threads compute strided local maxima and combines them through a 1 KiB
+shared-memory `fmaxf` tree. Lane 0 still evaluates every exponential and adds
+them in the original order; final exponentials and divisions are unchanged.
+For finite BF16 model scores, maximum selection introduces no rounding or
+arithmetic-order difference.
+
+Candidate SHA-256 is
+`139ce5b622d3db62b494816233fba5347e470269009d57f8dabad040d939307c`.
+The original exact comparison passes under `gpuq-91038615cb53`; a new
+4,096-column pseudorandom prefill boundary comparison passes under
+`gpuq-0b89eb90df2d`.
+
+| Prompt / output | Accepted TTFT p50 | Parallel-max TTFT p50 | Change |
+|---|---:|---:|---:|
+| 4,096 + 8 | path-control only | 0.504 s | expected unchanged path |
+| 11,264 + 32 | 5.100 s | 4.429 s | 13.16% lower |
+| 12,288 + 32 | 6.115 s | 5.276 s | 13.73% lower |
+| 32,760 + 8 | 43.405 s | 37.181 s | 14.34% lower, one trial |
+
+The five-trial 11K/12K screens have TTFT CV 0.13% and 0.01%. TPOT remains
+unchanged, every text trajectory is exact, typed interface probes pass and
+the real PNG/WAV outputs match their frozen references. The 32K sample keeps
+8,567 MiB measured headroom.
+
+Interactive Nsight capture stopped and flushed collection before terminating
+the service, so both reports include the 252 global-decode softmax launches.
+At 12K the plain prefill softmax falls from 1.946 to 1.110 seconds, 42.98%
+lower; profiler TTFT falls from 6.128 to 5.289 seconds, 13.69%, matching the
+no-profiler result. The baseline and candidate reports remain on the host as
+`omni-12288-current-sm89-core-interactive.nsys-rep` and
+`omni-12288-prefill-parallel-max-interactive.nsys-rep`, SHA-256
+`7d8b845fa2b67b0fef54c7317908808cf565bbd9cddd63a0520e02efc2a824d4`
+and `4a57db47acbee2ccaa626c6dd8bf76cde75fb5b128227d22e3b38b8bf6a3a0ad`.
+The Broker wrappers exit 143 only after the successful collection stop and are
+not timing evidence.
+
+**Decision: promote exact parallel maximum reduction for finite BF16 model
+scores.** Raw request evidence uses the `candidate-prefill-parallel-max-*`
+prefix; small profiler exports are checked in under `profiles/`. Qwen3.8 and
+Omni remain down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
