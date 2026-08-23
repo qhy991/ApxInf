@@ -1038,6 +1038,17 @@ and 12K from 18.420 to 18.652 ms, regressions of about 1.25% and 1.26%.
 `candidate-global-exp-cache-warp-stage-context.json`; production retains the
 ordered lane-0 preload implementation.
 
+#### Rejected eight-value lane-0 preload
+
+Doubling the ordered preload group from four values to eight preserved the
+same scalar arithmetic and passed the 32K byte-exact operator under Broker job
+`gpuq-05bf9838ea83`. Candidate binary SHA-256 was
+`827ab7cd266ac9da8d6143e8456d5cc83e875ce349628b9225a2a1a0cac00cf1`.
+The longer live range regressed 11K TPOT from 17.670 to 18.021 ms and 12K from
+18.420 to 18.813 ms, about 1.99% and 2.14%. **Decision: revert without profiler
+budget.** The raw record is `candidate-global-exp-cache-lane0-ilp8-context.json`;
+production keeps four-value preloads.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
