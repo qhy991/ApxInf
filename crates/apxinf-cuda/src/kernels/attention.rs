@@ -282,6 +282,24 @@ fn softmax_inplace_scale_enabled() -> Result<bool> {
         .map_err(Error::Other)
 }
 
+fn vision_full_fa2_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| match std::env::var("APXINF_VISION_FULL_FA2") {
+            Err(std::env::VarError::NotPresent) => Ok(false),
+            Ok(value) if value == "0" => Ok(false),
+            Ok(value) if value == "1" => Ok(true),
+            Ok(value) => Err(format!(
+                "APXINF_VISION_FULL_FA2 must be 0 or 1, got `{value}`"
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("APXINF_VISION_FULL_FA2 must be UTF-8".into())
+            }
+        })
+        .clone()
+        .map_err(Error::Other)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn gqa_scores(
     ctx: &CudaContext,
@@ -1022,14 +1040,30 @@ pub fn vision(
             "vision_sdpa: head_dim must be in 1..=128".into(),
         ));
     }
+    let requested_fa2 = head_dim == 80 && vision_full_fa2_enabled()?;
     #[cfg(apxinf_fa2_sm80)]
     {
-        if head_dim != 80 {
+        if head_dim != 80 || requested_fa2 {
             return fa2_attention(
                 ctx, q, k, v, 1, seq_len, seq_len, n_heads, n_heads, head_dim,
             )?
             .reshape(vec![seq_len, n_heads * head_dim]);
         }
+    }
+    #[cfg(all(not(apxinf_fa2_sm80), apxinf_fa2_vision_sm80))]
+    {
+        if head_dim <= 96 && (head_dim != 80 || requested_fa2) {
+            return fa2_attention(
+                ctx, q, k, v, 1, seq_len, seq_len, n_heads, n_heads, head_dim,
+            )?
+            .reshape(vec![seq_len, n_heads * head_dim]);
+        }
+    }
+    #[cfg(not(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80)))]
+    if requested_fa2 {
+        return Err(Error::Other(
+            "APXINF_VISION_FULL_FA2 requires an SM80-family FA2 build".into(),
+        ));
     }
     let device_id = ctx.device_id();
     let out_bytes = seq_len * n_heads * head_dim * DType::BF16.size_in_bytes();
@@ -1601,7 +1635,7 @@ pub fn split_gqa_qkv_bias_bf16(
     })
 }
 
-#[cfg(apxinf_fa2_sm80)]
+#[cfg(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80))]
 #[allow(clippy::too_many_arguments)]
 fn fa2_attention(
     ctx: &CudaContext,

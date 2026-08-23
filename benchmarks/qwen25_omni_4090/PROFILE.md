@@ -1146,9 +1146,11 @@ binary is installed but Qwen3.8 and Omni remain down when unused.
 Primary classification: **build/runtime-graph specialization**. Explicit
 `sm_89` previously implied compiling FA2, INT8 and Marlin and also emitted
 their Rust cfg paths, even though this BF16 Omni service does not select those
-operators. The build owner now accepts `APXINF_CUDA_OPERATOR_SET=core|full`.
-Unset remains `full` for compatibility; the Omni build script explicitly uses
-`core`, and the operator set participates in the kernel build ID.
+operators. The build owner now accepts
+`APXINF_CUDA_OPERATOR_SET=core|core-fa2|full`. Unset remains `full` for
+compatibility. This stage used `core`; the later vision-FA2 promotion moves the
+Omni build script to `core-fa2`. The operator set participates in the kernel
+build ID.
 
 The first clean core candidate SHA-256 is
 `8f8b58d101f326f5da04fe7ae031cb7940f81f5a0cee1d7506e08a8c1bda9be2`.
@@ -1931,6 +1933,74 @@ work without changing arithmetic order, produces a large repeated end-to-end
 gain, and passes all text, multimodal, capacity and recovery gates. The four
 full-attention vision blocks now own 89.3% of candidate GPU kernel time and are
 the next bounded vision target.
+
+## Promoted vision-only BF16 FlashAttention-2
+
+Primary classification: **source/runtime graph with a vendored FA2 CUDA
+operator**. The repository already vendored a non-causal SM80-family FA2
+HeadDim96 instance capable of serving the vision encoder's actual head
+dimension 80, but the Qwen2.5-Omni path explicitly excluded 80. A previous
+causal text-FA2 candidate was fast but changed the first output token, so this
+candidate is restricted to the four full-attention vision blocks behind a new
+selector. Text attention and the 28 indexed window blocks remain unchanged.
+
+`APXINF_VISION_FULL_FA2=1` is default-off and accepts only `0` or `1`. It
+requires an SM80-family build carrying FA2 and otherwise fails closed. The
+operator output passes the existing head-dim-80 CPU-reference tolerance; no
+bit-exact intermediate claim is made because FA2 changes reduction order. The
+promotion boundary remains stricter at model level: every repeated PNG, WAV,
+text and 32K request must preserve its complete accepted token trajectory.
+The final `core-fa2` carrier also keeps head dimension 128 on the custom
+reference path and passes the complete 51-test CUDA operator suite.
+
+The first mechanism screen used the existing `full` SM89 operator set. Five
+repeated no-profiler PNG requests pass exact tokens:
+
+| Real PNG, 1,760 + 16 | Indexed windows | Full vision FA2 | Change |
+|---|---:|---:|---:|
+| TTFT | 6.733 s | 0.762 s p50 | 88.67% lower / 8.82× |
+| Client wall | 12.845 s | 6.864 s p50 | 46.34% lower / 1.86× |
+| TPOT | 10.383 ms | 10.380 ms p50 | unchanged |
+
+TTFT and wall CV are 0.533% and 0.562%. A three-repeat final-carrier screen
+then reaches 0.763 s TTFT and 6.893 s wall with exact tokens. The final
+isolated deployment observes 0.758 s TTFT and 6.959 s wall. WAV, 1K+32,
+128+128, the
+full 32,760+8 boundary and typed recovery remain exact and unchanged.
+
+The formal carrier profile confirms four FA2 launches consume 7.696 ms total
+(1.898 ms median), replacing 5.975 s of scalar full attention: a 99.87%
+reduction or 776.37×. Complete GPU kernel time falls from 6.692 s after the
+indexed-window promotion to 0.726 s (89.15% lower). The 28 indexed-window
+launches are unchanged at 0.504 s and now own 69.4% of GPU kernel time. The
+formal report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-vision-core-fa2-1760-interactive.nsys-rep`,
+SHA-256
+`fccdb95f0b490f8c0e609d8196ba375543d1844d8c32a290354c59d5b5a00518`.
+The final vision-only-cfg rebuild has the same normalized FA2 plus indexed
+window SASS hash, `75e5252b01135c8489d3088685d4a6321d6ed02eaddca97028d42305eb040d1f`,
+as the profiled carrier. The subsequent head-dim-128 fallback addition is a
+Rust-only dispatch/test rebuild and reuses those CUDA objects unchanged.
+
+The original `full` build proved the mechanism but took 17 minutes 43 seconds
+and produced a 48,191,288-byte binary because it also compiled FP16 FA2,
+HeadDim256, INT8 and Marlin. The promoted `core-fa2` operator set retains only
+the BF16 HeadDim96 instance. Its clean build takes 3 minutes 49 seconds; the
+final vision-only-cfg rebuild takes 3 minutes 43 seconds; the final dispatch
+and head128 regression rebuild produces a 21,603,888-byte binary. Other static
+MQA/MHA entry points retain their native
+build path, while unsupported vision FA2 configurations fail closed. The prior
+`core` text-only artifact remains available but cannot enable full vision FA2.
+
+The deployed binary SHA-256 is
+`116242bac3452be382a3c0f2487aa31d331153fdac74022d92f0f486ef8fc1be`;
+`b61731d6...2e3d5433` is the immediate rollback artifact.
+
+**Decision: promote vision-only FA2 with the minimal `core-fa2` carrier.** It
+passes the model-level trajectory gate that rejected text FA2, removes the
+profiled critical path, and retains all text/capacity/recovery behavior. The
+service wall is now dominated by the per-request external Python processor;
+indexed window attention is the remaining GPU vision leader.
 
 ## Promoted short-KV CUDA Graph decode candidate
 

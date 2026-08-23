@@ -22,14 +22,18 @@ CARGO_TARGET_DIR=/opt/apxinf/qwen25-omni-sm89-target \
   benchmarks/qwen25_omni_4090/build_sm89.sh
 ```
 
-The script fixes `APXINF_CUDA_ARCH=sm_89` and
-`APXINF_CUDA_OPERATOR_SET=core`, builds the release CUDA service and prints its
+The script fixes `APXINF_CUDA_ARCH=sm_89` and defaults
+`APXINF_CUDA_OPERATOR_SET=core-fa2`, builds the release CUDA service and prints its
 SHA-256. A generic x86 CUDA build currently emits `sm_52` cubins plus PTX and
 relies on driver JIT; it is not the accepted 4090 build contract. The measured
-clean core build takes about 61 seconds and produces a roughly 15.3 MB binary.
+clean `core-fa2` build takes 229 seconds and produces a 21.6 MB binary. It adds
+only the BF16 HeadDim96 non-causal FA2 instance needed by the head-dim-80 Omni
+vision encoder. Setting the operator set to `core` retains the roughly
+61-second, 15.5 MB text-only artifact but makes the full-vision selector fail
+closed.
 The build-system default remains `APXINF_CUDA_OPERATOR_SET=full` for backward
 compatibility; that setting also compiles architecture-coupled FA2, INT8 and
-Marlin objects and took about 18 minutes with a roughly 48 MB binary. Reusing
+Marlin objects and took 17 minutes 43 seconds with a 48.2 MB binary. Reusing
 the same target directory makes subsequent links faster.
 
 ```bash
@@ -101,8 +105,12 @@ multiply launches with a complete-write backend primitive while retaining the
 old BF16 intermediate rounding exactly. `APXINF_VISION_GROUPED_SPARSE=1`
 caches the processor-owned window group plan and lets the 28 grouped vision
 blocks visit only ascending in-window key indices; unset or `0` retains the
-full-scan reference, and malformed plans fail closed. The prefill position-cache selector
-uploads one TMRoPE position array
+full-scan reference, and malformed plans fail closed.
+`APXINF_VISION_FULL_FA2=1` selects the bundled BF16 HeadDim96 FA2 kernel for
+the four full-attention vision blocks at actual head dimension 80. It requires
+an SM80-family `core-fa2` or `full` build and otherwise fails closed; it does
+not alter text attention. The prefill position-cache selector uploads one
+TMRoPE position array
 per text or multimodal prefill slice instead of once per Q/K layer call. The
 batched-GQA selector additionally packs BF16 prefill query rows by KV head
 above 4,096 cached tokens, flattens sequence and GQA rows into large score and

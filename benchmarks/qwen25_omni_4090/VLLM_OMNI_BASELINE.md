@@ -58,16 +58,16 @@ All numbers are p50 over five measured requests after one warmup.
 
 | Workload | Metric | ApxInf | vLLM-Omni | Result |
 |---|---:|---:|---:|---|
-| 1,024 + 32 | TTFT | 65.85 ms | 68.30 ms | ApxInf 1.04× |
-| 1,024 + 32 | TPOT | 9.38 ms | 22.62 ms | ApxInf 2.41× |
-| 1,024 + 32 | wall | 0.358 s | 0.770 s | ApxInf 2.15× |
-| 128 + 128 | TTFT | 14.87 ms | 53.09 ms | ApxInf 3.57× |
-| 128 + 128 | TPOT | 8.24 ms | 22.68 ms | ApxInf 2.75× |
-| 128 + 128 | wall | 1.063 s | 2.934 s | ApxInf 2.76× |
+| 1,024 + 32 | TTFT | 64.92 ms | 68.30 ms | ApxInf 1.05× |
+| 1,024 + 32 | TPOT | 9.36 ms | 22.62 ms | ApxInf 2.42× |
+| 1,024 + 32 | wall | 0.357 s | 0.770 s | ApxInf 2.16× |
+| 128 + 128 | TTFT | 15.00 ms | 53.09 ms | ApxInf 3.54× |
+| 128 + 128 | TPOT | 8.25 ms | 22.68 ms | ApxInf 2.75× |
+| 128 + 128 | wall | 1.065 s | 2.934 s | ApxInf 2.75× |
 
 The 128+128 algorithmic roofline makes the short-decode difference explicit.
 With NVIDIA's dense BF16 Tensor-Core convention of 165.2 TFLOP/s and 1,008
-GB/s memory bandwidth, ApxInf reaches a 74.33% minimum BWU lower bound versus
+GB/s memory bandwidth, ApxInf reaches a 74.23% minimum BWU lower bound versus
 27.02% for vLLM. Linear-only MFU is 0.453% versus 0.165%; both are low because
 batch-one decode is weight-bandwidth-bound. These are model-byte/FLOP lower
 bounds, not Nsight memory-transaction counters.
@@ -81,11 +81,11 @@ after one warmup.
 |---:|---:|---:|---:|---:|---:|---|
 | 8,192 | 0.816 s | 0.512 s | vLLM 1.59× | 10.58 ms | 19.11 ms | vLLM 1.38× |
 | 12,288 | 1.372 s | 0.830 s | vLLM 1.65× | 13.03 ms | 19.09 ms | vLLM 1.52× |
-| 32,760 | 5.698 s | 2.912 s | vLLM 1.96× | 24.33 ms | 17.58 ms | vLLM 1.94× |
+| 32,760 | 5.685 s | 2.912 s | vLLM 1.95× | 24.31 ms | 17.58 ms | vLLM 1.93× |
 
 vLLM's tiled FlashAttention path wins prefill increasingly with context. ApxInf
 keeps the faster decoder through 12K, but its long-KV decode crosses over by
-32K. The minimum-BWU lower bound at 32K is 30.10% for ApxInf and 41.65% for
+32K. The minimum-BWU lower bound at 32K is 30.11% for ApxInf and 41.65% for
 vLLM.
 
 Both engines pass 32,760 + 8. vLLM's throughput-oriented automatic policy
@@ -100,15 +100,15 @@ for ApxInf at 32K.
 
 | Input | Result | ApxInf | vLLM-Omni | Interpretation |
 |---|---|---:|---:|---|
-| PNG, 1,760 + 16 | both read `TinyLlama-1.1B Decode Throughput vs Position` | TTFT 6.773 s; wall 12.864 s | TTFT 0.232 s; wall 0.565 s | vLLM wall 22.8× lower |
-| WAV, 52 + 16 | both identify a sine wave | model TTFT 22.91 ms; TPOT 8.17 ms; wall 5.966 s | client TTFT 290.40 ms; TPOT 21.89 ms; wall 0.619 s | ApxInf decode is faster, but vLLM wall is 9.64× lower |
+| PNG, 1,760 + 16 | both read `TinyLlama-1.1B Decode Throughput vs Position` | TTFT 0.758 s; wall 6.959 s | TTFT 0.232 s; wall 0.565 s | vLLM TTFT 3.27× and wall 12.32× lower |
+| WAV, 52 + 16 | both identify a sine wave | model TTFT 22.15 ms; TPOT 8.16 ms; wall 5.937 s | client TTFT 290.40 ms; TPOT 21.89 ms; wall 0.619 s | ApxInf decode is faster, but vLLM wall is 9.59× lower |
 
-Indexed group plans reduce ApxInf PNG TTFT by 4.96× and wall time by 3.08×
-relative to its original external-baseline measurement. The four remaining
-full-attention vision blocks still consume 5.975 seconds and keep vLLM ahead.
-The WAV split identifies a different boundary: ApxInf's model execution is
-fast, but per-request external processing dominates service wall time. vLLM
-keeps processing in its resident service.
+Indexed group plans plus vision-only FA2 reduce ApxInf PNG TTFT by 44.0× and
+wall time by 5.68× relative to its original external-baseline measurement.
+The remaining 12× service-wall gap is now primarily the per-request external
+Python image processor rather than GPU full attention. The WAV split identifies
+the same boundary: ApxInf's model execution is fast, but external processing
+dominates service wall time. vLLM keeps processing in its resident service.
 
 ## vLLM deployment and observed defects
 
@@ -196,10 +196,10 @@ python3 benchmarks/qwen25_omni_4090/benchmark_vllm_omni_multimodal.py \
 
 The next high-leverage work is not another sub-percent pointwise kernel:
 
-1. Replace the four remaining full-attention vision launches with a tiled,
-   FlashAttention-class path while preserving the complete trajectory gate.
-2. Move image/audio processing into the resident service and remove
+1. Move image/audio processing into the resident service and remove
    per-request Python startup, especially for audio.
+2. Pack or reorder the 28 indexed vision windows so a batched tiled attention
+   path can replace their remaining 0.504-second GPU interval.
 3. Replace the remaining long-prefill text attention algorithm with a tiled,
    FlashAttention-class path while preserving the complete trajectory gate.
 

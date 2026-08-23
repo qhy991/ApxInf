@@ -1622,6 +1622,11 @@ fn vision_sdpa_bf16_head80_matches_reference() {
 }
 
 #[test]
+fn vision_sdpa_bf16_head128_matches_reference() {
+    assert_vision_sdpa_bf16_case(128);
+}
+
+#[test]
 fn grouped_sdpa_bf16_respects_window_boundaries() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     let (seq_len, n_heads, head_dim) = (2usize, 1usize, 64usize);

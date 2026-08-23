@@ -95,11 +95,20 @@ int fa2(
   fill_params(params, std::is_same<Element, cutlass::bfloat16_t>::value,
               q, k, v, output, softmax_lse, batch, query_tokens,
               key_tokens, query_heads, kv_heads, head_dim, softmax_scale);
+#if defined(APXINF_FA2_BF16_HDIM96_ONLY)
+  if constexpr (!std::is_same<Element, cutlass::bfloat16_t>::value) {
+    return static_cast<int>(cudaErrorNotSupported);
+  } else {
+    if (head_dim > 96) return static_cast<int>(cudaErrorInvalidValue);
+    FLASH_NAMESPACE::run_mha_fwd_<Element, 96, false>(params, stream);
+  }
+#else
   if (head_dim <= 96) {
     FLASH_NAMESPACE::run_mha_fwd_<Element, 96, false>(params, stream);
   } else {
     FLASH_NAMESPACE::run_mha_fwd_<Element, 256, false>(params, stream);
   }
+#endif
   return static_cast<int>(cudaSuccess);
 }
 
