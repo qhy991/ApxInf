@@ -331,4 +331,20 @@ mod tests {
         let wrong = Tensor::from_f32(vec![15, 1176], &vec![0.0; 15 * 1176]).unwrap();
         assert!(validate_input(&config, &wrong, &[[1, 4, 4]]).is_err());
     }
+
+    #[test]
+    fn real_png_grid_has_bounded_nonempty_windows() {
+        let raw = include_str!("../../tests/data/qwen25_omni_config_minimal.json");
+        let config = Qwen25OmniConfig::from_json_str(raw).unwrap();
+        let groups = vision_window_groups(&config, &[[1, 64, 108]]).unwrap();
+        assert_eq!(groups.len(), 6_912);
+        assert_eq!(groups.iter().copied().max(), Some(111));
+        let mut counts = vec![0usize; 112];
+        for group in groups {
+            counts[group as usize] += 1;
+        }
+        assert_eq!(counts.iter().filter(|&&count| count == 64).count(), 104);
+        assert_eq!(counts.iter().filter(|&&count| count == 32).count(), 8);
+        assert!(counts.iter().all(|&count| count > 0 && count <= 64));
+    }
 }
