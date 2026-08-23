@@ -6,9 +6,9 @@
   `Qwen/Qwen2.5-Omni-3B@f75b40e3da2003cdd6e1829b1f420ca70797c34e`
 - GPU: NVIDIA GeForce RTX 4090, 24,564 MiB, single request, BF16
 - Deployed binary SHA-256:
-  `20165551d65748aa9fba00c06fe5d40d5126b88a69cb070b9c9230d5730b153d`
+  `942eea1b67eb173b0494dd6ec83d8b7559fc081612b0694de168de224bcda269`
 - Immediate rollback SHA-256:
-  `116242bac3452be382a3c0f2487aa31d331153fdac74022d92f0f486ef8fc1be`
+  `20165551d65748aa9fba00c06fe5d40d5126b88a69cb070b9c9230d5730b153d`
 - Deployment owner: runit launches the checked-in Broker service definition;
   the service is stopped when unused so other queued work can own the GPU.
 
@@ -30,9 +30,12 @@ backend primitive that deliberately rounds the SiLU intermediate to BF16
 before multiplication, preserving the removed tensor bit for bit.
 Windowed vision attention caches an ascending group-to-key plan and skips
 masked K/V rows while preserving every original key index, max/sum lane and
-accumulation order. The four full-attention vision blocks use the vendored
-BF16 HeadDim96 FlashAttention-2 instance for the model's actual head dimension
-80; text attention remains on its accepted path.
+accumulation order in the native reference. The promoted path packs those
+rows into stable group order, executes variable-length BF16 HeadDim96
+FlashAttention-2, and restores the original token layout. The four
+full-attention vision blocks continue to use the same vendored FA2 instance
+for the model's actual head dimension 80; text attention remains on its
+accepted path.
 The service also creates one processor worker at startup and reuses its loaded
 Transformers `AutoProcessor` for every serialized chat request. This removes
 per-request Python startup and model-processor construction without changing
@@ -54,15 +57,15 @@ execution:
 
 | Workload | Repeats | Model TTFT p50 | Model TPOT p50 | Prior wall | Current wall p50 | Wall speedup |
 |---|---:|---:|---:|---:|---:|---:|
-| PNG, 1,760 + 16 | 5 | 0.752 s | 10.382 ms | 6.959 s | 1.074 s | 6.48× |
-| WAV, 52 + 16 | 5 | 20.17 ms | 8.113 ms | 5.937 s | 0.151 s | 39.24× |
+| PNG, 1,760 + 16 | 5 | 0.257 s | 10.388 ms | 1.074 s | 0.581 s | 1.85× |
+| WAV, 52 + 16 control | 5 | 20.12 ms | 8.090 ms | 0.151 s | 0.159 s | not a target |
 
 All repeated text cases preserve their accepted complete trajectory hashes.
 The exact 32,768-token contract passes with 9,591 MiB minimum sampled memory
-headroom. The 51-test CUDA operator regression, typed invalid-request recovery,
+headroom. The 52-test CUDA operator regression, typed invalid-request recovery,
 malformed-media worker recovery, and repeated real PNG/WAV exact-token gates
-pass. See `PROFILE.md`, `promotion-persistent-processor.json` and the raw
-`candidate-persistent-processor-*` records for the latest promotion evidence.
+pass. See `PROFILE.md`, `promotion-grouped-varlen-fa2.json` and the raw
+`formal-grouped-varlen-fa2-*` records for the latest promotion evidence.
 
 ## Original frozen deployment
 

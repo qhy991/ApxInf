@@ -1209,6 +1209,121 @@ pub fn grouped_indexed(
     ))
 }
 
+/// Pack equal-group rows, execute one variable-length FA2 call, and restore
+/// the model-owned token order. The caller owns and caches the immutable
+/// permutation and cumulative group offsets.
+#[cfg(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80))]
+#[allow(clippy::too_many_arguments)]
+pub fn grouped_varlen_fa2(
+    ctx: &CudaContext,
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    seq_len: usize,
+    n_heads: usize,
+    head_dim: usize,
+    group_offsets: &CudaBuffer,
+    group_indices: &CudaBuffer,
+    group_count: usize,
+    max_group_size: usize,
+) -> Result<Tensor> {
+    if q.dtype() != DType::BF16 || k.dtype() != DType::BF16 || v.dtype() != DType::BF16 {
+        return Err(Error::Other(
+            "grouped varlen FA2: only BF16 supported".into(),
+        ));
+    }
+    let expected_shape = [seq_len, n_heads, head_dim];
+    if q.shape().dims() != expected_shape
+        || k.shape().dims() != expected_shape
+        || v.shape().dims() != expected_shape
+    {
+        return Err(Error::Other(
+            "grouped varlen FA2: Q/K/V shape mismatch".into(),
+        ));
+    }
+    if head_dim == 0
+        || head_dim > 96
+        || group_count == 0
+        || max_group_size == 0
+        || max_group_size > seq_len
+        || group_offsets.len() != (group_count + 1) * std::mem::size_of::<u32>()
+        || group_indices.len() != seq_len * std::mem::size_of::<u32>()
+    {
+        return Err(Error::Other(
+            "grouped varlen FA2: invalid shape or group plan".into(),
+        ));
+    }
+    let row_elements = n_heads
+        .checked_mul(head_dim)
+        .ok_or_else(|| Error::Other("grouped varlen FA2 row width overflow".into()))?;
+    if row_elements % 8 != 0 {
+        return Err(Error::Other(
+            "grouped varlen FA2 requires a BF16 row width divisible by 8".into(),
+        ));
+    }
+    let seq_len_u32 = u32::try_from(seq_len)
+        .map_err(|_| Error::Other("grouped varlen FA2 sequence exceeds u32".into()))?;
+    let row_elements_u32 = u32::try_from(row_elements)
+        .map_err(|_| Error::Other("grouped varlen FA2 row width exceeds u32".into()))?;
+    let batch_i32 = i32::try_from(group_count)
+        .map_err(|_| Error::Other("grouped varlen FA2 group count exceeds i32".into()))?;
+    let total_i32 = i32::try_from(seq_len)
+        .map_err(|_| Error::Other("grouped varlen FA2 sequence exceeds i32".into()))?;
+    let max_group_i32 = i32::try_from(max_group_size)
+        .map_err(|_| Error::Other("grouped varlen FA2 group size exceeds i32".into()))?;
+    let heads_i32 = i32::try_from(n_heads)
+        .map_err(|_| Error::Other("grouped varlen FA2 heads exceed i32".into()))?;
+    let head_dim_i32 = i32::try_from(head_dim)
+        .map_err(|_| Error::Other("grouped varlen FA2 head dimension exceeds i32".into()))?;
+
+    let tensor_bytes = q.size_in_bytes();
+    if k.size_in_bytes() != tensor_bytes || v.size_in_bytes() != tensor_bytes {
+        return Err(Error::Other(
+            "grouped varlen FA2: Q/K/V byte size mismatch".into(),
+        ));
+    }
+    let packed_q = uninitialized_buffer(ctx, tensor_bytes)?;
+    let packed_k = uninitialized_buffer(ctx, tensor_bytes)?;
+    let packed_v = uninitialized_buffer(ctx, tensor_bytes)?;
+    let packed_output = uninitialized_buffer(ctx, tensor_bytes)?;
+    let output = uninitialized_buffer(ctx, tensor_bytes)?;
+    let lse_bytes = seq_len
+        .checked_mul(n_heads)
+        .and_then(|value| value.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| Error::Other("grouped varlen FA2 LSE size overflow".into()))?;
+    let softmax_lse = uninitialized_buffer(ctx, lse_bytes)?;
+
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_pack_grouped_qkv_bf16(
+            gpu_ptr(q)?, gpu_ptr(k)?, gpu_ptr(v)?,
+            packed_q.ptr(), packed_k.ptr(), packed_v.ptr(),
+            group_indices.ptr(), seq_len_u32, row_elements_u32,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+        ffi::check_cuda(ffi::apxinf_static_fa2_varlen_bf16(
+            packed_q.ptr(), packed_k.ptr(), packed_v.ptr(),
+            packed_output.ptr(), softmax_lse.ptr(), group_offsets.ptr(),
+            batch_i32, total_i32, max_group_i32, heads_i32, heads_i32,
+            head_dim_i32, (head_dim as f32).sqrt().recip(),
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+        ffi::check_cuda(ffi::apxinf_unpack_grouped_rows_bf16(
+            packed_output.ptr(), output.ptr(), group_indices.ptr(),
+            seq_len_u32, row_elements_u32, ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+
+    Ok(make_gpu_tensor(
+        Shape::new(vec![seq_len, row_elements]),
+        DType::BF16,
+        ctx.device_id(),
+        output,
+    ))
+}
+
 /// Causal attention mask on CUDA. Dispatches on dtype.
 pub fn causal_mask(ctx: &CudaContext, input: &Tensor, kv_offset: u32) -> Result<Tensor> {
     let device_id = ctx.device_id();

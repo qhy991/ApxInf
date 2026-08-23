@@ -682,6 +682,50 @@ __global__ void vision_grouped_indexed_sdpa_bf16_kernel(
 }
 
 
+// Pack Q/K/V rows into stable group order for variable-length FA2. Each
+// vector covers eight BF16 elements; the caller proves row_elements % 8 == 0
+// and provides a permutation from packed row to original row.
+__global__ void vision_pack_grouped_qkv_bf16_kernel(
+    const uint4* q, const uint4* k, const uint4* v,
+    uint4* packed_q, uint4* packed_k, uint4* packed_v,
+    const uint32_t* group_indices, uint32_t rows,
+    uint32_t vectors_per_row)
+{
+    uint64_t packed_vector =
+        static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    uint64_t vector_count =
+        static_cast<uint64_t>(rows) * vectors_per_row;
+    if (packed_vector >= vector_count) return;
+    uint32_t packed_row = static_cast<uint32_t>(packed_vector / vectors_per_row);
+    uint32_t vector_in_row = static_cast<uint32_t>(packed_vector % vectors_per_row);
+    uint32_t original_row = group_indices[packed_row];
+    uint64_t original_vector =
+        static_cast<uint64_t>(original_row) * vectors_per_row + vector_in_row;
+    packed_q[packed_vector] = q[original_vector];
+    packed_k[packed_vector] = k[original_vector];
+    packed_v[packed_vector] = v[original_vector];
+}
+
+// Restore packed variable-length FA2 output to the model-owned token order.
+// group_indices is a permutation, so stores are disjoint and need no atomics.
+__global__ void vision_unpack_grouped_rows_bf16_kernel(
+    const uint4* packed, uint4* output, const uint32_t* group_indices,
+    uint32_t rows, uint32_t vectors_per_row)
+{
+    uint64_t packed_vector =
+        static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    uint64_t vector_count =
+        static_cast<uint64_t>(rows) * vectors_per_row;
+    if (packed_vector >= vector_count) return;
+    uint32_t packed_row = static_cast<uint32_t>(packed_vector / vectors_per_row);
+    uint32_t vector_in_row = static_cast<uint32_t>(packed_vector % vectors_per_row);
+    uint32_t original_row = group_indices[packed_row];
+    uint64_t original_vector =
+        static_cast<uint64_t>(original_row) * vectors_per_row + vector_in_row;
+    output[original_vector] = packed[packed_vector];
+}
+
+
 
 // ── Flash Attention decode (bf16) — single-kernel online-softmax ────────
 //

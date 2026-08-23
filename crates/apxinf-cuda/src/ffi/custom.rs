@@ -1252,6 +1252,28 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_pack_grouped_qkv_bf16(
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        packed_q: *mut c_void,
+        packed_k: *mut c_void,
+        packed_v: *mut c_void,
+        group_indices: *const c_void,
+        rows: u32,
+        row_elements: u32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
+    pub fn apxinf_unpack_grouped_rows_bf16(
+        packed: *const c_void,
+        output: *mut c_void,
+        group_indices: *const c_void,
+        rows: u32,
+        row_elements: u32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_im2col1d_bf16(
         input: *const c_void,
         output: *mut c_void,

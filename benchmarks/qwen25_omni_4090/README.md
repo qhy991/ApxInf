@@ -117,6 +117,10 @@ old BF16 intermediate rounding exactly. `APXINF_VISION_GROUPED_SPARSE=1`
 caches the processor-owned window group plan and lets the 28 grouped vision
 blocks visit only ascending in-window key indices; unset or `0` retains the
 full-scan reference, and malformed plans fail closed.
+`APXINF_VISION_GROUPED_FA2=1` composes with that plan: it packs Q/K/V into
+stable group order, runs the vendored variable-length BF16 HeadDim96 FA2
+kernel, and restores the original token order. It requires nonempty groups,
+an FA2 build and head dimension at most 96; otherwise it fails closed.
 `APXINF_VISION_FULL_FA2=1` selects the bundled BF16 HeadDim96 FA2 kernel for
 the four full-attention vision blocks at actual head dimension 80. It requires
 an SM80-family `core-fa2` or `full` build and otherwise fails closed; it does

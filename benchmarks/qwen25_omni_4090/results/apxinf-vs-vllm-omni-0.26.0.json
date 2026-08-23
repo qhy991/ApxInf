@@ -22,7 +22,7 @@
     "apxinf_decode": "deployed-vision-full-fa2-decode.json",
     "apxinf_context": "deployed-fused-silu-mul-context.json",
     "apxinf_context_32k": "deployed-vision-full-fa2-final-32k.json",
-    "apxinf_multimodal": "promotion-persistent-processor.json",
+    "apxinf_multimodal": "promotion-grouped-varlen-fa2.json",
     "vllm_quick": "vllm-omni-0.26.0-kv2g-quick.json",
     "vllm_decode": "vllm-omni-0.26.0-kv2g-decode.json",
     "vllm_context": "vllm-omni-0.26.0-kv2g-context.json",
@@ -138,9 +138,9 @@
       "workload": "real_png_1760+16",
       "semantic_result": "both read the visible chart title",
       "apxinf": {
-        "ttft_ms": 752.172645,
-        "tpot_ms": 10.381736666666665,
-        "wall_ms": 1074.316918849945
+        "ttft_ms": 257.305729,
+        "tpot_ms": 10.387854333333333,
+        "wall_ms": 580.5624350905418
       },
       "vllm_omni": {
         "ttft_ms": 231.9645881652832,
@@ -148,18 +148,18 @@
         "wall_ms": 564.7583678364754
       },
       "speedup": {
-        "vllm_ttft": 3.2426,
-        "apxinf_tpot": 2.1111,
-        "vllm_wall": 1.9023
+        "vllm_ttft": 1.1092,
+        "apxinf_tpot": 2.1099,
+        "vllm_wall": 1.028
       }
     },
     {
       "workload": "real_wav_52+16",
       "semantic_result": "both identify a sine wave",
       "apxinf": {
-        "model_ttft_ms": 20.167895,
-        "model_tpot_ms": 8.112909500000001,
-        "service_wall_ms": 151.29221230745316
+        "model_ttft_ms": 20.12323,
+        "model_tpot_ms": 8.0902335,
+        "service_wall_ms": 158.95911306142807
       },
       "vllm_omni": {
         "client_ttft_ms": 290.40009528398514,
@@ -167,9 +167,9 @@
         "service_wall_ms": 618.9755797386169
       },
       "speedup": {
-        "apxinf_model_ttft": 14.3991,
-        "apxinf_model_tpot": 2.6986,
-        "apxinf_service_wall": 4.0913
+        "apxinf_model_ttft": 14.4311,
+        "apxinf_model_tpot": 2.7061,
+        "apxinf_service_wall": 3.8939
       }
     }
   ],
@@ -211,12 +211,12 @@
     ]
   },
   "decision": {
-    "apxinf_strength": "short-to-mid-context single-request text decode and real-audio service latency",
-    "vllm_omni_strength": "long-context prefill and real-image encoder latency",
+    "apxinf_strength": "short-to-mid-context single-request text decode, real-audio service latency, and near-parity real-image wall time",
+    "vllm_omni_strength": "long-context prefill and slightly lower real-image TTFT",
     "next_apxinf_priorities": [
-      "pack or reorder indexed vision windows for a batched tiled attention path",
       "replace the remaining long-prefill text attention path with a tiled FlashAttention-class algorithm",
-      "replace the resident Python processor only if CPU/RSS or multi-request evidence makes it material"
+      "replace the resident Python processor only if CPU/RSS or multi-request evidence makes it material",
+      "re-profile the post-FA2 image path before selecting another vision change"
     ]
   }
 }

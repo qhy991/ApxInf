@@ -2060,6 +2060,78 @@ formal binary and runit definition are updated but remain stopped while
 Qwen3.8 owns the GPU. This result does not claim multi-request throughput,
 video input, speech output or a native-Rust media processor.
 
+## Promoted grouped variable-length vision FA2
+
+Primary classification: **source/runtime graph**. After the persistent
+processor and full-attention FA2 promotions, the 28 windowed vision blocks
+still spent about 503.1 ms in the exact indexed one-warp kernel. The frozen
+real PNG has 6,912 raw tokens partitioned into 112 nonempty windows: 104
+windows of 64 tokens and eight edge windows of 32. The vendored HeadDim96 FA2
+kernel already supports cumulative variable-length sequence offsets, so the
+remaining work did not require a new attention algorithm or PTX carrier.
+No authoritative SubCUDA checkout was configured, so no external case-library
+transfer is claimed.
+
+`APXINF_VISION_GROUPED_FA2=1` requires the accepted
+`APXINF_VISION_GROUPED_SPARSE=1` plan, BF16 Q/K/V, head dimension at most 96,
+nonempty contiguous groups and an SM80-family FA2 build. Unsupported settings
+fail closed. The candidate uses the existing stable `group_indices`
+permutation to pack Q/K/V, passes the cached cumulative offsets to one varlen
+FA2 call per block, and scatters the output back to the model-owned token
+order. Unset or `0` retains the exact indexed kernel. The four full-attention
+blocks, audio encoder and text path are unchanged.
+
+The minimal `core-fa2` build completed in 230 seconds. Its 21,698,600-byte
+binary SHA-256 is
+`942eea1b67eb173b0494dd6ec83d8b7559fc081612b0694de168de224bcda269`.
+The immediate rollback is
+`20165551d65748aa9fba00c06fe5d40d5126b88a69cb070b9c9230d5730b153d`.
+The authoritative BF16/general operator filter passes 52/52, including the
+new unequal/interleaved-group varlen FA2 comparison. A broader 86-test run
+passes 84 and observes two unrelated FP8 GEMM failures because `core-fa2`
+deliberately excludes that FP8 carrier; neither failure enters the BF16 Omni
+contract.
+
+One warmup plus five clean no-profiler real-PNG requests all reproduce the
+complete accepted trajectory:
+
+| Real PNG, 1,760 + 16 | Indexed window baseline | Grouped varlen FA2 | Change |
+|---|---:|---:|---:|
+| Model TTFT p50 | 0.752 s | 0.257 s | 2.92× faster |
+| Client wall p50 | 1.074 s | 0.581 s | 1.85× faster |
+| Model TPOT p50 | 10.382 ms | 10.388 ms | unchanged |
+| Wall CV | 0.77% | 1.43% | stable |
+
+WAV remains a non-target control and reproduces its exact trajectory with
+20.12 ms TTFT and 8.09 ms TPOT. The 1K+32 text control is stable at 64.92 ms
+TTFT and 9.37 ms TPOT; 32,760+8, the typed protocol gate and malformed-media
+recovery also pass. A preliminary run overlapped an externally owned root
+Rust build and is retained under `candidate-grouped-varlen-fa2-*`, but is not
+the timing authority. The clean formal files use the
+`formal-grouped-varlen-fa2-*` prefix.
+
+The complete Nsight Systems report remains on the GPU host at
+`/var/lib/agent-gpu-broker/profiles/omni-vision-grouped-varlen-fa2-1760-interactive.nsys-rep`,
+size 744,425 bytes, SHA-256
+`c6ed2dc9e120397573423f3b7ff8f42eff1a97dde93ba95f6beb6f3e967d2a9c`.
+No indexed grouped kernel appears. Across 28 blocks, Q/K/V packing consumes
+2.421 ms, varlen FA2 consumes 1.655 ms, and output restoration consumes 0.327
+ms: 4.403 ms total versus the prior 503.099 ms, a 114.3× interval reduction.
+The unchanged four full-image FA2 launches consume 8.013 ms. This critical
+path movement explains the approximately 495 ms TTFT reduction.
+
+Against vLLM-Omni 0.26.0 on the same real PNG, ApxInf now records 0.581 s wall
+versus 0.565 s and 0.257 s TTFT versus 0.232 s. The 2.8% wall difference is
+near parity rather than a general winner; ApxInf retains a 2.11× TPOT
+advantage on this cell.
+
+**Decision: promote grouped variable-length FA2 for the tested single-image
+SM89 BF16 cell.** The strict selector, operator suite, complete trajectories,
+repeated E2E gain, controls, recovery and causal profile all pass. The formal
+binary and runit selector are updated while the service remains stopped. This
+does not claim other image geometries, multi-request throughput, video or
+speech output.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

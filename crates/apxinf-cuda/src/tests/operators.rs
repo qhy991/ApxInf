@@ -10,6 +10,8 @@ use crate::kernels::attention::{
     softmax_causal_bf16_scaled_plain_gqa_packed, softmax_causal_with_exp_cache,
     softmax_causal_with_global_exp_cache, split_gqa_qkv_bias_bf16, vision,
 };
+#[cfg(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80))]
+use crate::kernels::attention::grouped_varlen_fa2;
 use crate::kernels::cache::append;
 use crate::kernels::elementwise::{add, add_bias, mul, scale};
 use crate::kernels::embedding::lookup;
@@ -1712,6 +1714,78 @@ fn grouped_indexed_sdpa_bf16_is_bit_exact() {
     assert_eq!(
         download_bf16_as_fp32(&candidate).unwrap(),
         download_bf16_as_fp32(&baseline).unwrap()
+    );
+}
+
+#[cfg(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80))]
+#[test]
+fn grouped_varlen_fa2_bf16_matches_reference() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, head_dim) = (96usize, 2usize, 80usize);
+    let elements = seq_len * n_heads * head_dim;
+    let q_values = (0..elements)
+        .map(|index| (index as f32 * 0.013 - 2.0).sin() * 0.5)
+        .collect::<Vec<_>>();
+    let k_values = (0..elements)
+        .map(|index| (index as f32 * 0.017 - 1.0).cos() * 0.4)
+        .collect::<Vec<_>>();
+    let v_values = (0..elements)
+        .map(|index| (index as f32 * 0.019 - 0.5).sin() * 2.0)
+        .collect::<Vec<_>>();
+    let shape = vec![seq_len, n_heads, head_dim];
+    let q = upload_fp32_as_bf16(&ctx, &q_values, shape.clone()).unwrap();
+    let k = upload_fp32_as_bf16(&ctx, &k_values, shape.clone()).unwrap();
+    let v = upload_fp32_as_bf16(&ctx, &v_values, shape).unwrap();
+    let group_values = (0..seq_len)
+        .map(|index| {
+            if index % 4 == 0 {
+                2
+            } else if index % 3 == 0 {
+                1
+            } else {
+                0
+            }
+        })
+        .collect::<Vec<u32>>();
+    let (offset_values, index_values) = vision_group_plan(&group_values).unwrap();
+    let upload_u32s = |values: &[u32]| {
+        let bytes = values
+            .iter()
+            .flat_map(|value| value.to_ne_bytes())
+            .collect::<Vec<_>>();
+        let buffer = CudaBuffer::alloc(bytes.len(), ctx.device_id()).unwrap();
+        buffer.copy_from_host(&bytes).unwrap();
+        buffer
+    };
+    let groups = upload_u32s(&group_values);
+    let offsets = upload_u32s(&offset_values);
+    let indices = upload_u32s(&index_values);
+    let max_group_size = offset_values
+        .windows(2)
+        .map(|window| (window[1] - window[0]) as usize)
+        .max()
+        .unwrap();
+    let baseline = grouped(
+        &ctx, &q, &k, &v, seq_len, n_heads, head_dim, &groups,
+    )
+    .unwrap();
+    let candidate = grouped_varlen_fa2(
+        &ctx,
+        &q,
+        &k,
+        &v,
+        seq_len,
+        n_heads,
+        head_dim,
+        &offsets,
+        &indices,
+        offset_values.len() - 1,
+        max_group_size,
+    )
+    .unwrap();
+    assert_bf16_close_reduction(
+        &download_bf16_as_fp32(&candidate).unwrap(),
+        &download_bf16_as_fp32(&baseline).unwrap(),
     );
 }
 
