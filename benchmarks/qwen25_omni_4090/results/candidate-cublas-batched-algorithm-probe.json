@@ -1,0 +1,58 @@
+{
+  "schema": "apxinf.qwen25_omni.cublas_batched_algo_probe.v1",
+  "evidence_level": "source_report_transcription",
+  "base_revision": "abee989",
+  "shape_contract": {
+    "operation": "GQA score cublasGemmStridedBatchedEx",
+    "m": 8,
+    "k": 128,
+    "batch": 256,
+    "query_stride_elements": 2048,
+    "key_stride_elements": 0,
+    "score_stride_formula": "16 * kv_len",
+    "dtype": "bf16",
+    "compute": "fp32"
+  },
+  "protocol": {
+    "warmups": 2,
+    "timed_iterations": 10,
+    "timing": "host envelope plus final stream synchronization",
+    "cache_state": "hot"
+  },
+  "sweeps": [
+    {
+      "job": "gpuq-d005a531e654",
+      "kv_lengths": [4096, 8192, 12288],
+      "algorithms": [-1, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115],
+      "preliminary_signal": "algorithms 105-111 appeared about 8 percent faster at 8192 only"
+    },
+    {
+      "job": "gpuq-2c1d71293b04",
+      "kv_lengths": [5120, 6144, 7168, 8192, 9216, 10240, 11264, 12288],
+      "algorithms": [-1, 104, 105, 110, 112],
+      "result": "the 8192 signal disappeared; a new isolated signal appeared at 7168"
+    },
+    {
+      "job": "gpuq-435478a48174",
+      "kv_lengths": [6656, 6912, 7168, 7424, 7680],
+      "algorithms": [-1, 105],
+      "result": "all relative differences were below 0.02 percent"
+    }
+  ],
+  "representative_repeats": {
+    "kv_8192_first_default_ms": 1.107198,
+    "kv_8192_first_algo110_ms": 1.017117,
+    "kv_8192_repeat_default_ms": 1.017245,
+    "kv_8192_repeat_algo105_ms": 1.017705,
+    "kv_7168_first_default_ms": 0.937862,
+    "kv_7168_first_algo105_ms": 0.889013,
+    "kv_7168_repeat_default_ms": 0.937893,
+    "kv_7168_repeat_algo105_ms": 0.937852
+  },
+  "decision": "revert_probe_surface",
+  "reason": "no algorithm had a reproducible continuous KV-length advantage, so no production selector is justified",
+  "limitations": [
+    "The probe reports per-arm averages rather than raw per-iteration samples",
+    "The probe is hot-cache operator evidence and cannot promote an end-to-end policy"
+  ]
+}

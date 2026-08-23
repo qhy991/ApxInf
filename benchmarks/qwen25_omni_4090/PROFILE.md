@@ -1382,6 +1382,20 @@ moved only about 0.10%/0.04% in the positive direction.
 **Decision: revert as a mixed null result.** cuBLAS automatic selection remains
 the owner; the raw record is `candidate-batched-algo99-context.json`.
 
+#### Closed cuBLAS batched-algorithm enumeration
+
+A production-shape ignored probe measured score GEMM with `m=8`, `k=128`,
+`batch=256`, broadcast K and the real query/output strides. Algorithms -1,
+99 and 100–115 were screened at 4K/8K/12K, then apparent windows were repeated
+across 5K–12K and every 256 tokens around 7K. Initial 8K and 7,168-token
+signals of 8% and 5% disappeared on the matched repeats; the final boundary
+sweep differed by less than 0.02% between default and algorithm 105.
+
+**Decision: remove the temporary algorithm parameter and ignored probe.** No
+algorithm has a reproducible continuous KV-length advantage, so another
+runtime selector is not justified. The structured evidence is
+`candidate-cublas-batched-algorithm-probe.json`.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
