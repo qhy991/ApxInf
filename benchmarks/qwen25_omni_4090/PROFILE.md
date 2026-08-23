@@ -1370,6 +1370,18 @@ and 4.448 to 4.640 seconds at 12K.
 1,024, the final 512/256/1,024 policy is the tested optimum. The raw record is
 `candidate-chunk128-retune-context.json`.
 
+#### Rejected explicit cuBLAS Tensor-Op default
+
+The first library-selector counterfactual changed only BF16
+`cublasGemmStridedBatchedEx` from `CUBLAS_GEMM_DEFAULT` (-1) to
+`CUBLAS_GEMM_DEFAULT_TENSOR_OP` (99). Candidate SHA-256 was
+`283cc91598113e4b4f3268058c9cd320521444205a73cd5b47e8401fb1cc3ee9`.
+Trajectories stayed exact, but 8K TTFT regressed about 0.33% while 11K/12K
+moved only about 0.10%/0.04% in the positive direction.
+
+**Decision: revert as a mixed null result.** cuBLAS automatic selection remains
+the owner; the raw record is `candidate-batched-algo99-context.json`.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
