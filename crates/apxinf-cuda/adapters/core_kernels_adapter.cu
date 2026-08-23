@@ -657,6 +657,46 @@ extern "C" cudaError_t apxinf_grouped_indexed_sdpa_bf16(
     return cudaGetLastError();
 }
 
+extern "C" cudaError_t apxinf_pack_grouped_qkv_bf16(
+    const void* q, const void* k, const void* v,
+    void* packed_q, void* packed_k, void* packed_v,
+    const void* group_indices, uint32_t rows, uint32_t row_elements,
+    void* stream)
+{
+    if (q == nullptr || k == nullptr || v == nullptr || packed_q == nullptr ||
+        packed_k == nullptr || packed_v == nullptr || group_indices == nullptr ||
+        rows == 0 || row_elements == 0 || row_elements % 8 != 0)
+        return cudaErrorInvalidConfiguration;
+    uint32_t vectors_per_row = row_elements / 8;
+    uint64_t vector_count = static_cast<uint64_t>(rows) * vectors_per_row;
+    uint64_t blocks = (vector_count + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    if (blocks == 0 || blocks > 0xffffffffULL) return cudaErrorInvalidConfiguration;
+    vision_pack_grouped_qkv_bf16_kernel<<<
+        static_cast<uint32_t>(blocks), BLOCK_SIZE, 0, (cudaStream_t)stream>>>(
+        (const uint4*)q, (const uint4*)k, (const uint4*)v,
+        (uint4*)packed_q, (uint4*)packed_k, (uint4*)packed_v,
+        (const uint32_t*)group_indices, rows, vectors_per_row);
+    return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_unpack_grouped_rows_bf16(
+    const void* packed, void* output, const void* group_indices,
+    uint32_t rows, uint32_t row_elements, void* stream)
+{
+    if (packed == nullptr || output == nullptr || group_indices == nullptr ||
+        rows == 0 || row_elements == 0 || row_elements % 8 != 0)
+        return cudaErrorInvalidConfiguration;
+    uint32_t vectors_per_row = row_elements / 8;
+    uint64_t vector_count = static_cast<uint64_t>(rows) * vectors_per_row;
+    uint64_t blocks = (vector_count + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    if (blocks == 0 || blocks > 0xffffffffULL) return cudaErrorInvalidConfiguration;
+    vision_unpack_grouped_rows_bf16_kernel<<<
+        static_cast<uint32_t>(blocks), BLOCK_SIZE, 0, (cudaStream_t)stream>>>(
+        (const uint4*)packed, (uint4*)output,
+        (const uint32_t*)group_indices, rows, vectors_per_row);
+    return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_flash_attn_decode_bf16(
     const void* q, const void* k_cache, const void* v_cache, void* out,
     uint32_t n_heads, uint32_t n_kv_heads, uint32_t head_dim,

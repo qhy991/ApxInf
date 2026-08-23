@@ -13,8 +13,9 @@ nearby but structurally different model.
 The result is not a single winner:
 
 - ApxInf is the stronger short-to-mid-context, single-request text decoder.
-- vLLM-Omni is substantially stronger in long-context prefill and retains
-  lower real-image TTFT and wall time after ApxInf's processor promotion.
+- vLLM-Omni is substantially stronger in long-context prefill; the real-image
+  path is now within 3% on client wall after ApxInf's grouped-varlen FA2
+  promotion.
 - Both reach the complete 32,760 prompt + 8 output contract after vLLM's KV
   reservation is aligned to the declared single-request workload.
 - Both understand the frozen real PNG and WAV. ApxInf now wins real-audio
@@ -100,15 +101,16 @@ for ApxInf at 32K.
 
 | Input | Result | ApxInf | vLLM-Omni | Interpretation |
 |---|---|---:|---:|---|
-| PNG, 1,760 + 16 | both read `TinyLlama-1.1B Decode Throughput vs Position` | TTFT 0.752 s; TPOT 10.38 ms; wall 1.074 s | TTFT 0.232 s; TPOT 21.92 ms; wall 0.565 s | vLLM TTFT 3.24× and wall 1.90× lower; ApxInf TPOT 2.11× lower |
-| WAV, 52 + 16 | both identify a sine wave | model TTFT 20.17 ms; TPOT 8.11 ms; wall 0.151 s | client TTFT 290.40 ms; TPOT 21.89 ms; wall 0.619 s | ApxInf TTFT 14.40×, TPOT 2.70× and wall 4.09× lower |
+| PNG, 1,760 + 16 | both read `TinyLlama-1.1B Decode Throughput vs Position` | TTFT 0.257 s; TPOT 10.39 ms; wall 0.581 s | TTFT 0.232 s; TPOT 21.92 ms; wall 0.565 s | vLLM TTFT 1.11× and wall 1.03× lower; ApxInf TPOT 2.11× lower |
+| WAV, 52 + 16 | both identify a sine wave | model TTFT 20.12 ms; TPOT 8.09 ms; wall 0.159 s | client TTFT 290.40 ms; TPOT 21.89 ms; wall 0.619 s | ApxInf TTFT 14.43×, TPOT 2.71× and wall 3.89× lower |
 
 Indexed group plans plus vision-only FA2 reduce ApxInf PNG TTFT by 44.0× and
-the persistent processor reduces the remaining PNG wall time by another 6.48×
-relative to the prior deployed result. WAV wall time falls 39.24×. The model
+the persistent processor reduces its remaining service overhead, and grouped
+variable-length FA2 then lowers PNG TTFT another 2.92× and wall another 1.85×.
+WAV remains a non-target control. The model
 TTFT/TPOT intervals remain effectively unchanged, while estimated non-model
-overhead falls by 97.25% for PNG and 98.87% for WAV. The image comparison now
-isolates the remaining vision-model work instead of repeated processor startup.
+overhead from the processor promotion stays removed. On this one PNG the final
+2.8% wall difference should be called near parity, not a general winner.
 
 ## SGLang compatibility status
 
@@ -214,12 +216,12 @@ python3 benchmarks/qwen25_omni_4090/benchmark_vllm_omni_multimodal.py \
 
 The next high-leverage work is not another sub-percent pointwise kernel:
 
-1. Pack or reorder the 28 indexed vision windows so a batched tiled attention
-   path can replace their remaining 0.504-second GPU interval.
-2. Replace the remaining long-prefill text attention algorithm with a tiled,
+1. Replace the remaining long-prefill text attention algorithm with a tiled,
    FlashAttention-class path while preserving the complete trajectory gate.
-3. Replace the resident Python processor with native Rust only if CPU/RSS or
+2. Replace the resident Python processor with native Rust only if CPU/RSS or
    future multi-request evidence makes that boundary material.
+3. Re-profile the post-FA2 image path before selecting another vision change;
+   the prior indexed-window bottleneck is closed.
 
 Only after these boundaries move should smaller decode-kernel fusions again
 become the primary optimization target.

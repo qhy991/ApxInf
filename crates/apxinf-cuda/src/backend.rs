@@ -46,6 +46,7 @@ struct VisionGroupCache {
     offsets: CudaBuffer,
     indices: CudaBuffer,
     group_count: usize,
+    max_group_size: usize,
 }
 
 fn tmrope_position_cache_enabled() -> Result<bool> {
@@ -98,6 +99,24 @@ fn vision_grouped_sparse_enabled() -> Result<bool> {
             )),
             Err(std::env::VarError::NotUnicode(_)) => {
                 Err("APXINF_VISION_GROUPED_SPARSE must be UTF-8".into())
+            }
+        })
+        .clone()
+        .map_err(Error::Other)
+}
+
+fn vision_grouped_fa2_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| match std::env::var("APXINF_VISION_GROUPED_FA2") {
+            Err(std::env::VarError::NotPresent) => Ok(false),
+            Ok(value) if value == "0" => Ok(false),
+            Ok(value) if value == "1" => Ok(true),
+            Ok(value) => Err(format!(
+                "APXINF_VISION_GROUPED_FA2 must be 0 or 1, got `{value}`"
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("APXINF_VISION_GROUPED_FA2 must be UTF-8".into())
             }
         })
         .clone()
@@ -409,7 +428,14 @@ impl Backend for CudaBackend {
                 group_ids.len()
             )));
         }
-        if !vision_grouped_sparse_enabled()? {
+        let grouped_sparse = vision_grouped_sparse_enabled()?;
+        let grouped_fa2 = vision_grouped_fa2_enabled()?;
+        if grouped_fa2 && !grouped_sparse {
+            return Err(Error::Other(
+                "APXINF_VISION_GROUPED_FA2 requires APXINF_VISION_GROUPED_SPARSE=1".into(),
+            ));
+        }
+        if !grouped_sparse {
             let bytes = u32_bytes(group_ids);
             let ids = CudaBuffer::alloc(bytes.len(), self.ctx.device_id()).map_err(Error::Cuda)?;
             ids.copy_from_host(&bytes).map_err(Error::Cuda)?;
@@ -428,6 +454,25 @@ impl Backend for CudaBackend {
         {
             let (offset_values, index_values) = vision_group_plan(group_ids)?;
             let group_count = offset_values.len() - 1;
+            let max_group_size = offset_values
+                .windows(2)
+                .map(|window| (window[1] - window[0]) as usize)
+                .max()
+                .ok_or_else(|| Error::Other("vision group plan has no groups".into()))?;
+            if grouped_fa2
+                && offset_values
+                    .windows(2)
+                    .any(|window| window[0] >= window[1])
+            {
+                return Err(Error::Other(
+                    "grouped vision FA2 requires nonempty contiguous groups".into(),
+                ));
+            }
+            if grouped_fa2 {
+                eprintln!(
+                    "ApxInf grouped vision FA2: {group_count} groups, max {max_group_size} tokens, total {seq_len}"
+                );
+            }
             let group_bytes = u32_bytes(group_ids);
             let offset_bytes = u32_bytes(&offset_values);
             let index_bytes = u32_bytes(&index_values);
@@ -467,9 +512,34 @@ impl Backend for CudaBackend {
                 offsets,
                 indices,
                 group_count,
+                max_group_size,
             });
         }
         let cached = cache.as_ref().expect("vision group cache populated");
+        if grouped_fa2 {
+            #[cfg(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80))]
+            {
+                return kernels::attention::grouped_varlen_fa2(
+                    &self.ctx,
+                    q,
+                    k,
+                    v,
+                    seq_len,
+                    n_heads,
+                    head_dim,
+                    &cached.offsets,
+                    &cached.indices,
+                    cached.group_count,
+                    cached.max_group_size,
+                );
+            }
+            #[cfg(not(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80)))]
+            {
+                return Err(Error::Other(
+                    "APXINF_VISION_GROUPED_FA2 requires an SM80-family FA2 build".into(),
+                ));
+            }
+        }
         kernels::attention::grouped_indexed(
             &self.ctx,
             q,
