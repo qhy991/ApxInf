@@ -1,0 +1,35 @@
+{
+  "schema": "apxinf.qwen25_omni.candidate.v1",
+  "evidence_level": "source_report_transcription",
+  "base_revision": "1202c92",
+  "classification": "PTX/SASS-directed CUDA",
+  "hypothesis": "replace per-element exact division with one reciprocal and parallel multiplication",
+  "candidate_binary_sha256": "47952d3fa391b78e4113fa3108df6a74ac20eee77b7a5608459b1ddde52d426b",
+  "candidate_kernel_build_id": "kb1-7d32a1585eb9b02428cb4c1e4f87c5dd",
+  "correctness": {
+    "legacy_32k_sine": {
+      "job": "gpuq-23a9db431b7c",
+      "passed": true
+    },
+    "long_boundary_pseudorandom": {
+      "job": "gpuq-734b6a5d0db9",
+      "passed": false,
+      "first_failure": {
+        "cols": 32767,
+        "index": 7655,
+        "candidate_bf16_as_f32": 5.47152e-9,
+        "scalar_bf16_as_f32": 5.500624e-9
+      }
+    },
+    "restored_division_path": {
+      "job": "gpuq-3a80edb0d2d5",
+      "passed": true
+    }
+  },
+  "e2e_measured": false,
+  "decision": "revert",
+  "reason": "the expanded exactness gate found a BF16 mismatch before service admission",
+  "limitations": [
+    "The raw test transcript was observed in the terminal but not archived as a file"
+  ]
+}

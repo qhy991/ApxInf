@@ -420,6 +420,53 @@ fn attention_softmax_global_exp_cache_decode_is_bit_exact_at_32k() {
 }
 
 #[test]
+fn attention_softmax_global_exp_cache_decode_is_bit_exact_across_long_boundaries() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let n_heads = 2usize;
+    for cols in [11_265usize, 12_288, 16_385, 32_767] {
+        let input = (0..n_heads * cols)
+            .map(|index| {
+                let bits = (index as u32)
+                    .wrapping_mul(1_664_525)
+                    .wrapping_add(1_013_904_223);
+                let unit = (bits & 0xffff) as f32 / 65_535.0;
+                unit * 24.0 - 12.0
+            })
+            .collect::<Vec<_>>();
+        let tensor = upload_fp32_as_bf16(&ctx, &input, vec![n_heads, cols]).unwrap();
+        let scalar = softmax_causal_with_exp_cache(
+            &ctx,
+            &tensor,
+            (cols - 1) as u32,
+            n_heads as u32,
+            false,
+        )
+        .unwrap();
+        let cached = softmax_causal_with_global_exp_cache(
+            &ctx,
+            &tensor,
+            (cols - 1) as u32,
+            n_heads as u32,
+        )
+        .unwrap();
+        let cached = download_bf16_as_fp32(&cached).unwrap();
+        let scalar = download_bf16_as_fp32(&scalar).unwrap();
+        assert_eq!(cached.len(), scalar.len());
+        if let Some((index, (cached, scalar))) = cached
+            .iter()
+            .zip(&scalar)
+            .enumerate()
+            .find(|(_, (cached, scalar))| cached != scalar)
+        {
+            panic!(
+                "global exp cache differed at {cols} columns, index {index}: \
+                 cached={cached:?}, scalar={scalar:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn attention_softmax_bf16_crosses_legacy_grid_y_boundary() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     let rows = 65_536usize;

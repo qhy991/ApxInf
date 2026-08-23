@@ -42,6 +42,13 @@
     "native_sm89_cubins": 13,
     "sm89_ptx_entries": 13
   },
+  "formal_rebuild": {
+    "binary_sha256": "6b26aebcae3ac0d653cd0f60527a0636513e852bf5c69147ab4f9cecf40614fc",
+    "kernel_build_id": "kb1-8197311a653abd1899ba62a9e377c7b0",
+    "quick_result": "deployed-native-sm89-core-reproducible-quick.json",
+    "contract_result": "deployed-native-sm89-core-reproducible-contract.json",
+    "passed": true
+  },
   "correctness_job": "gpuq-3a6fe4fb5b59",
   "decision": "promote",
   "limitations": [

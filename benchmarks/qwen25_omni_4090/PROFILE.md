@@ -1150,9 +1150,13 @@ operators. The build owner now accepts `APXINF_CUDA_OPERATOR_SET=core|full`.
 Unset remains `full` for compatibility; the Omni build script explicitly uses
 `core`, and the operator set participates in the kernel build ID.
 
-The core candidate SHA-256 is
+The first clean core candidate SHA-256 is
 `8f8b58d101f326f5da04fe7ae031cb7940f81f5a0cee1d7506e08a8c1bda9be2`.
-It contains six `sm_89` cubins and no FA2, Marlin or CUTLASS-INT8 symbols.
+The final rebuild from the formatted committed build owner is
+`6b26aebcae3ac0d653cd0f60527a0636513e852bf5c69147ab4f9cecf40614fc`;
+it repeats the exact quick trajectory at 9.353 ms TPOT and passes the typed
+contract. The artifact contains six `sm_89` cubins and no FA2, Marlin or
+CUTLASS-INT8 symbols.
 The full and core global-softmax kernels have identical normalized machine
 opcode hash `fa710f54d797463cae0cf8a76dc15763d92730347207df4820b100d5df4f33c5`
 and identical 40-register, zero-local/stack, 16-byte-shared resource usage.
@@ -1176,6 +1180,22 @@ the Omni 4090 build contract.** Raw evidence uses the
 `candidate-native-sm89-core-*` prefix. The `full` default remains available to
 Qwen3.8 and other consumers that need the optional operators; Qwen3.8 and Omni
 remain down when unused.
+
+#### Rejected reciprocal normalization
+
+A normalization candidate replaced each exact FP32 division with one lane-0
+reciprocal and parallel multiplication, without adding a launch or barrier.
+Candidate SHA-256 was
+`47952d3fa391b78e4113fa3108df6a74ac20eee77b7a5608459b1ddde52d426b`.
+It passed the original 32K sine gate under `gpuq-23a9db431b7c`, but a new
+deterministic pseudorandom gate over 11,265, 12,288, 16,385 and 32,767 columns
+found a BF16 mismatch at 32,767 columns, index 7,655: candidate
+`5.47152e-9` versus scalar `5.500624e-9`.
+
+**Decision: revert before end-to-end timing.** The restored exact-division
+path passes the expanded gate under `gpuq-3a80edb0d2d5`. The concise
+multi-boundary regression test remains in the suite; the structured record is
+`candidate-global-exp-cache-reciprocal.json`.
 
 ## Promoted short-KV CUDA Graph decode candidate
 
