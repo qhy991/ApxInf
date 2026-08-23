@@ -1049,6 +1049,18 @@ The longer live range regressed 11K TPOT from 17.670 to 18.021 ms and 12K from
 budget.** The raw record is `candidate-global-exp-cache-lane0-ilp8-context.json`;
 production keeps four-value preloads.
 
+#### Rejected two-value lane-0 preload
+
+Reducing the ordered preload group from four values to two also passed the 32K
+byte-exact operator, under Broker job `gpuq-69d136b04c7d`. Candidate binary
+SHA-256 was
+`59d5dadd809b494de2b5e95ed959966e92f82c7004f74679ac82db4db5afb937`.
+Insufficient memory-level parallelism regressed 11K TPOT from 17.670 to
+19.055 ms and 12K from 18.420 to 19.872 ms, about 7.85% and 7.89%.
+**Decision: revert and close the preload-depth search.** The two-, four- and
+eight-value variants establish four as the stable tested optimum. The raw
+record is `candidate-global-exp-cache-lane0-ilp2-context.json`.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
