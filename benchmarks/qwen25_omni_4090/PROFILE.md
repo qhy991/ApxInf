@@ -1211,6 +1211,20 @@ At 11K TPOT moved from 16.934 to 16.916 ms, but 12K regressed from 17.558 to
 gain does not justify another policy boundary. The raw record is
 `candidate-global-exp-cache-normalize-ilp2-context.json`.
 
+#### Rejected forced 32-bit score loads
+
+An aligned candidate loaded two packed `uint32_t` values and reconstructed
+their four BF16 elements, intending to replace four 16-bit score loads with
+two 32-bit loads. Candidate SHA-256 was
+`e049b9b905bb5e7685cee7a1899c34a87fd1621015236e08d4d64cf5133fa875`.
+Native SM89 SASS retained exactly 66 `LDG.E.U16` and 82 32-bit `LDG.E`
+instructions in both accepted and candidate kernels, with unchanged resources.
+
+**Decision: revert at the build/SASS gate without correctness or end-to-end
+budget.** ptxas scalarized the representation, so the intended mechanism did
+not survive. The structured record is
+`candidate-global-exp-cache-forced-u32-load.json`.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

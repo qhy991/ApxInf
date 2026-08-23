@@ -1,0 +1,26 @@
+{
+  "schema": "apxinf.qwen25_omni.candidate.v1",
+  "evidence_level": "source_report_transcription",
+  "base_revision": "4799730",
+  "classification": "PTX/SASS-directed CUDA",
+  "hypothesis": "force two aligned 32-bit score loads instead of four 16-bit loads",
+  "candidate_binary_sha256": "e049b9b905bb5e7685cee7a1899c34a87fd1621015236e08d4d64cf5133fa875",
+  "candidate_kernel_build_id": "kb1-951fb257592de830e8b2b160ddffbc4c",
+  "sass": {
+    "accepted_ldg_e_u16_count": 66,
+    "candidate_ldg_e_u16_count": 66,
+    "accepted_ldg_e_32_count": 82,
+    "candidate_ldg_e_32_count": 82,
+    "registers": 40,
+    "local_bytes": 0,
+    "stack_bytes": 0,
+    "shared_bytes": 16
+  },
+  "operator_correctness_measured": false,
+  "e2e_measured": false,
+  "decision": "revert",
+  "reason": "ptxas scalarized the forced uint32 representation to the same load widths before the operator gate",
+  "limitations": [
+    "The SASS inspection was observed in the terminal but not archived as a raw disassembly file"
+  ]
+}
