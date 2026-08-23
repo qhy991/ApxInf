@@ -1549,6 +1549,19 @@ The deployed binary SHA-256 is
 **Decision: promote full-write output allocation.** It removes redundant
 memory traffic with no new selector, representation or execution path.
 
+### Rejected long-prefill global numerator cache
+
+The next candidate stored every exact scaled FP32 softmax numerator so the
+long-prefill kernel could avoid a second score read and `expf`. Direct tests at
+4,097, 8,192 and 12,288 columns were bit-exact, but the 12K chunk required a
+192 MiB workspace plus one FP32 write and two FP32 reads per valid element.
+No-profiler 12K TTFT regressed from 1.523 s to 1.870 s (22.79%), with candidate
+CV rising to 9.9%.
+
+**Decision: revert before profiling.** The end-to-end rejection gate failed
+decisively; production retains the recompute-based exact softmax. Structured
+evidence is `candidate-prefill-global-exp-cache-rejected.json`.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
