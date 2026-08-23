@@ -10,7 +10,7 @@ use super::contracts::{
 use crate::buffer::{CudaBuffer, CudaDeviceAddress};
 use crate::context::CudaContext;
 use crate::ffi;
-use crate::workspace::output_buffer;
+use crate::workspace::uninitialized_buffer;
 
 /// Apply RoPE into caller-owned storage using a device-resident position.
 #[allow(clippy::too_many_arguments)]
@@ -288,7 +288,7 @@ pub fn apply(
     let seq_len = if dims.len() == 2 { 1 } else { dims[0] };
 
     let out_bytes = input.size_in_bytes();
-    let out_buf = output_buffer(ctx, out_bytes)?;
+    let out_buf = uninitialized_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = match input.dtype() {
@@ -345,7 +345,7 @@ pub fn apply_mrope(
     let dims = input.shape().dims();
     let seq_len = if dims.len() == 2 { 1 } else { dims[0] };
     let out_bytes = input.size_in_bytes();
-    let out_buf = output_buffer(ctx, out_bytes)?;
+    let out_buf = uninitialized_buffer(ctx, out_bytes)?;
 
     if input.dtype() != DType::BF16 {
         return Err(Error::Other("rope_mrope: only BF16 supported".into()));
@@ -393,7 +393,7 @@ pub fn apply_tmrope(
     if pos_ids.len() != seq_len * 3 * 4 {
         return Err(Error::Other("rope_tmrope: position buffer length mismatch".into()));
     }
-    let output = output_buffer(ctx, input.size_in_bytes())?;
+    let output = uninitialized_buffer(ctx, input.size_in_bytes())?;
     unsafe {
         ffi::check_cuda(ffi::apxinf_rope_tmrope_bf16(
             gpu_ptr(input)?,
@@ -433,7 +433,7 @@ pub fn apply_vision_2d(
     let device_id = ctx.device_id();
     let dims = input.shape().dims();
     let seq_len = if dims.len() == 2 { 1 } else { dims[0] };
-    let out_buf = output_buffer(ctx, input.size_in_bytes())?;
+    let out_buf = uninitialized_buffer(ctx, input.size_in_bytes())?;
     unsafe {
         let res = ffi::apxinf_rope_vision_2d_bf16(
             gpu_ptr(input)?,
@@ -469,7 +469,7 @@ pub fn apply_batched(
     let seq_len = if dims.len() == 2 { 1 } else { dims[0] };
 
     let out_bytes = input.size_in_bytes();
-    let out_buf = output_buffer(ctx, out_bytes)?;
+    let out_buf = uninitialized_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = match input.dtype() {

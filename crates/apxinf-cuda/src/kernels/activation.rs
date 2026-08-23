@@ -9,7 +9,7 @@ use super::contracts::{
 use crate::buffer::CudaBuffer;
 use crate::context::CudaContext;
 use crate::ffi;
-use crate::workspace::output_buffer;
+use crate::workspace::uninitialized_buffer;
 
 /// Allocation-free SiLU into caller-owned decode storage.
 pub fn silu_into(
@@ -88,7 +88,7 @@ pub fn silu(ctx: &CudaContext, input: &Tensor) -> Result<Tensor> {
     let count = input.numel() as u32;
 
     let out_bytes = input.size_in_bytes();
-    let out_buf = output_buffer(ctx, out_bytes)?;
+    let out_buf = uninitialized_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = match input.dtype() {
@@ -118,7 +118,7 @@ pub fn gelu_tanh(ctx: &CudaContext, input: &Tensor) -> Result<Tensor> {
     }
     let device_id = ctx.device_id();
     let count = input.numel() as u32;
-    let out_buf = output_buffer(ctx, input.size_in_bytes())?;
+    let out_buf = uninitialized_buffer(ctx, input.size_in_bytes())?;
     unsafe {
         let res =
             ffi::apxinf_gelu_tanh_bf16(gpu_ptr(input)?, out_buf.ptr(), count, ctx.stream().handle());

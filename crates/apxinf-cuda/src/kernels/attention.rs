@@ -5,8 +5,8 @@ use std::sync::OnceLock;
 use apxinf_core::{DType, Device, Error, KvCache, Result, Shape, Tensor};
 
 use super::contracts::{
-    bf16_output, check_cuda, checked_bytes, f16_output, gpu_ptr, make_gpu_tensor, matrix_shape,
-    optional_ptr, require_address, require_buffers, require_finite, unsupported_dtype,
+    check_cuda, checked_bytes, f16_output, gpu_ptr, make_gpu_tensor, matrix_shape, optional_ptr,
+    require_address, require_buffers, require_finite, unsupported_dtype,
 };
 use super::elementwise::{bias_f16, concat_rows_f16};
 use crate::buffer::{CudaBuffer, CudaDeviceAddress};
@@ -1358,9 +1358,14 @@ pub fn split_qkv_bias_bf16(
             "static inference BF16 vision QKV shape mismatch".into(),
         ));
     }
-    let q = bf16_output(ctx, tokens, projection_width)?;
-    let k = bf16_output(ctx, tokens, projection_width)?;
-    let v = bf16_output(ctx, tokens, projection_width)?;
+    let projection_bytes = checked_bytes(
+        DType::BF16,
+        &[tokens, projection_width],
+        "vision QKV split output",
+    )?;
+    let q = uninitialized_buffer(ctx, projection_bytes)?;
+    let k = uninitialized_buffer(ctx, projection_bytes)?;
+    let v = uninitialized_buffer(ctx, projection_bytes)?;
     unsafe {
         ffi::check_cuda(ffi::apxinf_static_qkv_split_bias_bf16(
             gpu_ptr(qkv)?,
@@ -1408,9 +1413,13 @@ pub fn split_gqa_qkv_bias_bf16(
     {
         return Err(Error::Other("BF16 packed GQA QKV shape mismatch".into()));
     }
-    let q = bf16_output(ctx, tokens, q_width)?;
-    let k = bf16_output(ctx, tokens, kv_width)?;
-    let v = bf16_output(ctx, tokens, kv_width)?;
+    let q = uninitialized_buffer(
+        ctx,
+        checked_bytes(DType::BF16, &[tokens, q_width], "GQA Q split output")?,
+    )?;
+    let kv_bytes = checked_bytes(DType::BF16, &[tokens, kv_width], "GQA KV split output")?;
+    let k = uninitialized_buffer(ctx, kv_bytes)?;
+    let v = uninitialized_buffer(ctx, kv_bytes)?;
     unsafe {
         ffi::check_cuda(ffi::apxinf_gqa_qkv_split_bias_bf16(
             gpu_ptr(qkv)?,

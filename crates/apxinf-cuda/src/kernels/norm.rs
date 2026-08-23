@@ -9,7 +9,7 @@ use super::contracts::{
 use crate::buffer::CudaBuffer;
 use crate::context::CudaContext;
 use crate::ffi;
-use crate::workspace::output_buffer;
+use crate::workspace::uninitialized_buffer;
 
 /// RMS normalization into caller-owned storage.
 #[allow(clippy::too_many_arguments)]
@@ -119,7 +119,7 @@ pub fn rms(ctx: &CudaContext, input: &Tensor, weight: &Tensor, eps: f32) -> Resu
     };
 
     let out_bytes = input.size_in_bytes();
-    let out_buf = output_buffer(ctx, out_bytes)?;
+    let out_buf = uninitialized_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = match input.dtype() {
@@ -174,7 +174,7 @@ pub fn layer(
     } else {
         dims[dims.len() - 1]
     };
-    let out_buf = output_buffer(ctx, input.size_in_bytes())?;
+    let out_buf = uninitialized_buffer(ctx, input.size_in_bytes())?;
     unsafe {
         let res = ffi::apxinf_layer_norm_bf16(
             gpu_ptr(input)?,

@@ -2,7 +2,7 @@
 
 `BASELINE.md` owns the current accepted deployment summary. This file retains
 the causal profiles, rejected branches and promotion evidence for each stage;
-the current promotion record is **Promoted full-write output allocation**
+the current promotion record is **Promoted pointwise full-write allocation**
 below.
 
 ## Contract
@@ -1548,6 +1548,46 @@ The deployed binary SHA-256 is
 
 **Decision: promote full-write output allocation.** It removes redundant
 memory traffic with no new selector, representation or execution path.
+
+## Promoted pointwise full-write allocation
+
+The next bounded pass applies the same ownership proof to ordinary pointwise
+and layout operators. SiLU, GELU, add, bias-add, multiply, scale, RMSNorm,
+LayerNorm, RoPE/TMRoPE/MRoPE, embedding and QKV-split kernels write every
+legal output element before its first consumer. Their eager outputs now use
+the existing uninitialized stream-ordered allocator. KV-cache, prefix reserve,
+partial-write and accumulator contracts remain zero-initialized.
+
+Against the first full-write deployment:
+
+| Prompt / output | Prior TTFT p50 | Pointwise TTFT p50 | Change | Repeats |
+|---|---:|---:|---:|---:|
+| 1,024 + 32 | 74.18 ms | 71.49 ms | 3.63% lower | 5 |
+| 8,192 + 8 | 0.927 s | 0.891 s | 3.84% lower | 5 |
+| 12,288 + 8 | 1.523 s | 1.479 s | 2.90% lower | 5 |
+| 32,760 + 8 | 5.969 s | 5.907 s | 1.03% lower | 3 |
+
+The 32K improvement is larger than its 0.21% TTFT CV. The 128+128 decode TPOT
+is unchanged at 8.258 ms, while long eager decode improves with the removed
+pointwise clears. Every complete trajectory remains exact; the 45-test CUDA
+operator suite, typed request recovery and real PNG/WAV gates pass. The 32K
+capacity run retains 9,591 MiB minimum sampled memory headroom.
+
+The matched 12K profile reduces device memset operations from 29,727 to 7,056
+and memset GPU time from 49.6 ms to 12.4 ms. Profile TTFT falls from 1.584 s
+to 1.526 s (3.67%), agreeing with no-profiler timing. The candidate Systems
+report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-12288-nozero-pointwise-interactive.nsys-rep`,
+SHA-256
+`ccae673f613793d9b9d782bc8650d6c8519819912a75c9f6d5bbac9d613478fa`;
+small CSV summaries are checked in.
+
+The deployed binary SHA-256 is
+`b07642c15372ed769bf2a6cde443df157cf6191c927e27bec474f4c4150e140b`;
+`fbad7e23...217291f8` remains the immediate rollback artifact.
+
+**Decision: promote pointwise full-write allocation.** It provides stable
+positive gains across every measured context without adding a public mode.
 
 ### Rejected long-prefill global numerator cache
 

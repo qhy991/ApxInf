@@ -96,8 +96,9 @@ per text or multimodal prefill slice instead of once per Q/K layer call. The
 batched-GQA selector additionally packs BF16 prefill query rows by KV head
 above 4,096 cached tokens, flattens sequence and GQA rows into large score and
 value GEMMs, and restores the existing output layout without changing the KV
-cache. GEMM and softmax outputs that are fully overwritten use uninitialized
-stream-ordered storage, avoiding a redundant device memset; partial-write and
+cache. GEMM, softmax, pointwise, normalization, RoPE, embedding and QKV-split
+outputs that are fully overwritten use uninitialized stream-ordered storage,
+avoiding a redundant device memset; cache, prefix, partial-write and
 accumulator contracts retain zero initialization. Short prefill and decode
 retain their accepted paths. The
 GPU last-row selector creates a view of the final hidden row before output
