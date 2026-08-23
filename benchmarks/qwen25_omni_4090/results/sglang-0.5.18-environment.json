@@ -1,0 +1,56 @@
+{
+  "schema": "apxinf.qwen25_omni.external_environment.v1",
+  "completed_at": "2026-08-24T03:30:00+08:00",
+  "engine": "SGLang",
+  "engine_version": "0.5.18",
+  "source_revision": "71de97b264b04dcd514cf904003028aefe9775c8",
+  "environment_path": "/opt/apxinf/sglang-v0.5.17",
+  "environment_path_note": "The isolated path was created for 0.5.17 and then upgraded in place to the current stable 0.5.18 after 0.5.17 failed the model compatibility gate.",
+  "python": "3.12.14",
+  "packages": {
+    "torch": "2.13.0+cu132",
+    "torchvision": "0.28.0+cu132",
+    "torchaudio": "not installed",
+    "transformers": "5.12.1",
+    "flashinfer-python": "0.6.17",
+    "sglang-kernel": "0.4.6.post1",
+    "sgl-deep-gemm": "0.1.5.post3"
+  },
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "driver": "580.95.05",
+    "host_cuda_toolkit": "12.3",
+    "wheel_cuda": "13.2"
+  },
+  "installation": {
+    "uv": "0.12.5",
+    "mirror": "https://mirrors.aliyun.com/pypi/simple",
+    "final_command": "uv pip install --default-index https://mirrors.aliyun.com/pypi/simple --prerelease=allow --torch-backend=auto --python /opt/apxinf/sglang-v0.5.17/bin/python sglang==0.5.18",
+    "environment_size_gib_approx": 8.5,
+    "shared_uv_cache_gib_approx": 21
+  },
+  "packaging_facts": [
+    "SGLang 0.5.18 declares torch==2.13.0 but torchaudio==2.11.0.",
+    "The declared pair fails at import because Torch is CUDA 13.2 while Torchaudio is CUDA 13.0.",
+    "No Torchaudio 2.13.0 wheel exists on the selected or primary PyPI indexes.",
+    "Torchaudio was removed from this isolated compatibility environment. Transformers then imports successfully; SGLang explicitly reports that audio requests will fail at request time."
+  ],
+  "cache_contract": {
+    "SETUPTOOLS_USE_DISTUTILS": "local",
+    "XDG_CACHE_HOME": "/var/lib/agent-gpu-broker/cache",
+    "TORCHINDUCTOR_CACHE_DIR": "/var/lib/agent-gpu-broker/cache/torchinductor",
+    "TORCH_EXTENSIONS_DIR": "/var/lib/agent-gpu-broker/cache/torch-extensions",
+    "TRITON_CACHE_DIR": "/var/lib/agent-gpu-broker/cache/triton",
+    "CUDA_CACHE_PATH": "/var/lib/agent-gpu-broker/cache/cuda"
+  },
+  "source_hashes": {
+    "model_config_json": "20790f362c37a1718a3e764f597ae33dfc20177399762018dffaabf8321d4dd1",
+    "sglang_transformers_wrapper": "7b27cebdce3cf46be8e76cf9c5b400f022acc845f7c5e74190dbc8af75f1610a",
+    "sglang_generic_multimodal_processor": "843de5bd0abfabf30baa126613890bfdb3d383933e082ddf1d9a792b42a10bc6"
+  },
+  "isolation": {
+    "existing_vllm_environment_modified": false,
+    "apxinf_environment_modified": false,
+    "gpu_access": "all launches routed through the machine GPU Broker"
+  }
+}

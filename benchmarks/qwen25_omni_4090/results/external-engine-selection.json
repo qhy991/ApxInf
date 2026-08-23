@@ -43,15 +43,16 @@
     },
     {
       "engine": "SGLang",
-      "version": "0.5.17",
-      "source_revision": "29481685462732237d80d86076d6563e1f658102",
+      "version": "0.5.18",
+      "source_revision": "71de97b264b04dcd514cf904003028aefe9775c8",
       "support_level": "Transformers compatibility backend, not native SGLang model code",
       "launch_gate": "--model-impl transformers --enable-multimodal",
-      "text": "pending same-GPU measurement",
-      "image": "pending exact-token and semantic gate",
-      "audio": "source-level unsupported signal: TransformersAutoMultimodalProcessor has an explicit audio-loading TODO",
-      "selection": "secondary compatibility experiment",
-      "source": "https://github.com/sgl-project/sglang/tree/v0.5.17"
+      "text": "not runnable: AutoModel.from_config does not recognize the full Qwen2_5OmniConfig",
+      "image": "not runnable for the same model-construction failure",
+      "audio": "not runnable and independently unsupported by the generic processor's explicit audio-loading TODO",
+      "selection": "completed compatibility experiment; excluded from performance scoring",
+      "evidence": "sglang-0.5.18-compatibility.json",
+      "source": "https://github.com/sgl-project/sglang/tree/v0.5.18"
     },
     {
       "engine": "Transformers",
@@ -62,8 +63,8 @@
   ],
   "decision": {
     "primary_baseline": "vLLM-Omni 0.26.0",
-    "secondary_experiment": "SGLang 0.5.17 Transformers backend",
+    "secondary_experiment": "SGLang 0.5.18 Transformers backend failed before weight loading",
     "reason": "vLLM-Omni is the only maintained candidate found with native Qwen2.5-Omni-3B thinker-only support across the required text, image and audio inputs.",
-    "pending": "Run SGLang after the externally owned Qwen3.8 GPU gate completes; retain startup or capability failures without changing the frozen workload."
+    "pending": "Revisit SGLang only after an upstream native Qwen2.5-Omni integration or thinker-stage adapter lands."
   }
 }
