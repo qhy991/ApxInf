@@ -1102,6 +1102,45 @@ this document mean “validated on SM89 hardware”, not “contains a native
 `candidate-global-exp-cache-aligned-vector-*` prefix. Qwen3.8 and Omni remain
 down when unused.
 
+#### Promoted native SM89 build contract
+
+Primary classification: **ptxas configuration and deployment contract**. The
+accepted source was rebuilt in the independent target
+`/opt/apxinf/qwen25-omni-sm89-target-20260823a` with
+`APXINF_CUDA_ARCH=sm_89`. `cuobjdump` verifies thirteen native `sm_89` cubins;
+the prior artifact contained six `sm_52` cubins plus PTX and depended on driver
+JIT on the RTX 4090. Candidate binary SHA-256 is
+`0ab51980fe0544e11817cac1a11177a24ad9a021b577df87a7394aaf8d637a04`.
+The native 32K softmax test remained byte-exact under Broker job
+`gpuq-bed7a85bea43`.
+
+| Prompt / output | PTX-JIT TPOT p50 | Native SM89 repeat p50 | Change |
+|---|---:|---:|---:|
+| 1,024 + 32 | 9.368 ms | 9.355 ms | 0.14% lower |
+| 128 + 128 | 8.266 ms | 8.251 ms | 0.19% lower |
+| 11,264 + 32 | 16.960 ms | 16.896 ms | 0.37% lower |
+| 12,288 + 32 | 17.642 ms | 17.556 ms | 0.49% lower |
+| 32,760 + 8 | 36.452 ms | 36.394 ms | 0.16% lower, one trial |
+
+Both long-context candidate screens preserve exact trajectories and remain
+directionally positive. Repeat TPOT CV is 0.095% at 11K and 0.056% at 12K.
+The 32K trajectory remains
+`f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9`,
+with a 15,997 MiB peak and 8,567 MiB headroom. Typed HTTP probes and the frozen
+real PNG/WAV token references also pass, covering the compile-time FA2 side
+effect of the SM89 build.
+
+The deployment gain has explicit costs. The first clean build took 18 minutes
+6 seconds because architecture selection also compiled FA2, INT8 and Marlin;
+the subsequent service link took 24.84 seconds. Binary size increased from
+15,109,000 to 47,965,440 bytes. This architecture/optional-operator coupling
+is a build-system limitation, not a runtime speedup claim. The checked-in
+`build_sm89.sh` is now the reproducible 4090 build owner.
+
+**Decision: promote the native SM89 artifact under the late-stage stable-win
+rule.** Raw evidence uses the `candidate-native-sm89-*` prefix. The formal
+binary is installed but Qwen3.8 and Omni remain down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

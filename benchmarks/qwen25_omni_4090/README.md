@@ -10,6 +10,21 @@ TTFT/TPOT from `/v1/evaluations/generate`. `nvidia-smi` samples are explanatory
 hardware evidence, not a replacement for endpoint timing. The prefill rate is
 named a proxy because TTFT includes first-token work.
 
+Build the accepted RTX 4090 artifact with an explicit native architecture:
+
+```bash
+CARGO_TARGET_DIR=/opt/apxinf/qwen25-omni-sm89-target \
+  benchmarks/qwen25_omni_4090/build_sm89.sh
+```
+
+The script fixes `APXINF_CUDA_ARCH=sm_89`, builds the release CUDA service and
+prints its SHA-256. A generic x86 CUDA build currently emits `sm_52` cubins
+plus PTX and relies on driver JIT; it is not the accepted 4090 build contract.
+The first clean SM89 build also compiles architecture-coupled FA2, INT8 and
+Marlin objects, so it can take about 18 minutes and produces a roughly 48 MB
+binary. Reusing the same target directory makes subsequent service links much
+faster.
+
 ```bash
 python3 benchmarks/qwen25_omni_4090/benchmark_service.py \
   --suite quick --warmups 1 --repeats 3
