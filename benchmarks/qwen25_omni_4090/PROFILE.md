@@ -1357,6 +1357,19 @@ is `candidate-chunk256-retune-context.json`,
 `candidate-chunk256-4k12k-11k-12k.json`; small profiler exports are checked in.
 Qwen3.8 and Omni remain down when unused.
 
+#### Rejected 128-token chunk floor
+
+The final chunk-size arm halved the 4K–12K chunk from 256 to 128. Candidate
+SHA-256 was
+`0c08eee73cfad643939805aa45da3b0f1603521a74ee9e9cf54dd5d8de5dc567`.
+Exact trajectories remained stable, but TTFT regressed from 0.505 to 0.613
+seconds at 4K, 1.969 to 2.114 seconds at 8K, 3.745 to 3.927 seconds at 11K
+and 4.448 to 4.640 seconds at 12K.
+
+**Decision: revert and close the chunk-size axis.** Across 128, 256, 512 and
+1,024, the final 512/256/1,024 policy is the tested optimum. The raw record is
+`candidate-chunk128-retune-context.json`.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
