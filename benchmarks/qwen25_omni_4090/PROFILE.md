@@ -1219,10 +1219,13 @@ two 32-bit loads. Candidate SHA-256 was
 `e049b9b905bb5e7685cee7a1899c34a87fd1621015236e08d4d64cf5133fa875`.
 Native SM89 SASS retained exactly 66 `LDG.E.U16` and 82 32-bit `LDG.E`
 instructions in both accepted and candidate kernels, with unchanged resources.
+The detailed branch diff shows that the accepted aligned path already uses two
+32-bit loads; the candidate only changed the unpack sequence. The U16 loads
+belong to fallback and other phases, not scalarization of the aligned path.
 
 **Decision: revert at the build/SASS gate without correctness or end-to-end
-budget.** ptxas scalarized the representation, so the intended mechanism did
-not survive. The structured record is
+budget.** The intended load-width reduction was already present, so the Inline
+PTX added no mechanism. The structured record is
 `candidate-global-exp-cache-forced-u32-load.json`.
 
 ## Promoted short-KV CUDA Graph decode candidate

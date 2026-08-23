@@ -19,7 +19,7 @@
   "operator_correctness_measured": false,
   "e2e_measured": false,
   "decision": "revert",
-  "reason": "ptxas scalarized the forced uint32 representation to the same load widths before the operator gate",
+  "reason": "the accepted aligned branch already emitted two 32-bit loads; the candidate only changed unpack instructions and did not reduce the load sequence",
   "limitations": [
     "The SASS inspection was observed in the terminal but not archived as a raw disassembly file"
   ]
