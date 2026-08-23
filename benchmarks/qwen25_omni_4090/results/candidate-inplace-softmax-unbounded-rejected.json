@@ -1,0 +1,41 @@
+{
+  "schema": "apxinf.qwen25_omni.candidate.v1",
+  "base_revision": "d9a4078",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "classification": "source/runtime graph and data ownership",
+  "hypothesis": "scale a single-consumer BF16 score buffer once during max and normalize it in place",
+  "candidate_binary_sha256": "fefe45b32963845e3ae1e6e1ba4b45af6a74808eb932e49a6d13b8008492849f",
+  "correctness": {
+    "targeted_job": "gpuq-838e97324e0c",
+    "boundaries": [4097, 8192, 12288],
+    "operator_bit_exact": true,
+    "service_trajectories_exact": true
+  },
+  "end_to_end": [
+    {
+      "prompt_tokens": 12288,
+      "query_chunk_tokens": 256,
+      "base_ttft_seconds": 1.465324462,
+      "candidate_ttft_seconds": 1.440790347,
+      "result": "improved"
+    },
+    {
+      "prompt_tokens": 32760,
+      "query_chunk_tokens": 1024,
+      "base_ttft_seconds": 5.869166831,
+      "candidate_ttft_seconds": 6.058780878,
+      "ttft_regression_percent": 3.23,
+      "result": "regressed"
+    }
+  ],
+  "decision": "revert_unbounded_selector",
+  "reason": "The score write is beneficial for 256-token chunks but creates a clear bandwidth/cache regression for the 1024-token long-context chunk.",
+  "bounded_followup": "require query_tokens <= 256",
+  "production_source_changed": false,
+  "formal_binary_changed": false,
+  "raw_reports": [
+    "candidate-inplace-softmax-8k12k.json",
+    "candidate-inplace-softmax-32k.json",
+    "candidate-inplace-softmax-quick.json"
+  ]
+}

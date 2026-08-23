@@ -247,6 +247,72 @@ __global__ void attention_softmax_bf16_kernel(
     }
 }
 
+// Exact long-prefill softmax for a single-consumer score buffer. Each score
+// is scaled and rounded to BF16 during the existing maximum scan, then the
+// same storage is normalized in place. Later phases therefore avoid two
+// repeated scale-and-round operations without changing the BF16 values used.
+__global__ void attention_softmax_bf16_scale_in_place_kernel(
+    __nv_bfloat16* scores_output,
+    uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads,
+    float score_scale, uint32_t packed_gqa_ratio)
+{
+    uint32_t row = apxinf_row_from_grid_yz();
+    if (row >= rows) return;
+
+    uint32_t seq_pos = attention_sequence_position(
+        row, rows, n_heads, packed_gqa_ratio);
+    uint32_t valid_cols = min(seq_pos + kv_offset + 1, cols);
+    uint32_t lane = threadIdx.x;
+    __nv_bfloat16* row_scores = scores_output + row * cols;
+    __shared__ float max_values[256];
+    float local_max = -INFINITY;
+    for (uint32_t c = lane; c < valid_cols; c += blockDim.x) {
+        __nv_bfloat16 scaled = __float2bfloat16(
+            __bfloat162float(row_scores[c]) * score_scale);
+        row_scores[c] = scaled;
+        local_max = fmaxf(local_max, __bfloat162float(scaled));
+    }
+    max_values[lane] = local_max;
+    __syncthreads();
+    for (uint32_t offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+        if (lane < offset) {
+            max_values[lane] = fmaxf(max_values[lane], max_values[lane + offset]);
+        }
+        __syncthreads();
+    }
+    float max_val = max_values[0];
+    __syncthreads();
+
+    __shared__ float sum_shared;
+    float sum_exp = 0.0f;
+    for (uint32_t base = 0; base < valid_cols; base += blockDim.x) {
+        uint32_t c = base + lane;
+        max_values[lane] = c < valid_cols
+            ? expf(__bfloat162float(row_scores[c]) - max_val)
+            : 0.0f;
+        __syncthreads();
+        if (lane == 0) {
+            uint32_t count = min(blockDim.x, valid_cols - base);
+            for (uint32_t index = 0; index < count; index++) {
+                sum_exp += max_values[index];
+            }
+        }
+        __syncthreads();
+    }
+    if (lane == 0) {
+        sum_shared = sum_exp;
+    }
+    __syncthreads();
+    sum_exp = sum_shared;
+
+    for (uint32_t c = lane; c < cols; c += blockDim.x) {
+        scores_output[row * cols + c] = c < valid_cols
+            ? __float2bfloat16(
+                  expf(__bfloat162float(row_scores[c]) - max_val) / sum_exp)
+            : __float2bfloat16(0.0f);
+    }
+}
+
 
 // Preserve the scalar maximum and summation order while caching each FP32
 // exponential once. Dynamic shared memory stores `cols` numerators.

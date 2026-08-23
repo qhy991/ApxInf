@@ -996,6 +996,17 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_attention_softmax_bf16_scale_in_place(
+        scores_output: *mut c_void,
+        cols: u32,
+        rows: u32,
+        kv_offset: u32,
+        n_heads: u32,
+        gqa_ratio: u32,
+        score_scale: f32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_attention_softmax_bf16_exp_cache(
         scores: *const c_void,
         output: *mut c_void,

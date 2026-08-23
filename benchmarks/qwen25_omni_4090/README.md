@@ -104,6 +104,9 @@ retain their accepted paths. The
 `APXINF_QWEN25_BF16_CHUNK_TACTICS=1` selector installs five exact RTX 4090
 SM89 cuBLASLt records for the promoted 256- and 1,024-row packed-QKV and MLP
 shapes before execution; unmatched shapes remain on vendor cuBLAS. The
+`APXINF_SOFTMAX_INPLACE_SCALE=1` selector lets flattened BF16 prefill chunks
+of at most 256 query tokens scale and normalize their single-consumer score
+buffer in place. Larger chunks retain the accepted non-mutating softmax. The
 GPU last-row selector creates a view of the final hidden row before output
 normalization, avoiding a whole-slice D2H and row H2D round trip. The
 eager argmax selector applies the same exact two-stage GPU selection to

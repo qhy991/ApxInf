@@ -2,7 +2,7 @@
 
 `BASELINE.md` owns the current accepted deployment summary. This file retains
 the causal profiles, rejected branches and promotion evidence for each stage;
-the current promotion record is **Promoted exact SM89 BF16 chunk tactics**
+the current promotion record is **Promoted bounded in-place scaled softmax**
 below.
 
 ## Contract
@@ -1645,6 +1645,54 @@ The deployed binary SHA-256 is
 **Decision: promote exact SM89 BF16 chunk tactics.** The gain is small but
 stable under the late-optimization rule, and the selector remains explicit,
 bounded and reproducible.
+
+## Promoted bounded in-place scaled softmax
+
+Primary classification: **source/runtime graph and data ownership**. The
+flattened-GQA score tensor has one consumer. For query chunks of at most 256
+tokens, the promoted kernel scales each score once during the existing maximum
+scan, stores the exact BF16-rounded value back into the owned score buffer,
+and normalizes that same storage. Subsequent phases therefore avoid two
+repeated scale-and-BF16 conversions, and the runtime removes one large
+attention-output allocation/free per layer and chunk.
+
+The direct operator gate compares the ordinary and in-place paths at 4,097,
+8,192 and 12,288 columns and requires every BF16 output to match exactly. The
+selector `APXINF_SOFTMAX_INPLACE_SCALE=1` is default-off and accepts only `0`
+or `1`; production additionally requires flattened BF16 prefill,
+`kv_len > 4096`, and `query_tokens <= 256`.
+
+The first unrestricted iteration proved why the query-token gate is required:
+12K improved, but the 1,024-token 32K chunk regressed from 5.869 s to 6.059 s
+(3.2%). The bounded version restores 32K to the accepted non-mutating path.
+
+Adjacent no-profiler evidence for the selected cells is:
+
+| Prompt / output | Baseline TTFT p50 | In-place TTFT p50 | Change | Candidate CV |
+|---|---:|---:|---:|---:|
+| 8,192 + 8 | 0.88396 s | 0.87803 s | 0.67% lower | 0.083% |
+| 12,288 + 8 | 1.46502 s | 1.43879 s | 1.79% lower | 0.152% |
+| 32,760 + 8 | 5.86917 s | 5.85931 s | unchanged control | 0.294% |
+
+Every complete trajectory is exact. The 46-test CUDA operator suite, 128+128
+decode, typed invalid-request recovery, real PNG/WAV and exact 32K capacity
+gates pass.
+
+Systems shows 1,152 fewer `cudaMallocAsync` and `cudaFreeAsync` calls. The
+in-place softmax kernel itself is 4.7 ms slower because of the score write,
+but the two downstream 64x128 GEMM families fall from 105.9 ms to 79.3 ms,
+and profile TTFT falls from 1.504 s to 1.473 s. The candidate report remains
+at
+`/var/lib/agent-gpu-broker/profiles/omni-12288-inplace-softmax-interactive.nsys-rep`,
+SHA-256
+`317948dda30b0a57e456efc35908f0bbd26314cf1969ebdb53cdd931f31e4f1a`.
+
+The deployed binary SHA-256 is
+`2a70b977ac4222634569dbee2406128adcfe93a48e7a09d3525aa8199ee649a8`;
+`44d8e316...c4084680` is the immediate rollback artifact.
+
+**Decision: promote the bounded in-place path.** It composes a stable 8K/12K
+gain while excluding the measured 32K regression.
 
 ### Rejected long-prefill global numerator cache
 

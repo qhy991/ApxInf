@@ -206,6 +206,7 @@ fn batched_gqa_prefill_enabled() -> Result<bool> {
 
 const MAX_SOFTMAX_EXP_CACHE_COLS: usize = 11_264;
 const MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS: usize = 4_096;
+const MAX_INPLACE_SCALE_QUERY_TOKENS: usize = 256;
 
 fn softmax_exp_cache_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
@@ -257,6 +258,24 @@ fn softmax_global_exp_cache_enabled() -> Result<bool> {
             )),
             Err(std::env::VarError::NotUnicode(_)) => {
                 Err("APXINF_SOFTMAX_GLOBAL_EXP_CACHE must be UTF-8".into())
+            }
+        })
+        .clone()
+        .map_err(Error::Other)
+}
+
+fn softmax_inplace_scale_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| match std::env::var("APXINF_SOFTMAX_INPLACE_SCALE") {
+            Err(std::env::VarError::NotPresent) => Ok(false),
+            Ok(value) if value == "0" => Ok(false),
+            Ok(value) if value == "1" => Ok(true),
+            Ok(value) => Err(format!(
+                "APXINF_SOFTMAX_INPLACE_SCALE must be 0 or 1, got `{value}`"
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("APXINF_SOFTMAX_INPLACE_SCALE must be UTF-8".into())
             }
         })
         .clone()
@@ -743,7 +762,19 @@ pub(crate) fn sdpa_with_batched_prefill(
 
     let scores = scores.into_tensor(Shape::new(vec![seq_len * n_heads, kv_len]), dtype);
     let score_scale = 1.0 / (head_dim as f32).sqrt();
-    let attention = if use_flattened_prefill {
+    let use_inplace_softmax = use_flattened_prefill
+        && seq_len <= MAX_INPLACE_SCALE_QUERY_TOKENS
+        && softmax_inplace_scale_enabled()?;
+    let attention = if use_inplace_softmax {
+        softmax_causal_bf16_scaled_in_place_gqa_packed(
+            ctx,
+            scores,
+            kv_offset,
+            n_heads as u32,
+            gqa_ratio as u32,
+            score_scale,
+        )?
+    } else if use_flattened_prefill {
         softmax_causal_bf16_scaled_plain_gqa_packed(
             ctx,
             &scores,
@@ -1296,6 +1327,46 @@ pub(crate) fn softmax_causal_bf16_scaled_plain_gqa_packed(
         ctx.device_id(),
         output,
     ))
+}
+
+pub(crate) fn softmax_causal_bf16_scaled_in_place_gqa_packed(
+    ctx: &CudaContext,
+    input: Tensor,
+    kv_offset: u32,
+    n_heads: u32,
+    gqa_ratio: u32,
+    score_scale: f32,
+) -> Result<Tensor> {
+    if input.dtype() != DType::BF16 || gqa_ratio == 0 || n_heads % gqa_ratio != 0 {
+        return Err(Error::Other(
+            "in-place packed GQA softmax requires BF16 and divisible heads".into(),
+        ));
+    }
+    require_finite("attention score scale", &[score_scale])?;
+    let shape = input.shape().clone();
+    let dims = shape.dims();
+    let rows = dims[dims.len() - 2];
+    let cols = dims[dims.len() - 1];
+    if rows % n_heads as usize != 0 {
+        return Err(Error::Other(
+            "in-place packed GQA softmax rows must be divisible by heads".into(),
+        ));
+    }
+    let output = CudaBuffer::from_tensor(&input).map_err(Error::Cuda)?;
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_attention_softmax_bf16_scale_in_place(
+            output.ptr(),
+            cols as u32,
+            rows as u32,
+            kv_offset,
+            n_heads,
+            gqa_ratio,
+            score_scale,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+    Ok(output.into_tensor(shape, DType::BF16))
 }
 
 pub(crate) fn softmax_causal_with_global_exp_cache(

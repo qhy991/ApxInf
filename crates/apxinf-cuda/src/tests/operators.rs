@@ -5,9 +5,9 @@ use crate::context::CudaContext;
 use crate::kernels::activation::{gelu_tanh, silu};
 use crate::kernels::attention::{
     causal_mask, grouped, sdpa_with_batched_prefill, softmax, softmax_causal,
-    softmax_causal_bf16_scaled_plain, softmax_causal_bf16_scaled_plain_gqa_packed,
-    softmax_causal_with_exp_cache, softmax_causal_with_global_exp_cache,
-    split_gqa_qkv_bias_bf16, vision,
+    softmax_causal_bf16_scaled_in_place_gqa_packed, softmax_causal_bf16_scaled_plain,
+    softmax_causal_bf16_scaled_plain_gqa_packed, softmax_causal_with_exp_cache,
+    softmax_causal_with_global_exp_cache, split_gqa_qkv_bias_bf16, vision,
 };
 use crate::kernels::cache::append;
 use crate::kernels::elementwise::{add, add_bias, mul, scale};
@@ -548,6 +548,50 @@ fn attention_softmax_packed_gqa_rows_match_standard_layout() {
         }
     }
     assert_eq!(unpacked, standard);
+}
+
+#[test]
+fn attention_softmax_in_place_scale_matches_plain_long_boundaries() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, gqa_ratio) = (2usize, 4usize, 2usize);
+    let rows = seq_len * n_heads;
+    let score_scale = 1.0 / 128.0f32.sqrt();
+    for cols in [4_097usize, 8_192, 12_288] {
+        let values = (0..rows * cols)
+            .map(|index| {
+                let bits = (index as u32)
+                    .wrapping_mul(22_695_477)
+                    .wrapping_add(1);
+                (bits & 0xffff) as f32 / 8_192.0 - 4.0
+            })
+            .collect::<Vec<_>>();
+        let plain_input = upload_fp32_as_bf16(&ctx, &values, vec![rows, cols]).unwrap();
+        let inplace_input = upload_fp32_as_bf16(&ctx, &values, vec![rows, cols]).unwrap();
+        let kv_offset = (cols - seq_len) as u32;
+        let plain = softmax_causal_bf16_scaled_plain_gqa_packed(
+            &ctx,
+            &plain_input,
+            kv_offset,
+            n_heads as u32,
+            gqa_ratio as u32,
+            score_scale,
+        )
+        .unwrap();
+        let inplace = softmax_causal_bf16_scaled_in_place_gqa_packed(
+            &ctx,
+            inplace_input,
+            kv_offset,
+            n_heads as u32,
+            gqa_ratio as u32,
+            score_scale,
+        )
+        .unwrap();
+        assert_eq!(
+            download_bf16_as_fp32(&inplace).unwrap(),
+            download_bf16_as_fp32(&plain).unwrap(),
+            "in-place scale differed at {cols} columns"
+        );
+    }
 }
 
 #[test]
