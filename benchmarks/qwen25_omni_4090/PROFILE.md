@@ -1197,6 +1197,20 @@ path passes the expanded gate under `gpuq-3a80edb0d2d5`. The concise
 multi-boundary regression test remains in the suite; the structured record is
 `candidate-global-exp-cache-reciprocal.json`.
 
+#### Rejected two-way exact normalization
+
+The next candidate preserved exact division but manually issued two
+independent normalization elements per thread to expose division ILP. It
+passed the expanded long-boundary exactness gate under `gpuq-8355b758eeed`;
+candidate SHA-256 was
+`2d54dd57a8506c4074b1ef984bcc1ce0ca17ec2449bbedc250c913271cdcaf40`.
+At 11K TPOT moved from 16.934 to 16.916 ms, but 12K regressed from 17.558 to
+17.614 ms, about 0.32%, above the candidate's measurement variation.
+
+**Decision: revert without a post-hoc shape selector.** The uncertain 11K
+gain does not justify another policy boundary. The raw record is
+`candidate-global-exp-cache-normalize-ilp2-context.json`.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
