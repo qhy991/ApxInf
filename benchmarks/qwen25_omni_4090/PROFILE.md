@@ -1023,6 +1023,21 @@ rule.** Raw evidence is
 `candidate-global-exp-cache-lane0-ilp-32760.json`. Qwen3.8 and Omni remain down
 when unused.
 
+#### Rejected warp-staged ordered reductions
+
+The next candidate used the first warp to coalesce groups of 32 global loads
+into shared memory, while lane 0 consumed every value in the original scalar
+order. It therefore preserved exact arithmetic but added two warp barriers and
+shared-memory traffic per group. Binary SHA-256 was
+`6b6b2b441f0242f2f7b9dec1c1e94ccdb2ddeda810e4b67c67f56a99097a88bf`;
+the 32K operator was byte-exact under Broker job `gpuq-48fb826e90b9`.
+
+The synchronization cost dominated: 11K TPOT moved from 17.670 to 17.890 ms
+and 12K from 18.420 to 18.652 ms, regressions of about 1.25% and 1.26%.
+**Decision: revert without profiler budget.** The raw record is
+`candidate-global-exp-cache-warp-stage-context.json`; production retains the
+ordered lane-0 preload implementation.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
