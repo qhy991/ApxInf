@@ -17,13 +17,15 @@ CARGO_TARGET_DIR=/opt/apxinf/qwen25-omni-sm89-target \
   benchmarks/qwen25_omni_4090/build_sm89.sh
 ```
 
-The script fixes `APXINF_CUDA_ARCH=sm_89`, builds the release CUDA service and
-prints its SHA-256. A generic x86 CUDA build currently emits `sm_52` cubins
-plus PTX and relies on driver JIT; it is not the accepted 4090 build contract.
-The first clean SM89 build also compiles architecture-coupled FA2, INT8 and
-Marlin objects, so it can take about 18 minutes and produces a roughly 48 MB
-binary. Reusing the same target directory makes subsequent service links much
-faster.
+The script fixes `APXINF_CUDA_ARCH=sm_89` and
+`APXINF_CUDA_OPERATOR_SET=core`, builds the release CUDA service and prints its
+SHA-256. A generic x86 CUDA build currently emits `sm_52` cubins plus PTX and
+relies on driver JIT; it is not the accepted 4090 build contract. The measured
+clean core build takes about 61 seconds and produces a roughly 15.3 MB binary.
+The build-system default remains `APXINF_CUDA_OPERATOR_SET=full` for backward
+compatibility; that setting also compiles architecture-coupled FA2, INT8 and
+Marlin objects and took about 18 minutes with a roughly 48 MB binary. Reusing
+the same target directory makes subsequent links faster.
 
 ```bash
 python3 benchmarks/qwen25_omni_4090/benchmark_service.py \

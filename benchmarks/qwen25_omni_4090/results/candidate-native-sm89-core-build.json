@@ -1,0 +1,51 @@
+{
+  "schema": "apxinf.qwen25_omni.cuda_build.v1",
+  "evidence_level": "source_report_transcription",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "base_revision": "1574174",
+  "source_state": {
+    "dirty_files": [
+      "crates/apxinf-cuda/build.rs",
+      "benchmarks/qwen25_omni_4090/build_sm89.sh"
+    ],
+    "change": "add APXINF_CUDA_OPERATOR_SET=core|full and select core for Omni"
+  },
+  "candidate": {
+    "target_dir": "/opt/apxinf/qwen25-omni-sm89-core-target-20260823a",
+    "environment": {
+      "APXINF_CUDA_ARCH": "sm_89",
+      "APXINF_CUDA_OPERATOR_SET": "core"
+    },
+    "command": "cargo build --release --features cuda",
+    "clean_target": true,
+    "elapsed_seconds": 61,
+    "binary_sha256": "8f8b58d101f326f5da04fe7ae031cb7940f81f5a0cee1d7506e08a8c1bda9be2",
+    "binary_bytes": 15278120,
+    "native_sm89_cubins": 6,
+    "sm89_ptx_entries": 6,
+    "kernel_build_id": "kb1-8197311a653abd1899ba62a9e377c7b0",
+    "excluded_symbol_counts": {
+      "fa2": 0,
+      "marlin": 0,
+      "cutlass_int8": 0
+    }
+  },
+  "full_reference": {
+    "target_dir": "/opt/apxinf/qwen25-omni-sm89-target-20260823a",
+    "environment": {
+      "APXINF_CUDA_ARCH": "sm_89",
+      "APXINF_CUDA_OPERATOR_SET": "implicit full (pre-selector)"
+    },
+    "elapsed_seconds": 1086,
+    "binary_sha256": "0ab51980fe0544e11817cac1a11177a24ad9a021b577df87a7394aaf8d637a04",
+    "binary_bytes": 47965440,
+    "native_sm89_cubins": 13,
+    "sm89_ptx_entries": 13
+  },
+  "correctness_job": "gpuq-3a6fe4fb5b59",
+  "decision": "promote",
+  "limitations": [
+    "The raw build transcript was observed in the terminal but not archived as a file",
+    "Runtime correctness and performance are stored in separate candidate-native-sm89-core result files"
+  ]
+}

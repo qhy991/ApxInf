@@ -42,6 +42,7 @@ fn computed_kernel_build_id(
     target_arch: &str,
     nvcc_arch: Option<&str>,
     cutlass_arch: Option<&str>,
+    operator_set: &str,
 ) -> String {
     let mut hash = FNV1A_128_OFFSET;
     for value in [
@@ -50,6 +51,7 @@ fn computed_kernel_build_id(
         target_arch,
         nvcc_arch.unwrap_or("native"),
         cutlass_arch.unwrap_or("native"),
+        operator_set,
     ] {
         hash_bytes(&mut hash, value.as_bytes());
         hash_bytes(&mut hash, &[0]);
@@ -115,6 +117,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(apxinf_marlin_sm89)");
     println!("cargo:rerun-if-env-changed=APXINF_CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=APXINF_CUDA_ARCH_CUTLASS");
+    println!("cargo:rerun-if-env-changed=APXINF_CUDA_OPERATOR_SET");
     println!("cargo:rerun-if-env-changed=APXINF_KERNEL_BUILD_ID");
     // Only try to link CUDA if the toolkit is available.
     let cuda_path = env::var("CUDA_PATH")
@@ -213,12 +216,22 @@ fn main() {
                     }
                 })
             });
+            let operator_set = match env::var("APXINF_CUDA_OPERATOR_SET") {
+                Err(env::VarError::NotPresent) => "full".to_string(),
+                Ok(value) if value == "core" || value == "full" => value,
+                Ok(value) => panic!("APXINF_CUDA_OPERATOR_SET must be core or full, got `{value}`"),
+                Err(env::VarError::NotUnicode(_)) => {
+                    panic!("APXINF_CUDA_OPERATOR_SET must be UTF-8")
+                }
+            };
+            let build_optional_operators = operator_set == "full";
             let kernel_build_id = env::var("APXINF_KERNEL_BUILD_ID").unwrap_or_else(|_| {
                 computed_kernel_build_id(
                     std::path::Path::new(&manifest_dir),
                     &arch_for_target,
                     nvcc_arch.as_deref(),
                     cutlass_arch.as_deref(),
+                    &operator_set,
                 )
             });
             emit_kernel_build_id(&kernel_build_id);
@@ -249,7 +262,9 @@ fn main() {
             let cutlass_int8 = std::path::Path::new(&adapters_dir).join("cutlass_w8a8_adapter.cu");
             let marlin_adapter = std::path::Path::new(&adapters_dir).join("marlin_adapter.cu");
             let mut cutlass_includes = Vec::new();
-            if cutlass_arch.as_deref().is_some_and(is_cutlass_sm100_family) {
+            if build_optional_operators
+                && cutlass_arch.as_deref().is_some_and(is_cutlass_sm100_family)
+            {
                 let fmha = cutlass_root.join("fmha");
                 let cutlass = cutlass_root.join("include");
                 let cutlass_utils = cutlass_root.join("tools/util/include");
@@ -274,7 +289,7 @@ fn main() {
             }
 
             let mut cutlass_int8_includes = Vec::new();
-            if nvcc_arch.as_deref().is_some_and(is_fa2_sm80_family) {
+            if build_optional_operators && nvcc_arch.as_deref().is_some_and(is_fa2_sm80_family) {
                 let cutlass = cutlass_root.join("include");
                 let cutlass_utils = cutlass_root.join("tools/util/include");
                 let extensions = cutlass_root.join("extensions");
@@ -306,8 +321,10 @@ fn main() {
             let fa2_wrapper = std::path::Path::new(&adapters_dir).join("fa2_adapter.cu");
             let mut fa2_sources = Vec::new();
             let mut fa2_includes = Vec::new();
-            let fa2_sm80 = nvcc_arch.as_deref().is_some_and(is_fa2_sm80_family);
-            let fa2_f16_sm100 = nvcc_arch.as_deref().is_some_and(is_cutlass_sm100_family);
+            let fa2_sm80 =
+                build_optional_operators && nvcc_arch.as_deref().is_some_and(is_fa2_sm80_family);
+            let fa2_f16_sm100 = build_optional_operators
+                && nvcc_arch.as_deref().is_some_and(is_cutlass_sm100_family);
             if fa2_sm80 || fa2_f16_sm100 {
                 let fa2_hdim96 = fa2_root.join("flash_attn/flash_fwd_hdim96_bf16_sm80.cu");
                 let fa2_hdim256 = fa2_root.join("flash_attn/flash_fwd_hdim256_bf16_sm80.cu");
@@ -343,7 +360,7 @@ fn main() {
                 emit_rerun_if_changed_tree(&fa2_root);
             }
 
-            if nvcc_arch.as_deref() == Some("sm_89") {
+            if build_optional_operators && nvcc_arch.as_deref() == Some("sm_89") {
                 let marlin_root = std::path::Path::new(&kernels_dir).join("marlin");
                 assert!(
                     marlin_adapter.is_file()

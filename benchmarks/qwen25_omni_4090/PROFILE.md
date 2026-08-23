@@ -1141,6 +1141,42 @@ is a build-system limitation, not a runtime speedup claim. The checked-in
 rule.** Raw evidence uses the `candidate-native-sm89-*` prefix. The formal
 binary is installed but Qwen3.8 and Omni remain down when unused.
 
+#### Promoted SM89 core operator set
+
+Primary classification: **build/runtime-graph specialization**. Explicit
+`sm_89` previously implied compiling FA2, INT8 and Marlin and also emitted
+their Rust cfg paths, even though this BF16 Omni service does not select those
+operators. The build owner now accepts `APXINF_CUDA_OPERATOR_SET=core|full`.
+Unset remains `full` for compatibility; the Omni build script explicitly uses
+`core`, and the operator set participates in the kernel build ID.
+
+The core candidate SHA-256 is
+`8f8b58d101f326f5da04fe7ae031cb7940f81f5a0cee1d7506e08a8c1bda9be2`.
+It contains six `sm_89` cubins and no FA2, Marlin or CUTLASS-INT8 symbols.
+The full and core global-softmax kernels have identical normalized machine
+opcode hash `fa710f54d797463cae0cf8a76dc15763d92730347207df4820b100d5df4f33c5`
+and identical 40-register, zero-local/stack, 16-byte-shared resource usage.
+The 32K operator is byte-exact under Broker job `gpuq-3a6fe4fb5b59`.
+
+| Prompt / output | Full SM89 TPOT p50 | Core SM89 TPOT p50 | Change |
+|---|---:|---:|---:|
+| 1,024 + 32 | 9.355 ms | 9.358 ms | 0.03% slower |
+| 128 + 128 | 8.251 ms | 8.250 ms | unchanged |
+| 11,264 + 32 | 16.896 ms | 16.934 ms | 0.23% slower |
+| 12,288 + 32 | 17.556 ms | 17.558 ms | unchanged |
+| 32,760 + 8 | 36.394 ms | 36.267 ms | 0.35% lower, one trial |
+
+Every trajectory, typed HTTP probe and real PNG/WAV reference passes. The
+largest repeated runtime movement is 0.23%, below the predeclared 0.5%
+non-regression threshold. The 32K sample retains 9,079 MiB measured headroom.
+
+The clean build improves from 1,086 to 61 seconds and the binary shrinks from
+47,965,440 to 15,278,120 bytes. **Decision: promote the core operator set as
+the Omni 4090 build contract.** Raw evidence uses the
+`candidate-native-sm89-core-*` prefix. The `full` default remains available to
+Qwen3.8 and other consumers that need the optional operators; Qwen3.8 and Omni
+remain down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
