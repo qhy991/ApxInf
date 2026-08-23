@@ -59,6 +59,133 @@ fn batch_count(value: usize) -> Result<i32> {
     i32::try_from(value).map_err(|_| Error::Other("strided GQA batch exceeds i32".into()))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn copy_buffer_2d(
+    ctx: &CudaContext,
+    source: &CudaBuffer,
+    source_offset: usize,
+    source_pitch: usize,
+    destination: &CudaBuffer,
+    destination_offset: usize,
+    destination_pitch: usize,
+    width: usize,
+    rows: usize,
+) -> Result<()> {
+    if rows == 0 || width == 0 {
+        return Ok(());
+    }
+    if source.device() != ctx.device_id() || destination.device() != ctx.device_id() {
+        return Err(Error::Other("2D GQA copy crosses CUDA devices".into()));
+    }
+    if width > source_pitch || width > destination_pitch {
+        return Err(Error::Other("2D GQA copy width exceeds pitch".into()));
+    }
+    let source_end = source_offset
+        .checked_add(
+            rows.saturating_sub(1)
+                .checked_mul(source_pitch)
+                .and_then(|offset| offset.checked_add(width))
+                .ok_or_else(|| Error::Other("2D GQA source span overflow".into()))?,
+        )
+        .ok_or_else(|| Error::Other("2D GQA source offset overflow".into()))?;
+    let destination_end = destination_offset
+        .checked_add(
+            rows.saturating_sub(1)
+                .checked_mul(destination_pitch)
+                .and_then(|offset| offset.checked_add(width))
+                .ok_or_else(|| Error::Other("2D GQA destination span overflow".into()))?,
+        )
+        .ok_or_else(|| Error::Other("2D GQA destination offset overflow".into()))?;
+    if source_end > source.len() || destination_end > destination.len() {
+        return Err(Error::Other("2D GQA copy exceeds allocation".into()));
+    }
+    unsafe {
+        ffi::check_cuda(ffi::cudaMemcpy2DAsync(
+            destination.ptr().cast::<u8>().add(destination_offset).cast(),
+            destination_pitch,
+            source.ptr().cast::<u8>().add(source_offset).cast(),
+            source_pitch,
+            width,
+            rows,
+            ffi::cudaMemcpyKind::cudaMemcpyDeviceToDevice,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pack_gqa_rows(
+    ctx: &CudaContext,
+    source: &CudaBuffer,
+    destination: &CudaBuffer,
+    seq_len: usize,
+    n_heads: usize,
+    n_kv_heads: usize,
+    gqa_ratio: usize,
+    row_width: usize,
+    element_bytes: usize,
+) -> Result<()> {
+    let group_bytes = gqa_ratio
+        .checked_mul(row_width)
+        .and_then(|value| value.checked_mul(element_bytes))
+        .ok_or_else(|| Error::Other("packed GQA row width overflow".into()))?;
+    let row_bytes = n_heads
+        .checked_mul(row_width)
+        .and_then(|value| value.checked_mul(element_bytes))
+        .ok_or_else(|| Error::Other("GQA row pitch overflow".into()))?;
+    for kv_head in 0..n_kv_heads {
+        copy_buffer_2d(
+            ctx,
+            source,
+            kv_head * group_bytes,
+            row_bytes,
+            destination,
+            kv_head * seq_len * group_bytes,
+            group_bytes,
+            group_bytes,
+            seq_len,
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn unpack_gqa_rows(
+    ctx: &CudaContext,
+    source: &CudaBuffer,
+    destination: &CudaBuffer,
+    seq_len: usize,
+    n_heads: usize,
+    n_kv_heads: usize,
+    gqa_ratio: usize,
+    row_width: usize,
+    element_bytes: usize,
+) -> Result<()> {
+    let group_bytes = gqa_ratio
+        .checked_mul(row_width)
+        .and_then(|value| value.checked_mul(element_bytes))
+        .ok_or_else(|| Error::Other("packed GQA row width overflow".into()))?;
+    let row_bytes = n_heads
+        .checked_mul(row_width)
+        .and_then(|value| value.checked_mul(element_bytes))
+        .ok_or_else(|| Error::Other("GQA row pitch overflow".into()))?;
+    for kv_head in 0..n_kv_heads {
+        copy_buffer_2d(
+            ctx,
+            source,
+            kv_head * seq_len * group_bytes,
+            group_bytes,
+            destination,
+            kv_head * group_bytes,
+            row_bytes,
+            group_bytes,
+            seq_len,
+        )?;
+    }
+    Ok(())
+}
+
 fn batched_gqa_prefill_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
     ENABLED
@@ -359,6 +486,109 @@ fn gqa_values_batched(
         .map_err(Error::Cuda)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn gqa_scores_flattened(
+    ctx: &CudaContext,
+    dtype: DType,
+    query: &CudaBuffer,
+    query_offset: usize,
+    key_cache: &CudaBuffer,
+    key_offset: usize,
+    scores: &CudaBuffer,
+    scores_offset: usize,
+    batch: usize,
+    gqa_ratio: usize,
+    kv_len: usize,
+    head_dim: usize,
+) -> Result<()> {
+    let element_bytes = dtype.size_in_bytes();
+    let query = buffer_slice(
+        query,
+        query_offset * element_bytes,
+        batch * gqa_ratio * head_dim * element_bytes,
+    )?;
+    let key = buffer_slice(
+        key_cache,
+        key_offset * element_bytes,
+        kv_len * head_dim * element_bytes,
+    )?;
+    let output = buffer_slice(
+        scores,
+        scores_offset * element_bytes,
+        batch * gqa_ratio * kv_len * element_bytes,
+    )?;
+    ctx.cublas()
+        .gemm_ex(
+            dtype,
+            CublasTranspose::None,
+            CublasTranspose::Transpose,
+            batch * gqa_ratio,
+            kv_len,
+            head_dim,
+            1.0,
+            &query,
+            head_dim as i32,
+            &key,
+            head_dim as i32,
+            0.0,
+            &output,
+            kv_len as i32,
+        )
+        .map_err(Error::Cuda)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gqa_values_flattened(
+    ctx: &CudaContext,
+    dtype: DType,
+    attention: &Tensor,
+    attention_offset: usize,
+    value_cache: &CudaBuffer,
+    value_offset: usize,
+    output: &CudaBuffer,
+    output_offset: usize,
+    batch: usize,
+    gqa_ratio: usize,
+    kv_len: usize,
+    head_dim: usize,
+) -> Result<()> {
+    let element_bytes = dtype.size_in_bytes();
+    let attention = tensor_slice(
+        attention,
+        attention_offset * element_bytes,
+        batch * gqa_ratio * kv_len * element_bytes,
+        ctx.device_id(),
+    )?;
+    let value = buffer_slice(
+        value_cache,
+        value_offset * element_bytes,
+        kv_len * head_dim * element_bytes,
+    )?;
+    let output = buffer_slice(
+        output,
+        output_offset * element_bytes,
+        batch * gqa_ratio * head_dim * element_bytes,
+    )?;
+    ctx.cublas()
+        .gemm_ex(
+            dtype,
+            CublasTranspose::None,
+            CublasTranspose::None,
+            batch * gqa_ratio,
+            head_dim,
+            kv_len,
+            1.0,
+            &attention,
+            kv_len as i32,
+            &value,
+            head_dim as i32,
+            0.0,
+            &output,
+            head_dim as i32,
+        )
+        .map_err(Error::Cuda)
+}
+
 /// GQA scaled-dot-product attention over an existing CUDA KV cache.
 #[allow(clippy::too_many_arguments)]
 pub fn sdpa(
@@ -434,11 +664,48 @@ pub(crate) fn sdpa_with_batched_prefill(
     let gqa_ratio = n_heads / n_kv_heads;
     let dtype = query.dtype();
     let element_bytes = dtype.size_in_bytes();
+    let use_flattened_prefill = use_batched_prefill
+        && dtype == DType::BF16
+        && seq_len > 1
+        && kv_len > MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS;
+    let packed_query = if use_flattened_prefill {
+        let packed = uninitialized_buffer(ctx, query.size_in_bytes())?;
+        let source = CudaBuffer::from_tensor(query).map_err(Error::Cuda)?;
+        pack_gqa_rows(
+            ctx,
+            &source,
+            &packed,
+            seq_len,
+            n_heads,
+            n_kv_heads,
+            gqa_ratio,
+            head_dim,
+            element_bytes,
+        )?;
+        Some(packed)
+    } else {
+        None
+    };
     let scores = uninitialized_buffer(ctx, seq_len * n_heads * kv_len * element_bytes)?;
     let key_cache = cache.k_buffer(layer_idx);
 
     for kv_head in 0..n_kv_heads {
-        if use_batched_prefill && seq_len > 1 {
+        if let Some(packed_query) = &packed_query {
+            gqa_scores_flattened(
+                ctx,
+                dtype,
+                packed_query,
+                kv_head * seq_len * gqa_ratio * head_dim,
+                key_cache,
+                kv_head * max_seq_len * head_dim,
+                &scores,
+                kv_head * seq_len * gqa_ratio * kv_len,
+                seq_len,
+                gqa_ratio,
+                kv_len,
+                head_dim,
+            )?;
+        } else if use_batched_prefill && seq_len > 1 {
             gqa_scores_batched(
                 ctx,
                 dtype,
@@ -476,7 +743,16 @@ pub(crate) fn sdpa_with_batched_prefill(
 
     let scores = scores.into_tensor(Shape::new(vec![seq_len * n_heads, kv_len]), dtype);
     let score_scale = 1.0 / (head_dim as f32).sqrt();
-    let attention = if dtype == DType::BF16
+    let attention = if use_flattened_prefill {
+        softmax_causal_bf16_scaled_plain_gqa_packed(
+            ctx,
+            &scores,
+            kv_offset,
+            n_heads as u32,
+            gqa_ratio as u32,
+            score_scale,
+        )?
+    } else if dtype == DType::BF16
         && seq_len > 1
         && kv_len > MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS
     {
@@ -493,9 +769,32 @@ pub(crate) fn sdpa_with_batched_prefill(
     };
 
     let output = uninitialized_buffer(ctx, seq_len * n_heads * head_dim * element_bytes)?;
+    let packed_output = if use_flattened_prefill {
+        Some(uninitialized_buffer(
+            ctx,
+            seq_len * n_heads * head_dim * element_bytes,
+        )?)
+    } else {
+        None
+    };
     let value_cache = cache.v_buffer(layer_idx);
     for kv_head in 0..n_kv_heads {
-        if use_batched_prefill && seq_len > 1 {
+        if let Some(packed_output) = &packed_output {
+            gqa_values_flattened(
+                ctx,
+                dtype,
+                &attention,
+                kv_head * seq_len * gqa_ratio * kv_len,
+                value_cache,
+                kv_head * max_seq_len * head_dim,
+                packed_output,
+                kv_head * seq_len * gqa_ratio * head_dim,
+                seq_len,
+                gqa_ratio,
+                kv_len,
+                head_dim,
+            )?;
+        } else if use_batched_prefill && seq_len > 1 {
             gqa_values_batched(
                 ctx,
                 dtype,
@@ -529,6 +828,20 @@ pub(crate) fn sdpa_with_batched_prefill(
                 )?;
             }
         }
+    }
+
+    if let Some(packed_output) = &packed_output {
+        unpack_gqa_rows(
+            ctx,
+            packed_output,
+            &output,
+            seq_len,
+            n_heads,
+            n_kv_heads,
+            gqa_ratio,
+            head_dim,
+            element_bytes,
+        )?;
     }
 
     Ok(output.into_tensor(Shape::new(vec![seq_len, n_heads * head_dim]), dtype))
@@ -927,6 +1240,51 @@ pub(crate) fn softmax_causal_bf16_scaled_plain(
             rows as u32,
             kv_offset,
             n_heads,
+            score_scale,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+    Ok(make_gpu_tensor(
+        input.shape().clone(),
+        DType::BF16,
+        ctx.device_id(),
+        output,
+    ))
+}
+
+pub(crate) fn softmax_causal_bf16_scaled_plain_gqa_packed(
+    ctx: &CudaContext,
+    input: &Tensor,
+    kv_offset: u32,
+    n_heads: u32,
+    gqa_ratio: u32,
+    score_scale: f32,
+) -> Result<Tensor> {
+    if input.dtype() != DType::BF16 || gqa_ratio == 0 || n_heads % gqa_ratio != 0 {
+        return Err(Error::Other(
+            "packed GQA scaled softmax requires BF16 and divisible heads".into(),
+        ));
+    }
+    require_finite("attention score scale", &[score_scale])?;
+    let dims = input.shape().dims();
+    let rows = dims[dims.len() - 2];
+    let cols = dims[dims.len() - 1];
+    if rows % n_heads as usize != 0 {
+        return Err(Error::Other(
+            "packed GQA scaled softmax rows must be divisible by heads".into(),
+        ));
+    }
+    let output = output_buffer(ctx, input.size_in_bytes())?;
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_attention_softmax_bf16_gqa_packed(
+            gpu_ptr(input)?,
+            output.ptr(),
+            cols as u32,
+            rows as u32,
+            kv_offset,
+            n_heads,
+            gqa_ratio,
             score_scale,
             ctx.stream().handle(),
         ))

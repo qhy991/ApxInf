@@ -177,15 +177,25 @@ __device__ __forceinline__ float attention_scaled_bf16(
     return __bfloat162float(__float2bfloat16(__bfloat162float(score) * scale));
 }
 
+__device__ __forceinline__ uint32_t attention_sequence_position(
+    uint32_t row, uint32_t rows, uint32_t n_heads, uint32_t packed_gqa_ratio)
+{
+    if (packed_gqa_ratio == 0) return row / n_heads;
+    uint32_t kv_heads = n_heads / packed_gqa_ratio;
+    uint32_t rows_per_kv_head = rows / kv_heads;
+    return (row % rows_per_kv_head) / packed_gqa_ratio;
+}
+
 __global__ void attention_softmax_bf16_kernel(
     const __nv_bfloat16* scores, __nv_bfloat16* output,
     uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads,
-    float score_scale)
+    float score_scale, uint32_t packed_gqa_ratio)
 {
     uint32_t row = apxinf_row_from_grid_yz();
     if (row >= rows) return;
 
-    uint32_t seq_pos = row / n_heads;
+    uint32_t seq_pos = attention_sequence_position(
+        row, rows, n_heads, packed_gqa_ratio);
     uint32_t valid_cols = min(seq_pos + kv_offset + 1, cols);
     uint32_t lane = threadIdx.x;
     __shared__ float max_values[256];

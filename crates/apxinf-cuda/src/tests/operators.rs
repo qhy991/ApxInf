@@ -5,8 +5,9 @@ use crate::context::CudaContext;
 use crate::kernels::activation::{gelu_tanh, silu};
 use crate::kernels::attention::{
     causal_mask, grouped, sdpa_with_batched_prefill, softmax, softmax_causal,
-    softmax_causal_bf16_scaled_plain, softmax_causal_with_exp_cache,
-    softmax_causal_with_global_exp_cache, split_gqa_qkv_bias_bf16, vision,
+    softmax_causal_bf16_scaled_plain, softmax_causal_bf16_scaled_plain_gqa_packed,
+    softmax_causal_with_exp_cache, softmax_causal_with_global_exp_cache,
+    split_gqa_qkv_bias_bf16, vision,
 };
 use crate::kernels::cache::append;
 use crate::kernels::elementwise::{add, add_bias, mul, scale};
@@ -487,6 +488,69 @@ fn attention_softmax_fused_scale_is_bit_exact_across_long_prefill() {
 }
 
 #[test]
+fn attention_softmax_packed_gqa_rows_match_standard_layout() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, n_kv_heads, cols) = (3usize, 4usize, 2usize, 4_097usize);
+    let gqa_ratio = n_heads / n_kv_heads;
+    let rows = seq_len * n_heads;
+    let score_scale = 1.0 / 128.0f32.sqrt();
+    let row_major = (0..rows * cols)
+        .map(|index| {
+            let bits = (index as u32)
+                .wrapping_mul(1_103_515_245)
+                .wrapping_add(12_345);
+            (bits & 0xffff) as f32 / 8_192.0 - 4.0
+        })
+        .collect::<Vec<_>>();
+    let mut packed = vec![0.0f32; row_major.len()];
+    for kv_head in 0..n_kv_heads {
+        for sequence in 0..seq_len {
+            for local_head in 0..gqa_ratio {
+                let source_row = sequence * n_heads + kv_head * gqa_ratio + local_head;
+                let packed_row = (kv_head * seq_len + sequence) * gqa_ratio + local_head;
+                packed[packed_row * cols..(packed_row + 1) * cols]
+                    .copy_from_slice(&row_major[source_row * cols..(source_row + 1) * cols]);
+            }
+        }
+    }
+    let row_major_tensor =
+        upload_fp32_as_bf16(&ctx, &row_major, vec![rows, cols]).unwrap();
+    let packed_tensor = upload_fp32_as_bf16(&ctx, &packed, vec![rows, cols]).unwrap();
+    let kv_offset = (cols - seq_len) as u32;
+    let standard = softmax_causal_bf16_scaled_plain(
+        &ctx,
+        &row_major_tensor,
+        kv_offset,
+        n_heads as u32,
+        score_scale,
+    )
+    .unwrap();
+    let packed = softmax_causal_bf16_scaled_plain_gqa_packed(
+        &ctx,
+        &packed_tensor,
+        kv_offset,
+        n_heads as u32,
+        gqa_ratio as u32,
+        score_scale,
+    )
+    .unwrap();
+    let standard = download_bf16_as_fp32(&standard).unwrap();
+    let packed = download_bf16_as_fp32(&packed).unwrap();
+    let mut unpacked = vec![0.0f32; packed.len()];
+    for kv_head in 0..n_kv_heads {
+        for sequence in 0..seq_len {
+            for local_head in 0..gqa_ratio {
+                let destination_row = sequence * n_heads + kv_head * gqa_ratio + local_head;
+                let packed_row = (kv_head * seq_len + sequence) * gqa_ratio + local_head;
+                unpacked[destination_row * cols..(destination_row + 1) * cols]
+                    .copy_from_slice(&packed[packed_row * cols..(packed_row + 1) * cols]);
+            }
+        }
+    }
+    assert_eq!(unpacked, standard);
+}
+
+#[test]
 fn attention_softmax_global_exp_cache_decode_is_bit_exact_at_32k() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     let (n_heads, cols) = (2usize, 32_768usize);
@@ -661,6 +725,60 @@ fn gqa_batched_prefill_matches_scalar_bf16() {
     let scalar = download_bf16_as_fp32(&scalar).unwrap();
     let batched = download_bf16_as_fp32(&batched).unwrap();
     assert_bf16_close_reduction(&batched, &scalar);
+}
+
+#[test]
+fn gqa_flattened_long_prefill_matches_scalar_bf16() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, kv_len, n_heads, n_kv_heads, head_dim, max_seq_len) =
+        (3usize, 4_097usize, 4usize, 2usize, 16usize, 4_100usize);
+    let q_values = (0..seq_len * n_heads * head_dim)
+        .map(|index| ((index as f32 * 0.031) - 2.0).sin())
+        .collect::<Vec<_>>();
+    let k_values = (0..kv_len * n_kv_heads * head_dim)
+        .map(|index| ((index as f32 * 0.047) - 1.0).cos())
+        .collect::<Vec<_>>();
+    let v_values = (0..kv_len * n_kv_heads * head_dim)
+        .map(|index| ((index as f32 * 0.013) - 0.75).sin())
+        .collect::<Vec<_>>();
+    let q = upload_fp32_as_bf16(&ctx, &q_values, vec![seq_len, n_heads, head_dim]).unwrap();
+    let k = upload_fp32_as_bf16(&ctx, &k_values, vec![kv_len, n_kv_heads, head_dim]).unwrap();
+    let v = upload_fp32_as_bf16(&ctx, &v_values, vec![kv_len, n_kv_heads, head_dim]).unwrap();
+    let cache = CudaKVCache::new(ctx.device_id(), 1, n_kv_heads, head_dim, max_seq_len).unwrap();
+    cache.append(&ctx, 0, &k, &v, kv_len).unwrap();
+    let kv_offset = (kv_len - seq_len) as u32;
+    let scalar = sdpa_with_batched_prefill(
+        &ctx,
+        &q,
+        &cache,
+        0,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        kv_len,
+        max_seq_len,
+        kv_offset,
+        false,
+    )
+    .unwrap();
+    let flattened = sdpa_with_batched_prefill(
+        &ctx,
+        &q,
+        &cache,
+        0,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        kv_len,
+        max_seq_len,
+        kv_offset,
+        true,
+    )
+    .unwrap();
+    assert_bf16_close_reduction(
+        &download_bf16_as_fp32(&flattened).unwrap(),
+        &download_bf16_as_fp32(&scalar).unwrap(),
+    );
 }
 
 // ── KV cache append ───────────────────────────────────────────────

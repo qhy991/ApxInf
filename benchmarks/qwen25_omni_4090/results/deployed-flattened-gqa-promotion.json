@@ -1,0 +1,94 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "model": "Qwen/Qwen2.5-Omni-3B",
+  "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "base_revision": "1bd6888",
+  "base_binary_sha256": "5ad5c4985d2b1cafdccf6afe4f94b83c0cea0efd52cb3f360f122358378533bf",
+  "candidate_binary_sha256": "23ec923e386425e69a5455517e16f9ac4c5378aa1a78c5d9eeadb2a288aa8d5e",
+  "change": {
+    "classification": "source/runtime graph and data layout",
+    "selector": "existing APXINF_BATCHED_GQA_PREFILL=1",
+    "admission_scope": "BF16 multi-token prefill with kv_len > 4096",
+    "description": "pack query rows by KV head, flatten sequence and GQA rows for score/value GEMMs, use packed-row causal softmax, and restore the existing output layout",
+    "kv_cache_layout_changed": false,
+    "decode_path_changed": false
+  },
+  "correctness": {
+    "targeted_operator_job": "gpuq-489cdc7ca340",
+    "targeted_tests_passed": 4,
+    "full_operator_job": "gpuq-783ef6b874c5",
+    "full_operator_tests_passed": 45,
+    "full_operator_tests_failed": 0,
+    "text_trajectories_exact": true,
+    "real_png_exact": true,
+    "real_wav_exact": true,
+    "invalid_request_recovery_passed": true,
+    "candidate_reports": [
+      "candidate-flattened-gqa-quick.json",
+      "candidate-flattened-gqa-8k12k.json",
+      "candidate-flattened-gqa-11k32k.json",
+      "candidate-flattened-gqa-contract.json",
+      "candidate-flattened-gqa-multimodal.json"
+    ]
+  },
+  "no_profiler_p50": [
+    {
+      "prompt_tokens": 8192,
+      "output_tokens": 8,
+      "base_ttft_seconds": 1.886587902,
+      "candidate_ttft_seconds": 0.982398254,
+      "ttft_reduction_percent": 47.93,
+      "candidate_tpot_seconds": 0.014581267,
+      "repeats": 5
+    },
+    {
+      "prompt_tokens": 11264,
+      "output_tokens": 8,
+      "base_ttft_seconds": 3.540943649,
+      "candidate_ttft_seconds": 1.455286052,
+      "ttft_reduction_percent": 58.90,
+      "candidate_tpot_seconds": 0.016989842714285715,
+      "repeats": 3
+    },
+    {
+      "prompt_tokens": 12288,
+      "output_tokens": 8,
+      "base_ttft_seconds": 4.21126844,
+      "candidate_ttft_seconds": 1.633170097,
+      "ttft_reduction_percent": 61.22,
+      "candidate_tpot_seconds": 0.017573206,
+      "repeats": 5
+    },
+    {
+      "prompt_tokens": 32760,
+      "output_tokens": 8,
+      "base_ttft_seconds": 27.989495989,
+      "candidate_ttft_seconds": 6.658021284,
+      "ttft_reduction_percent": 76.21,
+      "candidate_tpot_seconds": 0.036214832428571424,
+      "repeats": 3
+    }
+  ],
+  "capacity": {
+    "prompt_tokens": 32760,
+    "output_tokens": 8,
+    "passed": true,
+    "trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9",
+    "peak_memory_mib": 14973,
+    "minimum_sampled_headroom_mib": 9591
+  },
+  "deployment": {
+    "formal_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf",
+    "rollback_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf.5ad5c4985d2b1cafdccf6afe4f94b83c0cea0efd52cb3f360f122358378533bf",
+    "formal_reports": [
+      "deployed-flattened-gqa-quick.json",
+      "deployed-flattened-gqa-context.json",
+      "deployed-flattened-gqa-contract.json"
+    ],
+    "formal_health_passed": true,
+    "service_stopped_when_unused": true,
+    "gpu_idle_after_validation": true
+  },
+  "decision": "promote"
+}

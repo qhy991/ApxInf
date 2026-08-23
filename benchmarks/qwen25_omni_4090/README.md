@@ -61,9 +61,9 @@ memory-controller utilization, clocks, and power. Context probing stops at the
 first failed case; service recovery is an operator action and must be recorded
 separately rather than hidden by the benchmark.
 
-The promoted text-only path uses 256-token causal chunks from 4,096 through
-6,144 prompt tokens, 512-token chunks for the other prompts through 12,288,
-and 1,024-token chunks above that measured crossover. It reaches the complete
+The promoted text-only path uses 512-token causal chunks below 4,096 prompt
+tokens, 256-token chunks from 4,096 through 12,288, and 1,024-token chunks
+above that measured crossover. It reaches the complete
 service contract at 32,760 prompt + 8 output tokens on the 24 GiB RTX 4090.
 Image and audio
 requests deliberately retain their processor-owned, unchunked path. Only the
@@ -93,6 +93,10 @@ packed QKV owner shared by both paths. `APXINF_QWEN25_FUSED_TMROPE_KV=1`
 publishes rotated K and unchanged V directly to their caches during graph
 decode. The prefill position-cache selector uploads one TMRoPE position array
 per text or multimodal prefill slice instead of once per Q/K layer call. The
+batched-GQA selector additionally packs BF16 prefill query rows by KV head
+above 4,096 cached tokens, flattens sequence and GQA rows into large score and
+value GEMMs, and restores the existing output layout without changing the KV
+cache. Short prefill and decode retain their accepted paths. The
 GPU last-row selector creates a view of the final hidden row before output
 normalization, avoiding a whole-slice D2H and row H2D round trip. The
 eager argmax selector applies the same exact two-stage GPU selection to

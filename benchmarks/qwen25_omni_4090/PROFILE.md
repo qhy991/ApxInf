@@ -2,7 +2,7 @@
 
 `BASELINE.md` owns the current accepted deployment summary. This file retains
 the causal profiles, rejected branches and promotion evidence for each stage;
-the current promotion record is **Promoted fused TMRoPE K/V publication**
+the current promotion record is **Promoted flattened long-prefill GQA**
 below.
 
 ## Contract
@@ -1432,6 +1432,72 @@ size 6,658,585 bytes, SHA-256
 **Decision: promote exact scale-softmax fusion for BF16 long prefill.** Raw
 evidence uses the `candidate-prefill-fused-scale-*` prefix; small profiler
 exports are checked in. Qwen3.8 and Omni remain down when unused.
+
+### Rejected dual-stream score overlap
+
+An optimistic ceiling probe placed two independent production-shape GQA score
+GEMMs on separate CUDA streams and handles. Across seven repeated trials, the
+median dual-stream improvement was 1.87% at 4K, 0.20% at 8K and 0.13% at
+12K. The long-context ceiling is smaller than the event, ownership and buffer
+lifetime costs required by a production path.
+
+**Decision: remove the temporary dual-stream probe and retain one inference
+stream.** Structured evidence is in
+`candidate-gqa-score-dual-stream-ceiling.json`.
+
+## Promoted flattened long-prefill GQA
+
+Primary classification: **source/runtime graph and data layout**. The former
+prefill path submitted a strided batch of 256 independent `m=8`, `k=128`
+score GEMMs for every KV head, even though every batch member shares the same
+K matrix. At 12K, `gemmSN_TN` accounted for 54.7% of summed GPU kernel time.
+The promoted path packs the query rows by KV head, flattens sequence and GQA
+rows into one GEMM, keeps score and softmax rows KV-head contiguous, performs
+the value GEMM in the same layout, then restores the model-owned output
+layout with bounded 2-D device copies. KV-cache ownership and layout do
+not change.
+
+The path is deliberately restricted to BF16 multi-token prefill with
+`kv_len > 4096` under the existing `APXINF_BATCHED_GQA_PREFILL=1` selector.
+Decode, F32, short prefill and the selector-off reference retain their prior
+implementations. Packed causal softmax derives each sequence position from
+the packed row index; a direct CUDA test proves its unpacked BF16 output is
+bit-exact to the standard row layout.
+
+The repeated hot-cache operator ceiling was stable:
+
+| KV length | Batched score | Flattened score | Speedup | Batched value | Flattened value | Speedup |
+|---:|---:|---:|---:|---:|---:|---:|
+| 4,096 | 0.1168 ms | 0.0213 ms | 5.49× | 0.1185 ms | 0.0217 ms | 5.46× |
+| 8,192 | 1.0723 ms | 0.0378 ms | 28.38× | 0.2339 ms | 0.0339 ms | 6.89× |
+| 12,288 | 1.6064 ms | 0.0537 ms | 29.92× | 0.3565 ms | 0.0472 ms | 7.55× |
+
+No-profiler endpoint measurements include the layout-copy cost:
+
+| Prompt / output | Fused-scale TTFT p50 | Flattened-GQA TTFT p50 | Change | Candidate repeats |
+|---|---:|---:|---:|---:|
+| 8,192 + 8 | 1.887 s | 0.982 s | 47.9% lower | 5 |
+| 11,264 + 8 | 3.541 s | 1.455 s | 58.9% lower | 3 |
+| 12,288 + 8 | 4.211 s | 1.633 s | 61.2% lower | 5 |
+| 32,760 + 8 | 27.989 s | 6.658 s | 76.2% lower | 3 |
+
+TTFT CV is 0.11% at 12K and 3.49% at 32K. Decode TPOT remains within the
+accepted path's variation: 17.57 ms at 12K and 36.21 ms at 32K. Every text
+case reproduces its previously accepted complete trajectory hash, including
+`f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9`
+at the exact 32,768-token contract. Peak sampled 32K
+memory remains 14,973 MiB with 9,591 MiB headroom. Typed invalid requests
+recover cleanly, and the real PNG and WAV cases reproduce their complete
+reference token sequences without fallback.
+
+The candidate binary SHA-256 is
+`23ec923e386425e69a5455517e16f9ac4c5378aa1a78c5d9eeadb2a288aa8d5e`.
+Raw evidence uses the `candidate-flattened-gqa-*` prefix; the operator ceiling
+is `candidate-gqa-flattened-gemm-ceiling.json`.
+
+**Decision: promote flattened GQA for exact BF16 long prefill.** It removes
+the dominant migrated bottleneck without a second KV representation, a new
+runtime selector or a decode-path change.
 
 ## Promoted short-KV CUDA Graph decode candidate
 
