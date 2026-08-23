@@ -1061,6 +1061,47 @@ Insufficient memory-level parallelism regressed 11K TPOT from 17.670 to
 eight-value variants establish four as the stable tested optimum. The raw
 record is `candidate-global-exp-cache-lane0-ilp2-context.json`.
 
+#### Promoted aligned pair-load reduction schedule
+
+The next candidate retains the accepted four-value scalar arithmetic but gives
+the compiler an explicit aligned access contract. On aligned rows it reads
+BF16 scores through two `__nv_bfloat162` views and FP32 numerators through two
+`float2` views, then applies `fmaxf` and addition in the original element
+order. Row alignment is checked once; unsupported alignment takes the prior
+four-value path, so shape coverage and failure semantics do not change.
+
+Candidate binary SHA-256 is
+`8c157d4193979246160e62ba1aa34f0cc6251d2d8b1c20930ed828e119281241`.
+The 32K operator remained byte-exact under Broker job
+`gpuq-dbdf0ed0791d`.
+
+| Prompt / output | Four-value TPOT p50 | Aligned candidate repeat p50 | Change |
+|---|---:|---:|---:|
+| 11,264 + 32 | 17.670 ms | 16.960 ms | 4.02% lower |
+| 12,288 + 32 | 18.420 ms | 17.642 ms | 4.22% lower |
+| 32,760 + 8 | 37.719 ms | 36.452 ms | 3.36% lower, one trial |
+
+Both five-trial candidate screens are trajectory exact and directionally
+consistent. The repeat TPOT CV is 0.081% at 11K and 0.152% at 12K. The 32K
+trajectory remains
+`f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9`,
+with the unchanged 16,061 MiB peak and 8,503 MiB headroom. The 1K, 128-token
+decode, typed interface and real PNG/WAV gates all pass; the media outputs
+match the frozen token references exactly.
+
+`cuobjdump` reports 32 registers, zero stack, zero local memory and 16 bytes of
+shared memory for both the accepted and candidate kernels. The embedded
+`sm_52` SASS scalarizes the BF16 pair view but uses a different aligned load and
+address schedule; it does not prove a native wide SM89 instruction. The fatbin
+audit also shows that current production artifacts contain `sm_52` cubins plus
+PTX and rely on driver JIT on the RTX 4090. Earlier uses of “SM89 binary” in
+this document mean “validated on SM89 hardware”, not “contains a native
+`sm_89` cubin”. An explicit `sm_89` build is the next separate candidate.
+
+**Decision: promote the aligned pair-load schedule.** Raw evidence uses the
+`candidate-global-exp-cache-aligned-vector-*` prefix. Qwen3.8 and Omni remain
+down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

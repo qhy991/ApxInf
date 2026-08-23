@@ -271,19 +271,35 @@ __global__ void attention_softmax_bf16_exp_global_cache_kernel(
     __shared__ float max_shared;
     if (lane == 0) {
         float max_val = -INFINITY;
+        const __nv_bfloat16* row_scores = scores + row * cols;
         uint32_t c = 0;
-        for (; c + 3 < valid_cols; c += 4) {
-            float value0 = __bfloat162float(scores[row * cols + c]);
-            float value1 = __bfloat162float(scores[row * cols + c + 1]);
-            float value2 = __bfloat162float(scores[row * cols + c + 2]);
-            float value3 = __bfloat162float(scores[row * cols + c + 3]);
-            max_val = fmaxf(max_val, value0);
-            max_val = fmaxf(max_val, value1);
-            max_val = fmaxf(max_val, value2);
-            max_val = fmaxf(max_val, value3);
+        if (reinterpret_cast<uintptr_t>(row_scores) % alignof(__nv_bfloat162) == 0) {
+            for (; c + 3 < valid_cols; c += 4) {
+                __nv_bfloat162 packed01 =
+                    reinterpret_cast<const __nv_bfloat162*>(row_scores + c)[0];
+                __nv_bfloat162 packed23 =
+                    reinterpret_cast<const __nv_bfloat162*>(row_scores + c)[1];
+                float2 values01 = __bfloat1622float2(packed01);
+                float2 values23 = __bfloat1622float2(packed23);
+                max_val = fmaxf(max_val, values01.x);
+                max_val = fmaxf(max_val, values01.y);
+                max_val = fmaxf(max_val, values23.x);
+                max_val = fmaxf(max_val, values23.y);
+            }
+        } else {
+            for (; c + 3 < valid_cols; c += 4) {
+                float value0 = __bfloat162float(row_scores[c]);
+                float value1 = __bfloat162float(row_scores[c + 1]);
+                float value2 = __bfloat162float(row_scores[c + 2]);
+                float value3 = __bfloat162float(row_scores[c + 3]);
+                max_val = fmaxf(max_val, value0);
+                max_val = fmaxf(max_val, value1);
+                max_val = fmaxf(max_val, value2);
+                max_val = fmaxf(max_val, value3);
+            }
         }
         for (; c < valid_cols; c++) {
-            max_val = fmaxf(max_val, __bfloat162float(scores[row * cols + c]));
+            max_val = fmaxf(max_val, __bfloat162float(row_scores[c]));
         }
         max_shared = max_val;
     }
@@ -296,19 +312,31 @@ __global__ void attention_softmax_bf16_exp_global_cache_kernel(
     __shared__ float sum_shared;
     if (lane == 0) {
         float sum_exp = 0.0f;
+        const float* row_numerators = numerators + row * cols;
         uint32_t c = 0;
-        for (; c + 3 < valid_cols; c += 4) {
-            float value0 = numerators[row * cols + c];
-            float value1 = numerators[row * cols + c + 1];
-            float value2 = numerators[row * cols + c + 2];
-            float value3 = numerators[row * cols + c + 3];
-            sum_exp += value0;
-            sum_exp += value1;
-            sum_exp += value2;
-            sum_exp += value3;
+        if (reinterpret_cast<uintptr_t>(row_numerators) % alignof(float2) == 0) {
+            for (; c + 3 < valid_cols; c += 4) {
+                float2 values01 = reinterpret_cast<const float2*>(row_numerators + c)[0];
+                float2 values23 = reinterpret_cast<const float2*>(row_numerators + c)[1];
+                sum_exp += values01.x;
+                sum_exp += values01.y;
+                sum_exp += values23.x;
+                sum_exp += values23.y;
+            }
+        } else {
+            for (; c + 3 < valid_cols; c += 4) {
+                float value0 = row_numerators[c];
+                float value1 = row_numerators[c + 1];
+                float value2 = row_numerators[c + 2];
+                float value3 = row_numerators[c + 3];
+                sum_exp += value0;
+                sum_exp += value1;
+                sum_exp += value2;
+                sum_exp += value3;
+            }
         }
         for (; c < valid_cols; c++) {
-            sum_exp += numerators[row * cols + c];
+            sum_exp += row_numerators[c];
         }
         sum_shared = sum_exp;
     }
