@@ -1873,6 +1873,65 @@ wins short single-request decode, while vLLM-Omni wins long prefill and the
 real image path. Long-prefill attention and the vision tower therefore outrank
 another sub-percent pointwise candidate.
 
+## Promoted indexed window vision attention
+
+Primary classification: **source/runtime graph**. The frozen PNG processor
+produces grid `[1,64,108]`, 6,912 raw patch tokens and 1,728 merged text
+placeholders. The vision encoder has 32 attention blocks: four full-attention
+blocks and 28 windowed blocks over at most 8×8 patches.
+
+The prior grouped kernel assigned one CTA to every query/head and checked the
+query/key group before the dot product, but its output phase still loaded and
+multiplied V for all 6,912 keys. The window contract therefore retained nearly
+full quadratic traffic. The promoted path builds ascending original key-index
+lists for every processor-owned group, uploads them once through a CUDA-backend
+cache keyed by the complete group vector, and visits only those keys.
+
+`APXINF_VISION_GROUPED_SPARSE=1` selects the path. Unset or `0` retains the
+full-scan grouped reference; invalid values and malformed plans fail closed.
+The plan deliberately stores original key indices rather than a reordered
+layout. The kernel preserves the old `key % 32` max/sum lane assignment, fixed
+warp-reduction tree, and increasing-key V accumulation. A direct interleaved
+group test at head dimension 80 is bit-exact, and the complete 50-test CUDA
+operator suite passes.
+
+Five no-profiler candidate requests after one smoke observation are stable and
+retain the exact 16-token PNG trajectory:
+
+| Real PNG, 1,760 + 16 | Prior accepted | Indexed windows | Change |
+|---|---:|---:|---:|
+| TTFT | 33.382 s | 6.733 s p50 | 79.83% lower / 4.96× |
+| Client wall | 39.555 s | 12.845 s p50 | 67.53% lower / 3.08× |
+| TPOT | 10.332 ms | 10.383 ms p50 | unchanged |
+
+Candidate TTFT CV is 0.096% and wall CV is 0.587%. Real WAV output, 1K+32,
+128+128, 12K+8, the full 32,760+8 boundary, typed request recovery and all
+complete text trajectories remain unchanged. The final formal PNG observation
+is 6.773 s TTFT and 12.864 s wall with exact tokens.
+
+The causal profiles are decisive. In the accepted baseline, 32 vision
+attention launches consume 32.933 s and 99.4% of GPU kernel time. With indexed
+windows, the 28 grouped launches consume 0.503 s total (17.746 ms median per
+launch), while the four unchanged full-attention launches consume 5.975 s.
+The matched full launches imply grouped attention falls from 26.958 s to
+0.503 s, a 98.13% reduction or 53.58×. Complete profiled GPU kernel time falls
+from 33.146 s to 6.692 s (79.81%). The reports remain at:
+
+- `/var/lib/agent-gpu-broker/profiles/omni-vision-png-1760-baseline-interactive.nsys-rep`,
+  SHA-256 `f64f18205128280cd0781fd439608721609a2a7daf5d990c550891ee6cf74c10`;
+- `/var/lib/agent-gpu-broker/profiles/omni-vision-grouped-sparse-1760-interactive.nsys-rep`,
+  SHA-256 `f74c0b929ffb40f540cb06a6fdad3e68cb194c6438cccfdcfe6d50f18ffcf954`.
+
+The deployed binary SHA-256 is
+`432ac73ef573f36fa47b8c2112abc7f1b5b561a79816ed60f57c16f0d06adb18`;
+`2296e9b3...1468374` is the immediate rollback artifact.
+
+**Decision: promote indexed window vision attention.** It removes masked K/V
+work without changing arithmetic order, produces a large repeated end-to-end
+gain, and passes all text, multimodal, capacity and recovery gates. The four
+full-attention vision blocks now own 89.3% of candidate GPU kernel time and are
+the next bounded vision target.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

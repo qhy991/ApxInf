@@ -636,6 +636,27 @@ extern "C" cudaError_t apxinf_grouped_sdpa_bf16(
     return cudaGetLastError();
 }
 
+extern "C" cudaError_t apxinf_grouped_indexed_sdpa_bf16(
+    const void* q, const void* k, const void* v, void* out,
+    uint32_t seq_len, uint32_t n_heads, uint32_t head_dim, float scale,
+    const void* group_ids, const void* group_offsets,
+    const void* group_indices, uint32_t group_count, void* stream)
+{
+    if (head_dim == 0 || head_dim > 128 || group_count == 0 ||
+        group_ids == nullptr || group_offsets == nullptr || group_indices == nullptr)
+        return cudaErrorInvalidConfiguration;
+    dim3 grid(seq_len, n_heads, 1);
+    dim3 block(32, 1, 1);
+    size_t smem = (seq_len + 1) * sizeof(float);
+    vision_grouped_indexed_sdpa_bf16_kernel<<<grid, block, smem, (cudaStream_t)stream>>>(
+        (const __nv_bfloat16*)q, (const __nv_bfloat16*)k,
+        (const __nv_bfloat16*)v, (__nv_bfloat16*)out,
+        seq_len, n_heads, head_dim, scale,
+        (const uint32_t*)group_ids, (const uint32_t*)group_offsets,
+        (const uint32_t*)group_indices, group_count);
+    return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_flash_attn_decode_bf16(
     const void* q, const void* k_cache, const void* v_cache, void* out,
     uint32_t n_heads, uint32_t n_kv_heads, uint32_t head_dim,

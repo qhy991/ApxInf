@@ -13,8 +13,8 @@ nearby but structurally different model.
 The result is not a single winner:
 
 - ApxInf is the stronger short-to-mid-context, single-request text decoder.
-- vLLM-Omni is substantially stronger in long-context prefill and the real
-  image path.
+- vLLM-Omni is substantially stronger in long-context prefill and remains
+  stronger on the real image path after ApxInf's indexed-window promotion.
 - Both reach the complete 32,760 prompt + 8 output contract after vLLM's KV
   reservation is aligned to the declared single-request workload.
 - Both understand the frozen real PNG and WAV. vLLM has much lower
@@ -58,17 +58,17 @@ All numbers are p50 over five measured requests after one warmup.
 
 | Workload | Metric | ApxInf | vLLM-Omni | Result |
 |---|---:|---:|---:|---|
-| 1,024 + 32 | TTFT | 66.02 ms | 68.30 ms | ApxInf 1.03× |
-| 1,024 + 32 | TPOT | 9.37 ms | 22.62 ms | ApxInf 2.41× |
+| 1,024 + 32 | TTFT | 65.85 ms | 68.30 ms | ApxInf 1.04× |
+| 1,024 + 32 | TPOT | 9.38 ms | 22.62 ms | ApxInf 2.41× |
 | 1,024 + 32 | wall | 0.358 s | 0.770 s | ApxInf 2.15× |
-| 128 + 128 | TTFT | 14.96 ms | 53.09 ms | ApxInf 3.55× |
+| 128 + 128 | TTFT | 14.87 ms | 53.09 ms | ApxInf 3.57× |
 | 128 + 128 | TPOT | 8.24 ms | 22.68 ms | ApxInf 2.75× |
 | 128 + 128 | wall | 1.063 s | 2.934 s | ApxInf 2.76× |
 
 The 128+128 algorithmic roofline makes the short-decode difference explicit.
 With NVIDIA's dense BF16 Tensor-Core convention of 165.2 TFLOP/s and 1,008
-GB/s memory bandwidth, ApxInf reaches a 74.39% minimum BWU lower bound versus
-27.02% for vLLM. Linear-only MFU is 0.454% versus 0.165%; both are low because
+GB/s memory bandwidth, ApxInf reaches a 74.33% minimum BWU lower bound versus
+27.02% for vLLM. Linear-only MFU is 0.453% versus 0.165%; both are low because
 batch-one decode is weight-bandwidth-bound. These are model-byte/FLOP lower
 bounds, not Nsight memory-transaction counters.
 
@@ -81,11 +81,11 @@ after one warmup.
 |---:|---:|---:|---:|---:|---:|---|
 | 8,192 | 0.816 s | 0.512 s | vLLM 1.59× | 10.58 ms | 19.11 ms | vLLM 1.38× |
 | 12,288 | 1.372 s | 0.830 s | vLLM 1.65× | 13.03 ms | 19.09 ms | vLLM 1.52× |
-| 32,760 | 5.719 s | 2.912 s | vLLM 1.96× | 24.37 ms | 17.58 ms | vLLM 1.94× |
+| 32,760 | 5.698 s | 2.912 s | vLLM 1.96× | 24.33 ms | 17.58 ms | vLLM 1.94× |
 
 vLLM's tiled FlashAttention path wins prefill increasingly with context. ApxInf
 keeps the faster decoder through 12K, but its long-KV decode crosses over by
-32K. The minimum-BWU lower bound at 32K is 30.04% for ApxInf and 41.65% for
+32K. The minimum-BWU lower bound at 32K is 30.10% for ApxInf and 41.65% for
 vLLM.
 
 Both engines pass 32,760 + 8. vLLM's throughput-oriented automatic policy
@@ -100,13 +100,15 @@ for ApxInf at 32K.
 
 | Input | Result | ApxInf | vLLM-Omni | Interpretation |
 |---|---|---:|---:|---|
-| PNG, 1,760 + 16 | both read `TinyLlama-1.1B Decode Throughput vs Position` | TTFT 33.382 s; wall 39.555 s | TTFT 0.232 s; wall 0.565 s | vLLM wall 70.0× lower |
-| WAV, 52 + 16 | both identify a sine wave | model TTFT 23.09 ms; TPOT 8.15 ms; wall 6.222 s | client TTFT 290.40 ms; TPOT 21.89 ms; wall 0.619 s | ApxInf decode is faster, but vLLM wall is 10.1× lower |
+| PNG, 1,760 + 16 | both read `TinyLlama-1.1B Decode Throughput vs Position` | TTFT 6.773 s; wall 12.864 s | TTFT 0.232 s; wall 0.565 s | vLLM wall 22.8× lower |
+| WAV, 52 + 16 | both identify a sine wave | model TTFT 22.91 ms; TPOT 8.17 ms; wall 5.966 s | client TTFT 290.40 ms; TPOT 21.89 ms; wall 0.619 s | ApxInf decode is faster, but vLLM wall is 9.64× lower |
 
-The PNG result identifies ApxInf's vision tower as a first-order bottleneck,
-not a small kernel-tail issue. The WAV split identifies a different boundary:
-ApxInf's model execution is fast, but per-request external processing dominates
-service wall time. vLLM keeps processing in its resident service.
+Indexed group plans reduce ApxInf PNG TTFT by 4.96× and wall time by 3.08×
+relative to its original external-baseline measurement. The four remaining
+full-attention vision blocks still consume 5.975 seconds and keep vLLM ahead.
+The WAV split identifies a different boundary: ApxInf's model execution is
+fast, but per-request external processing dominates service wall time. vLLM
+keeps processing in its resident service.
 
 ## vLLM deployment and observed defects
 
@@ -194,12 +196,12 @@ python3 benchmarks/qwen25_omni_4090/benchmark_vllm_omni_multimodal.py \
 
 The next high-leverage work is not another sub-percent pointwise kernel:
 
-1. Replace the remaining long-prefill attention algorithm with a tiled,
+1. Replace the four remaining full-attention vision launches with a tiled,
    FlashAttention-class path while preserving the complete trajectory gate.
-2. Optimize or replace the current vision-tower execution path; the real PNG
-   gap is two orders of magnitude in TTFT.
-3. Move image/audio processing into the resident service and remove
+2. Move image/audio processing into the resident service and remove
    per-request Python startup, especially for audio.
+3. Replace the remaining long-prefill text attention algorithm with a tiled,
+   FlashAttention-class path while preserving the complete trajectory gate.
 
 Only after these boundaries move should smaller decode-kernel fusions again
 become the primary optimization target.

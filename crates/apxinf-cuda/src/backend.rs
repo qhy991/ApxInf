@@ -27,6 +27,7 @@ impl Graph for CudaGraph {
 /// extension methods via `CudaBackend` directly.
 pub struct CudaBackend {
     tmrope_positions: Mutex<Option<TmropePositionCache>>,
+    vision_groups: Mutex<Option<VisionGroupCache>>,
     ctx: CudaContext,
 }
 
@@ -34,6 +35,17 @@ struct TmropePositionCache {
     values: Vec<u32>,
     _source_bytes: Vec<u8>,
     buffer: CudaBuffer,
+}
+
+struct VisionGroupCache {
+    values: Vec<u32>,
+    _group_source_bytes: Vec<u8>,
+    _offset_source_bytes: Vec<u8>,
+    _index_source_bytes: Vec<u8>,
+    groups: CudaBuffer,
+    offsets: CudaBuffer,
+    indices: CudaBuffer,
+    group_count: usize,
 }
 
 fn tmrope_position_cache_enabled() -> Result<bool> {
@@ -74,6 +86,83 @@ fn tmrope_prefill_position_cache_enabled() -> Result<bool> {
         .map_err(Error::Other)
 }
 
+fn vision_grouped_sparse_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| match std::env::var("APXINF_VISION_GROUPED_SPARSE") {
+            Err(std::env::VarError::NotPresent) => Ok(false),
+            Ok(value) if value == "0" => Ok(false),
+            Ok(value) if value == "1" => Ok(true),
+            Ok(value) => Err(format!(
+                "APXINF_VISION_GROUPED_SPARSE must be 0 or 1, got `{value}`"
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("APXINF_VISION_GROUPED_SPARSE must be UTF-8".into())
+            }
+        })
+        .clone()
+        .map_err(Error::Other)
+}
+
+pub(crate) fn vision_group_plan(group_ids: &[u32]) -> Result<(Vec<u32>, Vec<u32>)> {
+    if group_ids.is_empty() {
+        return Err(Error::Other("vision group plan is empty".into()));
+    }
+    let max_group = *group_ids
+        .iter()
+        .max()
+        .ok_or_else(|| Error::Other("vision group plan is empty".into()))?;
+    let group_count = usize::try_from(max_group)
+        .ok()
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| Error::Other("vision group count overflow".into()))?;
+    if group_count > group_ids.len() {
+        return Err(Error::Other(format!(
+            "vision group count {group_count} exceeds sequence {}",
+            group_ids.len()
+        )));
+    }
+    let mut counts = vec![0usize; group_count];
+    for &group in group_ids {
+        let group = group as usize;
+        counts[group] = counts[group]
+            .checked_add(1)
+            .ok_or_else(|| Error::Other("vision group size overflow".into()))?;
+    }
+    let mut offsets = Vec::with_capacity(group_count + 1);
+    offsets.push(0u32);
+    let mut total = 0usize;
+    for count in counts {
+        total = total
+            .checked_add(count)
+            .ok_or_else(|| Error::Other("vision group offset overflow".into()))?;
+        offsets.push(
+            u32::try_from(total)
+                .map_err(|_| Error::Other("vision group offset exceeds u32".into()))?,
+        );
+    }
+    let mut cursors = offsets[..group_count]
+        .iter()
+        .map(|value| *value as usize)
+        .collect::<Vec<_>>();
+    let mut indices = vec![0u32; group_ids.len()];
+    for (index, &group) in group_ids.iter().enumerate() {
+        let group = group as usize;
+        let cursor = cursors[group];
+        indices[cursor] = u32::try_from(index)
+            .map_err(|_| Error::Other("vision key index exceeds u32".into()))?;
+        cursors[group] += 1;
+    }
+    Ok((offsets, indices))
+}
+
+fn u32_bytes(values: &[u32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| value.to_ne_bytes())
+        .collect()
+}
+
 impl CudaBackend {
     /// Create a CUDA backend for the given device.
     pub fn new(device_id: usize) -> Result<Self> {
@@ -89,6 +178,7 @@ impl CudaBackend {
         );
         Ok(Self {
             tmrope_positions: Mutex::new(None),
+            vision_groups: Mutex::new(None),
             ctx,
         })
     }
@@ -319,10 +409,80 @@ impl Backend for CudaBackend {
                 group_ids.len()
             )));
         }
-        let bytes = group_ids.iter().flat_map(|value| value.to_ne_bytes()).collect::<Vec<_>>();
-        let ids = CudaBuffer::alloc(bytes.len(), self.ctx.device_id()).map_err(Error::Cuda)?;
-        ids.copy_from_host(&bytes).map_err(Error::Cuda)?;
-        kernels::attention::grouped(&self.ctx, q, k, v, seq_len, n_heads, head_dim, &ids)
+        if !vision_grouped_sparse_enabled()? {
+            let bytes = u32_bytes(group_ids);
+            let ids = CudaBuffer::alloc(bytes.len(), self.ctx.device_id()).map_err(Error::Cuda)?;
+            ids.copy_from_host(&bytes).map_err(Error::Cuda)?;
+            return kernels::attention::grouped(
+                &self.ctx, q, k, v, seq_len, n_heads, head_dim, &ids,
+            );
+        }
+
+        let mut cache = self
+            .vision_groups
+            .lock()
+            .map_err(|_| Error::Other("vision group cache lock poisoned".into()))?;
+        if cache
+            .as_ref()
+            .is_none_or(|cached| cached.values.as_slice() != group_ids)
+        {
+            let (offset_values, index_values) = vision_group_plan(group_ids)?;
+            let group_count = offset_values.len() - 1;
+            let group_bytes = u32_bytes(group_ids);
+            let offset_bytes = u32_bytes(&offset_values);
+            let index_bytes = u32_bytes(&index_values);
+            let groups = CudaBuffer::alloc_stream_ordered(
+                group_bytes.len(),
+                self.ctx.device_id(),
+                self.ctx.stream(),
+            )
+            .map_err(Error::Cuda)?;
+            let offsets = CudaBuffer::alloc_stream_ordered(
+                offset_bytes.len(),
+                self.ctx.device_id(),
+                self.ctx.stream(),
+            )
+            .map_err(Error::Cuda)?;
+            let indices = CudaBuffer::alloc_stream_ordered(
+                index_bytes.len(),
+                self.ctx.device_id(),
+                self.ctx.stream(),
+            )
+            .map_err(Error::Cuda)?;
+            groups
+                .copy_from_host_async(&group_bytes, self.ctx.stream())
+                .map_err(Error::Cuda)?;
+            offsets
+                .copy_from_host_async(&offset_bytes, self.ctx.stream())
+                .map_err(Error::Cuda)?;
+            indices
+                .copy_from_host_async(&index_bytes, self.ctx.stream())
+                .map_err(Error::Cuda)?;
+            *cache = Some(VisionGroupCache {
+                values: group_ids.to_vec(),
+                _group_source_bytes: group_bytes,
+                _offset_source_bytes: offset_bytes,
+                _index_source_bytes: index_bytes,
+                groups,
+                offsets,
+                indices,
+                group_count,
+            });
+        }
+        let cached = cache.as_ref().expect("vision group cache populated");
+        kernels::attention::grouped_indexed(
+            &self.ctx,
+            q,
+            k,
+            v,
+            seq_len,
+            n_heads,
+            head_dim,
+            &cached.groups,
+            &cached.offsets,
+            &cached.indices,
+            cached.group_count,
+        )
     }
 
     fn im2col1d(

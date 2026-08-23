@@ -1236,6 +1236,22 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_grouped_indexed_sdpa_bf16(
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        out: *mut c_void,
+        seq_len: u32,
+        n_heads: u32,
+        head_dim: u32,
+        scale: f32,
+        group_ids: *const c_void,
+        group_offsets: *const c_void,
+        group_indices: *const c_void,
+        group_count: u32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_im2col1d_bf16(
         input: *const c_void,
         output: *mut c_void,

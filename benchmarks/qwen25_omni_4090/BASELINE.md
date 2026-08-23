@@ -6,9 +6,9 @@
   `Qwen/Qwen2.5-Omni-3B@f75b40e3da2003cdd6e1829b1f420ca70797c34e`
 - GPU: NVIDIA GeForce RTX 4090, 24,564 MiB, single request, BF16
 - Deployed binary SHA-256:
-  `2296e9b3010d8174902f7ec6b2ffb22f7a046121bb4beb21f364d67eb1468374`
+  `432ac73ef573f36fa47b8c2112abc7f1b5b561a79816ed60f57c16f0d06adb18`
 - Immediate rollback SHA-256:
-  `8feb945de67c7f5566dd5843cddbda559090424e0dfae073c403971af3435ae0`
+  `2296e9b3010d8174902f7ec6b2ffb22f7a046121bb4beb21f364d67eb1468374`
 - Deployment owner: runit launches the checked-in Broker service definition;
   the service is stopped when unused so other queued work can own the GPU.
 
@@ -28,6 +28,9 @@ maximum while preserving its existing ordered global-cache sum.
 Separate Gate SiLU and elementwise multiply launches are replaced by one
 backend primitive that deliberately rounds the SiLU intermediate to BF16
 before multiplication, preserving the removed tensor bit for bit.
+Windowed vision attention caches an ascending group-to-key plan and skips
+masked K/V rows while preserving every original key index, max/sum lane and
+accumulation order. The four full-attention vision blocks remain unchanged.
 For BF16 multi-token attention above 4,096 cached tokens, sequence and GQA
 rows sharing one K/V head are packed into large score and value GEMMs. The
 existing KV-cache representation is unchanged, and the output is restored to
@@ -40,12 +43,18 @@ the model-owned row layout before its next consumer.
 | 12,288 + 8 | 10 paired | 1.374 s | 1.386 s | 0.9% lower | 13.063 ms |
 | 32,760 + 8 | 3 | 5.719 s | 5.759 s | 0.7% lower | 24.370 ms |
 
+The real PNG gate improves independently of text execution:
+
+| Workload | Prior TTFT | Current TTFT p50 | Change | Prior wall | Current wall p50 |
+|---|---:|---:|---:|---:|---:|
+| PNG, 1,760 + 16 | 33.382 s | 6.733 s | 79.8% lower | 39.555 s | 12.845 s |
+
 All repeated text cases preserve their accepted complete trajectory hashes.
 The exact 32,768-token contract passes with 9,591 MiB minimum sampled memory
-headroom. The 48-test CUDA operator regression, typed invalid-request recovery,
+headroom. The 50-test CUDA operator regression, typed invalid-request recovery,
 and real PNG/WAV exact-token gates pass. See `PROFILE.md` and the
-`candidate-fused-silu-mul-*` and `deployed-fused-silu-mul-*` records for the
-latest promotion evidence.
+`candidate-vision-grouped-sparse-*` and
+`deployed-vision-grouped-sparse-*` records for the latest promotion evidence.
 
 ## Original frozen deployment
 

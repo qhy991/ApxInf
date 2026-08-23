@@ -53,6 +53,10 @@ def reference_tokens(path: Path) -> tuple[str | None, dict[str, list[int]]]:
     report = json.loads(path.read_text(encoding="utf-8"))
     tokens: dict[str, list[int]] = {}
     for case in report.get("cases", []):
+        direct = case.get("output_tokens")
+        if isinstance(direct, list):
+            tokens[case["case_id"]] = direct
+            continue
         owner = case.get("candidate") or case.get("deployed") or case.get("baseline")
         if isinstance(owner, dict) and isinstance(owner.get("output_tokens"), list):
             tokens[case["case_id"]] = owner["output_tokens"]

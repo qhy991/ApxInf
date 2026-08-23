@@ -98,7 +98,10 @@ packed QKV owner shared by both paths. `APXINF_QWEN25_FUSED_TMROPE_KV=1`
 publishes rotated K and unchanged V directly to their caches during graph
 decode. `APXINF_QWEN25_FUSED_SILU_MUL=1` replaces separate Gate SiLU and
 multiply launches with a complete-write backend primitive while retaining the
-old BF16 intermediate rounding exactly. The prefill position-cache selector
+old BF16 intermediate rounding exactly. `APXINF_VISION_GROUPED_SPARSE=1`
+caches the processor-owned window group plan and lets the 28 grouped vision
+blocks visit only ascending in-window key indices; unset or `0` retains the
+full-scan reference, and malformed plans fail closed. The prefill position-cache selector
 uploads one TMRoPE position array
 per text or multimodal prefill slice instead of once per Q/K layer call. The
 batched-GQA selector additionally packs BF16 prefill query rows by KV head

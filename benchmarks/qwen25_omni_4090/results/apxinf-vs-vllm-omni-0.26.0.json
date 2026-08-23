@@ -18,10 +18,11 @@
     "vllm_kv_cache_memory_bytes": 2147483648
   },
   "sources": {
-    "apxinf_quick": "deployed-fused-silu-mul-quick.json",
-    "apxinf_decode": "candidate-fused-silu-mul-decode.json",
+    "apxinf_quick": "deployed-vision-grouped-sparse-quick.json",
+    "apxinf_decode": "deployed-vision-grouped-sparse-decode.json",
     "apxinf_context": "deployed-fused-silu-mul-context.json",
-    "apxinf_multimodal": "deployed-fused-silu-mul-multimodal.json",
+    "apxinf_context_32k": "deployed-vision-grouped-sparse-32k.json",
+    "apxinf_multimodal": "deployed-vision-grouped-sparse-multimodal.json",
     "vllm_quick": "vllm-omni-0.26.0-kv2g-quick.json",
     "vllm_decode": "vllm-omni-0.26.0-kv2g-decode.json",
     "vllm_context": "vllm-omni-0.26.0-kv2g-context.json",
@@ -32,9 +33,9 @@
     {
       "workload": "1024+32",
       "apxinf": {
-        "ttft_ms": 66.021112,
-        "tpot_ms": 9.368011258064517,
-        "wall_ms": 358.0039292573929
+        "ttft_ms": 65.851358,
+        "tpot_ms": 9.377445548387096,
+        "wall_ms": 358.2420349121094
       },
       "vllm_omni": {
         "ttft_ms": 68.29691678285599,
@@ -47,17 +48,17 @@
         "wall": "ApxInf"
       },
       "speedup": {
-        "apxinf_ttft": 1.0345,
-        "apxinf_tpot": 2.4142,
-        "apxinf_wall": 2.1515
+        "apxinf_ttft": 1.0371,
+        "apxinf_tpot": 2.4118,
+        "apxinf_wall": 2.15
       }
     },
     {
       "workload": "128+128",
       "apxinf": {
-        "ttft_ms": 14.959637,
-        "tpot_ms": 8.236856952755906,
-        "wall_ms": 1062.7122223377228
+        "ttft_ms": 14.868963,
+        "tpot_ms": 8.243917496062991,
+        "wall_ms": 1063.46033513546
       },
       "vllm_omni": {
         "ttft_ms": 53.09433490037918,
@@ -70,9 +71,9 @@
         "wall": "ApxInf"
       },
       "speedup": {
-        "apxinf_ttft": 3.5492,
-        "apxinf_tpot": 2.7536,
-        "apxinf_wall": 2.7606
+        "apxinf_ttft": 3.5708,
+        "apxinf_tpot": 2.7512,
+        "apxinf_wall": 2.7587
       }
     }
   ],
@@ -116,9 +117,9 @@
     {
       "workload": "32760+8",
       "apxinf": {
-        "ttft_ms": 5719.399391,
-        "tpot_ms": 24.369777428571427,
-        "wall_ms": 5896.201439201832
+        "ttft_ms": 5698.187968999999,
+        "tpot_ms": 24.325546142857143,
+        "wall_ms": 5875.952802598476
       },
       "vllm_omni": {
         "ttft_ms": 2912.2343733906746,
@@ -126,9 +127,9 @@
         "wall_ms": 3035.371094942093
       },
       "speedup": {
-        "vllm_ttft": 1.9639,
-        "vllm_tpot": 1.3865,
-        "vllm_wall": 1.9425
+        "vllm_ttft": 1.9566,
+        "vllm_tpot": 1.384,
+        "vllm_wall": 1.9358
       }
     }
   ],
@@ -137,9 +138,9 @@
       "workload": "real_png_1760+16",
       "semantic_result": "both read the visible chart title",
       "apxinf": {
-        "ttft_ms": 33382.141159,
-        "tpot_ms": 10.331534333333333,
-        "wall_ms": 39555.12563884258
+        "ttft_ms": 6773.0690860000005,
+        "tpot_ms": 10.335938733333334,
+        "wall_ms": 12863.979816436768
       },
       "vllm_omni": {
         "ttft_ms": 231.9645881652832,
@@ -147,18 +148,18 @@
         "wall_ms": 564.7583678364754
       },
       "speedup": {
-        "vllm_ttft": 143.9105,
-        "apxinf_tpot": 2.1214,
-        "vllm_wall": 70.039
+        "vllm_ttft": 29.1987,
+        "apxinf_tpot": 2.1205,
+        "vllm_wall": 22.7778
       }
     },
     {
       "workload": "real_wav_52+16",
       "semantic_result": "both identify a sine wave",
       "apxinf": {
-        "model_ttft_ms": 23.09439,
-        "model_tpot_ms": 8.1498545,
-        "service_wall_ms": 6222.290672361851
+        "model_ttft_ms": 22.905653,
+        "model_tpot_ms": 8.16901025,
+        "service_wall_ms": 5966.033659875393
       },
       "vllm_omni": {
         "client_ttft_ms": 290.40009528398514,
@@ -166,9 +167,9 @@
         "service_wall_ms": 618.9755797386169
       },
       "speedup": {
-        "apxinf_model_ttft": 12.5745,
-        "apxinf_model_tpot": 2.6863,
-        "vllm_service_wall": 10.0526
+        "apxinf_model_ttft": 12.6781,
+        "apxinf_model_tpot": 2.68,
+        "vllm_service_wall": 9.6386
       }
     }
   ],
@@ -189,9 +190,9 @@
     },
     "decode_128+128": {
       "apxinf": {
-        "linear_only_mfu_percent": 0.4535,
-        "minimum_bwu_percent": 74.3922,
-        "effective_minimum_bandwidth_gbps": 749.8734
+        "linear_only_mfu_percent": 0.4531,
+        "minimum_bwu_percent": 74.3285,
+        "effective_minimum_bandwidth_gbps": 749.2312
       },
       "vllm_omni": {
         "linear_only_mfu_percent": 0.1647,
@@ -200,7 +201,7 @@
       }
     },
     "decode_32760+8": {
-      "apxinf_minimum_bwu_percent": 30.0412,
+      "apxinf_minimum_bwu_percent": 30.0958,
       "vllm_omni_minimum_bwu_percent": 41.6521
     },
     "limitations": [
@@ -213,9 +214,9 @@
     "apxinf_strength": "short-to-mid-context single-request text decode",
     "vllm_omni_strength": "long-context prefill and multimodal encoders/preprocessing",
     "next_apxinf_priorities": [
-      "replace the remaining long-prefill attention path with a tiled FlashAttention-class algorithm",
-      "optimize or replace the current vision tower execution path",
-      "move image/audio preprocessing in-process and remove per-request Python startup"
+      "replace the four remaining full-attention vision launches with a tiled FlashAttention-class algorithm",
+      "move image/audio preprocessing in-process and remove per-request Python startup",
+      "replace the remaining long-prefill text attention path with a tiled FlashAttention-class algorithm"
     ]
   }
 }

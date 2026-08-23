@@ -1101,6 +1101,80 @@ pub fn grouped(
     ))
 }
 
+/// Grouped BF16 vision attention over ascending original key-index lists.
+/// The plan buffers are immutable request metadata cached by the CUDA backend.
+pub fn grouped_indexed(
+    ctx: &CudaContext,
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    seq_len: usize,
+    n_heads: usize,
+    head_dim: usize,
+    group_ids: &CudaBuffer,
+    group_offsets: &CudaBuffer,
+    group_indices: &CudaBuffer,
+    group_count: usize,
+) -> Result<Tensor> {
+    if q.dtype() != DType::BF16 || k.dtype() != DType::BF16 || v.dtype() != DType::BF16 {
+        return Err(Error::Other(
+            "indexed grouped_sdpa: only BF16 supported".into(),
+        ));
+    }
+    if head_dim == 0
+        || head_dim > 128
+        || group_count == 0
+        || group_ids.len() != seq_len * std::mem::size_of::<u32>()
+        || group_offsets.len() != (group_count + 1) * std::mem::size_of::<u32>()
+        || group_indices.len() != seq_len * std::mem::size_of::<u32>()
+    {
+        return Err(Error::Other(
+            "indexed grouped_sdpa: invalid shape or group plan".into(),
+        ));
+    }
+    let seq_len = u32::try_from(seq_len)
+        .map_err(|_| Error::Other("indexed grouped_sdpa sequence exceeds u32".into()))?;
+    let n_heads = u32::try_from(n_heads)
+        .map_err(|_| Error::Other("indexed grouped_sdpa heads exceed u32".into()))?;
+    let head_dim = u32::try_from(head_dim)
+        .map_err(|_| Error::Other("indexed grouped_sdpa head dimension exceeds u32".into()))?;
+    let group_count = u32::try_from(group_count)
+        .map_err(|_| Error::Other("indexed grouped_sdpa group count exceeds u32".into()))?;
+    let out_bytes = seq_len as usize
+        * n_heads as usize
+        * head_dim as usize
+        * DType::BF16.size_in_bytes();
+    let out_buf = output_buffer(ctx, out_bytes)?;
+    let scale = 1.0 / (head_dim as f32).sqrt();
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_grouped_indexed_sdpa_bf16(
+            gpu_ptr(q)?,
+            gpu_ptr(k)?,
+            gpu_ptr(v)?,
+            out_buf.ptr(),
+            seq_len,
+            n_heads,
+            head_dim,
+            scale,
+            group_ids.ptr(),
+            group_offsets.ptr(),
+            group_indices.ptr(),
+            group_count,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+    Ok(make_gpu_tensor(
+        Shape::new(vec![
+            seq_len as usize,
+            n_heads as usize * head_dim as usize,
+        ]),
+        DType::BF16,
+        ctx.device_id(),
+        out_buf,
+    ))
+}
+
 /// Causal attention mask on CUDA. Dispatches on dtype.
 pub fn causal_mask(ctx: &CudaContext, input: &Tensor, kv_offset: u32) -> Result<Tensor> {
     let device_id = ctx.device_id();

@@ -573,6 +573,115 @@ __global__ void vision_sdpa_bf16_kernel(
 }
 
 
+// Windowed vision attention over an indexed group plan. `group_offsets` and
+// `group_indices` describe stable, ascending original key indices per group.
+// Keeping each key's original index preserves the scalar key order, the
+// original lane assignment (`key % 32`) for max/sum, and therefore the BF16
+// result of the full-scan grouped kernel while avoiding all out-of-window K/V
+// reads and zero-value accumulations.
+__global__ void vision_grouped_indexed_sdpa_bf16_kernel(
+    const __nv_bfloat16* q, const __nv_bfloat16* k, const __nv_bfloat16* v,
+    __nv_bfloat16* out,
+    uint32_t seq_len, uint32_t n_heads, uint32_t head_dim, float scale,
+    const uint32_t* group_ids, const uint32_t* group_offsets,
+    const uint32_t* group_indices, uint32_t group_count)
+{
+    uint32_t head = blockIdx.y;
+    uint32_t qi = blockIdx.x;
+    if (qi >= seq_len) return;
+    int tid = threadIdx.x;
+    constexpr int kMaxElementsPerThread = 4;
+    int dimensions[kMaxElementsPerThread];
+    float query_values[kMaxElementsPerThread];
+    int dimension_count = 0;
+
+    uint32_t group = group_ids[qi];
+    if (group >= group_count) return;
+    uint32_t group_start = group_offsets[group];
+    uint32_t group_end = group_offsets[group + 1];
+    if (group_start >= group_end || group_end > seq_len) return;
+
+    extern __shared__ float smem[];
+    float* scores = smem;
+    const __nv_bfloat16* q_row =
+        q + qi * n_heads * head_dim + head * head_dim;
+    for (uint32_t dimension = tid; dimension < head_dim; dimension += 32u) {
+        dimensions[dimension_count] = static_cast<int>(dimension);
+        query_values[dimension_count] = __bfloat162float(q_row[dimension]);
+        dimension_count++;
+    }
+
+    // Scores are written at original key indices. All lanes participate in
+    // every dot-product reduction exactly as in the full-scan kernel.
+    for (uint32_t position = group_start; position < group_end; position++) {
+        uint32_t ki = group_indices[position];
+        const __nv_bfloat16* k_row =
+            k + ki * n_heads * head_dim + head * head_dim;
+        float dot = 0.0f;
+        for (int slot = 0; slot < dimension_count; slot++) {
+            dot += query_values[slot] *
+                __bfloat162float(k_row[dimensions[slot]]);
+        }
+        for (int off = 16; off > 0; off >>= 1)
+            dot += __shfl_xor_sync(0xffffffff, dot, off);
+        if (tid == 0) scores[ki] = dot * scale;
+    }
+    __syncthreads();
+
+    // Preserve the old per-lane key partition. Omitted keys were -INFINITY
+    // in max and exact zero in sum, so skipping them does not change either
+    // lane accumulator or the fixed warp reduction tree.
+    float max_val = -INFINITY;
+    for (uint32_t position = group_start; position < group_end; position++) {
+        uint32_t ki = group_indices[position];
+        if ((ki & 31u) == static_cast<uint32_t>(tid))
+            max_val = fmaxf(max_val, scores[ki]);
+    }
+    for (int off = 16; off > 0; off >>= 1)
+        max_val = fmaxf(max_val, __shfl_xor_sync(0xffffffff, max_val, off));
+    if (tid == 0) scores[seq_len] = max_val;
+    __syncthreads();
+    max_val = scores[seq_len];
+
+    float sum = 0.0f;
+    for (uint32_t position = group_start; position < group_end; position++) {
+        uint32_t ki = group_indices[position];
+        if ((ki & 31u) == static_cast<uint32_t>(tid)) {
+            float e = expf(scores[ki] - max_val);
+            scores[ki] = e;
+            sum += e;
+        }
+    }
+    for (int off = 16; off > 0; off >>= 1)
+        sum += __shfl_xor_sync(0xffffffff, sum, off);
+    if (tid == 0) scores[seq_len] = sum;
+    __syncthreads();
+    float inv_sum = 1.0f / scores[seq_len];
+    for (uint32_t position = group_start; position < group_end; position++) {
+        uint32_t ki = group_indices[position];
+        if ((ki & 31u) == static_cast<uint32_t>(tid)) scores[ki] *= inv_sum;
+    }
+    __syncthreads();
+
+    float accumulators[kMaxElementsPerThread] = {0.0f, 0.0f, 0.0f, 0.0f};
+    for (uint32_t position = group_start; position < group_end; position++) {
+        uint32_t ki = group_indices[position];
+        float probability = scores[ki];
+        const __nv_bfloat16* v_row =
+            v + ki * n_heads * head_dim + head * head_dim;
+        for (int slot = 0; slot < dimension_count; slot++) {
+            accumulators[slot] += probability *
+                __bfloat162float(v_row[dimensions[slot]]);
+        }
+    }
+    __nv_bfloat16* out_row =
+        out + qi * n_heads * head_dim + head * head_dim;
+    for (int slot = 0; slot < dimension_count; slot++) {
+        out_row[dimensions[slot]] = __float2bfloat16(accumulators[slot]);
+    }
+}
+
+
 
 // ── Flash Attention decode (bf16) — single-kernel online-softmax ────────
 //
