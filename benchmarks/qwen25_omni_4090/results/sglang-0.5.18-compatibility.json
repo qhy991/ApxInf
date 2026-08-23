@@ -1,0 +1,86 @@
+{
+  "schema": "apxinf.qwen25_omni.external_engine_compatibility.v1",
+  "completed_at": "2026-08-24T03:30:00+08:00",
+  "engine": "SGLang",
+  "engine_version": "0.5.18",
+  "source_revision": "71de97b264b04dcd514cf904003028aefe9775c8",
+  "model": "Qwen/Qwen2.5-Omni-3B",
+  "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+  "contract": {
+    "hardware": "one NVIDIA GeForce RTX 4090",
+    "precision": "BF16",
+    "model_impl": "transformers",
+    "multimodal": true,
+    "talker": "excluded by the comparison objective",
+    "context_length": 32768,
+    "max_running_requests": 1,
+    "max_total_tokens": 32768,
+    "prefix_cache": false,
+    "cuda_graph": false,
+    "api": "/v1/chat/completions"
+  },
+  "checkpoint": {
+    "architectures": [
+      "Qwen2_5OmniModel"
+    ],
+    "model_type": "qwen2_5_omni",
+    "standalone_thinker_subdirectory": false
+  },
+  "attempts": [
+    {
+      "engine_version": "0.5.17",
+      "stage": "Python packaging preflight",
+      "result": "failed",
+      "error": "ModuleNotFoundError: No module named distutils",
+      "resolution": "SETUPTOOLS_USE_DISTUTILS=local; no model or workload change"
+    },
+    {
+      "engine_version": "0.5.17",
+      "stage": "Transformers model construction",
+      "result": "failed",
+      "error": "AutoModel.from_config does not recognize Qwen2_5OmniConfig"
+    },
+    {
+      "engine_version": "0.5.18",
+      "stage": "Python packaging preflight",
+      "result": "failed then repaired",
+      "error": "Torch 2.13.0+cu132 and Torchaudio 2.11.0+cu130 CUDA ABI mismatch",
+      "resolution": "Removed unavailable/incompatible optional Torchaudio; SGLang imports and explicitly marks audio unavailable"
+    },
+    {
+      "engine_version": "0.5.18",
+      "stage": "Transformers model construction",
+      "result": "failed",
+      "error": "ValueError: Unrecognized configuration class Qwen2_5OmniConfig for AutoModel",
+      "source_boundary": "sglang/srt/models/transformers.py:616 calls AutoModel.from_config(self.config)",
+      "weight_loading_started": false,
+      "server_ready": false
+    }
+  ],
+  "capability_result": {
+    "text": "not runnable",
+    "image": "not runnable",
+    "audio": "unsupported by the generic processor and not runnable",
+    "max_context": "not measurable",
+    "performance": "not measurable"
+  },
+  "audio_source_audit": {
+    "boundary": "sglang/srt/multimodal/processors/transformers_auto.py:158",
+    "finding": "The generic Transformers multimodal processor contains an explicit TODO for video/audio loading."
+  },
+  "reproduction": {
+    "probe": "comparators/sglang_0_5_18_transformers_probe.run",
+    "environment": "sglang-0.5.18-environment.json"
+  },
+  "decision": {
+    "status": "exclude_from_performance_table",
+    "reason": "The current stable SGLang server cannot construct the official Qwen2.5-Omni-3B checkpoint under its documented Transformers backend, so no equivalent request reaches model execution.",
+    "primary_external_baseline": "vLLM-Omni 0.26.0",
+    "required_upstream_change": "A native Qwen2.5-Omni model integration or a thinker-stage adapter that does not route the full Qwen2_5OmniConfig through AutoModel.from_config."
+  },
+  "limitations": [
+    "This result does not claim that future SGLang releases cannot add support.",
+    "No performance number is reported because the server never became ready.",
+    "Changing the checkpoint architecture or extracting a synthetic thinker model would change the frozen comparison contract and was not used."
+  ]
+}

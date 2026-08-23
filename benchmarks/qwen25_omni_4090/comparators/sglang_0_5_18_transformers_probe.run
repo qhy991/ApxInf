@@ -1,0 +1,35 @@
+#!/bin/sh
+# Reproduce the frozen SGLang compatibility probe. On SGLang 0.5.18 this
+# currently fails closed before weight loading because its Transformers model
+# wrapper calls AutoModel.from_config(Qwen2_5OmniConfig), which Transformers
+# 5.12.1 does not register.
+set -eu
+
+exec chpst -u gpuq:gpuq-users /usr/local/bin/gpu-run \
+  --owner codex-apxinf --label sglang-0518-qwen25-omni-transformers \
+  --mode exclusive --gpu-count 1 \
+  --cwd /mnt/user_dir/hanjinchen/apxinf-qwen25-omni-3b \
+  --estimate 30m --queue-timeout 2h --run-timeout 1h -- \
+  env \
+  SETUPTOOLS_USE_DISTUTILS=local \
+  HF_HOME=/var/lib/agent-gpu-broker/hf-cache \
+  TRANSFORMERS_OFFLINE=1 \
+  HF_HUB_OFFLINE=1 \
+  TOKENIZERS_PARALLELISM=false \
+  XDG_CACHE_HOME=/var/lib/agent-gpu-broker/cache \
+  TORCH_HOME=/var/lib/agent-gpu-broker/cache/torch \
+  TORCHINDUCTOR_CACHE_DIR=/var/lib/agent-gpu-broker/cache/torchinductor \
+  TORCH_EXTENSIONS_DIR=/var/lib/agent-gpu-broker/cache/torch-extensions \
+  TRITON_CACHE_DIR=/var/lib/agent-gpu-broker/cache/triton \
+  CUDA_CACHE_PATH=/var/lib/agent-gpu-broker/cache/cuda \
+  FLASHINFER_WORKSPACE_BASE=/var/lib/agent-gpu-broker \
+  /opt/apxinf/sglang-v0.5.17/bin/python -m sglang.launch_server \
+  --model-path /mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B \
+  --served-model-name Qwen/Qwen2.5-Omni-3B \
+  --host 127.0.0.1 --port 8004 \
+  --model-impl transformers --enable-multimodal --trust-remote-code \
+  --dtype bfloat16 --context-length 32768 \
+  --max-running-requests 1 --max-total-tokens 32768 \
+  --chunked-prefill-size 32768 --max-prefill-tokens 32768 \
+  --mem-fraction-static 0.8 --disable-radix-cache \
+  --disable-cuda-graph --stream-interval 1

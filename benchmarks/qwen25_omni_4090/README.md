@@ -11,7 +11,10 @@ loads and the same real PNG/WAV assets. The external scripts also accept an
 engine name, version endpoint and audio content schema so the SGLang
 Transformers compatibility path can be evaluated without changing the frozen
 workload. Keep those results separate from the native ApxInf acceptance
-baseline.
+baseline. Current stable SGLang 0.5.18 fails the frozen checkpoint at
+`AutoModel.from_config(Qwen2_5OmniConfig)` before weight loading, so it is a
+capability result rather than a performance row; the reproduction probe lives
+under `comparators/`.
 
 The timing authority is client-observed wall time plus the service-emitted
 TTFT/TPOT from `/v1/evaluations/generate`. `nvidia-smi` samples are explanatory

@@ -115,20 +115,23 @@ overhead from the processor promotion stays removed. On this one PNG the final
 ## SGLang compatibility status
 
 This exact checkpoint is not currently a native SGLang-Omni model. Its public
-model list names Qwen3-Omni, while SGLang 0.5.17 resolves
+model list names Qwen3-Omni, while current stable SGLang 0.5.18 resolves
 `Qwen2_5OmniForConditionalGeneration` through `--model-impl transformers`.
-The frozen v0.5.17 source revision is
-`29481685462732237d80d86076d6563e1f658102`. Its generic Transformers
-multimodal processor loads images, but the audio-loading branch is an explicit
-TODO. Therefore SGLang is treated as a compatibility experiment, not as the
-maintained same-model baseline that vLLM-Omni provides.
+Its generic Transformers multimodal processor loads images, but the
+audio-loading branch is an explicit TODO.
 
-The checked-in external-engine scripts now support SGLang's `/server_info`
-version endpoint and `audio_url` request schema without changing token counts,
-media assets, sampling or timing. Actual service measurements remain pending
-until the externally owned Qwen3.8 gate releases the GPU. A failure to start,
-an image token-count mismatch or unsupported audio will be retained as a
-capability result rather than hidden by changing the workload.
+The exact BF16, 32K, concurrency-one contract was attempted on both 0.5.17 and
+0.5.18 after fixing only their environment boundaries. Version 0.5.18 also
+ships mutually incompatible Torch 2.13.0 and Torchaudio 2.11.0 CUDA wheels;
+removing the unavailable optional audio package makes SGLang import and
+explicitly marks audio unavailable. The server still fails before weight
+loading: its Transformers wrapper calls `AutoModel.from_config` on the
+checkpoint's full `Qwen2_5OmniConfig`, which Transformers 5.12.1 does not
+register for `AutoModel`. Consequently no text, image, context or performance
+number is valid for SGLang. It is recorded as a capability failure, while
+vLLM-Omni remains the maintained same-model baseline. See
+`results/sglang-0.5.18-compatibility.json` and the checked-in reproduction
+probe; no checkpoint rewrite or synthetic thinker extraction was used.
 
 ## vLLM deployment and observed defects
 
