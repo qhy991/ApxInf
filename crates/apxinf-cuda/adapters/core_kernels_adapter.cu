@@ -225,6 +225,19 @@ extern "C" cudaError_t apxinf_silu_mul_bf16(
     return cudaGetLastError();
 }
 
+extern "C" cudaError_t apxinf_silu_mul_separate_bf16(
+    const void* gate, const void* up, void* output, uint32_t count, void* stream)
+{
+    if (gate == nullptr || up == nullptr || output == nullptr)
+        return cudaErrorInvalidConfiguration;
+    dim3 grid((count + BLOCK_SIZE - 1) / BLOCK_SIZE, 1, 1);
+    dim3 block(BLOCK_SIZE, 1, 1);
+    silu_mul_separate_bf16_kernel<<<grid, block, 0, (cudaStream_t)stream>>>(
+        (const __nv_bfloat16*)gate, (const __nv_bfloat16*)up,
+        (__nv_bfloat16*)output, count);
+    return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_rms_norm_bf16(
     const void* input, const void* weight, void* output,
     uint32_t cols, uint32_t rows, float eps, void* stream)

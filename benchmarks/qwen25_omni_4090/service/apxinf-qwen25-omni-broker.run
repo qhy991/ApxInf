@@ -27,6 +27,7 @@ exec chpst -u gpuq:gpuq-users /usr/local/bin/gpu-run \
   APXINF_QWEN25_GPU_LAST_ROW=1 \
   APXINF_QWEN25_PACKED_QKV=1 \
   APXINF_QWEN25_FUSED_TMROPE_KV=1 \
+  APXINF_QWEN25_FUSED_SILU_MUL=1 \
   APXINF_QWEN25_CHUNKED_PREFILL=1 \
   APXINF_QWEN25_BF16_CHUNK_TACTICS=1 \
   /opt/apxinf/qwen25-omni-target/release/apxinf serve \

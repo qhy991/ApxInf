@@ -91,7 +91,10 @@ uses the explicitly selected exact scalar softmax; without that selector it
 fails closed. `APXINF_QWEN25_PACKED_QKV=1` selects one
 packed QKV owner shared by both paths. `APXINF_QWEN25_FUSED_TMROPE_KV=1`
 publishes rotated K and unchanged V directly to their caches during graph
-decode. The prefill position-cache selector uploads one TMRoPE position array
+decode. `APXINF_QWEN25_FUSED_SILU_MUL=1` replaces separate Gate SiLU and
+multiply launches with a complete-write backend primitive while retaining the
+old BF16 intermediate rounding exactly. The prefill position-cache selector
+uploads one TMRoPE position array
 per text or multimodal prefill slice instead of once per Q/K layer call. The
 batched-GQA selector additionally packs BF16 prefill query rows by KV head
 above 4,096 cached tokens, flattens sequence and GQA rows into large score and

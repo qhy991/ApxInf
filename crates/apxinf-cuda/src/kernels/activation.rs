@@ -82,6 +82,45 @@ pub fn silu_mul_bf16_into(
     })
 }
 
+/// Exact fused BF16 SiLU(gate) * up for separate, shape-identical tensors.
+pub fn silu_mul(ctx: &CudaContext, gate: &Tensor, up: &Tensor) -> Result<Tensor> {
+    if gate.dtype() != DType::BF16 || up.dtype() != DType::BF16 || gate.shape() != up.shape() {
+        return Err(Error::Other(
+            "separate SiLU multiply requires shape-identical BF16 tensors".into(),
+        ));
+    }
+    let count = u32::try_from(gate.numel())
+        .map_err(|_| Error::Other("separate SiLU multiply exceeds u32 elements".into()))?;
+    let bytes = checked_bytes(DType::BF16, &[gate.numel()], "separate SiLU multiply")?;
+    let gate_buffer = CudaBuffer::from_tensor(gate).map_err(Error::Cuda)?;
+    let up_buffer = CudaBuffer::from_tensor(up).map_err(Error::Cuda)?;
+    let output = uninitialized_buffer(ctx, bytes)?;
+    require_buffers(
+        ctx,
+        "separate SiLU multiply",
+        &[
+            ("gate", &gate_buffer, bytes),
+            ("up", &up_buffer, bytes),
+            ("output", &output, bytes),
+        ],
+    )?;
+    check_cuda(unsafe {
+        ffi::apxinf_silu_mul_separate_bf16(
+            gate_buffer.ptr(),
+            up_buffer.ptr(),
+            output.ptr(),
+            count,
+            ctx.stream().handle(),
+        )
+    })?;
+    Ok(make_gpu_tensor(
+        gate.shape().clone(),
+        DType::BF16,
+        ctx.device_id(),
+        output,
+    ))
+}
+
 /// SiLU (Swish) activation on CUDA.
 pub fn silu(ctx: &CudaContext, input: &Tensor) -> Result<Tensor> {
     let device_id = ctx.device_id();

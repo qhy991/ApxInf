@@ -26,6 +26,13 @@ pub trait Backend {
     /// Element-wise multiply.
     fn mul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor>;
 
+    /// Fused SiLU(gate) * up. Backends may override this complete-write
+    /// boundary; the default preserves composition and numerical order.
+    fn silu_mul(&self, gate: &Tensor, up: &Tensor) -> Result<Tensor> {
+        let activated = self.silu(gate)?;
+        self.mul(&activated, up)
+    }
+
     /// Scale by scalar: output = input * factor
     fn scale(&self, input: &Tensor, factor: f32) -> Result<Tensor>;
 

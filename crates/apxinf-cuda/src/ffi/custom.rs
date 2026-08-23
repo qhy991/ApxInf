@@ -763,6 +763,14 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_silu_mul_separate_bf16(
+        gate: *const c_void,
+        up: *const c_void,
+        output: *mut c_void,
+        count: u32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_softmax_f32(
         input: *const c_void,
         output: *mut c_void,

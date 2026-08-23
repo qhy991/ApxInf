@@ -1820,6 +1820,53 @@ CV rising to 9.9%.
 decisively; production retains the recompute-based exact softmax. Structured
 evidence is `candidate-prefill-global-exp-cache-rejected.json`.
 
+## Promoted exact Gate/Up SiLU-Mul fusion
+
+Primary classification: **higher-level graph rewrite plus exact CUDA fusion**.
+The Qwen2.5-Omni MLP formerly materialized a BF16 SiLU tensor and launched a
+second elementwise multiply. The promoted backend primitive consumes the
+separate Gate and Up tensors and produces their product in one complete-write
+kernel. Its CUDA implementation explicitly rounds SiLU to BF16 before
+multiplication, matching the removed intermediate tensor bit for bit. Other
+backends retain the ordinary `silu` then `mul` composition.
+
+`APXINF_QWEN25_FUSED_SILU_MUL=1` selects the model path. Unset or `0` keeps
+the prior composition and invalid values fail closed. A direct operator test
+requires bit-exact agreement, and the complete 48-test CUDA suite passes.
+Contract recovery, real PNG/WAV inputs and the full 32,760+8 boundary also
+pass with the accepted trajectory hashes.
+
+An ABBA test used the same candidate binary with only the selector changed,
+five measured requests per service phase and one warmup per phase:
+
+| 12,288 prompt + 8 output | Separate kernels | Fused kernel | Change |
+|---|---:|---:|---:|
+| TTFT mean | 1.38644 s | 1.37438 s | 0.87% lower |
+| Client wall mean | 1.48111 s | 1.46961 s | 0.78% lower |
+| TPOT mean | 13.021 ms | 13.063 ms | 0.32% higher |
+
+The short eight-token TPOT delta is below the admission claim. An independent
+128+128 control improves TPOT from 8.254 ms to 8.237 ms, while the admission
+claim is the repeated prefill and complete-request reduction. Every phase has
+one identical complete trajectory hash.
+
+The 12K profile supplies causal attribution. Across 1,980 MLP invocations,
+separate SiLU and multiply take 13.791 ms and 12.696 ms, or 26.487 ms total.
+The fused kernel takes 16.060 ms, 39.37% less, removes 1,980 launches and
+reduces total profiled GPU kernel time from 1,435.536 ms to 1,418.467 ms
+(1.19%). The report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-12288-fused-silu-mul-interactive.nsys-rep`,
+SHA-256
+`7da3531fe366f3e090ca18a2ce41df2929b9178ebfe1b2c41c9b157efcfcce45`.
+
+The deployed binary SHA-256 is
+`2296e9b3010d8174902f7ec6b2ffb22f7a046121bb4beb21f364d67eb1468374`;
+`8feb945d...3435ae0` is the immediate rollback artifact.
+
+**Decision: promote exact Gate/Up SiLU-Mul fusion.** The profile proves the
+removed work, ABBA proves a stable end-to-end prefill gain, decode does not
+regress in the longer control, and all correctness/capacity gates pass.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

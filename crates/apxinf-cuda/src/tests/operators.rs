@@ -2,7 +2,7 @@ use apxinf_core::{DType, Error, Result, Shape, Tensor};
 
 use crate::buffer::{CudaBuffer, HostMappedBuffer};
 use crate::context::CudaContext;
-use crate::kernels::activation::{gelu_tanh, silu};
+use crate::kernels::activation::{gelu_tanh, silu, silu_mul};
 use crate::kernels::attention::{
     causal_mask, grouped, sdpa_with_batched_prefill, softmax, softmax_causal,
     softmax_causal_bf16_scaled_in_place_gqa_packed, softmax_causal_bf16_scaled_plain,
@@ -82,6 +82,27 @@ fn silu_bf16_matches_fp32_reference() {
     let actual = download_bf16_as_fp32(&bf_out).unwrap();
 
     assert_bf16_close_elementwise(&actual, &expected);
+}
+
+#[test]
+fn silu_mul_separate_bf16_is_bit_exact() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (rows, cols) = (4usize, 257usize);
+    let gate_values = (0..rows * cols)
+        .map(|index| ((index as f32 * 0.017) - 7.0).sin() * 6.0)
+        .collect::<Vec<_>>();
+    let up_values = (0..rows * cols)
+        .map(|index| ((index as f32 * 0.023) - 3.0).cos() * 4.0)
+        .collect::<Vec<_>>();
+    let gate = upload_fp32_as_bf16(&ctx, &gate_values, vec![rows, cols]).unwrap();
+    let up = upload_fp32_as_bf16(&ctx, &up_values, vec![rows, cols]).unwrap();
+    let activated = silu(&ctx, &gate).unwrap();
+    let separate = mul(&ctx, &activated, &up).unwrap();
+    let fused = silu_mul(&ctx, &gate, &up).unwrap();
+    assert_eq!(
+        download_bf16_as_fp32(&fused).unwrap(),
+        download_bf16_as_fp32(&separate).unwrap()
+    );
 }
 
 // ── Elementwise: add ──────────────────────────────────────────────

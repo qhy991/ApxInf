@@ -134,6 +134,10 @@ impl Backend for CudaBackend {
         kernels::elementwise::mul(&self.ctx, a, b)
     }
 
+    fn silu_mul(&self, gate: &Tensor, up: &Tensor) -> Result<Tensor> {
+        kernels::activation::silu_mul(&self.ctx, gate, up)
+    }
+
     fn scale(&self, input: &Tensor, factor: f32) -> Result<Tensor> {
         kernels::elementwise::scale(&self.ctx, input, factor)
     }

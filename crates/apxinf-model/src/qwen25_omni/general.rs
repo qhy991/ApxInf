@@ -126,6 +126,15 @@ fn eager_gpu_argmax_enabled() -> Result<bool> {
         .map_err(Error::Other)
 }
 
+#[cfg(feature = "cuda")]
+fn fused_silu_mul_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| parse_binary_env("APXINF_QWEN25_FUSED_SILU_MUL"))
+        .clone()
+        .map_err(Error::Other)
+}
+
 impl GeneralQwen25Omni {
     pub(crate) fn from_selected_weights(
         config: Qwen25OmniConfig,
@@ -612,13 +621,17 @@ impl GeneralQwen25Omni {
         let normalized = self
             .backend
             .rms_norm(&residual, &layer.ffn_norm, text.rms_norm_eps)?;
-        let gate = self
-            .backend
-            .silu(&self.backend.matmul(&normalized, &layer.w_gate)?)?;
+        let gate = self.backend.matmul(&normalized, &layer.w_gate)?;
         let up = self.backend.matmul(&normalized, &layer.w_up)?;
-        let mlp = self
-            .backend
-            .matmul(&self.backend.mul(&gate, &up)?, &layer.w_down)?;
+        #[cfg(feature = "cuda")]
+        let activated = if fused_silu_mul_enabled()? {
+            self.backend.silu_mul(&gate, &up)?
+        } else {
+            self.backend.mul(&self.backend.silu(&gate)?, &up)?
+        };
+        #[cfg(not(feature = "cuda"))]
+        let activated = self.backend.mul(&self.backend.silu(&gate)?, &up)?;
+        let mlp = self.backend.matmul(&activated, &layer.w_down)?;
         self.backend.add(&residual, &mlp)
     }
 
