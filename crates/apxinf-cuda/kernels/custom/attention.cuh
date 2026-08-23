@@ -271,7 +271,18 @@ __global__ void attention_softmax_bf16_exp_global_cache_kernel(
     __shared__ float max_shared;
     if (lane == 0) {
         float max_val = -INFINITY;
-        for (uint32_t c = 0; c < valid_cols; c++) {
+        uint32_t c = 0;
+        for (; c + 3 < valid_cols; c += 4) {
+            float value0 = __bfloat162float(scores[row * cols + c]);
+            float value1 = __bfloat162float(scores[row * cols + c + 1]);
+            float value2 = __bfloat162float(scores[row * cols + c + 2]);
+            float value3 = __bfloat162float(scores[row * cols + c + 3]);
+            max_val = fmaxf(max_val, value0);
+            max_val = fmaxf(max_val, value1);
+            max_val = fmaxf(max_val, value2);
+            max_val = fmaxf(max_val, value3);
+        }
+        for (; c < valid_cols; c++) {
             max_val = fmaxf(max_val, __bfloat162float(scores[row * cols + c]));
         }
         max_shared = max_val;
@@ -285,7 +296,18 @@ __global__ void attention_softmax_bf16_exp_global_cache_kernel(
     __shared__ float sum_shared;
     if (lane == 0) {
         float sum_exp = 0.0f;
-        for (uint32_t c = 0; c < valid_cols; c++) {
+        uint32_t c = 0;
+        for (; c + 3 < valid_cols; c += 4) {
+            float value0 = numerators[row * cols + c];
+            float value1 = numerators[row * cols + c + 1];
+            float value2 = numerators[row * cols + c + 2];
+            float value3 = numerators[row * cols + c + 3];
+            sum_exp += value0;
+            sum_exp += value1;
+            sum_exp += value2;
+            sum_exp += value3;
+        }
+        for (; c < valid_cols; c++) {
             sum_exp += numerators[row * cols + c];
         }
         sum_shared = sum_exp;

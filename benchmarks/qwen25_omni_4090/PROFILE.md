@@ -979,6 +979,50 @@ The 11K/12K TPOT medians moved from 17.722/18.475 to 17.657/18.348 ms:
 profiler budget.** Production keeps the 256-thread geometry; the structured
 record is `candidate-global-exp-cache-512t-context.json`.
 
+#### Promoted ordered lane-0 preload ILP
+
+The late-stage admission rule now retains a small change when correctness and
+interfaces are unchanged and repeated no-profiler measurements show a stable
+positive direction; it no longer requires a 1% minimum. The candidate keeps
+the fused global-cache block at 256 threads and preserves the exact scalar
+maximum and sum order. Lane 0 only preloads four adjacent BF16 scores or FP32
+numerators before applying the original four `fmaxf` or addition operations in
+sequence. It adds no flag, workspace, lifetime or fallback state.
+
+Candidate binary SHA-256 is
+`0723831f1adb81e98232f75fa445818b9307a88af0eedbd30244b4fdc61f55b5`.
+The 32K operator remained byte-exact under Broker job
+`gpuq-d78f7ac200a7`.
+
+| Prompt / output | Accepted TPOT p50 | Candidate repeat TPOT p50 | Change |
+|---|---:|---:|---:|
+| 11,264 + 32 | 17.727 ms | 17.670 ms | 0.32% lower |
+| 12,288 + 32 | 18.457 ms | 18.420 ms | 0.20% lower |
+| 32,760 + 8 | 37.773 ms historical | 37.719 ms | 0.14% lower, one trial |
+
+The two candidate screens contain ten measurements per long-context cell in
+total. Every candidate TPOT sample is below every sample in the adjacent
+five-trial accepted repeat for both 11K and 12K. Candidate-repeat TPOT CV is
+0.052% and 0.103%; all trajectories are exact. The 32K model trajectory keeps
+SHA-256 `f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9`,
+peaks at 15,965 MiB and retains 8,599 MiB headroom.
+
+The attempted candidate and accepted 12K Nsight wrappers both omitted the
+global-cache kernel that the prior formal runit capture proves is present in
+the production path. Those wrapper captures are therefore path-mismatched and
+are not used as attribution or admission evidence. This promotion relies on
+the exact changed-operator gate, the prior production-path profile and the
+repeated formal-runit no-profiler measurements; it does not claim a new
+candidate-specific Systems attribution.
+
+**Decision: promote the ordered lane-0 preloads under the late-stage stable-win
+rule.** Raw evidence is
+`baseline-fused-global-exp-cache-repeat-context.json`,
+`candidate-global-exp-cache-lane0-ilp-context.json`,
+`candidate-global-exp-cache-lane0-ilp-repeat-context.json` and
+`candidate-global-exp-cache-lane0-ilp-32760.json`. Qwen3.8 and Omni remain down
+when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
