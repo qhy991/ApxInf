@@ -1778,6 +1778,14 @@ The deployed binary SHA-256 is
 **Decision: promote global-cache parallel maximum.** It preserves the exact
 decode contract and materially reduces long-context TPOT.
 
+### Rejected in-place normalization ILP2
+
+A manual two-element normalization loop kept the in-place kernel at 28
+registers with zero local/stack bytes and remained bit-exact, but regressed
+8K/12K TTFT by 5.91%/6.55%. The compiler's original scalar-stride schedule is
+therefore retained. Structured evidence is
+`candidate-inplace-softmax-ilp2-rejected.json`.
+
 ### Rejected split-buffer FP32 numerator cache
 
 A bit-exact follow-up split each FP32 numerator's raw bits across the consumed

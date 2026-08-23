@@ -1,0 +1,40 @@
+{
+  "schema": "apxinf.qwen25_omni.candidate.v1",
+  "base_revision": "e27e587",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "classification": "PTX/SASS-directed CUDA",
+  "hypothesis": "process two independent normalization elements per thread to hide expf and division latency",
+  "candidate_binary_sha256": "a9a37e74fa6f8b8e7952a8eefee6ee3a8d62f692bde92adaffe2314d25130a67",
+  "correctness": {
+    "broker_job": "gpuq-8bdfc7f368c2",
+    "operator_bit_exact": true,
+    "service_trajectories_exact": true
+  },
+  "resources": {
+    "base_registers": 28,
+    "candidate_registers": 28,
+    "candidate_local_bytes": 0,
+    "candidate_stack_bytes": 0,
+    "shared_bytes": 1040
+  },
+  "end_to_end": [
+    {
+      "prompt_tokens": 8192,
+      "base_ttft_seconds": 0.821940409,
+      "candidate_ttft_seconds": 0.870518081,
+      "ttft_regression_percent": 5.91
+    },
+    {
+      "prompt_tokens": 12288,
+      "base_ttft_seconds": 1.385710801,
+      "candidate_ttft_seconds": 1.476522838,
+      "ttft_regression_percent": 6.55
+    }
+  ],
+  "raw_report": "candidate-inplace-softmax-ilp2-8k12k.json",
+  "decision": "revert",
+  "reason": "The manual ILP2 loop preserves register count but produces a substantially slower compiled schedule on both target cells.",
+  "production_source_changed": false,
+  "formal_binary_changed": false,
+  "profile_collected": false
+}
