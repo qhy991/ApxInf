@@ -6,14 +6,16 @@
   `Qwen/Qwen2.5-Omni-3B@f75b40e3da2003cdd6e1829b1f420ca70797c34e`
 - GPU: NVIDIA GeForce RTX 4090, 24,564 MiB, single request, BF16
 - Deployed binary SHA-256:
-  `23ec923e386425e69a5455517e16f9ac4c5378aa1a78c5d9eeadb2a288aa8d5e`
+  `fbad7e2359f0e34cfb95112f01dad00fffdc36ad1ea6c17dc63e2ed8217291f8`
 - Immediate rollback SHA-256:
-  `5ad5c4985d2b1cafdccf6afe4f94b83c0cea0efd52cb3f360f122358378533bf`
+  `23ec923e386425e69a5455517e16f9ac4c5378aa1a78c5d9eeadb2a288aa8d5e`
 - Deployment owner: runit launches the checked-in Broker service definition;
   the service is stopped when unused so other queued work can own the GPU.
 
 The current path composes the prior exact softmax, chunking, CUDA Graph,
-GPU-token-selection and cache optimizations with flattened long-prefill GQA.
+GPU-token-selection and cache optimizations with flattened long-prefill GQA
+and uninitialized allocation for outputs that their GEMM or softmax producer
+provably overwrites in full.
 For BF16 multi-token attention above 4,096 cached tokens, sequence and GQA
 rows sharing one K/V head are packed into large score and value GEMMs. The
 existing KV-cache representation is unchanged, and the output is restored to
@@ -21,18 +23,17 @@ the model-owned row layout before its next consumer.
 
 | Workload | Repeats | TTFT p50 | Prior TTFT p50 | Change | TPOT p50 |
 |---|---:|---:|---:|---:|---:|
-| 1,024 + 32 | 3 | 76.36 ms | 75.5 ms | unchanged | 9.353 ms |
-| 8,192 + 8 | 5 | 0.982 s | 1.887 s | 47.9% lower | 14.581 ms |
-| 11,264 + 8 | 3 | 1.455 s | 3.541 s | 58.9% lower | 16.990 ms |
-| 12,288 + 8 | 5 | 1.633 s | 4.211 s | 61.2% lower | 17.573 ms |
-| 32,760 + 8 | 3 | 6.658 s | 27.989 s | 76.2% lower | 36.215 ms |
+| 1,024 + 32 | 5 | 74.18 ms | 76.36 ms | 2.9% lower | 9.368 ms |
+| 8,192 + 8 | 5 | 0.927 s | 0.982 s | 5.6% lower | 14.285 ms |
+| 12,288 + 8 | 5 | 1.523 s | 1.633 s | 6.8% lower | 17.253 ms |
+| 32,760 + 8 | 3 | 5.969 s | 6.658 s | 10.4% lower | 35.884 ms |
 
 All repeated text cases preserve their accepted complete trajectory hashes.
 The exact 32,768-token contract passes with 9,591 MiB minimum sampled memory
 headroom. The 45-test CUDA operator regression, typed invalid-request recovery,
 and real PNG/WAV exact-token gates pass. See `PROFILE.md` and the
-`candidate-flattened-gqa-*` / `deployed-flattened-gqa-*` records for the
-promotion evidence.
+`candidate-nozero-fullwrite-*` / `deployed-nozero-fullwrite-*` records for
+the latest promotion evidence.
 
 ## Original frozen deployment
 

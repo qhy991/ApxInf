@@ -940,7 +940,7 @@ pub fn softmax(ctx: &CudaContext, input: &Tensor) -> Result<Tensor> {
     let cols = *dims.last().unwrap();
 
     let out_bytes = input.size_in_bytes();
-    let out_buf = output_buffer(ctx, out_bytes)?;
+    let out_buf = uninitialized_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = match input.dtype() {
@@ -1167,7 +1167,7 @@ pub(crate) fn softmax_causal_with_exp_cache(
             || (rows != n_heads as usize && cols <= MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS));
 
     let out_bytes = input.size_in_bytes();
-    let out_buf = output_buffer(ctx, out_bytes)?;
+    let out_buf = uninitialized_buffer(ctx, out_bytes)?;
 
     unsafe {
         let res = if use_exp_cache {
@@ -1231,7 +1231,7 @@ pub(crate) fn softmax_causal_bf16_scaled_plain(
     let dims = input.shape().dims();
     let rows = dims[dims.len() - 2];
     let cols = dims[dims.len() - 1];
-    let output = output_buffer(ctx, input.size_in_bytes())?;
+    let output = uninitialized_buffer(ctx, input.size_in_bytes())?;
     unsafe {
         ffi::check_cuda(ffi::apxinf_attention_softmax_bf16(
             gpu_ptr(input)?,
@@ -1275,7 +1275,7 @@ pub(crate) fn softmax_causal_bf16_scaled_plain_gqa_packed(
             "packed GQA scaled softmax rows must be divisible by heads".into(),
         ));
     }
-    let output = output_buffer(ctx, input.size_in_bytes())?;
+    let output = uninitialized_buffer(ctx, input.size_in_bytes())?;
     unsafe {
         ffi::check_cuda(ffi::apxinf_attention_softmax_bf16_gqa_packed(
             gpu_ptr(input)?,
@@ -1315,7 +1315,7 @@ pub(crate) fn softmax_causal_with_global_exp_cache(
     }
     let rows = dims[dims.len() - 2];
     let cols = dims[dims.len() - 1];
-    let out_buf = output_buffer(ctx, input.size_in_bytes())?;
+    let out_buf = uninitialized_buffer(ctx, input.size_in_bytes())?;
     let numerator_bytes = rows
         .checked_mul(cols)
         .and_then(|value| value.checked_mul(std::mem::size_of::<f32>()))

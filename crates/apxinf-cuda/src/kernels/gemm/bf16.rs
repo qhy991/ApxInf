@@ -7,7 +7,7 @@ use crate::tuning::{
     DeviceFingerprint, Epilogue, GemmLayout, GemmOp, GemmTuningKey, ScaleMode, TacticBackend,
     TuningDType,
 };
-use crate::workspace::output_buffer;
+use crate::workspace::uninitialized_buffer;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Bf16AutotuneResult {
@@ -341,7 +341,7 @@ pub fn gemm_bf16(ctx: &CudaContext, activation: &Tensor, weight: &Tensor) -> Res
     }
 
     let (m, k, n) = (activation_shape[0], activation_shape[1], weight_shape[1]);
-    let output = output_buffer(ctx, m * n * DType::BF16.size_in_bytes())?;
+    let output = uninitialized_buffer(ctx, m * n * DType::BF16.size_in_bytes())?;
     let activation = CudaBuffer::from_tensor(activation).map_err(Error::Cuda)?;
     let weight = CudaBuffer::from_tensor(weight).map_err(Error::Cuda)?;
     let use_persisted_cublaslt = crate::tuning::lookup_gemm_exact(&tuning_key(ctx, m, n, k))

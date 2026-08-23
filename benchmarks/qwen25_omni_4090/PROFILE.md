@@ -2,7 +2,7 @@
 
 `BASELINE.md` owns the current accepted deployment summary. This file retains
 the causal profiles, rejected branches and promotion evidence for each stage;
-the current promotion record is **Promoted flattened long-prefill GQA**
+the current promotion record is **Promoted full-write output allocation**
 below.
 
 ## Contract
@@ -1498,6 +1498,56 @@ is `candidate-gqa-flattened-gemm-ceiling.json`.
 **Decision: promote flattened GQA for exact BF16 long prefill.** It removes
 the dominant migrated bottleneck without a second KV representation, a new
 runtime selector or a decode-path change.
+
+## Promoted full-write output allocation
+
+Primary classification: **source/runtime graph and data materialization**.
+After flattened GQA, the 12K profile contained 41,615 device memset operations
+using 144.7 ms of GPU time. The largest avoidable groups were the causal
+attention outputs above 32 MiB (1,152 operations, 70.7 ms) and GEMM outputs
+with `beta=0` (including 6,912 operations of 5,636,096 bytes, 21.9 ms).
+These buffers were allocated through the zero-filling output helper and then
+fully overwritten before any consumer could read them.
+
+The promoted change selects the existing uninitialized stream-ordered helper
+only at contracts with a complete producer write: general and causal softmax,
+scaled long-prefill softmax, packed-GQA softmax, global-cache softmax, and
+GEMM outputs whose call fixes `beta=0`. Buffer ownership, shape, lifetime,
+CUDA stream, GEMM arithmetic and every kernel instruction remain unchanged.
+Outputs with partial-write or accumulator semantics retain zero initialization.
+
+No-profiler results against the flattened-GQA deployment are:
+
+| Prompt / output | Zero-filled TTFT p50 | Full-write TTFT p50 | Change | Repeats |
+|---|---:|---:|---:|---:|
+| 1,024 + 32 | 76.36 ms | 74.18 ms | 2.85% lower | 5 |
+| 8,192 + 8 | 0.982 s | 0.927 s | 5.64% lower | 5 |
+| 12,288 + 8 | 1.633 s | 1.523 s | 6.75% lower | 5 |
+| 32,760 + 8 | 6.658 s | 5.969 s | 10.35% lower | 3 |
+
+The 128+128 decode TPOT is 8.260 ms and therefore unchanged. All cells retain
+their complete accepted trajectory hashes; 12K TTFT CV is 0.13% and 32K is
+0.19%. The exact 32,768-token contract still has 9,591 MiB minimum sampled
+headroom. The 45-test CUDA operator suite, typed invalid-request recovery and
+real PNG/WAV complete-token gates pass.
+
+The matched Systems profile reports device memset time falling from 144.7 ms
+to 49.6 ms and operations from 41,615 to 29,727. Profile TTFT falls from
+1.693 s to 1.584 s (6.43%), agreeing with the no-profiler result. The baseline
+report is
+`/var/lib/agent-gpu-broker/profiles/omni-12288-flattened-gqa-interactive.nsys-rep`
+(SHA-256 `bc55ee19384929e604414794b0b51f5aafe9759bc85599d2e6621844c7d73302`);
+the candidate report is
+`/var/lib/agent-gpu-broker/profiles/omni-12288-nozero-fullwrite-interactive.nsys-rep`
+(SHA-256 `def09f7f22f319dd82838bf9603c6af9400a1429b824aaf54e676b46faeffbc9`).
+Small CSV exports are checked in.
+
+The deployed binary SHA-256 is
+`fbad7e2359f0e34cfb95112f01dad00fffdc36ad1ea6c17dc63e2ed8217291f8`;
+`23ec923e...88d5e` remains the immediate rollback artifact.
+
+**Decision: promote full-write output allocation.** It removes redundant
+memory traffic with no new selector, representation or execution path.
 
 ## Promoted short-KV CUDA Graph decode candidate
 
