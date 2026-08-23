@@ -1778,6 +1778,14 @@ The deployed binary SHA-256 is
 **Decision: promote global-cache parallel maximum.** It preserves the exact
 decode contract and materially reduces long-context TPOT.
 
+### Rejected flattened-GQA cuBLASLt tactics
+
+The BF16 tuner was extended with the real flattened score/value shapes at
+`M=2048`, `KV=12288`. The best cuBLASLt score tactic regressed 2.2%, while the
+best value tactic improved only 0.95%. This is below a credible end-to-end
+ceiling, so vendor cuBLAS remains the owner. Evidence is
+`candidate-flat-gemm-cublaslt-rejected.json`.
+
 ### Rejected in-place normalization ILP2
 
 A manual two-element normalization loop kept the in-place kernel at 28

@@ -14,17 +14,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let max_algorithms = env_usize("APXINF_QWEN25_OMNI_TUNE_MAX_ALGORITHMS", 8)?;
     let warmup_iterations = env_usize("APXINF_QWEN25_OMNI_TUNE_WARMUP", 1)?;
     let benchmark_iterations = env_usize("APXINF_QWEN25_OMNI_TUNE_ITERATIONS", 3)?;
+    let kv_len = env_usize("APXINF_QWEN25_OMNI_TUNE_KV_LEN", 0)?;
     if m == 0 || max_algorithms == 0 || max_algorithms > 64 || benchmark_iterations == 0 {
         return Err("invalid Qwen2.5-Omni BF16 tuning budget".into());
     }
 
-    let shapes = [
+    let mut shapes = vec![
         ("q_o", m, 2048usize, 2048usize),
         ("k_v", m, 256usize, 2048usize),
         ("packed_qkv", m, 2560usize, 2048usize),
         ("gate_up", m, 11008usize, 2048usize),
         ("down", m, 2048usize, 11008usize),
     ];
+    if kv_len > 0 {
+        shapes.push(("flat_score", m * 8, kv_len, 128));
+        shapes.push(("flat_value", m * 8, 128, kv_len));
+    }
     let backend = CudaBackend::new(0)?;
     let mut records = Vec::with_capacity(shapes.len());
     for (name, m, n, k) in shapes {
