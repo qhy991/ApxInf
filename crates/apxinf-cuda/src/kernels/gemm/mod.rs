@@ -13,7 +13,10 @@ use crate::context::CudaContext;
 use crate::cublas::CublasTranspose;
 use crate::workspace::uninitialized_buffer;
 
-pub use bf16::{autotune_cublaslt_bf16, gemm_bf16 as bf16, Bf16AutotuneResult};
+pub use bf16::{
+    autotune_cublaslt_bf16, gemm_bf16 as bf16, install_cublaslt_bf16_tactics,
+    Bf16AutotuneResult, Bf16CublasLtTactic,
+};
 #[cfg(apxinf_cutlass_gemm)]
 pub use fp8::autotune_cutlass_gemm_f16 as autotune_cutlass_fp8;
 #[cfg(test)]
@@ -55,6 +58,9 @@ pub fn matmul(ctx: &CudaContext, activation: &Tensor, weight: &Tensor) -> Result
                 weight.device()
             },
         });
+    }
+    if activation.dtype() == DType::BF16 {
+        return bf16::gemm_bf16(ctx, activation, weight);
     }
     let output_shape = activation.shape().matmul_shape(weight.shape())?;
     let m = activation.shape().dims()[activation.ndim() - 2];

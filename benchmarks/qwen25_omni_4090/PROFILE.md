@@ -2,7 +2,7 @@
 
 `BASELINE.md` owns the current accepted deployment summary. This file retains
 the causal profiles, rejected branches and promotion evidence for each stage;
-the current promotion record is **Promoted pointwise full-write allocation**
+the current promotion record is **Promoted exact SM89 BF16 chunk tactics**
 below.
 
 ## Contract
@@ -1588,6 +1588,63 @@ The deployed binary SHA-256 is
 
 **Decision: promote pointwise full-write allocation.** It provides stable
 positive gains across every measured context without adding a public mode.
+
+## Promoted exact SM89 BF16 chunk tactics
+
+Primary classification: **source/runtime graph and library tactic selection**.
+The earlier 4K tuning probe did not match the promoted chunked workload. The
+current probe adds the packed-QKV shape and measures the actual 256-row and
+1,024-row chunks with cold L2. Repeated selections agree on rank 2 for packed
+QKV and rank 1 for Gate/Up; the 256-row Down projection additionally selects
+rank 2. Unsupported shapes, devices and the selector-off path stay on vendor
+cuBLAS.
+
+The model installs five exact records into the existing immutable TacticStore
+before weight execution or graph capture. The CUDA mechanism prepares all
+cuBLASLt plans and one fixed 32 MiB workspace at load time. The hot path only
+does an exact key lookup; it never autotunes or mutates policy. The selector is
+`APXINF_QWEN25_BF16_CHUNK_TACTICS=1`, accepts only `0` or `1`, and fails closed
+unless the runtime is an RTX 4090 SM89.
+
+The direct cold-L2 probes show these relevant operator signals:
+
+| Shape | Selected rank | Speedup over vendor |
+|---|---:|---:|
+| M256 packed-QKV, N2560 K2048 | 2 | 1.079× |
+| M256 Gate/Up, N11008 K2048 | 1 | 1.115× |
+| M256 Down, N2048 K11008 | 2 | 1.034× |
+| M1024 packed-QKV, N2560 K2048 | 2 | 1.047× |
+| M1024 Gate/Up, N11008 K2048 | 1 | 1.052× |
+
+Final-SHA no-profiler results against the pointwise deployment are:
+
+| Prompt / output | Vendor TTFT p50 | Tactic TTFT p50 | Change | Evidence |
+|---|---:|---:|---:|---|
+| 1,024 + 32 | 71.49 ms | 70.59 ms | 1.25% lower | 3 formal repeats |
+| 8,192 + 8 | 0.891 s | 0.882 s | 1.03% lower | 5 formal repeats |
+| 12,288 + 8 | 1.479 s | 1.465 s | 0.94% lower | adjacent A/B, 5+5 repeats |
+| 32,760 + 8 | 5.907 s | 5.869 s | 0.64% lower | 5 formal repeats |
+
+The adjacent 12K candidate CV is 0.022%; every complete trajectory is exact.
+The 128+128 decode path is unchanged at 8.260 ms TPOT. The 45-test CUDA
+operator suite, typed invalid-request recovery, real PNG/WAV final-binary gate
+and exact 32K capacity boundary pass.
+
+In the 12K profile, the two dominant selected GEMM grids change from
+`32x22x2` and `32x4x7` to `32x22x1` and `32x4x4`. Their aggregate leading
+kernel family falls from 516.5 ms to 509.3 ms, while profile TTFT falls from
+1.526 s to 1.504 s. The candidate report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-12288-bf16-chunk-tactics-interactive.nsys-rep`,
+SHA-256
+`b2495bce678d08eae08d28ab4b987d786ac61413bfd0f6f8d1f03ef351f85d3b`.
+
+The deployed binary SHA-256 is
+`44d8e31699faec2f5856c2799d26e725e8d1190e3a602f50a9be1505c4084680`;
+`b07642c1...150e140b` is the immediate rollback artifact.
+
+**Decision: promote exact SM89 BF16 chunk tactics.** The gain is small but
+stable under the late-optimization rule, and the selector remains explicit,
+bounded and reproducible.
 
 ### Rejected long-prefill global numerator cache
 

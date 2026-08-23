@@ -6,9 +6,9 @@
   `Qwen/Qwen2.5-Omni-3B@f75b40e3da2003cdd6e1829b1f420ca70797c34e`
 - GPU: NVIDIA GeForce RTX 4090, 24,564 MiB, single request, BF16
 - Deployed binary SHA-256:
-  `b07642c15372ed769bf2a6cde443df157cf6191c927e27bec474f4c4150e140b`
+  `44d8e31699faec2f5856c2799d26e725e8d1190e3a602f50a9be1505c4084680`
 - Immediate rollback SHA-256:
-  `fbad7e2359f0e34cfb95112f01dad00fffdc36ad1ea6c17dc63e2ed8217291f8`
+  `b07642c15372ed769bf2a6cde443df157cf6191c927e27bec474f4c4150e140b`
 - Deployment owner: runit launches the checked-in Broker service definition;
   the service is stopped when unused so other queued work can own the GPU.
 
@@ -16,7 +16,8 @@ The current path composes the prior exact softmax, chunking, CUDA Graph,
 GPU-token-selection and cache optimizations with flattened long-prefill GQA
 and uninitialized allocation for outputs that GEMM, softmax, pointwise,
 normalization, RoPE, embedding or QKV-split producers provably overwrite in
-full.
+full. Exact SM89 chunk-shape GEMMs use load-time cuBLASLt tactics from the
+same immutable TacticStore; all unmatched shapes retain vendor cuBLAS.
 For BF16 multi-token attention above 4,096 cached tokens, sequence and GQA
 rows sharing one K/V head are packed into large score and value GEMMs. The
 existing KV-cache representation is unchanged, and the output is restored to
@@ -24,17 +25,17 @@ the model-owned row layout before its next consumer.
 
 | Workload | Repeats | TTFT p50 | Prior TTFT p50 | Change | TPOT p50 |
 |---|---:|---:|---:|---:|---:|
-| 1,024 + 32 | 5 | 71.49 ms | 74.18 ms | 3.6% lower | 9.362 ms |
-| 8,192 + 8 | 5 | 0.891 s | 0.927 s | 3.8% lower | 13.698 ms |
-| 12,288 + 8 | 5 | 1.479 s | 1.523 s | 2.9% lower | 16.708 ms |
-| 32,760 + 8 | 3 | 5.907 s | 5.969 s | 1.0% lower | 35.233 ms |
+| 1,024 + 32 | 3 | 70.59 ms | 71.49 ms | 1.3% lower | 9.359 ms |
+| 8,192 + 8 | 5 | 0.882 s | 0.891 s | 1.0% lower | 13.700 ms |
+| 12,288 + 8 | 5 paired | 1.465 s | 1.479 s | 0.9% lower | 16.688 ms |
+| 32,760 + 8 | 5 | 5.869 s | 5.907 s | 0.6% lower | 35.257 ms |
 
 All repeated text cases preserve their accepted complete trajectory hashes.
 The exact 32,768-token contract passes with 9,591 MiB minimum sampled memory
 headroom. The 45-test CUDA operator regression, typed invalid-request recovery,
 and real PNG/WAV exact-token gates pass. See `PROFILE.md` and the
-`candidate-nozero-pointwise-*` / `deployed-nozero-pointwise-*` records for
-the latest promotion evidence.
+`candidate-bf16-chunk-tactics-*`, `paired-bf16-chunk-tactics-*` and
+`deployed-bf16-chunk-tactics-*` records for the latest promotion evidence.
 
 ## Original frozen deployment
 

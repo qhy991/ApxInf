@@ -21,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shapes = [
         ("q_o", m, 2048usize, 2048usize),
         ("k_v", m, 256usize, 2048usize),
+        ("packed_qkv", m, 2560usize, 2048usize),
         ("gate_up", m, 11008usize, 2048usize),
         ("down", m, 2048usize, 11008usize),
     ];
