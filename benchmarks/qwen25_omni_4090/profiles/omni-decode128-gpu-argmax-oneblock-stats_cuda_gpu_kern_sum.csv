@@ -1,0 +1,25 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+24.9,5077870,72,70526.0,71904.0,67104,77760,2293.2,void cutlass::Kernel<cutlass_80_tensorop_bf16_s16816gemm_bf16_64x64_32x6_nn_align8>(T1::Params)
+22.8,4652623,144,32309.9,35728.0,11072,59520,20720.8,"std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)0, (bool)0, (int)9, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)"
+9.5,1936683,36,53796.8,53296.5,52993,67104,2329.3,ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_32x6_nn
+9.2,1877416,36,52150.4,52112.5,51713,52801,223.1,ampere_bf16_s16816gemm_bf16_64x128_ldg8_f2f_stages_64x3_nn
+6.6,1343333,2,671666.5,671666.5,664163,679170,10611.6,void cutlass::Kernel<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_32x32_32x1_nn_align8>(T1::Params)
+5.0,1020514,72,14173.8,13792.0,12672,16800,1136.7,void cutlass::Kernel<cutlass_80_tensorop_bf16_s16816gemm_bf16_128x64_32x6_nn_align8>(T1::Params)
+3.3,672325,146,4605.0,4544.0,4256,5600,232.3,"rms_norm_bf16_kernel(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int, unsigned int, float)"
+2.3,461993,144,3208.3,3760.0,1504,5152,1016.6,"rope_tmrope_bf16_kernel(const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int, unsigned int, unsigned int, float, const unsigned int *, unsigned int, unsigned int)"
+2.0,412397,216,1909.2,2079.0,1472,2560,351.8,"void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, (bool)1, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T5 *, T5 *, const T6 *, const T6 *, const T7 *, const T4 *, T7 *, void *, long, T6 *, int *)"
+1.6,325635,72,4522.7,4512.0,4384,4640,54.8,void cutlass::Kernel<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_32x1_nn_align8>(T1::Params)
+1.5,307298,72,4268.0,4192.0,3840,5504,317.4,ampere_bf16_s16816gemm_bf16_64x64_ldg8_f2f_stages_64x5_nn
+1.4,287966,216,1333.2,1280.0,1119,1952,261.8,"add_bias_bf16_kernel(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int, unsigned int)"
+1.2,248290,72,3448.5,3360.0,3233,7072,511.8,"std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)0, (bool)0, (int)8, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)"
+1.2,236801,72,3288.9,3296.0,3168,3424,50.7,void cutlass::Kernel<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_64x2_tn_align8>(T1::Params)
+1.1,227137,36,6309.4,6304.0,6240,6400,49.9,"attention_softmax_bf16_exp_cache_kernel(const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int, unsigned int, unsigned int, unsigned int)"
+1.1,220928,72,3068.4,3040.0,3007,3360,74.7,"kv_cache_append_decode_bf16_kernel(__nv_bfloat16 *, const __nv_bfloat16 *, unsigned int, unsigned int, unsigned int, const unsigned int *)"
+1.0,211938,144,1471.8,1408.5,992,2208,460.6,"add_bf16_kernel(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int)"
+1.0,208034,72,2889.4,2880.5,1055,4768,1840.8,"silu_bf16_kernel(const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int)"
+0.9,193632,72,2689.3,2687.5,991,4416,1686.1,"mul_bf16_kernel(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int)"
+0.8,167324,36,4647.9,4576.0,4511,5632,210.3,"void flash_attn_decode_bf16_splitk_kernel<(int)128, (int)16>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int, unsigned int, unsigned int, unsigned int, float, const unsigned int *)"
+0.7,143072,1,143072.0,143072.0,143072,143072,0.0,"argmax_bf16_kernel(const __nv_bfloat16 *, unsigned int, unsigned int *)"
+0.4,87393,72,1213.8,1216.0,1183,1376,31.0,"kv_cache_append_bf16_kernel(__nv_bfloat16 *, const __nv_bfloat16 *, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int)"
+0.3,62204,36,1727.9,1728.0,1695,1760,20.3,"scale_bf16_kernel(const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int, float)"
+0.0,8320,2,4160.0,4160.0,3232,5088,1312.4,"embedding_bf16_kernel(const __nv_bfloat16 *, const unsigned int *, __nv_bfloat16 *, unsigned int, unsigned int)"

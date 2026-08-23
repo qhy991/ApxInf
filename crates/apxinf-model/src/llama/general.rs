@@ -51,8 +51,8 @@ impl GeneralLlama {
         pack_fused_weights(&mut weights, &*backend);
 
         // Create the decode workspace + graph capture state if the backend
-        // is CUDA (the fast path intentionally uses the concrete CudaBackend
-        // type).
+        // is CUDA (the fast path uses the concrete CudaBackend type — see
+        // `doc/design.md` "concrete types are the ceiling").
         #[cfg(feature = "cuda")]
         let decode_graph = {
             let cfg = Self::decode_cfg_static(&config, weights.token_embedding.dtype());

@@ -4,11 +4,9 @@
 //! tokens from the Phase 0 dump, runs the unified LLM/VLM generation
 //! interface, and prints the first 10 greedy tokens.
 //!
-//! Set `APXINF_QWEN3VL_MODEL_DIR` to the local Qwen3-VL model directory.
-//!
 //! Usage:
 //!   cargo run --example multimodal_check --features cuda -- \
-//!       "$APXINF_QWEN3VL_MODEL_DIR"
+//!       /hanjinchen/models/Qwen3-VL-2B-Instruct
 
 use std::io::Read;
 use std::path::PathBuf;

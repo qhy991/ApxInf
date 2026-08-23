@@ -1,7 +1,7 @@
 # apxinf-py
 
 PyO3 bindings for the ApxInf VLA runtime — the **binding layer** of the ApxInf
-Python frontend.
+Python frontend (see [doc/20260812-python-frontend/PRD.md](../../doc/20260812-python-frontend/PRD.md)).
 
 `import apxinf_py` gives in-process, numpy-in / numpy-out access to bare-model
 inference, removing the old subprocess + stdio hop. The public tier is L1; no

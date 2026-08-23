@@ -1,0 +1,44 @@
+{
+  "schema": "apxinf.qwen25_omni.candidate.v1",
+  "base_revision": "a84c487",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "classification": "source/runtime graph and library tactic selection",
+  "hypothesis": "replace flattened GQA score/value vendor GEMMs with exact-shape cuBLASLt heuristics",
+  "contract": {
+    "query_tokens": 256,
+    "gqa_ratio": 8,
+    "flattened_rows": 2048,
+    "kv_len": 12288,
+    "dtype": "bf16",
+    "cache_state": "cold_l2",
+    "warmups": 3,
+    "iterations": 10
+  },
+  "results": [
+    {
+      "name": "flat_score",
+      "m": 2048,
+      "n": 12288,
+      "k": 128,
+      "vendor_ms": 0.05541440024971962,
+      "cublaslt_best_ms": 0.05664960294961929,
+      "best_rank": 4,
+      "speedup": 0.9781957395006249
+    },
+    {
+      "name": "flat_value",
+      "m": 2048,
+      "n": 128,
+      "k": 12288,
+      "vendor_ms": 0.08652479946613312,
+      "cublaslt_best_ms": 0.08570879697799683,
+      "best_rank": 2,
+      "speedup": 1.0095206386847988
+    }
+  ],
+  "raw_report": "candidate-flat-gemm-tune-12288.json",
+  "decision": "do_not_integrate",
+  "reason": "Score GEMM regresses and the value GEMM gain is below one percent, leaving no credible end-to-end benefit after tactic lookup and plan costs.",
+  "production_source_changed": false,
+  "formal_binary_changed": false
+}

@@ -51,6 +51,21 @@ __global__ void silu_mul_bf16_kernel(
     output[gid] = __float2bfloat16(s * u);
 }
 
+// Exact composition of the ordinary BF16 SiLU and Mul operators for separate
+// Gate and Up tensors. The SiLU result is rounded to BF16 before multiplying,
+// matching the removed intermediate tensor bit for bit.
+__global__ void silu_mul_separate_bf16_kernel(
+    const __nv_bfloat16* gate, const __nv_bfloat16* up,
+    __nv_bfloat16* output, uint32_t count)
+{
+    uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= count) return;
+    float g = __bfloat162float(gate[gid]);
+    float u = __bfloat162float(up[gid]);
+    __nv_bfloat16 activated = __float2bfloat16(g / (1.0f + expf(-g)));
+    output[gid] = __float2bfloat16(__bfloat162float(activated) * u);
+}
+
 
 
 // ── GELU (tanh approximation, bf16) — Qwen3-VL vision MLP ────────────────

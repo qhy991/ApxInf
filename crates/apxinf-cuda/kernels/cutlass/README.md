@@ -7,8 +7,8 @@ adapters against only these repository-local operator sources and headers.
 
 ## Source snapshot
 
-The contents were imported without modification from an upstream snapshot at
-commit `7434950d5b3a73dcbf810a797e772cebdb869598`:
+The contents were imported without modification from the local Mizar-Robo
+snapshot at commit `7434950d5b3a73dcbf810a797e772cebdb869598`:
 
 - `include/` from `3rdparty/cutlass/include/`
 - `tools/util/include/` from
@@ -25,9 +25,9 @@ operators must be compiled against a mutually compatible CUTLASS snapshot.
 ## Licensing
 
 The imported CUTLASS and FMHA headers retain their original NVIDIA copyright
-and BSD-3-Clause notices. The full CUTLASS license is preserved under
-`licenses/`. The imported scale-epilogue extension headers retain their SGLang
-copyright and Apache-2.0 license text.
+and BSD-3-Clause notices. The full CUTLASS license and the source repository's
+MIT license are preserved under `licenses/`. The imported scale-epilogue
+extension headers retain their SGLang copyright and Apache-2.0 license text.
 
 ApxInf-specific C++ operators are `fp8_gemm_sm100.cu` and
 `fmha_sm100.cu` for SM100-family devices and

@@ -1,0 +1,125 @@
+{
+  "schema": "apxinf.qwen25_omni.service_benchmark.v1",
+  "started_at": "2026-08-22T04:09:24.900730+00:00",
+  "completed_at": "2026-08-22T04:09:25.363679+00:00",
+  "base_url": "http://127.0.0.1:8002",
+  "suite": "context",
+  "contract": {
+    "api": "/v1/evaluations/generate",
+    "single_request": true,
+    "sampling": "greedy",
+    "temperature": 0,
+    "ignore_eos": true,
+    "stream": false,
+    "token_pattern": "1000 + index % 17",
+    "warmups": 0,
+    "repeats": 1,
+    "timeout_seconds": 180.0,
+    "sample_interval_ms": 100
+  },
+  "health": {
+    "context_contract": "prompt_tokens + requested_completion_tokens <= max_model_len",
+    "fallback_active": false,
+    "input_modalities": [
+      "text",
+      "image",
+      "audio"
+    ],
+    "max_model_len": 32768,
+    "max_output_tokens": 128,
+    "max_prompt_tokens": 32767,
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "output_modalities": [
+      "text"
+    ],
+    "parallel_requests": 1,
+    "precision": "bf16",
+    "speech_output": false,
+    "status": "ok",
+    "talker_disabled": true,
+    "video": false
+  },
+  "raw_cases": [
+    {
+      "case": {
+        "case_id": "context_11264",
+        "prompt_tokens": 11264,
+        "output_tokens": 8,
+        "family": "context"
+      },
+      "warmup_failure": null,
+      "trials": [
+        {
+          "passed": false,
+          "error": "HTTP 503: {\"error\":{\"message\":\"CUDA error: CUDA error 2: out of memory\",\"type\":\"runtime_error\"}}",
+          "wall_seconds": 0.34807897359132767,
+          "hardware": {
+            "sample_count": 2,
+            "gpu_util_mean_pct": 0.0,
+            "gpu_util_max_pct": 0.0,
+            "memory_util_mean_pct": 0.0,
+            "memory_util_max_pct": 0.0,
+            "memory_used_peak_mib": 17461.0,
+            "memory_total_mib": 24564.0,
+            "memory_headroom_min_mib": 7103.0,
+            "power_mean_w": 76.18,
+            "power_max_w": 76.18,
+            "sm_clock_mean_mhz": 2520.0,
+            "memory_clock_mean_mhz": 10251.0
+          }
+        }
+      ]
+    }
+  ],
+  "summaries": [
+    {
+      "case_id": "context_11264",
+      "prompt_tokens": 11264,
+      "output_tokens": 8,
+      "family": "context",
+      "trial_count": 1,
+      "passed_trials": 0,
+      "failed_trials": 1,
+      "wall_seconds": {
+        "mean": null,
+        "p50": null,
+        "p90": null,
+        "cv": null
+      },
+      "ttft_seconds": {
+        "mean": null,
+        "p50": null,
+        "p90": null,
+        "cv": null
+      },
+      "tpot_seconds": {
+        "mean": null,
+        "p50": null,
+        "p90": null,
+        "cv": null
+      },
+      "prefill_tokens_per_second_proxy": {
+        "mean": null,
+        "p50": null,
+        "p90": null,
+        "cv": null
+      },
+      "decode_tokens_per_second": {
+        "mean": null,
+        "p50": null,
+        "p90": null,
+        "cv": null
+      },
+      "e2e_output_tokens_per_second": {
+        "mean": null,
+        "p50": null,
+        "p90": null,
+        "cv": null
+      },
+      "trajectory_sha256s": [],
+      "trajectory_stable": false
+    }
+  ],
+  "passed": false
+}

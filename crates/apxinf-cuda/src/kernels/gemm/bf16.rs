@@ -4,10 +4,10 @@ use crate::buffer::CudaBuffer;
 use crate::context::CudaContext;
 use crate::ffi;
 use crate::tuning::{
-    DeviceFingerprint, Epilogue, GemmLayout, GemmOp, GemmTuningKey, ScaleMode, TacticBackend,
-    TuningDType,
+    DeviceFingerprint, Epilogue, GemmLayout, GemmOp, GemmTuningKey, GemmTuningRecord, ScaleMode,
+    TacticBackend, TacticId, TacticStore, TuningDType,
 };
-use crate::workspace::output_buffer;
+use crate::workspace::uninitialized_buffer;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Bf16AutotuneResult {
@@ -16,6 +16,15 @@ pub struct Bf16AutotuneResult {
     pub vendor_ms: f64,
     pub cublaslt_default_ms: f64,
     pub cublaslt_best_ms: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Bf16CublasLtTactic {
+    pub m: usize,
+    pub n: usize,
+    pub k: usize,
+    pub heuristic_rank: i32,
+    pub milliseconds: f64,
 }
 
 struct CudaEventPair {
@@ -287,6 +296,78 @@ fn tuning_key(ctx: &CudaContext, m: usize, n: usize, k: usize) -> GemmTuningKey 
     }
 }
 
+/// Install an exact BF16 cuBLASLt tactic set before model execution or graph
+/// capture. The immutable TacticStore owns selection; the C ABI owns prepared
+/// plans and their fixed workspace.
+pub fn install_cublaslt_bf16_tactics(
+    ctx: &CudaContext,
+    tactics: &[Bf16CublasLtTactic],
+) -> Result<()> {
+    if tactics.is_empty() {
+        return Err(Error::Other(
+            "BF16 cuBLASLt tactic set must not be empty".into(),
+        ));
+    }
+    if !crate::workspace::may_prepare_native_resources() {
+        return Err(Error::Other(
+            "BF16 cuBLASLt tactics must be installed before graph execution".into(),
+        ));
+    }
+    let records = tactics
+        .iter()
+        .map(|tactic| {
+            if !(0..64).contains(&tactic.heuristic_rank)
+                || tactic.m == 0
+                || tactic.n == 0
+                || tactic.k == 0
+                || !tactic.milliseconds.is_finite()
+                || tactic.milliseconds <= 0.0
+            {
+                return Err(Error::Other(format!(
+                    "invalid BF16 cuBLASLt tactic {tactic:?}"
+                )));
+            }
+            Ok(GemmTuningRecord {
+                key: tuning_key(ctx, tactic.m, tactic.n, tactic.k),
+                tactic: TacticId {
+                    backend: TacticBackend::CublasLt,
+                    value: tactic.heuristic_rank,
+                },
+                milliseconds: Some(tactic.milliseconds),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let store = TacticStore::from_gemm_records(records)?;
+    if let Some(installed) = crate::tuning::installed() {
+        if installed != &store {
+            return Err(Error::Other(
+                "a different CUDA tactic store is already installed".into(),
+            ));
+        }
+    }
+    for tactic in tactics {
+        set_cublaslt_gemm_heuristic(
+            tactic.m,
+            tactic.n,
+            tactic.k,
+            tactic.heuristic_rank,
+        )?;
+        unsafe {
+            ffi::check_cublas(ffi::apxinf_static_prepare_bf16_gemm(
+                tactic.m as i32,
+                tactic.n as i32,
+                tactic.k as i32,
+            ))
+            .map_err(Error::Cuda)?;
+        }
+    }
+    if crate::tuning::installed().is_some() {
+        Ok(())
+    } else {
+        crate::tuning::install(store)
+    }
+}
+
 pub(crate) fn set_cublaslt_gemm_heuristic(
     m: usize,
     n: usize,
@@ -341,7 +422,7 @@ pub fn gemm_bf16(ctx: &CudaContext, activation: &Tensor, weight: &Tensor) -> Res
     }
 
     let (m, k, n) = (activation_shape[0], activation_shape[1], weight_shape[1]);
-    let output = output_buffer(ctx, m * n * DType::BF16.size_in_bytes())?;
+    let output = uninitialized_buffer(ctx, m * n * DType::BF16.size_in_bytes())?;
     let activation = CudaBuffer::from_tensor(activation).map_err(Error::Cuda)?;
     let weight = CudaBuffer::from_tensor(weight).map_err(Error::Cuda)?;
     let use_persisted_cublaslt = crate::tuning::lookup_gemm_exact(&tuning_key(ctx, m, n, k))

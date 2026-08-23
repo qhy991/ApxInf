@@ -1,0 +1,83 @@
+{
+  "schema": "apxinf.qwen25_omni.external_engine_environment.v1",
+  "engine": "vLLM-Omni",
+  "engine_version": "0.26.0",
+  "vllm_version": "0.26.0",
+  "python_version": "3.12.14",
+  "torch_version": "2.11.0+cu130",
+  "torch_cuda_version": "13.0",
+  "transformers_version": "5.15.1",
+  "flashinfer_python_version": "0.6.14",
+  "uv_version": "0.12.5",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "compute_capability": "8.9",
+    "driver_version": "580.95.05",
+    "memory_total_mib": 24564
+  },
+  "model": {
+    "id": "Qwen/Qwen2.5-Omni-3B",
+    "revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "local_path": "/mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B"
+  },
+  "installation": {
+    "environment": "/opt/apxinf/vllm-omni-v0.26.0",
+    "python_runtime": "/opt/apxinf/vllm-omni-python",
+    "uv_bootstrap": "/opt/apxinf/vllm-omni-bootstrap/local/bin/uv",
+    "uv_cache": "/opt/apxinf/vllm-omni-uv-cache",
+    "isolated_from_system_vllm": true,
+    "system_vllm_version_unchanged": "0.6.2",
+    "setuptools_distutils_override": "local"
+  },
+  "deployment": {
+    "pipeline": "qwen2_5_omni_thinker_only",
+    "dtype": "bfloat16",
+    "max_model_len": 32768,
+    "max_num_seqs": 1,
+    "max_num_batched_tokens": 32768,
+    "kv_cache_memory_bytes": 2147483648,
+    "kv_cache_tokens": 58240,
+    "full_32768_request_concurrency": 1.78,
+    "enforce_eager": true,
+    "prefix_caching": false,
+    "text_output_only": true,
+    "weight_memory_gib": 8.84,
+    "steady_resident_memory_mib": 16562,
+    "config": "benchmarks/qwen25_omni_4090/comparators/vllm_omni_thinker_only.yaml",
+    "broker_run": "benchmarks/qwen25_omni_4090/service/vllm-qwen25-omni-broker.run"
+  },
+  "broker_jobs": {
+    "cuda_preflight": "gpuq-4136ef3c22e6",
+    "first_cache_path_failure": "gpuq-674182f6ba5b",
+    "auto_kv_capacity_probe": "gpuq-69e10ff28865",
+    "final_kv2g_baseline": "gpuq-69b9cdc701fc"
+  },
+  "observed_failures": [
+    {
+      "kind": "environment",
+      "description": "Broker user inherited root cache paths; explicit vLLM, FlashInfer, Torch, Triton and speaker cache owners were required",
+      "resolved": true
+    },
+    {
+      "kind": "capacity",
+      "description": "automatic 11.45 GiB KV reservation OOMed at 24576+8 while allocating a 516 MiB SiLU output with 498.69 MiB free",
+      "resolved": true,
+      "resolution": "freeze a 2 GiB KV cache for the declared single-request workload"
+    },
+    {
+      "kind": "api",
+      "description": "/v1/completions returned HTTP 500 because OmniRequestOutput lacks ec_transfer_params",
+      "resolved": false,
+      "benchmark_authority": "/v1/chat/completions"
+    }
+  ],
+  "final_validation": {
+    "text_1k_decode_32": true,
+    "text_128_decode_128": true,
+    "context_32760_decode_8": true,
+    "real_png": true,
+    "real_wav": true,
+    "service_stopped_when_unused": true,
+    "gpu_idle_after_validation": true
+  }
+}

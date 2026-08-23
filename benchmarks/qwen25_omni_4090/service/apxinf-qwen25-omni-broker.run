@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+
+exec chpst -u gpuq:gpuq-users /usr/local/bin/gpu-run \
+  --owner codex-apxinf --label qwen25-omni-service \
+  --mode exclusive --gpu-count 1 \
+  --cwd /mnt/user_dir/hanjinchen/apxinf-qwen25-omni-3b \
+  --estimate 8760h --queue-timeout 24h --run-timeout 8760h -- \
+  env \
+  PYTHONPATH=/opt/apxinf/qwen25-omni-processor-4.56.0 \
+  HF_HOME=/var/lib/agent-gpu-broker/hf-cache \
+  TRANSFORMERS_OFFLINE=1 \
+  HF_HUB_OFFLINE=1 \
+  TOKENIZERS_PARALLELISM=false \
+  APXINF_DISABLE_TALKER=1 \
+  APXINF_OMNI_PERSISTENT_PROCESSOR=1 \
+  APXINF_VISION_GROUPED_SPARSE=1 \
+  APXINF_VISION_FULL_FA2=1 \
+  APXINF_BATCHED_GQA_PREFILL=1 \
+  APXINF_STREAM_ORDERED_ALLOC=1 \
+  APXINF_TMROPE_POSITION_CACHE=1 \
+  APXINF_TMROPE_POSITION_CACHE_PREFILL=1 \
+  APXINF_SOFTMAX_EXP_CACHE=1 \
+  APXINF_SOFTMAX_GLOBAL_EXP_CACHE=1 \
+  APXINF_SOFTMAX_EXP_CACHE_LONG_FALLBACK=1 \
+  APXINF_SOFTMAX_INPLACE_SCALE=1 \
+  APXINF_QWEN25_DECODE_GRAPH=1 \
+  APXINF_QWEN25_GPU_ARGMAX=1 \
+  APXINF_QWEN25_EAGER_GPU_ARGMAX=1 \
+  APXINF_QWEN25_GPU_LAST_ROW=1 \
+  APXINF_QWEN25_PACKED_QKV=1 \
+  APXINF_QWEN25_FUSED_TMROPE_KV=1 \
+  APXINF_QWEN25_FUSED_SILU_MUL=1 \
+  APXINF_QWEN25_CHUNKED_PREFILL=1 \
+  APXINF_QWEN25_BF16_CHUNK_TACTICS=1 \
+  /opt/apxinf/qwen25-omni-target/release/apxinf serve \
+  --model /mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B \
+  --host 127.0.0.1 --port 8001 \
+  --max-model-len 32768 --enable-multimodal

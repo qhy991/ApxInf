@@ -1,0 +1,65 @@
+{
+  "contract": {
+    "benchmark_iterations": 3,
+    "cache_state": "cold_l2",
+    "max_algorithms": 8,
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "prompt_rows": 4096,
+    "warmup_iterations": 1
+  },
+  "cublas": "12.3.2",
+  "cuda": "12.3",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "records": [
+    {
+      "best_speedup_over_vendor": 1.003238175945668,
+      "cublaslt_best_ms": 0.21740800142288208,
+      "cublaslt_best_rank": 0,
+      "cublaslt_default_ms": 0.21740800142288208,
+      "cublaslt_returned_algorithms": 8,
+      "k": 2048,
+      "m": 4096,
+      "n": 2048,
+      "name": "q_o",
+      "vendor_ms": 0.2181120067834854
+    },
+    {
+      "best_speedup_over_vendor": 1.0092592620663416,
+      "cublaslt_best_ms": 0.03686400130391121,
+      "cublaslt_best_rank": 0,
+      "cublaslt_default_ms": 0.03686400130391121,
+      "cublaslt_returned_algorithms": 8,
+      "k": 2048,
+      "m": 4096,
+      "n": 256,
+      "name": "k_v",
+      "vendor_ms": 0.03720533475279808
+    },
+    {
+      "best_speedup_over_vendor": 1.004909781831964,
+      "cublaslt_best_ms": 1.1253759860992432,
+      "cublaslt_best_rank": 2,
+      "cublaslt_default_ms": 1.1308587789535522,
+      "cublaslt_returned_algorithms": 8,
+      "k": 2048,
+      "m": 4096,
+      "n": 11008,
+      "name": "gate_up",
+      "vendor_ms": 1.1309013366699219
+    },
+    {
+      "best_speedup_over_vendor": 1.0978929981198466,
+      "cublaslt_best_ms": 1.1223145723342896,
+      "cublaslt_best_rank": 1,
+      "cublaslt_default_ms": 1.235967993736267,
+      "cublaslt_returned_algorithms": 8,
+      "k": 11008,
+      "m": 4096,
+      "n": 2048,
+      "name": "down",
+      "vendor_ms": 1.2321813106536865
+    }
+  ],
+  "schema": "apxinf.qwen25_omni.bf16_tuning_probe.v1",
+  "sm": 89
+}

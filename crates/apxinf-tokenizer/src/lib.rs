@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use minijinja::Environment;
+use minijinja::{Environment, Error as JinjaError, ErrorKind, State, Value};
 use apxinf_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use tokenizers::Tokenizer as HfTokenizer;
@@ -164,6 +164,7 @@ impl Tokenizer {
 
         // Create environment and template on demand
         let mut env = Environment::new();
+        env.set_unknown_method_callback(python_string_method);
         env.add_template("chat", template_str)
             .map_err(|e| Error::Other(format!("template error: {e}")))?;
 
@@ -224,9 +225,42 @@ impl Tokenizer {
     /// Convenience method that applies template and encodes the result.
     pub fn encode_chat(&self, messages: &[ChatMessage]) -> Result<Vec<u32>> {
         let prompt = self.apply_chat_template(messages)?;
-        println!("Formatted prompt:\n{}", prompt);
         self.encode(&prompt)
     }
+}
+
+fn python_string_method(
+    _state: &State,
+    value: &Value,
+    method: &str,
+    args: &[Value],
+) -> std::result::Result<Value, JinjaError> {
+    if !matches!(method, "startswith" | "endswith") {
+        return Err(JinjaError::from(ErrorKind::UnknownMethod));
+    }
+    let source = value.as_str().ok_or_else(|| {
+        JinjaError::new(
+            ErrorKind::InvalidOperation,
+            format!("{method} requires a string receiver"),
+        )
+    })?;
+    if args.len() != 1 {
+        return Err(JinjaError::new(
+            ErrorKind::InvalidOperation,
+            format!("{method} requires exactly one argument"),
+        ));
+    }
+    let needle = args[0].as_str().ok_or_else(|| {
+        JinjaError::new(
+            ErrorKind::InvalidOperation,
+            format!("{method} requires a string argument"),
+        )
+    })?;
+    Ok(Value::from(if method == "startswith" {
+        source.starts_with(needle)
+    } else {
+        source.ends_with(needle)
+    }))
 }
 
 #[cfg(test)]
@@ -244,5 +278,22 @@ mod tests {
 
         let system = ChatMessage::system("You are helpful");
         assert_eq!(system.role, "system");
+    }
+
+    #[test]
+    fn test_qwen_python_string_methods() {
+        let mut env = Environment::new();
+        env.set_unknown_method_callback(python_string_method);
+        env.add_template(
+            "qwen",
+            "{{ value.startswith('tool') }}|{{ value.endswith('call') }}",
+        )
+        .unwrap();
+        let rendered = env
+            .get_template("qwen")
+            .unwrap()
+            .render(serde_json::json!({"value":"tool_call"}))
+            .unwrap();
+        assert_eq!(rendered, "true|true");
     }
 }

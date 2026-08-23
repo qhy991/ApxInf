@@ -4,11 +4,9 @@
 //! (as a .npy file) + grid_thw, runs the vision tower, and writes the
 //! primary + 3 deepstack embeddings as .npy files for external comparison.
 //!
-//! Set `APXINF_QWEN3VL_MODEL_DIR` to the local Qwen3-VL model directory.
-//!
 //! Usage:
 //!   cargo run --example vision_check --features cuda -- \
-//!       "$APXINF_QWEN3VL_MODEL_DIR" \
+//!       /hanjinchen/models/Qwen3-VL-2B-Instruct \
 //!       tests/qwen3vl_reference/image_pixel_values.npy \
 //!       "1 20 20" \
 //!       /tmp/vision_out

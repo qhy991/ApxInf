@@ -1,0 +1,29 @@
+{
+  "schema": "apxinf.qwen25_omni.operator_candidate.v1",
+  "completed_at": "2026-08-22T15:58:00Z",
+  "model": "Qwen/Qwen2.5-Omni-3B",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "operator": "attention_softmax_bf16_global_exp_cache",
+  "contract": {
+    "dtype": "bf16",
+    "rows": 2,
+    "cols": 32768,
+    "kv_offset": 32767,
+    "comparison": "complete BF16 output against scalar max/sum order"
+  },
+  "broker_job": "gpuq-b8f5e05cdb75",
+  "test": "attention_softmax_global_exp_cache_decode_is_bit_exact_at_32k",
+  "passed": true,
+  "exact": true,
+  "candidate_binary_sha256": "881491b0de93a73c7e77b050c11a83436cdb5a0beb8b99b72d7871c777c5c035",
+  "fused_candidate": {
+    "broker_job": "gpuq-99792400416e",
+    "binary_sha256": "321e8a6db1e932e5138170070ae4bd27183e42cd3143128c75d477f10ccaba5e",
+    "passed": true,
+    "exact": true
+  },
+  "limitations": [
+    "The operator test proves arithmetic equivalence, not end-to-end timing.",
+    "The production model separately validates 16 decode rows and complete token trajectories."
+  ]
+}

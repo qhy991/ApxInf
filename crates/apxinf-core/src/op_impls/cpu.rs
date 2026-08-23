@@ -87,6 +87,225 @@ impl Backend for CpuBackend {
         Tensor::from_f32(dims.to_vec(), &out)
     }
 
+    fn rope_mrope(&self, input: &Tensor, n_heads: usize, head_dim: usize,
+                  theta: f32, sections: [usize; 3], pos_ids: &[u32]) -> Result<Tensor> {
+        let data = input.as_f32()?;
+        let dims = input.shape().dims();
+        let seq_len = dims[0];
+        if pos_ids.len() != seq_len * 3 || sections.iter().sum::<usize>() != head_dim / 2 {
+            return Err(Error::Other("rope_mrope: invalid positions or sections".into()));
+        }
+        let half = head_dim / 2;
+        let mut out = vec![0.0_f32; data.len()];
+        for seq in 0..seq_len {
+            for head in 0..n_heads {
+                let base = seq * n_heads * head_dim + head * head_dim;
+                for pair in 0..half {
+                    let remainder = pair % 3;
+                    let axis = if remainder == 1 && pair < sections[1] * 3 {
+                        1
+                    } else if remainder == 2 && pair < sections[2] * 3 {
+                        2
+                    } else {
+                        0
+                    };
+                    let frequency = 1.0 / theta.powf(2.0 * pair as f32 / head_dim as f32);
+                    let angle = pos_ids[seq * 3 + axis] as f32 * frequency;
+                    let (sin, cos) = angle.sin_cos();
+                    let first = data[base + pair];
+                    let second = data[base + half + pair];
+                    out[base + pair] = first * cos - second * sin;
+                    out[base + half + pair] = first * sin + second * cos;
+                }
+            }
+        }
+        Tensor::from_f32(dims.to_vec(), &out)
+    }
+
+    fn rope_tmrope(&self, input: &Tensor, n_heads: usize, head_dim: usize,
+                   theta: f32, sections: [usize; 3], pos_ids: &[u32]) -> Result<Tensor> {
+        let data = input.as_f32()?;
+        let dims = input.shape().dims();
+        let seq_len = dims[0];
+        if pos_ids.len() != seq_len * 3 || sections.iter().sum::<usize>() != head_dim / 2 {
+            return Err(Error::Other("rope_tmrope: invalid positions or sections".into()));
+        }
+        let half = head_dim / 2;
+        let first_boundary = sections[0] * 2;
+        let second_boundary = first_boundary + sections[1] * 2;
+        let mut output = vec![0.0_f32; data.len()];
+        for seq in 0..seq_len {
+            for head in 0..n_heads {
+                let base = seq * n_heads * head_dim + head * head_dim;
+                for dimension in 0..head_dim {
+                    let axis = if dimension < first_boundary {
+                        0
+                    } else if dimension < second_boundary {
+                        1
+                    } else {
+                        2
+                    };
+                    let pair = dimension % half;
+                    let frequency = 1.0 / theta.powf(2.0 * pair as f32 / head_dim as f32);
+                    let angle = pos_ids[seq * 3 + axis] as f32 * frequency;
+                    let (sin, cos) = angle.sin_cos();
+                    let rotated = if dimension < half {
+                        -data[base + dimension + half]
+                    } else {
+                        data[base + dimension - half]
+                    };
+                    output[base + dimension] = data[base + dimension] * cos + rotated * sin;
+                }
+            }
+        }
+        Tensor::from_f32(dims.to_vec(), &output)
+    }
+
+    fn layer_norm(&self, input: &Tensor, weight: &Tensor, bias: &Tensor,
+                  eps: f32) -> Result<Tensor> {
+        let data = input.as_f32()?;
+        let weight = weight.as_f32()?;
+        let bias = bias.as_f32()?;
+        let dims = input.shape().dims();
+        let cols = *dims.last().ok_or_else(|| Error::Other("layer_norm: scalar input".into()))?;
+        if weight.len() != cols || bias.len() != cols || data.len() % cols != 0 {
+            return Err(Error::Other("layer_norm: shape mismatch".into()));
+        }
+        let mut output = vec![0.0_f32; data.len()];
+        for (input_row, output_row) in data.chunks_exact(cols).zip(output.chunks_exact_mut(cols)) {
+            let mean = input_row.iter().sum::<f32>() / cols as f32;
+            let variance = input_row.iter().map(|value| (value - mean).powi(2)).sum::<f32>()
+                / cols as f32;
+            let inverse = 1.0 / (variance + eps).sqrt();
+            for col in 0..cols {
+                output_row[col] = (input_row[col] - mean) * inverse * weight[col] + bias[col];
+            }
+        }
+        Tensor::from_f32(dims.to_vec(), &output)
+    }
+
+    fn gelu_tanh(&self, input: &Tensor) -> Result<Tensor> {
+        let values = input.as_f32()?;
+        let scale = (2.0_f32 / std::f32::consts::PI).sqrt();
+        let output = values
+            .iter()
+            .map(|value| 0.5 * value * (1.0 + (scale * (value + 0.044715 * value.powi(3))).tanh()))
+            .collect::<Vec<_>>();
+        Tensor::from_f32(input.shape().dims().to_vec(), &output)
+    }
+
+    fn add_bias(&self, input: &Tensor, bias: &Tensor) -> Result<Tensor> {
+        let data = input.as_f32()?;
+        let bias = bias.as_f32()?;
+        let cols = *input.shape().dims().last()
+            .ok_or_else(|| Error::Other("add_bias: scalar input".into()))?;
+        if bias.len() != cols || data.len() % cols != 0 {
+            return Err(Error::Other("add_bias: shape mismatch".into()));
+        }
+        let output = data
+            .iter()
+            .enumerate()
+            .map(|(index, value)| value + bias[index % cols])
+            .collect::<Vec<_>>();
+        Tensor::from_f32(input.shape().dims().to_vec(), &output)
+    }
+
+    fn rope_vision_2d(&self, input: &Tensor, n_heads: usize, head_dim: usize,
+                      theta: f32, pos_ids: &[u32]) -> Result<Tensor> {
+        let data = input.as_f32()?;
+        let dims = input.shape().dims();
+        let seq_len = dims[0];
+        if pos_ids.len() != seq_len * 2 || head_dim % 4 != 0 {
+            return Err(Error::Other("rope_vision_2d: invalid positions or head dimension".into()));
+        }
+        let half = head_dim / 2;
+        let axis_pairs = half / 2;
+        let mut output = vec![0.0_f32; data.len()];
+        for seq in 0..seq_len {
+            for head in 0..n_heads {
+                let base = seq * n_heads * head_dim + head * head_dim;
+                for pair in 0..half {
+                    let axis = usize::from(pair >= axis_pairs);
+                    let pair_in_axis = pair % axis_pairs;
+                    let frequency = 1.0 / theta.powf(2.0 * pair_in_axis as f32 / half as f32);
+                    let angle = pos_ids[seq * 2 + axis] as f32 * frequency;
+                    let (sin, cos) = angle.sin_cos();
+                    let first = data[base + pair];
+                    let second = data[base + half + pair];
+                    output[base + pair] = first * cos - second * sin;
+                    output[base + half + pair] = first * sin + second * cos;
+                }
+            }
+        }
+        Tensor::from_f32(dims.to_vec(), &output)
+    }
+
+    fn vision_sdpa(&self, q: &Tensor, k: &Tensor, v: &Tensor,
+                   seq_len: usize, n_heads: usize, head_dim: usize) -> Result<Tensor> {
+        full_attention_cpu(q, k, v, seq_len, n_heads, head_dim, None)
+    }
+
+    fn grouped_sdpa(&self, q: &Tensor, k: &Tensor, v: &Tensor,
+                    seq_len: usize, n_heads: usize, head_dim: usize,
+                    group_ids: &[u32]) -> Result<Tensor> {
+        if group_ids.len() != seq_len {
+            return Err(Error::Other(format!(
+                "grouped_sdpa: {} group ids for {seq_len} tokens",
+                group_ids.len()
+            )));
+        }
+        full_attention_cpu(q, k, v, seq_len, n_heads, head_dim, Some(group_ids))
+    }
+
+    fn im2col1d(&self, input: &Tensor, kernel: usize, stride: usize,
+                padding: usize) -> Result<Tensor> {
+        let data = input.as_f32()?;
+        let dims = input.shape().dims();
+        if dims.len() != 2 || kernel == 0 || stride == 0 {
+            return Err(Error::Other("im2col1d: expected rank-2 input and positive kernel/stride".into()));
+        }
+        let (frames, channels) = (dims[0], dims[1]);
+        let padded = frames.checked_add(2 * padding)
+            .ok_or_else(|| Error::Other("im2col1d: padded length overflow".into()))?;
+        if padded < kernel {
+            return Err(Error::Other("im2col1d: kernel exceeds padded input".into()));
+        }
+        let output_frames = (padded - kernel) / stride + 1;
+        let mut output = vec![0.0_f32; output_frames * channels * kernel];
+        for out_frame in 0..output_frames {
+            for channel in 0..channels {
+                for tap in 0..kernel {
+                    let padded_frame = out_frame * stride + tap;
+                    if let Some(frame) = padded_frame.checked_sub(padding).filter(|frame| *frame < frames) {
+                        output[out_frame * channels * kernel + channel * kernel + tap] =
+                            data[frame * channels + channel];
+                    }
+                }
+            }
+        }
+        Tensor::from_f32(vec![output_frames, channels * kernel], &output)
+    }
+
+    fn avg_pool1d(&self, input: &Tensor, kernel: usize, stride: usize) -> Result<Tensor> {
+        let data = input.as_f32()?;
+        let dims = input.shape().dims();
+        if dims.len() != 2 || kernel == 0 || stride == 0 || dims[0] < kernel {
+            return Err(Error::Other("avg_pool1d: invalid input or parameters".into()));
+        }
+        let (frames, channels) = (dims[0], dims[1]);
+        let output_frames = (frames - kernel) / stride + 1;
+        let mut output = vec![0.0_f32; output_frames * channels];
+        for out_frame in 0..output_frames {
+            for channel in 0..channels {
+                let sum = (0..kernel)
+                    .map(|tap| data[(out_frame * stride + tap) * channels + channel])
+                    .sum::<f32>();
+                output[out_frame * channels + channel] = sum / kernel as f32;
+            }
+        }
+        Tensor::from_f32(vec![output_frames, channels], &output)
+    }
+
     fn embedding(&self, table: &Tensor, ids: &[u32]) -> Result<Tensor> {
         let table_data = table.as_f32()?;
         let embed_dim = table.shape().dims()[1];
@@ -214,4 +433,102 @@ struct NoopGraph;
 
 impl Graph for NoopGraph {
     fn replay(&self) -> Result<()> { Ok(()) }
+}
+
+fn full_attention_cpu(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    seq_len: usize,
+    n_heads: usize,
+    head_dim: usize,
+    group_ids: Option<&[u32]>,
+) -> Result<Tensor> {
+    let q = q.as_f32()?;
+    let k = k.as_f32()?;
+    let v = v.as_f32()?;
+    let expected = seq_len * n_heads * head_dim;
+    if q.len() != expected || k.len() != expected || v.len() != expected {
+        return Err(Error::Other("non-causal attention: shape mismatch".into()));
+    }
+    let scale = 1.0 / (head_dim as f32).sqrt();
+    let mut output = vec![0.0_f32; expected];
+    for query in 0..seq_len {
+        for head in 0..n_heads {
+            let query_offset = (query * n_heads + head) * head_dim;
+            let mut scores = vec![f32::NEG_INFINITY; seq_len];
+            for key in 0..seq_len {
+                if group_ids.is_some_and(|groups| groups[query] != groups[key]) {
+                    continue;
+                }
+                let key_offset = (key * n_heads + head) * head_dim;
+                scores[key] = (0..head_dim)
+                    .map(|dim| q[query_offset + dim] * k[key_offset + dim])
+                    .sum::<f32>()
+                    * scale;
+            }
+            let maximum = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let denominator = scores
+                .iter()
+                .filter(|score| score.is_finite())
+                .map(|score| (score - maximum).exp())
+                .sum::<f32>();
+            for key in 0..seq_len {
+                if !scores[key].is_finite() {
+                    continue;
+                }
+                let probability = (scores[key] - maximum).exp() / denominator;
+                let value_offset = (key * n_heads + head) * head_dim;
+                for dim in 0..head_dim {
+                    output[query_offset + dim] += probability * v[value_offset + dim];
+                }
+            }
+        }
+    }
+    Tensor::from_f32(vec![seq_len, n_heads * head_dim], &output)
+}
+
+#[cfg(test)]
+mod omni_operator_tests {
+    use super::*;
+
+    #[test]
+    fn im2col_and_average_pool_match_small_reference() {
+        let backend = CpuBackend;
+        let input = Tensor::from_f32(vec![3, 1], &[1.0, 2.0, 3.0]).unwrap();
+        let columns = backend.im2col1d(&input, 3, 1, 1).unwrap();
+        assert_eq!(columns.shape().dims(), [3, 3]);
+        assert_eq!(
+            columns.to_f32_vec().unwrap(),
+            vec![0.0, 1.0, 2.0, 1.0, 2.0, 3.0, 2.0, 3.0, 0.0]
+        );
+        let pooled = backend.avg_pool1d(&input, 2, 1).unwrap();
+        assert_eq!(pooled.to_f32_vec().unwrap(), vec![1.5, 2.5]);
+    }
+
+    #[test]
+    fn grouped_attention_cannot_cross_group_boundary() {
+        let backend = CpuBackend;
+        let q = Tensor::from_f32(vec![2, 1, 1], &[1.0, 1.0]).unwrap();
+        let k = Tensor::from_f32(vec![2, 1, 1], &[1.0, 1.0]).unwrap();
+        let v = Tensor::from_f32(vec![2, 1, 1], &[2.0, 8.0]).unwrap();
+        let isolated = backend.grouped_sdpa(&q, &k, &v, 2, 1, 1, &[0, 1]).unwrap();
+        assert_eq!(isolated.to_f32_vec().unwrap(), vec![2.0, 8.0]);
+        let shared = backend.vision_sdpa(&q, &k, &v, 2, 1, 1).unwrap();
+        assert_eq!(shared.to_f32_vec().unwrap(), vec![5.0, 5.0]);
+    }
+
+    #[test]
+    fn tmrope_uses_contiguous_full_dimension_axes() {
+        let backend = CpuBackend;
+        let input = Tensor::from_f32(vec![1, 1, 6], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+            .unwrap();
+        let output = backend
+            .rope_tmrope(&input, 1, 6, 10_000.0, [1, 1, 1], &[0, 0, 1])
+            .unwrap()
+            .to_f32_vec()
+            .unwrap();
+        assert_eq!(&output[..4], &[1.0, 2.0, 3.0, 4.0]);
+        assert_ne!(&output[4..], &[5.0, 6.0]);
+    }
 }

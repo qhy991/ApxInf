@@ -6,7 +6,6 @@ build-backend = "maturin"
 name = "apxinf-py"
 version = "0.1.0"
 description = "PyO3 bindings for the ApxInf VLA runtime (L0/L1 bare-model infer)."
-license = { text = "Apache-2.0" }
 requires-python = ">=3.9"
 dependencies = ["numpy>=1.21"]
 

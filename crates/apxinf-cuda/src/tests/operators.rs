@@ -1,14 +1,24 @@
 use apxinf_core::{DType, Error, Result, Shape, Tensor};
 
-use crate::buffer::CudaBuffer;
+use crate::backend::vision_group_plan;
+use crate::buffer::{CudaBuffer, HostMappedBuffer};
 use crate::context::CudaContext;
-use crate::kernels::activation::{gelu_tanh, silu};
-use crate::kernels::attention::{causal_mask, softmax, softmax_causal, vision};
+use crate::kernels::activation::{gelu_tanh, silu, silu_mul};
+use crate::kernels::attention::{
+    causal_mask, grouped, grouped_indexed, sdpa_with_batched_prefill, softmax, softmax_causal,
+    softmax_causal_bf16_scaled_in_place_gqa_packed, softmax_causal_bf16_scaled_plain,
+    softmax_causal_bf16_scaled_plain_gqa_packed, softmax_causal_with_exp_cache,
+    softmax_causal_with_global_exp_cache, split_gqa_qkv_bias_bf16, vision,
+};
 use crate::kernels::cache::append;
 use crate::kernels::elementwise::{add, add_bias, mul, scale};
 use crate::kernels::embedding::lookup;
 use crate::kernels::norm::{layer, rms};
-use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_vision_2d};
+use crate::kernels::preprocess::{avg_pool1d_bf16, im2col1d_bf16};
+use crate::kernels::qwen35_attention;
+use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
+use crate::kernels::selection::argmax_bf16_into;
+use crate::CudaKVCache;
 
 fn gpu_ptr(tensor: &Tensor) -> Result<*mut std::ffi::c_void> {
     Ok(CudaBuffer::from_tensor(tensor).map_err(Error::Cuda)?.ptr())
@@ -27,6 +37,41 @@ fn silu_ref(x: f32) -> f32 {
 }
 
 #[test]
+fn argmax_bf16_matches_lowest_index_cpu_contract() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let run = |values: &[f32]| {
+        let tensor = upload_fp32_as_bf16(&ctx, values, vec![values.len()]).unwrap();
+        let logits = CudaBuffer::from_tensor(&tensor).unwrap();
+        let partials = CudaBuffer::alloc_zeros(
+            crate::kernels::selection::ARGMAX_PARTIAL_BYTES,
+            ctx.device_id(),
+        )
+        .unwrap();
+        let output = HostMappedBuffer::alloc(4, ctx.device_id()).unwrap();
+        argmax_bf16_into(
+            &ctx,
+            &logits,
+            &partials,
+            output.address(),
+            values.len(),
+        )
+        .unwrap();
+        ctx.synchronize().unwrap();
+        output.read_u32().unwrap()
+    };
+
+    assert_eq!(run(&[1.0, 5.0, 5.0, 4.0]), 1);
+    assert_eq!(run(&[-0.0, 0.0]), 0);
+    assert_eq!(run(&[f32::NAN, 3.0, 3.0]), 1);
+    assert_eq!(run(&[f32::NAN, f32::NAN]), 0);
+
+    let mut full_vocab = vec![-4.0; 151_936];
+    full_vocab[17] = 8.0;
+    full_vocab[150_000] = 8.0;
+    assert_eq!(run(&full_vocab), 17);
+}
+
+#[test]
 fn silu_bf16_matches_fp32_reference() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     // A mix of magnitudes and signs so we exercise the tails of exp/sigmoid.
@@ -38,6 +83,27 @@ fn silu_bf16_matches_fp32_reference() {
     let actual = download_bf16_as_fp32(&bf_out).unwrap();
 
     assert_bf16_close_elementwise(&actual, &expected);
+}
+
+#[test]
+fn silu_mul_separate_bf16_is_bit_exact() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (rows, cols) = (4usize, 257usize);
+    let gate_values = (0..rows * cols)
+        .map(|index| ((index as f32 * 0.017) - 7.0).sin() * 6.0)
+        .collect::<Vec<_>>();
+    let up_values = (0..rows * cols)
+        .map(|index| ((index as f32 * 0.023) - 3.0).cos() * 4.0)
+        .collect::<Vec<_>>();
+    let gate = upload_fp32_as_bf16(&ctx, &gate_values, vec![rows, cols]).unwrap();
+    let up = upload_fp32_as_bf16(&ctx, &up_values, vec![rows, cols]).unwrap();
+    let activated = silu(&ctx, &gate).unwrap();
+    let separate = mul(&ctx, &activated, &up).unwrap();
+    let fused = silu_mul(&ctx, &gate, &up).unwrap();
+    assert_eq!(
+        download_bf16_as_fp32(&fused).unwrap(),
+        download_bf16_as_fp32(&separate).unwrap()
+    );
 }
 
 // ── Elementwise: add ──────────────────────────────────────────────
@@ -328,6 +394,494 @@ fn attention_softmax_bf16_matches_fp32_reference() {
     assert_bf16_close_reduction(&download_bf16_as_fp32(&out).unwrap(), &expected);
 }
 
+#[test]
+fn attention_softmax_exp_cache_bf16_is_bit_exact() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, cols) = (3usize, 2usize, 257usize);
+    let rows = seq_len * n_heads;
+    let input = (0..rows * cols)
+        .map(|index| ((index as f32 * 0.019) - 4.0).sin())
+        .collect::<Vec<_>>();
+    let tensor = upload_fp32_as_bf16(&ctx, &input, vec![rows, cols]).unwrap();
+    let scalar = softmax_causal_with_exp_cache(&ctx, &tensor, 4, n_heads as u32, false)
+        .unwrap();
+    let cached = softmax_causal_with_exp_cache(&ctx, &tensor, 4, n_heads as u32, true)
+        .unwrap();
+    assert_eq!(
+        download_bf16_as_fp32(&cached).unwrap(),
+        download_bf16_as_fp32(&scalar).unwrap()
+    );
+}
+
+#[test]
+fn attention_softmax_parallel_max_is_bit_exact_at_prefill_cache_boundary() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, cols) = (3usize, 2usize, 4_096usize);
+    let rows = seq_len * n_heads;
+    let input = (0..rows * cols)
+        .map(|index| {
+            let bits = (index as u32)
+                .wrapping_mul(22_695_477)
+                .wrapping_add(1);
+            (bits & 0xffff) as f32 / 4_096.0 - 8.0
+        })
+        .collect::<Vec<_>>();
+    let tensor = upload_fp32_as_bf16(&ctx, &input, vec![rows, cols]).unwrap();
+    let parallel = softmax_causal_with_exp_cache(
+        &ctx,
+        &tensor,
+        (cols - seq_len) as u32,
+        n_heads as u32,
+        false,
+    )
+    .unwrap();
+    let sequential = softmax_causal_with_exp_cache(
+        &ctx,
+        &tensor,
+        (cols - seq_len) as u32,
+        n_heads as u32,
+        true,
+    )
+    .unwrap();
+    let parallel = download_bf16_as_fp32(&parallel).unwrap();
+    let sequential = download_bf16_as_fp32(&sequential).unwrap();
+    assert_eq!(parallel.len(), sequential.len());
+    if let Some((index, (parallel, sequential))) = parallel
+        .iter()
+        .zip(&sequential)
+        .enumerate()
+        .find(|(_, (parallel, sequential))| parallel != sequential)
+    {
+        panic!(
+            "parallel max differed at index {index}: \
+             parallel={parallel:?}, sequential={sequential:?}"
+        );
+    }
+}
+
+#[test]
+fn attention_softmax_parallel_max_is_bit_exact_at_decode_cache_limit() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (n_heads, cols) = (2usize, 11_264usize);
+    let input = (0..n_heads * cols)
+        .map(|index| {
+            let bits = (index as u32)
+                .wrapping_mul(1_664_525)
+                .wrapping_add(1_013_904_223);
+            (bits & 0xffff) as f32 / 4_096.0 - 8.0
+        })
+        .collect::<Vec<_>>();
+    let tensor = upload_fp32_as_bf16(&ctx, &input, vec![n_heads, cols]).unwrap();
+    let scalar = softmax_causal_with_exp_cache(
+        &ctx,
+        &tensor,
+        (cols - 1) as u32,
+        n_heads as u32,
+        false,
+    )
+    .unwrap();
+    let cached = softmax_causal_with_exp_cache(
+        &ctx,
+        &tensor,
+        (cols - 1) as u32,
+        n_heads as u32,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        download_bf16_as_fp32(&cached).unwrap(),
+        download_bf16_as_fp32(&scalar).unwrap()
+    );
+}
+
+#[test]
+fn attention_softmax_fused_scale_is_bit_exact_across_long_prefill() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, head_dim) = (3usize, 2usize, 128usize);
+    let rows = seq_len * n_heads;
+    let score_scale = 1.0 / (head_dim as f32).sqrt();
+    for cols in [4_097usize, 8_192, 12_288] {
+        let input = (0..rows * cols)
+            .map(|index| {
+                let bits = (index as u32)
+                    .wrapping_mul(1_103_515_245)
+                    .wrapping_add(12_345);
+                (bits & 0xffff) as f32 / 8_192.0 - 4.0
+            })
+            .collect::<Vec<_>>();
+        let tensor = upload_fp32_as_bf16(&ctx, &input, vec![rows, cols]).unwrap();
+        let scaled = scale(&ctx, &tensor, score_scale).unwrap();
+        let separate = softmax_causal_with_exp_cache(
+            &ctx,
+            &scaled,
+            (cols - seq_len) as u32,
+            n_heads as u32,
+            false,
+        )
+        .unwrap();
+        let fused = softmax_causal_bf16_scaled_plain(
+            &ctx,
+            &tensor,
+            (cols - seq_len) as u32,
+            n_heads as u32,
+            score_scale,
+        )
+        .unwrap();
+        let separate = download_bf16_as_fp32(&separate).unwrap();
+        let fused = download_bf16_as_fp32(&fused).unwrap();
+        assert_eq!(separate.len(), fused.len());
+        if let Some((index, (separate, fused))) = separate
+            .iter()
+            .zip(&fused)
+            .enumerate()
+            .find(|(_, (separate, fused))| separate != fused)
+        {
+            panic!(
+                "fused scale differed at {cols} columns, index {index}: \
+                 separate={separate:?}, fused={fused:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn attention_softmax_packed_gqa_rows_match_standard_layout() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, n_kv_heads, cols) = (3usize, 4usize, 2usize, 4_097usize);
+    let gqa_ratio = n_heads / n_kv_heads;
+    let rows = seq_len * n_heads;
+    let score_scale = 1.0 / 128.0f32.sqrt();
+    let row_major = (0..rows * cols)
+        .map(|index| {
+            let bits = (index as u32)
+                .wrapping_mul(1_103_515_245)
+                .wrapping_add(12_345);
+            (bits & 0xffff) as f32 / 8_192.0 - 4.0
+        })
+        .collect::<Vec<_>>();
+    let mut packed = vec![0.0f32; row_major.len()];
+    for kv_head in 0..n_kv_heads {
+        for sequence in 0..seq_len {
+            for local_head in 0..gqa_ratio {
+                let source_row = sequence * n_heads + kv_head * gqa_ratio + local_head;
+                let packed_row = (kv_head * seq_len + sequence) * gqa_ratio + local_head;
+                packed[packed_row * cols..(packed_row + 1) * cols]
+                    .copy_from_slice(&row_major[source_row * cols..(source_row + 1) * cols]);
+            }
+        }
+    }
+    let row_major_tensor =
+        upload_fp32_as_bf16(&ctx, &row_major, vec![rows, cols]).unwrap();
+    let packed_tensor = upload_fp32_as_bf16(&ctx, &packed, vec![rows, cols]).unwrap();
+    let kv_offset = (cols - seq_len) as u32;
+    let standard = softmax_causal_bf16_scaled_plain(
+        &ctx,
+        &row_major_tensor,
+        kv_offset,
+        n_heads as u32,
+        score_scale,
+    )
+    .unwrap();
+    let packed = softmax_causal_bf16_scaled_plain_gqa_packed(
+        &ctx,
+        &packed_tensor,
+        kv_offset,
+        n_heads as u32,
+        gqa_ratio as u32,
+        score_scale,
+    )
+    .unwrap();
+    let standard = download_bf16_as_fp32(&standard).unwrap();
+    let packed = download_bf16_as_fp32(&packed).unwrap();
+    let mut unpacked = vec![0.0f32; packed.len()];
+    for kv_head in 0..n_kv_heads {
+        for sequence in 0..seq_len {
+            for local_head in 0..gqa_ratio {
+                let destination_row = sequence * n_heads + kv_head * gqa_ratio + local_head;
+                let packed_row = (kv_head * seq_len + sequence) * gqa_ratio + local_head;
+                unpacked[destination_row * cols..(destination_row + 1) * cols]
+                    .copy_from_slice(&packed[packed_row * cols..(packed_row + 1) * cols]);
+            }
+        }
+    }
+    assert_eq!(unpacked, standard);
+}
+
+#[test]
+fn attention_softmax_in_place_scale_matches_plain_long_boundaries() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, gqa_ratio) = (2usize, 4usize, 2usize);
+    let rows = seq_len * n_heads;
+    let score_scale = 1.0 / 128.0f32.sqrt();
+    for cols in [4_097usize, 8_192, 12_288] {
+        let values = (0..rows * cols)
+            .map(|index| {
+                let bits = (index as u32)
+                    .wrapping_mul(22_695_477)
+                    .wrapping_add(1);
+                (bits & 0xffff) as f32 / 8_192.0 - 4.0
+            })
+            .collect::<Vec<_>>();
+        let plain_input = upload_fp32_as_bf16(&ctx, &values, vec![rows, cols]).unwrap();
+        let inplace_input = upload_fp32_as_bf16(&ctx, &values, vec![rows, cols]).unwrap();
+        let kv_offset = (cols - seq_len) as u32;
+        let plain = softmax_causal_bf16_scaled_plain_gqa_packed(
+            &ctx,
+            &plain_input,
+            kv_offset,
+            n_heads as u32,
+            gqa_ratio as u32,
+            score_scale,
+        )
+        .unwrap();
+        let inplace = softmax_causal_bf16_scaled_in_place_gqa_packed(
+            &ctx,
+            inplace_input,
+            kv_offset,
+            n_heads as u32,
+            gqa_ratio as u32,
+            score_scale,
+        )
+        .unwrap();
+        assert_eq!(
+            download_bf16_as_fp32(&inplace).unwrap(),
+            download_bf16_as_fp32(&plain).unwrap(),
+            "in-place scale differed at {cols} columns"
+        );
+    }
+}
+
+#[test]
+fn attention_softmax_global_exp_cache_decode_is_bit_exact_at_32k() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (n_heads, cols) = (2usize, 32_768usize);
+    let input = (0..n_heads * cols)
+        .map(|index| ((index as f32 * 0.019) - 4.0).sin())
+        .collect::<Vec<_>>();
+    let tensor = upload_fp32_as_bf16(&ctx, &input, vec![n_heads, cols]).unwrap();
+    let scalar = softmax_causal_with_exp_cache(
+        &ctx,
+        &tensor,
+        (cols - 1) as u32,
+        n_heads as u32,
+        false,
+    )
+    .unwrap();
+    let cached = softmax_causal_with_global_exp_cache(
+        &ctx,
+        &tensor,
+        (cols - 1) as u32,
+        n_heads as u32,
+    )
+    .unwrap();
+    assert_eq!(
+        download_bf16_as_fp32(&cached).unwrap(),
+        download_bf16_as_fp32(&scalar).unwrap()
+    );
+}
+
+#[test]
+fn attention_softmax_global_exp_cache_decode_is_bit_exact_across_long_boundaries() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let n_heads = 2usize;
+    for cols in [11_265usize, 12_288, 16_385, 32_767] {
+        let input = (0..n_heads * cols)
+            .map(|index| {
+                let bits = (index as u32)
+                    .wrapping_mul(1_664_525)
+                    .wrapping_add(1_013_904_223);
+                let unit = (bits & 0xffff) as f32 / 65_535.0;
+                unit * 24.0 - 12.0
+            })
+            .collect::<Vec<_>>();
+        let tensor = upload_fp32_as_bf16(&ctx, &input, vec![n_heads, cols]).unwrap();
+        let scalar = softmax_causal_with_exp_cache(
+            &ctx,
+            &tensor,
+            (cols - 1) as u32,
+            n_heads as u32,
+            false,
+        )
+        .unwrap();
+        let cached = softmax_causal_with_global_exp_cache(
+            &ctx,
+            &tensor,
+            (cols - 1) as u32,
+            n_heads as u32,
+        )
+        .unwrap();
+        let cached = download_bf16_as_fp32(&cached).unwrap();
+        let scalar = download_bf16_as_fp32(&scalar).unwrap();
+        assert_eq!(cached.len(), scalar.len());
+        if let Some((index, (cached, scalar))) = cached
+            .iter()
+            .zip(&scalar)
+            .enumerate()
+            .find(|(_, (cached, scalar))| cached != scalar)
+        {
+            panic!(
+                "global exp cache differed at {cols} columns, index {index}: \
+                 cached={cached:?}, scalar={scalar:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn attention_softmax_bf16_crosses_legacy_grid_y_boundary() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let rows = 65_536usize;
+    let cols = 1usize;
+    let n_heads = 16u32;
+    let input = vec![0.0; rows * cols];
+    let tensor = upload_fp32_as_bf16(&ctx, &input, vec![rows, cols]).unwrap();
+    let output = softmax_causal(&ctx, &tensor, 0, n_heads).unwrap();
+    let actual = download_bf16_as_fp32(&output).unwrap();
+    assert_eq!(actual.len(), rows);
+    assert!(actual.iter().all(|value| (*value - 1.0).abs() <= 1e-3));
+}
+
+#[test]
+fn attention_softmax_exp_cache_crosses_legacy_grid_y_boundary() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let rows = 65_536usize;
+    let cols = 1usize;
+    let tensor = upload_fp32_as_bf16(&ctx, &vec![0.0; rows], vec![rows, cols]).unwrap();
+    let output = softmax_causal_with_exp_cache(&ctx, &tensor, 0, 16, true).unwrap();
+    let actual = download_bf16_as_fp32(&output).unwrap();
+    assert_eq!(actual.len(), rows);
+    assert!(actual.iter().all(|value| (*value - 1.0).abs() <= 1e-3));
+}
+
+#[test]
+fn gqa_batched_prefill_matches_scalar_bf16() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, n_kv_heads, head_dim, max_seq_len) =
+        (4usize, 4usize, 2usize, 16usize, 8usize);
+    let q_values = (0..seq_len * n_heads * head_dim)
+        .map(|index| ((index as f32 * 0.031) - 2.0).sin())
+        .collect::<Vec<_>>();
+    let k_values = (0..seq_len * n_kv_heads * head_dim)
+        .map(|index| ((index as f32 * 0.047) - 1.0).cos())
+        .collect::<Vec<_>>();
+    let v_values = (0..seq_len * n_kv_heads * head_dim)
+        .map(|index| (index as f32 * 0.013) - 0.75)
+        .collect::<Vec<_>>();
+    let q = upload_fp32_as_bf16(
+        &ctx,
+        &q_values,
+        vec![seq_len, n_heads, head_dim],
+    )
+    .unwrap();
+    let k = upload_fp32_as_bf16(
+        &ctx,
+        &k_values,
+        vec![seq_len, n_kv_heads, head_dim],
+    )
+    .unwrap();
+    let v = upload_fp32_as_bf16(
+        &ctx,
+        &v_values,
+        vec![seq_len, n_kv_heads, head_dim],
+    )
+    .unwrap();
+    let cache = CudaKVCache::new(
+        ctx.device_id(),
+        1,
+        n_kv_heads,
+        head_dim,
+        max_seq_len,
+    )
+    .unwrap();
+    cache.append(&ctx, 0, &k, &v, seq_len).unwrap();
+
+    let scalar = sdpa_with_batched_prefill(
+        &ctx,
+        &q,
+        &cache,
+        0,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        seq_len,
+        max_seq_len,
+        0,
+        false,
+    )
+    .unwrap();
+    let batched = sdpa_with_batched_prefill(
+        &ctx,
+        &q,
+        &cache,
+        0,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        seq_len,
+        max_seq_len,
+        0,
+        true,
+    )
+    .unwrap();
+    let scalar = download_bf16_as_fp32(&scalar).unwrap();
+    let batched = download_bf16_as_fp32(&batched).unwrap();
+    assert_bf16_close_reduction(&batched, &scalar);
+}
+
+#[test]
+fn gqa_flattened_long_prefill_matches_scalar_bf16() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, kv_len, n_heads, n_kv_heads, head_dim, max_seq_len) =
+        (3usize, 4_097usize, 4usize, 2usize, 16usize, 4_100usize);
+    let q_values = (0..seq_len * n_heads * head_dim)
+        .map(|index| ((index as f32 * 0.031) - 2.0).sin())
+        .collect::<Vec<_>>();
+    let k_values = (0..kv_len * n_kv_heads * head_dim)
+        .map(|index| ((index as f32 * 0.047) - 1.0).cos())
+        .collect::<Vec<_>>();
+    let v_values = (0..kv_len * n_kv_heads * head_dim)
+        .map(|index| ((index as f32 * 0.013) - 0.75).sin())
+        .collect::<Vec<_>>();
+    let q = upload_fp32_as_bf16(&ctx, &q_values, vec![seq_len, n_heads, head_dim]).unwrap();
+    let k = upload_fp32_as_bf16(&ctx, &k_values, vec![kv_len, n_kv_heads, head_dim]).unwrap();
+    let v = upload_fp32_as_bf16(&ctx, &v_values, vec![kv_len, n_kv_heads, head_dim]).unwrap();
+    let cache = CudaKVCache::new(ctx.device_id(), 1, n_kv_heads, head_dim, max_seq_len).unwrap();
+    cache.append(&ctx, 0, &k, &v, kv_len).unwrap();
+    let kv_offset = (kv_len - seq_len) as u32;
+    let scalar = sdpa_with_batched_prefill(
+        &ctx,
+        &q,
+        &cache,
+        0,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        kv_len,
+        max_seq_len,
+        kv_offset,
+        false,
+    )
+    .unwrap();
+    let flattened = sdpa_with_batched_prefill(
+        &ctx,
+        &q,
+        &cache,
+        0,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        kv_len,
+        max_seq_len,
+        kv_offset,
+        true,
+    )
+    .unwrap();
+    assert_bf16_close_reduction(
+        &download_bf16_as_fp32(&flattened).unwrap(),
+        &download_bf16_as_fp32(&scalar).unwrap(),
+    );
+}
+
 // ── KV cache append ───────────────────────────────────────────────
 
 #[test]
@@ -400,6 +954,39 @@ fn kv_cache_append_bf16_writes_correct_slot() {
     }
 }
 
+#[test]
+fn kv_cache_clear_zeroes_in_place() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (n_kv_heads, head_dim, max_seq_len, append_len) = (2usize, 4usize, 8usize, 2usize);
+    let values = (0..append_len * n_kv_heads * head_dim)
+        .map(|index| index as f32 + 1.0)
+        .collect::<Vec<_>>();
+    let tensor = upload_fp32_as_bf16(
+        &ctx,
+        &values,
+        vec![append_len, n_kv_heads, head_dim],
+    )
+    .unwrap();
+    let mut cache = CudaKVCache::new(ctx.device_id(), 1, n_kv_heads, head_dim, max_seq_len)
+        .unwrap();
+    let key_ptr = cache.k_buffer(0).ptr();
+    let value_ptr = cache.v_buffer(0).ptr();
+    cache.append(&ctx, 0, &tensor, &tensor, append_len).unwrap();
+    ctx.synchronize().unwrap();
+    apxinf_core::KvCache::advance(&mut cache, append_len);
+    apxinf_core::KvCache::clear(&mut cache).unwrap();
+
+    assert_eq!(apxinf_core::KvCache::seq_len(&cache), 0);
+    assert_eq!(cache.k_buffer(0).ptr(), key_ptr);
+    assert_eq!(cache.v_buffer(0).ptr(), value_ptr);
+    let mut key = vec![1u8; cache.k_buffer(0).len()];
+    let mut value = vec![1u8; cache.v_buffer(0).len()];
+    cache.k_buffer(0).copy_to_host(&mut key).unwrap();
+    cache.v_buffer(0).copy_to_host(&mut value).unwrap();
+    assert!(key.iter().all(|byte| *byte == 0));
+    assert!(value.iter().all(|byte| *byte == 0));
+}
+
 // ── Decode-pos kernel variants (rope_decode, attn_softmax_decode, kv_cache_append_decode) ──
 
 #[test]
@@ -449,6 +1036,96 @@ fn rope_decode_bf16_matches_rope_bf16() {
     let out_tensor = make_gpu_tensor(Shape::new(vec![n_heads, head_dim]), DType::BF16, 0, out_buf);
     let actual = download_bf16_as_fp32(&out_tensor).unwrap();
     assert_bf16_close_elementwise(&actual, &expected);
+}
+
+#[test]
+fn tmrope_kv_write_matches_separate_rope_and_cache_appends() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (kv_heads, head_dim, max_seq_len) = (2usize, 128usize, 8usize);
+    let sections = [16usize, 24usize, 24usize];
+    let theta = 1_000_000.0f32;
+    let k_values = (0..kv_heads * head_dim)
+        .map(|index| (index as f32 * 0.007) - 0.5)
+        .collect::<Vec<_>>();
+    let v_values = (0..kv_heads * head_dim)
+        .map(|index| (index as f32 * -0.005) + 0.75)
+        .collect::<Vec<_>>();
+    let k_tensor = upload_fp32_as_bf16(&ctx, &k_values, vec![kv_heads, head_dim]).unwrap();
+    let v_tensor = upload_fp32_as_bf16(&ctx, &v_values, vec![kv_heads, head_dim]).unwrap();
+    let k = CudaBuffer::from_tensor(&k_tensor).unwrap();
+    let v = CudaBuffer::from_tensor(&v_tensor).unwrap();
+    let positions = HostMappedBuffer::alloc(16, ctx.device_id()).unwrap();
+    positions.write_u32s(&[7, 11, 13, 5]).unwrap();
+    let tmrope_positions = positions.address_at(0, 12).unwrap();
+    let cache_position = positions.address_at(12, 4).unwrap();
+    let input_bytes = kv_heads * head_dim * DType::BF16.size_in_bytes();
+    let cache_bytes = kv_heads * max_seq_len * head_dim * DType::BF16.size_in_bytes();
+    let rotated = CudaBuffer::alloc_zeros(input_bytes, ctx.device_id()).unwrap();
+    let reference_k = CudaBuffer::alloc_zeros(cache_bytes, ctx.device_id()).unwrap();
+    let reference_v = CudaBuffer::alloc_zeros(cache_bytes, ctx.device_id()).unwrap();
+    crate::kernels::rope::apply_tmrope_bf16_into(
+        &ctx,
+        &k,
+        &rotated,
+        head_dim,
+        kv_heads,
+        theta,
+        sections,
+        tmrope_positions,
+    )
+    .unwrap();
+    crate::kernels::cache::append_at(
+        &ctx,
+        DType::BF16,
+        &reference_k,
+        &rotated,
+        kv_heads,
+        head_dim,
+        max_seq_len,
+        cache_position,
+    )
+    .unwrap();
+    crate::kernels::cache::append_at(
+        &ctx,
+        DType::BF16,
+        &reference_v,
+        &v,
+        kv_heads,
+        head_dim,
+        max_seq_len,
+        cache_position,
+    )
+    .unwrap();
+
+    let fused_k = CudaBuffer::alloc_zeros(cache_bytes, ctx.device_id()).unwrap();
+    let fused_v = CudaBuffer::alloc_zeros(cache_bytes, ctx.device_id()).unwrap();
+    crate::kernels::rope::apply_tmrope_kv_write_bf16(
+        &ctx,
+        &k,
+        &v,
+        &fused_k,
+        &fused_v,
+        head_dim,
+        kv_heads,
+        max_seq_len,
+        theta,
+        sections,
+        tmrope_positions,
+        cache_position,
+    )
+    .unwrap();
+    ctx.synchronize().unwrap();
+
+    let mut reference_k_bytes = vec![0u8; cache_bytes];
+    let mut reference_v_bytes = vec![0u8; cache_bytes];
+    let mut fused_k_bytes = vec![0u8; cache_bytes];
+    let mut fused_v_bytes = vec![0u8; cache_bytes];
+    reference_k.copy_to_host(&mut reference_k_bytes).unwrap();
+    reference_v.copy_to_host(&mut reference_v_bytes).unwrap();
+    fused_k.copy_to_host(&mut fused_k_bytes).unwrap();
+    fused_v.copy_to_host(&mut fused_v_bytes).unwrap();
+    assert_eq!(fused_k_bytes, reference_k_bytes);
+    assert_eq!(fused_v_bytes, reference_v_bytes);
 }
 
 #[test]
@@ -888,12 +1565,249 @@ fn rope_vision_2d_bf16_matches_reference() {
     assert_bf16_close_reduction(&download_bf16_as_fp32(&out).unwrap(), &expected);
 }
 
+#[test]
+fn qwen25_tmrope_bf16_matches_contiguous_section_reference() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, head_dim) = (1usize, 1usize, 128usize);
+    let sections = [16usize, 24usize, 24usize];
+    let positions = [3u32, 7u32, 11u32];
+    let theta = 1_000_000.0f32;
+    let input = (0..head_dim)
+        .map(|index| (index as f32 * 0.03 - 1.0).sin())
+        .collect::<Vec<_>>();
+    let half = head_dim / 2;
+    let boundaries = [2 * sections[0], 2 * (sections[0] + sections[1])];
+    let expected = (0..head_dim)
+        .map(|dimension| {
+            let axis = if dimension < boundaries[0] { 0 } else if dimension < boundaries[1] { 1 } else { 2 };
+            let pair = dimension % half;
+            let angle = positions[axis] as f32
+                / theta.powf(2.0 * pair as f32 / head_dim as f32);
+            let rotated = if dimension < half { -input[dimension + half] } else { input[dimension - half] };
+            input[dimension] * angle.cos() + rotated * angle.sin()
+        })
+        .collect::<Vec<_>>();
+    let tensor = upload_fp32_as_bf16(&ctx, &input, vec![seq_len, n_heads, head_dim]).unwrap();
+    let position_bytes = positions.into_iter().flat_map(u32::to_ne_bytes).collect::<Vec<_>>();
+    let position_buffer = CudaBuffer::alloc(position_bytes.len(), ctx.device_id()).unwrap();
+    position_buffer.copy_from_host(&position_bytes).unwrap();
+    let output = apply_tmrope(
+        &ctx,
+        &tensor,
+        n_heads,
+        head_dim,
+        theta,
+        sections,
+        &position_buffer,
+    )
+    .unwrap();
+    assert_bf16_close_reduction(&download_bf16_as_fp32(&output).unwrap(), &expected);
+}
+
 // ── Vision SDPA (non-causal full attention) ──────────────────────
 
 #[test]
 fn vision_sdpa_bf16_matches_reference() {
+    assert_vision_sdpa_bf16_case(64);
+}
+
+#[test]
+fn vision_sdpa_bf16_head72_matches_reference() {
+    assert_vision_sdpa_bf16_case(72);
+}
+
+#[test]
+fn vision_sdpa_bf16_head80_matches_reference() {
+    assert_vision_sdpa_bf16_case(80);
+}
+
+#[test]
+fn vision_sdpa_bf16_head128_matches_reference() {
+    assert_vision_sdpa_bf16_case(128);
+}
+
+#[test]
+fn grouped_sdpa_bf16_respects_window_boundaries() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
-    let (seq, n_heads, head_dim) = (6usize, 2usize, 64usize);
+    let (seq_len, n_heads, head_dim) = (2usize, 1usize, 64usize);
+    let q = upload_fp32_as_bf16(&ctx, &vec![1.0; seq_len * head_dim], vec![seq_len, n_heads, head_dim]).unwrap();
+    let k = upload_fp32_as_bf16(&ctx, &vec![1.0; seq_len * head_dim], vec![seq_len, n_heads, head_dim]).unwrap();
+    let mut values = vec![2.0; head_dim];
+    values.extend(vec![8.0; head_dim]);
+    let v = upload_fp32_as_bf16(&ctx, &values, vec![seq_len, n_heads, head_dim]).unwrap();
+    let bytes = [0_u32, 1_u32]
+        .into_iter()
+        .flat_map(u32::to_ne_bytes)
+        .collect::<Vec<_>>();
+    let groups = CudaBuffer::alloc(bytes.len(), ctx.device_id()).unwrap();
+    groups.copy_from_host(&bytes).unwrap();
+    let output = grouped(&ctx, &q, &k, &v, seq_len, n_heads, head_dim, &groups).unwrap();
+    assert_bf16_close_reduction(
+        &download_bf16_as_fp32(&output).unwrap(),
+        &values,
+    );
+}
+
+#[test]
+fn vision_group_plan_preserves_original_key_order() {
+    let (offsets, indices) = vision_group_plan(&[0, 1, 0, 2, 1, 0]).unwrap();
+    assert_eq!(offsets, [0, 3, 5, 6]);
+    assert_eq!(indices, [0, 2, 5, 1, 4, 3]);
+    assert!(vision_group_plan(&[]).is_err());
+    assert!(vision_group_plan(&[3]).is_err());
+}
+
+#[test]
+fn grouped_indexed_sdpa_bf16_is_bit_exact() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, head_dim) = (65usize, 2usize, 80usize);
+    let elements = seq_len * n_heads * head_dim;
+    let q_values = (0..elements)
+        .map(|index| (index as f32 * 0.013 - 2.0).sin() * 0.5)
+        .collect::<Vec<_>>();
+    let k_values = (0..elements)
+        .map(|index| (index as f32 * 0.017 - 1.0).cos() * 0.4)
+        .collect::<Vec<_>>();
+    let v_values = (0..elements)
+        .map(|index| (index as f32 * 0.019 - 0.5).sin() * 2.0)
+        .collect::<Vec<_>>();
+    let shape = vec![seq_len, n_heads, head_dim];
+    let q = upload_fp32_as_bf16(&ctx, &q_values, shape.clone()).unwrap();
+    let k = upload_fp32_as_bf16(&ctx, &k_values, shape.clone()).unwrap();
+    let v = upload_fp32_as_bf16(&ctx, &v_values, shape).unwrap();
+    let group_values = (0..seq_len)
+        .map(|index| ((index / 2) % 5) as u32)
+        .collect::<Vec<_>>();
+    let (offset_values, index_values) = vision_group_plan(&group_values).unwrap();
+    let upload_u32s = |values: &[u32]| {
+        let bytes = values
+            .iter()
+            .flat_map(|value| value.to_ne_bytes())
+            .collect::<Vec<_>>();
+        let buffer = CudaBuffer::alloc(bytes.len(), ctx.device_id()).unwrap();
+        buffer.copy_from_host(&bytes).unwrap();
+        buffer
+    };
+    let groups = upload_u32s(&group_values);
+    let offsets = upload_u32s(&offset_values);
+    let indices = upload_u32s(&index_values);
+    let baseline = grouped(
+        &ctx, &q, &k, &v, seq_len, n_heads, head_dim, &groups,
+    )
+    .unwrap();
+    let candidate = grouped_indexed(
+        &ctx,
+        &q,
+        &k,
+        &v,
+        seq_len,
+        n_heads,
+        head_dim,
+        &groups,
+        &offsets,
+        &indices,
+        offset_values.len() - 1,
+    )
+    .unwrap();
+    assert_eq!(
+        download_bf16_as_fp32(&candidate).unwrap(),
+        download_bf16_as_fp32(&baseline).unwrap()
+    );
+}
+
+#[test]
+fn audio_im2col_and_average_pool_match_reference() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let input = upload_fp32_as_bf16(&ctx, &[1.0, 2.0, 3.0], vec![3, 1]).unwrap();
+    let columns = im2col1d_bf16(&ctx, &input, 3, 1, 1).unwrap();
+    assert_bf16_close_elementwise(
+        &download_bf16_as_fp32(&columns).unwrap(),
+        &[0.0, 1.0, 2.0, 1.0, 2.0, 3.0, 2.0, 3.0, 0.0],
+    );
+    let pooled = avg_pool1d_bf16(&ctx, &input, 2, 1).unwrap();
+    assert_bf16_close_elementwise(
+        &download_bf16_as_fp32(&pooled).unwrap(),
+        &[1.5, 2.5],
+    );
+}
+
+#[test]
+fn qwen35_attention_prepare_uses_interleaved_mrope_axes() {
+    const Q_HEADS: usize = 24;
+    const KV_HEADS: usize = 4;
+    const DIM: usize = 256;
+    const ROTARY: usize = 64;
+    const THETA: f32 = 10_000_000.0;
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let q_raw = (0..Q_HEADS * 2 * DIM)
+        .map(|index| ((index % DIM) as f32 * 0.003 - 0.4).sin())
+        .collect::<Vec<_>>();
+    let k_raw = (0..KV_HEADS * DIM)
+        .map(|index| (index as f32 * 0.005 - 0.2).cos())
+        .collect::<Vec<_>>();
+    let v_raw = vec![0.0f32; KV_HEADS * DIM];
+    let q = upload_fp32_as_bf16(&ctx, &q_raw, vec![1, Q_HEADS * 2 * DIM]).unwrap();
+    let k = upload_fp32_as_bf16(&ctx, &k_raw, vec![1, KV_HEADS * DIM]).unwrap();
+    let v = upload_fp32_as_bf16(&ctx, &v_raw, vec![1, KV_HEADS * DIM]).unwrap();
+    let q_norm = upload_fp32_as_bf16(&ctx, &vec![0.0; DIM], vec![DIM]).unwrap();
+    let k_norm = upload_fp32_as_bf16(&ctx, &vec![0.0; DIM], vec![DIM]).unwrap();
+    let query = upload_fp32_as_bf16(&ctx, &vec![0.0; Q_HEADS * DIM], vec![Q_HEADS, DIM]).unwrap();
+    let key = upload_fp32_as_bf16(&ctx, &vec![0.0; KV_HEADS * DIM], vec![KV_HEADS, DIM]).unwrap();
+    let value = upload_fp32_as_bf16(&ctx, &vec![0.0; KV_HEADS * DIM], vec![KV_HEADS, DIM]).unwrap();
+    let gate = upload_fp32_as_bf16(&ctx, &vec![0.0; Q_HEADS * DIM], vec![Q_HEADS, DIM]).unwrap();
+    let positions = HostMappedBuffer::alloc(3 * 4, ctx.device_id()).unwrap();
+    positions.write_u32s(&[5, 7, 11]).unwrap();
+    qwen35_attention::prepare_write(
+        &ctx,
+        &q,
+        &k,
+        &v,
+        &q_norm,
+        &k_norm,
+        &query,
+        &key,
+        &value,
+        &gate,
+        positions.address(),
+    )
+    .unwrap();
+    ctx.synchronize().unwrap();
+
+    let rounded = q_raw[..DIM]
+        .iter()
+        .map(|value| half::bf16::from_f32(*value).to_f32())
+        .collect::<Vec<_>>();
+    let inverse =
+        1.0 / (rounded.iter().map(|value| value * value).sum::<f32>() / DIM as f32 + 1e-6).sqrt();
+    let normalized = rounded
+        .iter()
+        .map(|value| value * inverse)
+        .collect::<Vec<_>>();
+    let mut expected = normalized.clone();
+    for dimension in 0..ROTARY {
+        let frequency = dimension & 31;
+        let axis = frequency % 3;
+        let position = [5.0f32, 7.0, 11.0][axis];
+        let angle = position * THETA.powf(-2.0 * frequency as f32 / ROTARY as f32);
+        let partner = if dimension < 32 {
+            dimension + 32
+        } else {
+            dimension - 32
+        };
+        let rotated = if dimension < 32 {
+            -normalized[partner]
+        } else {
+            normalized[partner]
+        };
+        expected[dimension] = normalized[dimension] * angle.cos() + rotated * angle.sin();
+    }
+    let actual = download_bf16_as_fp32(&query).unwrap();
+    assert_bf16_close_reduction(&actual[..DIM], &expected);
+}
+
+fn assert_vision_sdpa_bf16_case(head_dim: usize) {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq, n_heads) = (6usize, 2usize);
     let scale = 1.0f32 / (head_dim as f32).sqrt();
 
     let q: Vec<f32> = (0..seq * n_heads * head_dim)
@@ -995,6 +1909,36 @@ fn concat_2d_bf16_packs_qkv_correctly() {
         }
     }
     assert_bf16_close_elementwise(&out, &expected);
+}
+
+#[test]
+fn split_gqa_qkv_bias_bf16_handles_unequal_widths() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (tokens, q_heads, kv_heads, head_dim) = (2usize, 2usize, 1usize, 2usize);
+    let q_width = q_heads * head_dim;
+    let kv_width = kv_heads * head_dim;
+    let total = q_width + 2 * kv_width;
+    let values = (0..tokens * total).map(|i| i as f32).collect::<Vec<_>>();
+    let bias = (0..total).map(|i| 0.25 * i as f32).collect::<Vec<_>>();
+    let qkv = upload_fp32_as_bf16(&ctx, &values, vec![tokens, total]).unwrap();
+    let bias = upload_fp32_as_bf16(&ctx, &bias, vec![total]).unwrap();
+    let split =
+        split_gqa_qkv_bias_bf16(&ctx, &qkv, Some(&bias), q_heads, kv_heads, head_dim).unwrap();
+    let mut expected_q = Vec::new();
+    let mut expected_k = Vec::new();
+    let mut expected_v = Vec::new();
+    for token in 0..tokens {
+        let row = token * total;
+        expected_q.extend((0..q_width).map(|i| values[row + i] + 0.25 * i as f32));
+        expected_k
+            .extend((0..kv_width).map(|i| values[row + q_width + i] + 0.25 * (q_width + i) as f32));
+        expected_v.extend((0..kv_width).map(|i| {
+            values[row + q_width + kv_width + i] + 0.25 * (q_width + kv_width + i) as f32
+        }));
+    }
+    assert_bf16_close_elementwise(&download_bf16_as_fp32(&split.q).unwrap(), &expected_q);
+    assert_bf16_close_elementwise(&download_bf16_as_fp32(&split.k).unwrap(), &expected_k);
+    assert_bf16_close_elementwise(&download_bf16_as_fp32(&split.v).unwrap(), &expected_v);
 }
 
 #[test]

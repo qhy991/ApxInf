@@ -41,6 +41,7 @@ pub(crate) mod cuda {
     /// trait deliberately does not expose. The uniform `dyn Backend` only
     /// buys a single loading entry point (the registry returns `dyn`); the
     /// fused executor then recovers the concrete backend here on purpose.
+    /// See doc/20260812-pi05-backend-decoupling/design.md.
     pub(crate) fn downcast(backend: &dyn Backend) -> Option<&RuntimeBackend> {
         backend.as_any().downcast_ref::<RuntimeBackend>()
     }

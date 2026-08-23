@@ -1,0 +1,78 @@
+{
+  "schema": "apxinf.qwen25_omni.multimodal_pair.v1",
+  "model": "Qwen/Qwen2.5-Omni-3B",
+  "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "endpoint": "/v1/chat/completions",
+  "contract": {
+    "single_request": true,
+    "sampling": "greedy",
+    "temperature": 0,
+    "stream": false,
+    "max_tokens": 16,
+    "fallback_required": false,
+    "comparison": "complete output token sequence"
+  },
+  "baseline_binary_sha256": "a8cb1be3e697a96642d0500e096b0d6749eb1adb482bf65f8f6f8793e81aa217",
+  "candidate_binary_sha256": "ba1d82933b68506832c75ed63bf7c95d07f865329402bfe97293f84240577944",
+  "cases": [
+    {
+      "case_id": "real_png_chart_title",
+      "input": {
+        "kind": "image/png",
+        "path": "scripts/roofline_decode_throughput.png",
+        "sha256": "7cd4822b17f6d173d2d5406200f67bf4ee0791a13124a7602e58266f14d205fe",
+        "prompt": "Read the chart title. Answer with the title only."
+      },
+      "baseline": {
+        "prompt_tokens": 1760,
+        "output_tokens": [85693, 43, 80001, 12, 16, 13, 16, 33, 50194, 16904, 628, 6165, 12380, 320, 26567, 386],
+        "text": "TinyLlama-1.1B Decode Throughput vs Position (Apple M",
+        "ttft_seconds": 33.27304428,
+        "tpot_seconds": 0.0108457792,
+        "fallback_active": false
+      },
+      "candidate": {
+        "prompt_tokens": 1760,
+        "output_tokens": [85693, 43, 80001, 12, 16, 13, 16, 33, 50194, 16904, 628, 6165, 12380, 320, 26567, 386],
+        "text": "TinyLlama-1.1B Decode Throughput vs Position (Apple M",
+        "ttft_seconds": 33.402493567,
+        "tpot_seconds": 0.010646517666666666,
+        "fallback_active": false
+      },
+      "exact_token_agreement": true
+    },
+    {
+      "case_id": "real_wav_sine_description",
+      "input": {
+        "kind": "audio/wav",
+        "remote_path": "/var/lib/agent-gpu-broker/apxinf-omni-tone.wav",
+        "sha256": "13adab0a810c3e6a0eec4f3fcd896fc208e78f65c7b62af5e8bbc22ec0986032",
+        "prompt": "Describe this audio signal briefly."
+      },
+      "baseline": {
+        "prompt_tokens": 52,
+        "output_tokens": [785, 7699, 8286, 374, 264, 57668, 12060, 13, 151645],
+        "text": "The audio signal is a sine wave.",
+        "ttft_seconds": 0.029887171,
+        "tpot_seconds": 0.00872116025,
+        "fallback_active": false
+      },
+      "candidate": {
+        "prompt_tokens": 52,
+        "output_tokens": [785, 7699, 8286, 374, 264, 57668, 12060, 13, 151645],
+        "text": "The audio signal is a sine wave.",
+        "ttft_seconds": 0.030317266,
+        "tpot_seconds": 0.008505002625,
+        "fallback_active": false
+      },
+      "exact_token_agreement": true
+    }
+  ],
+  "passed": true,
+  "limitations": [
+    "Single image and single audio requests only",
+    "Text output only; video and speech generation remain unsupported",
+    "Profiler-free timings are single paired observations and correctness evidence, not standalone admission samples"
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "model": "Qwen/Qwen2.5-Omni-3B",
+  "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "base_revision": "d9a4078",
+  "classification": "source/runtime graph and data ownership",
+  "base_binary_sha256": "44d8e31699faec2f5856c2799d26e725e8d1190e3a602f50a9be1505c4084680",
+  "candidate_binary_sha256": "2a70b977ac4222634569dbee2406128adcfe93a48e7a09d3525aa8199ee649a8",
+  "selector": {
+    "name": "APXINF_SOFTMAX_INPLACE_SCALE",
+    "value": "1",
+    "default_enabled": false,
+    "eligibility": {
+      "dtype": "bf16",
+      "mode": "flattened multi-token prefill",
+      "minimum_kv_len": 4097,
+      "maximum_query_tokens": 256
+    },
+    "fail_closed": true
+  },
+  "change": {
+    "description": "scale the owned score buffer once during max and normalize the same storage in place",
+    "score_rounding_changed": false,
+    "sum_order_changed": false,
+    "output_layout_changed": false,
+    "removed_allocations_per_12288_request": 1152,
+    "removed_frees_per_12288_request": 1152
+  },
+  "correctness": {
+    "targeted_job": "gpuq-838e97324e0c",
+    "full_operator_job": "gpuq-e0fa0221a7a0",
+    "operator_tests_passed": 46,
+    "operator_tests_failed": 0,
+    "text_trajectories_exact": true,
+    "decode_128_passed": true,
+    "real_png_exact": true,
+    "real_wav_exact": true,
+    "invalid_request_recovery_passed": true
+  },
+  "adjacent_no_profiler_p50": [
+    {
+      "prompt_tokens": 8192,
+      "output_tokens": 8,
+      "base_ttft_seconds": 0.883960521,
+      "candidate_ttft_seconds": 0.878032998,
+      "ttft_reduction_percent": 0.67,
+      "base_repeats": 5,
+      "candidate_repeats": 5,
+      "candidate_ttft_cv": 0.0008343922517928021,
+      "reports": [
+        "paired-inplace-softmax-baseline-8192.json",
+        "paired-inplace-softmax-candidate-8192.json"
+      ]
+    },
+    {
+      "prompt_tokens": 12288,
+      "output_tokens": 8,
+      "base_ttft_seconds": 1.465022898,
+      "candidate_ttft_seconds": 1.438792926,
+      "ttft_reduction_percent": 1.79,
+      "base_repeats": 5,
+      "candidate_repeats": 5,
+      "candidate_ttft_cv": 0.0015193538982133652,
+      "reports": [
+        "paired-inplace-softmax-baseline-12288.json",
+        "paired-inplace-softmax-candidate-12288.json"
+      ]
+    }
+  ],
+  "unselected_control": {
+    "prompt_tokens": 32760,
+    "query_chunk_tokens": 1024,
+    "candidate_ttft_seconds": 5.859305042,
+    "repeats": 3,
+    "trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9",
+    "report": "deployed-inplace-softmax-32k-repeat.json"
+  },
+  "profile_attribution": {
+    "workload": "12288 prompt + 8 output",
+    "base_report_sha256": "b2495bce678d08eae08d28ab4b987d786ac61413bfd0f6f8d1f03ef351f85d3b",
+    "candidate_report_sha256": "317948dda30b0a57e456efc35908f0bbd26314cf1969ebdb53cdd931f31e4f1a",
+    "base_malloc_async_calls": 41130,
+    "candidate_malloc_async_calls": 39978,
+    "base_free_async_calls": 41129,
+    "candidate_free_async_calls": 39977,
+    "base_softmax_kernel_ms": 368.515461,
+    "candidate_softmax_kernel_ms": 373.208954,
+    "base_64x128_gemm_family_ms": 105.923323,
+    "candidate_64x128_gemm_family_ms": 79.312631,
+    "base_ttft_seconds": 1.503709084,
+    "candidate_ttft_seconds": 1.472895869
+  },
+  "deployment": {
+    "formal_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf",
+    "rollback_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf.44d8e31699faec2f5856c2799d26e725e8d1190e3a602f50a9be1505c4084680",
+    "runit_selector_installed": true,
+    "formal_health_passed": true,
+    "formal_contract_passed": true,
+    "service_stopped_when_unused": true,
+    "gpu_idle_after_validation": true
+  },
+  "decision": "promote_bounded"
+}

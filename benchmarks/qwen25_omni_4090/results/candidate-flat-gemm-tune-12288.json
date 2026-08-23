@@ -1,0 +1,101 @@
+{
+  "contract": {
+    "benchmark_iterations": 10,
+    "cache_state": "cold_l2",
+    "max_algorithms": 64,
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "prompt_rows": 256,
+    "warmup_iterations": 3
+  },
+  "cublas": "12.3.2",
+  "cuda": "12.3",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "records": [
+    {
+      "best_speedup_over_vendor": 0.9922147529772436,
+      "cublaslt_best_ms": 0.023840000852942467,
+      "cublaslt_best_rank": 0,
+      "cublaslt_default_ms": 0.023840000852942467,
+      "cublaslt_returned_algorithms": 8,
+      "k": 2048,
+      "m": 256,
+      "n": 2048,
+      "name": "q_o",
+      "vendor_ms": 0.023654400557279586
+    },
+    {
+      "best_speedup_over_vendor": 1.0809429260747834,
+      "cublaslt_best_ms": 0.011267200112342834,
+      "cublaslt_best_rank": 1,
+      "cublaslt_default_ms": 0.011801601387560368,
+      "cublaslt_returned_algorithms": 8,
+      "k": 2048,
+      "m": 256,
+      "n": 256,
+      "name": "k_v",
+      "vendor_ms": 0.012179200258105993
+    },
+    {
+      "best_speedup_over_vendor": 1.0388901793545156,
+      "cublaslt_best_ms": 0.029292797669768333,
+      "cublaslt_best_rank": 2,
+      "cublaslt_default_ms": 0.030828798189759254,
+      "cublaslt_returned_algorithms": 8,
+      "k": 2048,
+      "m": 256,
+      "n": 2560,
+      "name": "packed_qkv",
+      "vendor_ms": 0.03043199982494116
+    },
+    {
+      "best_speedup_over_vendor": 1.0126873726812398,
+      "cublaslt_best_ms": 0.08878080546855927,
+      "cublaslt_best_rank": 1,
+      "cublaslt_default_ms": 0.09054718911647797,
+      "cublaslt_returned_algorithms": 8,
+      "k": 2048,
+      "m": 256,
+      "n": 11008,
+      "name": "gate_up",
+      "vendor_ms": 0.08990720063447952
+    },
+    {
+      "best_speedup_over_vendor": 1.0410135075348126,
+      "cublaslt_best_ms": 0.09144319593906403,
+      "cublaslt_best_rank": 2,
+      "cublaslt_default_ms": 0.09614720195531845,
+      "cublaslt_returned_algorithms": 8,
+      "k": 11008,
+      "m": 256,
+      "n": 2048,
+      "name": "down",
+      "vendor_ms": 0.09519360214471817
+    },
+    {
+      "best_speedup_over_vendor": 0.9781957395006249,
+      "cublaslt_best_ms": 0.05664960294961929,
+      "cublaslt_best_rank": 4,
+      "cublaslt_default_ms": 0.057145603001117706,
+      "cublaslt_returned_algorithms": 8,
+      "k": 128,
+      "m": 2048,
+      "n": 12288,
+      "name": "flat_score",
+      "vendor_ms": 0.05541440024971962
+    },
+    {
+      "best_speedup_over_vendor": 1.0095206386847988,
+      "cublaslt_best_ms": 0.08570879697799683,
+      "cublaslt_best_rank": 2,
+      "cublaslt_default_ms": 0.08858560770750046,
+      "cublaslt_returned_algorithms": 8,
+      "k": 12288,
+      "m": 2048,
+      "n": 128,
+      "name": "flat_value",
+      "vendor_ms": 0.08652479946613312
+    }
+  ],
+  "schema": "apxinf.qwen25_omni.bf16_tuning_probe.v1",
+  "sm": 89
+}

@@ -1,5 +1,8 @@
 mod bf16;
 mod fp8;
+mod marlin;
+mod w4a16;
+mod w8a16;
 mod w8a8;
 
 use apxinf_core::{DType, Device, Error, Result, Tensor};
@@ -8,21 +11,35 @@ use super::contracts::{checked_bytes, require_buffers, require_finite};
 use crate::buffer::CudaBuffer;
 use crate::context::CudaContext;
 use crate::cublas::CublasTranspose;
+use crate::workspace::uninitialized_buffer;
 
-pub use bf16::{autotune_cublaslt_bf16, gemm_bf16 as bf16, Bf16AutotuneResult};
+pub use bf16::{
+    autotune_cublaslt_bf16, gemm_bf16 as bf16, install_cublaslt_bf16_tactics,
+    Bf16AutotuneResult, Bf16CublasLtTactic,
+};
 #[cfg(apxinf_cutlass_gemm)]
 pub use fp8::autotune_cutlass_gemm_f16 as autotune_cutlass_fp8;
 #[cfg(test)]
 pub(crate) use fp8::prepare_cublaslt_fp8_gemm;
 pub use fp8::{
-    autotune_cublaslt_gemm_f16 as autotune_cublaslt_fp8, cold_l2_tuning_metadata, exact_fp8_tactic,
-    gemm_fp8 as fp8, install_tuning_db, install_tuning_dbs,
+    autotune_cublaslt_gemm_f16 as autotune_cublaslt_fp8, cold_l2_tuning_metadata,
+    exact_fp8_tactic, gemm_fp8 as fp8, install_tuning_db, install_tuning_dbs,
     native_fp8_gemm_supported as native_fp8_supported, ColdL2TuningMetadata,
     CublasLtAlgorithmTiming, CutlassTacticTiming, Fp8WeightView,
 };
+pub use marlin::{
+    w4a16_marlin_write, MarlinPreparedWeight, MarlinW4A16WeightView, MarlinWorkspace,
+};
+pub use w4a16::{
+    gemm_w4a16_m8_write as w4a16_m8_write, gemv_w4a16 as w4a16, gemv_w4a16_write as w4a16_write,
+    gemv_w4a16_write_direct as w4a16_write_direct, W4A16Layout, W4A16WeightView,
+};
+pub use w8a16::{gemv_w8a16_write as w8a16_write, W8A16WeightView};
 #[cfg(test)]
 pub(crate) use w8a8::gemm_w8a8_with_preference;
-pub use w8a8::{gemm_w8a8 as w8a8, W8A8Layout, W8A8ScaleMode, W8A8WeightView};
+pub use w8a8::{
+    gemm_w8a8 as w8a8, gemm_w8a8_write as w8a8_write, W8A8Layout, W8A8ScaleMode, W8A8WeightView,
+};
 
 pub fn matmul(ctx: &CudaContext, activation: &Tensor, weight: &Tensor) -> Result<Tensor> {
     if activation.dtype() != weight.dtype() {
@@ -42,15 +59,17 @@ pub fn matmul(ctx: &CudaContext, activation: &Tensor, weight: &Tensor) -> Result
             },
         });
     }
+    if activation.dtype() == DType::BF16 {
+        return bf16::gemm_bf16(ctx, activation, weight);
+    }
     let output_shape = activation.shape().matmul_shape(weight.shape())?;
     let m = activation.shape().dims()[activation.ndim() - 2];
     let k = activation.shape().dims()[activation.ndim() - 1];
     let n = weight.shape().dims()[weight.ndim() - 1];
-    let output = CudaBuffer::alloc_zeros(
+    let output = uninitialized_buffer(
+        ctx,
         output_shape.numel() * activation.dtype().size_in_bytes(),
-        ctx.device_id(),
-    )
-    .map_err(Error::Cuda)?;
+    )?;
     let activation_buffer = CudaBuffer::from_tensor(activation).map_err(Error::Cuda)?;
     let weight_buffer = CudaBuffer::from_tensor(weight).map_err(Error::Cuda)?;
     ctx.cublas()
