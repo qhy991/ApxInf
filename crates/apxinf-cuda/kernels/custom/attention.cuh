@@ -171,9 +171,16 @@ __global__ void causal_mask_bf16_kernel(
 
 // ── Attention Softmax (bf16, fused causal mask + softmax) ─────────────────
 
+__device__ __forceinline__ float attention_scaled_bf16(
+    __nv_bfloat16 score, float scale)
+{
+    return __bfloat162float(__float2bfloat16(__bfloat162float(score) * scale));
+}
+
 __global__ void attention_softmax_bf16_kernel(
     const __nv_bfloat16* scores, __nv_bfloat16* output,
-    uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads)
+    uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads,
+    float score_scale)
 {
     uint32_t row = apxinf_row_from_grid_yz();
     if (row >= rows) return;
@@ -184,7 +191,8 @@ __global__ void attention_softmax_bf16_kernel(
     __shared__ float max_values[256];
     float local_max = -INFINITY;
     for (uint32_t c = lane; c < valid_cols; c += blockDim.x) {
-        local_max = fmaxf(local_max, __bfloat162float(scores[row * cols + c]));
+        local_max = fmaxf(
+            local_max, attention_scaled_bf16(scores[row * cols + c], score_scale));
     }
     max_values[lane] = local_max;
     __syncthreads();
@@ -202,7 +210,7 @@ __global__ void attention_softmax_bf16_kernel(
     for (uint32_t base = 0; base < valid_cols; base += blockDim.x) {
         uint32_t c = base + lane;
         max_values[lane] = c < valid_cols
-            ? expf(__bfloat162float(scores[row * cols + c]) - max_val)
+            ? expf(attention_scaled_bf16(scores[row * cols + c], score_scale) - max_val)
             : 0.0f;
         __syncthreads();
         if (lane == 0) {
@@ -221,7 +229,7 @@ __global__ void attention_softmax_bf16_kernel(
 
     for (uint32_t c = lane; c < cols; c += blockDim.x) {
         if (c < valid_cols) {
-            float x = __bfloat162float(scores[row * cols + c]);
+            float x = attention_scaled_bf16(scores[row * cols + c], score_scale);
             output[row * cols + c] = __float2bfloat16(expf(x - max_val) / sum_exp);
         } else {
             output[row * cols + c] = __float2bfloat16(0.0f);

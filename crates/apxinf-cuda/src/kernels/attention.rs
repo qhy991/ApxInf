@@ -475,8 +475,22 @@ pub(crate) fn sdpa_with_batched_prefill(
     }
 
     let scores = scores.into_tensor(Shape::new(vec![seq_len * n_heads, kv_len]), dtype);
-    let scores = super::elementwise::scale(ctx, &scores, 1.0 / (head_dim as f32).sqrt())?;
-    let attention = softmax_causal(ctx, &scores, kv_offset, n_heads as u32)?;
+    let score_scale = 1.0 / (head_dim as f32).sqrt();
+    let attention = if dtype == DType::BF16
+        && seq_len > 1
+        && kv_len > MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS
+    {
+        softmax_causal_bf16_scaled_plain(
+            ctx,
+            &scores,
+            kv_offset,
+            n_heads as u32,
+            score_scale,
+        )?
+    } else {
+        let scores = super::elementwise::scale(ctx, &scores, score_scale)?;
+        softmax_causal(ctx, &scores, kv_offset, n_heads as u32)?
+    };
 
     let output = uninitialized_buffer(ctx, seq_len * n_heads * head_dim * element_bytes)?;
     let value_cache = cache.v_buffer(layer_idx);
@@ -871,6 +885,7 @@ pub(crate) fn softmax_causal_with_exp_cache(
                     rows as u32,
                     kv_offset,
                     n_heads,
+                    1.0,
                     ctx.stream().handle(),
                 ),
                 dtype => return unsupported_dtype("attention_softmax", dtype),
@@ -884,6 +899,44 @@ pub(crate) fn softmax_causal_with_exp_cache(
         input.dtype(),
         device_id,
         out_buf,
+    ))
+}
+
+pub(crate) fn softmax_causal_bf16_scaled_plain(
+    ctx: &CudaContext,
+    input: &Tensor,
+    kv_offset: u32,
+    n_heads: u32,
+    score_scale: f32,
+) -> Result<Tensor> {
+    if input.dtype() != DType::BF16 {
+        return Err(Error::Other(
+            "scaled plain attention softmax requires BF16 input".into(),
+        ));
+    }
+    require_finite("attention score scale", &[score_scale])?;
+    let dims = input.shape().dims();
+    let rows = dims[dims.len() - 2];
+    let cols = dims[dims.len() - 1];
+    let output = output_buffer(ctx, input.size_in_bytes())?;
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_attention_softmax_bf16(
+            gpu_ptr(input)?,
+            output.ptr(),
+            cols as u32,
+            rows as u32,
+            kv_offset,
+            n_heads,
+            score_scale,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+    Ok(make_gpu_tensor(
+        input.shape().clone(),
+        DType::BF16,
+        ctx.device_id(),
+        output,
     ))
 }
 

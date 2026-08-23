@@ -337,13 +337,14 @@ extern "C" cudaError_t apxinf_rope_batched_bf16(
 
 extern "C" cudaError_t apxinf_attention_softmax_bf16(
     const void* scores, void* output,
-    uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads, void* stream)
+    uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads,
+    float score_scale, void* stream)
 {
     dim3 grid = apxinf_row_split_grid(1, rows);
     dim3 block(BLOCK_SIZE, 1, 1);
     attention_softmax_bf16_kernel<<<grid, block, 0, (cudaStream_t)stream>>>(
         (const __nv_bfloat16*)scores, (__nv_bfloat16*)output,
-        cols, rows, kv_offset, n_heads);
+        cols, rows, kv_offset, n_heads, score_scale);
     return cudaGetLastError();
 }
 

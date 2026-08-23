@@ -5,8 +5,8 @@ use crate::context::CudaContext;
 use crate::kernels::activation::{gelu_tanh, silu};
 use crate::kernels::attention::{
     causal_mask, grouped, sdpa_with_batched_prefill, softmax, softmax_causal,
-    softmax_causal_with_exp_cache, softmax_causal_with_global_exp_cache,
-    split_gqa_qkv_bias_bf16, vision,
+    softmax_causal_bf16_scaled_plain, softmax_causal_with_exp_cache,
+    softmax_causal_with_global_exp_cache, split_gqa_qkv_bias_bf16, vision,
 };
 use crate::kernels::cache::append;
 use crate::kernels::elementwise::{add, add_bias, mul, scale};
@@ -433,6 +433,56 @@ fn attention_softmax_parallel_max_is_bit_exact_at_prefill_cache_boundary() {
             "parallel max differed at index {index}: \
              parallel={parallel:?}, sequential={sequential:?}"
         );
+    }
+}
+
+#[test]
+fn attention_softmax_fused_scale_is_bit_exact_across_long_prefill() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (seq_len, n_heads, head_dim) = (3usize, 2usize, 128usize);
+    let rows = seq_len * n_heads;
+    let score_scale = 1.0 / (head_dim as f32).sqrt();
+    for cols in [4_097usize, 8_192, 12_288] {
+        let input = (0..rows * cols)
+            .map(|index| {
+                let bits = (index as u32)
+                    .wrapping_mul(1_103_515_245)
+                    .wrapping_add(12_345);
+                (bits & 0xffff) as f32 / 8_192.0 - 4.0
+            })
+            .collect::<Vec<_>>();
+        let tensor = upload_fp32_as_bf16(&ctx, &input, vec![rows, cols]).unwrap();
+        let scaled = scale(&ctx, &tensor, score_scale).unwrap();
+        let separate = softmax_causal_with_exp_cache(
+            &ctx,
+            &scaled,
+            (cols - seq_len) as u32,
+            n_heads as u32,
+            false,
+        )
+        .unwrap();
+        let fused = softmax_causal_bf16_scaled_plain(
+            &ctx,
+            &tensor,
+            (cols - seq_len) as u32,
+            n_heads as u32,
+            score_scale,
+        )
+        .unwrap();
+        let separate = download_bf16_as_fp32(&separate).unwrap();
+        let fused = download_bf16_as_fp32(&fused).unwrap();
+        assert_eq!(separate.len(), fused.len());
+        if let Some((index, (separate, fused))) = separate
+            .iter()
+            .zip(&fused)
+            .enumerate()
+            .find(|(_, (separate, fused))| separate != fused)
+        {
+            panic!(
+                "fused scale differed at {cols} columns, index {index}: \
+                 separate={separate:?}, fused={fused:?}"
+            );
+        }
     }
 }
 

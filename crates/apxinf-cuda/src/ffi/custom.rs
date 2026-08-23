@@ -980,6 +980,7 @@ extern "C" {
         rows: u32,
         kv_offset: u32,
         n_heads: u32,
+        score_scale: f32,
         stream: cudaStream_t,
     ) -> cudaError_t;
 

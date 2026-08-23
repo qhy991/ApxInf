@@ -1396,6 +1396,43 @@ algorithm has a reproducible continuous KV-length advantage, so another
 runtime selector is not justified. The structured evidence is
 `candidate-cublas-batched-algorithm-probe.json`.
 
+#### Promoted exact fused attention scaling
+
+Primary classification: **source/runtime graph with a custom CUDA operator**.
+For BF16 multi-token attention beyond the 4K shared-cache boundary, the score
+scale tensor had no consumer other than plain softmax. The promoted path passes
+the scale into that kernel and, on every score read, explicitly computes
+`BF16(BF16_score * scale)` before converting back to FP32. This reproduces the
+removed scale kernel's intermediate BF16 rounding exactly. F32, decode and
+≤4K paths retain the separate operation.
+
+Candidate SHA-256 is
+`5ad5c4985d2b1cafdccf6afe4f94b83c0cea0efd52cb3f360f122358378533bf`.
+Separate and fused paths match every BF16 output at 4,097, 8,192 and 12,288
+columns under `gpuq-1ed1152d9bd9`.
+
+| Prompt / output | Separate-scale TTFT p50 | Fused-scale TTFT p50 | Change |
+|---|---:|---:|---:|
+| 4,096 + 8 | 0.505 s | 0.505 s | unchanged control |
+| 8,192 + 8 | 1.969 s | 1.887 s | 4.21% lower |
+| 11,264 + 32 | 3.745 s | 3.551 s | 5.18% lower |
+| 12,288 + 32 | 4.448 s | 4.214 s | 5.26% lower |
+| 32,760 + 8 | 29.968 s | 27.989 s | 6.60% lower, one trial |
+
+All text and real PNG/WAV trajectories are exact. At 12K the independent
+scale kernel falls from 1,980 launches and 186.7 ms to 828 launches and 11.3
+ms, removing 1,152 long-prefill materializations. Plain softmax remains nearly
+flat, 363.5 to 362.2 ms, despite recomputing the exact scale on each read.
+Profiler TTFT falls from 4.497 to 4.255 seconds, 5.37%, matching no-profiler
+timing. The report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-12288-prefill-fused-scale-interactive.nsys-rep`,
+size 6,658,585 bytes, SHA-256
+`b5c3319499ba7897ee998ca65cc583534524ee389a6782837d2d164e0a4a0184`.
+
+**Decision: promote exact scale-softmax fusion for BF16 long prefill.** Raw
+evidence uses the `candidate-prefill-fused-scale-*` prefix; small profiler
+exports are checked in. Qwen3.8 and Omni remain down when unused.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
