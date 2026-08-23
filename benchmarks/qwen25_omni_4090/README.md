@@ -7,8 +7,11 @@ second CUDA context.
 
 The same-GPU external comparison is owned by `VLLM_OMNI_BASELINE.md`. It pins
 vLLM/vLLM-Omni 0.26.0, the thinker-only BF16 pipeline, exact token-count text
-loads and the same real PNG/WAV assets. Keep those results separate from the
-native ApxInf acceptance baseline.
+loads and the same real PNG/WAV assets. The external scripts also accept an
+engine name, version endpoint and audio content schema so the SGLang
+Transformers compatibility path can be evaluated without changing the frozen
+workload. Keep those results separate from the native ApxInf acceptance
+baseline.
 
 The timing authority is client-observed wall time plus the service-emitted
 TTFT/TPOT from `/v1/evaluations/generate`. `nvidia-smi` samples are explanatory
@@ -53,6 +56,10 @@ python3 benchmarks/qwen25_omni_4090/benchmark_multimodal.py \
   --audio /var/lib/agent-gpu-broker/apxinf-omni-tone.wav \
   --output benchmarks/qwen25_omni_4090/results/multimodal.json
 
+python3 benchmarks/qwen25_omni_4090/benchmark_processor_recovery.py \
+  --binary-path /opt/apxinf/qwen25-omni-target/release/apxinf \
+  --output benchmarks/qwen25_omni_4090/results/processor-recovery.json
+
 python3 benchmarks/qwen25_omni_4090/decode_roofline.py \
   --tpot-ms 8.255564196850394 --kv-len 128 \
   --peak-bandwidth-gbps 1008
@@ -83,9 +90,13 @@ non-greedy and streaming evaluation requests fail as typed HTTP 400 errors
 without poisoning the service. `benchmark_multimodal.py` compares complete
 image/audio output-token sequences against a frozen accepted report; its
 single observations are correctness coverage, not timing admission samples.
+`benchmark_processor_recovery.py` additionally requires a malformed PNG to
+return typed HTTP 422, confirms the persistent worker remains healthy, and
+then requires a valid PNG to reproduce the frozen complete token sequence.
 
 The accepted deployment keeps all optimized paths explicit through
-`APXINF_BATCHED_GQA_PREFILL=1`, `APXINF_STREAM_ORDERED_ALLOC=1` and
+`APXINF_OMNI_PERSISTENT_PROCESSOR=1`, `APXINF_BATCHED_GQA_PREFILL=1`,
+`APXINF_STREAM_ORDERED_ALLOC=1` and
 `APXINF_TMROPE_POSITION_CACHE=1`,
 `APXINF_TMROPE_POSITION_CACHE_PREFILL=1`, `APXINF_SOFTMAX_EXP_CACHE=1`,
 `APXINF_SOFTMAX_GLOBAL_EXP_CACHE=1`,
@@ -135,6 +146,11 @@ eager argmax selector applies the same exact two-stage GPU selection to
 graph-ineligible decode positions, leaving only the prefill logits on CPU. The
 global exp-cache selector preserves scalar max/sum order beyond the shared
 numerator-cache limit by staging FP32 numerators in a bounded decode workspace.
+The persistent-processor selector starts one CPU-only Python child after model
+load, waits for an explicit ready handshake, reuses the exact pinned
+`AutoProcessor`, and exposes its liveness and mode through `/health`. The
+serialized service has one request owner, so this optimization does not imply
+a parallel processor protocol or scheduler.
 The Broker-owned runit reference is checked in at
 `service/apxinf-qwen25-omni-broker.run`; it is the environment and launch
 authority for reproducing the promoted service. Unset or `0` preserves the

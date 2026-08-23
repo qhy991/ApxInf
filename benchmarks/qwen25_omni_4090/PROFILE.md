@@ -2002,6 +2002,64 @@ profiled critical path, and retains all text/capacity/recovery behavior. The
 service wall is now dominated by the per-request external Python processor;
 indexed window attention is the remaining GPU vision leader.
 
+## Promoted persistent Omni processor
+
+Primary classification: **control/runtime graph**. The accepted chat path
+started a fresh Python interpreter, imported NumPy, SciPy, SoundFile, PIL,
+Torch and Transformers, and rebuilt the same `AutoProcessor` for every image
+or audio request. The preceding complete profile already isolated this
+boundary: the final PNG service wall was 6.959 seconds while its model
+TTFT plus decode interval was about 0.915 seconds. Another pointwise CUDA
+change could not materially remove the remaining six seconds.
+
+`APXINF_OMNI_PERSISTENT_PROCESSOR=1` now starts one CPU-only worker during
+service initialization, waits for an explicit JSON ready handshake, and
+reuses the pinned processor through a newline-delimited request/response
+protocol. Request-owned media tensors still cross the same `.npy` boundary;
+the model inputs, tokenization and CUDA path are unchanged. Unset or `0`
+retains per-request worker construction, unsupported values fail closed, and
+`/health` reports `processor_mode=persistent` only while the child remains
+alive. The server is serialized, so this candidate deliberately adds no
+parallel worker pool or scheduling state.
+
+One warmup followed by five no-profiler requests produced the following
+complete-trajectory result:
+
+| Workload | Prior wall | Persistent wall p50 | Speedup | Model TTFT p50 | Model TPOT p50 | Wall CV |
+|---|---:|---:|---:|---:|---:|---:|
+| PNG, 1,760 + 16 | 6.959 s | 1.074 s | 6.48× | 0.752 s | 10.382 ms | 0.77% |
+| WAV, 52 + 16 | 5.937 s | 0.151 s | 39.24× | 20.17 ms | 8.113 ms | 0.46% |
+
+Every PNG and WAV request reproduced its full accepted token sequence and one
+stable trajectory. The estimated non-model interval falls from 6.044 to 0.166
+seconds for PNG and from 5.850 to 0.066 seconds for WAV, while the model
+interval remains unchanged. This removes 97.25% and 98.87% of the respective
+non-model overhead. The same worker PID was observed before and after the
+request series.
+
+Failure semantics are explicit. A syntactically valid request containing a
+corrupt PNG returns HTTP 422 `unprocessable_media`; the worker remains
+healthy, and the immediately following real PNG reproduces the complete
+accepted trajectory. The recovery authority is
+`results/candidate-persistent-processor-recovery.json`; raw timing and the
+promotion decision are indexed by
+`results/promotion-persistent-processor.json`.
+
+The promoted SM89 binary SHA-256 is
+`20165551d65748aa9fba00c06fe5d40d5126b88a69cb070b9c9230d5730b153d`.
+The immediate rollback binary is
+`116242bac3452be382a3c0f2487aa31d331153fdac74022d92f0f486ef8fc1be`.
+No new Nsight capture was needed: the prior complete Systems report owns the
+GPU/model interval, this Rust-only candidate reuses identical CUDA objects,
+and no-profiler timing closes precisely the isolated host-side gap.
+
+**Decision: promote the persistent processor for the tested serialized image
+and audio chat cells.** It passes exact output and bad-media recovery gates and
+delivers a large stable service-wall gain without changing model timing. The
+formal binary and runit definition are updated but remain stopped while
+Qwen3.8 owns the GPU. This result does not claim multi-request throughput,
+video input, speech output or a native-Rust media processor.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni

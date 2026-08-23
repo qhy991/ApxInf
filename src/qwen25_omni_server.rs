@@ -1,10 +1,11 @@
 //! Serialized OpenAI-compatible service for the pinned native Omni runtime.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apxinf_core::{Device, Tensor};
@@ -20,6 +21,23 @@ const MODEL_ID: &str = "Qwen/Qwen2.5-Omni-3B";
 const MODEL_REVISION: &str = "f75b40e3da2003cdd6e1829b1f420ca70797c34e";
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+fn persistent_processor_enabled() -> Result<bool, String> {
+    static ENABLED: OnceLock<Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| match std::env::var("APXINF_OMNI_PERSISTENT_PROCESSOR") {
+            Err(std::env::VarError::NotPresent) => Ok(false),
+            Ok(value) if value == "0" => Ok(false),
+            Ok(value) if value == "1" => Ok(true),
+            Ok(value) => Err(format!(
+                "APXINF_OMNI_PERSISTENT_PROCESSOR must be 0 or 1, got `{value}`"
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("APXINF_OMNI_PERSISTENT_PROCESSOR must be UTF-8".into())
+            }
+        })
+        .clone()
+}
 
 pub fn serve(model_dir: &Path, host: &str, port: u16, max_model_len: usize) -> Result<(), String> {
     let config = Qwen25OmniConfig::from_model_dir(model_dir).map_err(|error| error.to_string())?;
@@ -38,10 +56,14 @@ pub fn serve(model_dir: &Path, host: &str, port: u16, max_model_len: usize) -> R
         .map_err(|error| format!("load native qwen2.5-omni: {error}"))?;
     let tokenizer = Tokenizer::from_file(&model_dir.join("tokenizer.json"))
         .map_err(|error| format!("load tokenizer: {error}"))?;
+    let processor = persistent_processor_enabled()?
+        .then(|| ProcessorWorker::new(model_dir))
+        .transpose()?;
     let mut runtime = Runtime {
         model,
         tokenizer,
         model_dir: model_dir.to_path_buf(),
+        processor,
         config,
         max_model_len,
     };
@@ -69,6 +91,7 @@ struct Runtime {
     model: LoadedModel,
     tokenizer: Tokenizer,
     model_dir: PathBuf,
+    processor: Option<ProcessorWorker>,
     config: Qwen25OmniConfig,
     max_model_len: usize,
 }
@@ -100,6 +123,28 @@ struct Generation {
 }
 
 impl Runtime {
+    fn processor_mode(&mut self) -> Result<&'static str, String> {
+        let Some(processor) = self.processor.as_mut() else {
+            return Ok("per_request");
+        };
+        match processor
+            .child
+            .try_wait()
+            .map_err(|error| format!("inspect Omni processor worker: {error}"))?
+        {
+            None => Ok("persistent"),
+            Some(status) => Err(format!("Omni processor worker exited: {status}")),
+        }
+    }
+
+    fn preprocess_chat(&mut self, body: &Value) -> Result<Prepared, String> {
+        if let Some(processor) = self.processor.as_mut() {
+            processor.preprocess(body)
+        } else {
+            ProcessorWorker::new(&self.model_dir)?.preprocess(body)
+        }
+    }
+
     fn generate(
         &mut self,
         prepared: &Prepared,
@@ -158,27 +203,40 @@ fn handle_connection(runtime: &mut Runtime, stream: &mut TcpStream) -> Result<()
         Err(error) => return Err(error),
     };
     match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/health") => send_json(
-            stream,
-            200,
-            &json!({
-                "status":"ok",
-                "model":MODEL_ID,
-                "model_revision":MODEL_REVISION,
-                "precision":"bf16",
-                "parallel_requests":1,
-                "max_model_len":runtime.max_model_len,
-                "max_prompt_tokens":runtime.max_model_len.saturating_sub(1),
-                "max_output_tokens":128,
-                "context_contract":"prompt_tokens + requested_completion_tokens <= max_model_len",
-                "input_modalities":["text","image","audio"],
-                "output_modalities":["text"],
-                "talker_disabled":true,
-                "speech_output":false,
-                "video":false,
-                "fallback_active":false
-            }),
-        ),
+        ("GET", "/health") => {
+            let processor_mode = match runtime.processor_mode() {
+                Ok(mode) => mode,
+                Err(error) => {
+                    return send_json(
+                        stream,
+                        503,
+                        &json!({"status":"error","error":error,"fallback_active":false}),
+                    )
+                }
+            };
+            send_json(
+                stream,
+                200,
+                &json!({
+                    "status":"ok",
+                    "model":MODEL_ID,
+                    "model_revision":MODEL_REVISION,
+                    "precision":"bf16",
+                    "parallel_requests":1,
+                    "max_model_len":runtime.max_model_len,
+                    "max_prompt_tokens":runtime.max_model_len.saturating_sub(1),
+                    "max_output_tokens":128,
+                    "context_contract":"prompt_tokens + requested_completion_tokens <= max_model_len",
+                    "input_modalities":["text","image","audio"],
+                    "output_modalities":["text"],
+                    "talker_disabled":true,
+                    "speech_output":false,
+                    "video":false,
+                    "processor_mode":processor_mode,
+                    "fallback_active":false
+                }),
+            )
+        }
         ("GET", "/v1/models") => send_json(
             stream,
             200,
@@ -222,7 +280,7 @@ fn handle_chat(runtime: &mut Runtime, stream: &mut TcpStream, raw: &[u8]) -> Res
             &json!({"error":{"message":error,"type":"invalid_request"}}),
         );
     }
-    let prepared = match preprocess_chat(&runtime.model_dir, &body) {
+    let prepared = match runtime.preprocess_chat(&body) {
         Ok(prepared) => prepared,
         Err(error) => {
             return send_json(
@@ -563,17 +621,7 @@ fn parse_input_ids(body: &Value) -> Result<Vec<u32>, String> {
         .collect()
 }
 
-fn preprocess_chat(model_dir: &Path, body: &Value) -> Result<Prepared, String> {
-    let suffix = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-    let prefix = std::env::temp_dir().join(format!(
-        "apxinf-qwen25-omni-{}-{suffix}",
-        std::process::id()
-    ));
-    let metadata_path = prefix.with_extension("json");
-    let pixel_path = prefix.with_extension("pixels.npy");
-    let feature_path = prefix.with_extension("audio.npy");
-    let mask_path = prefix.with_extension("mask.npy");
-    let script = r#"
+const PROCESSOR_WORKER_SCRIPT: &str = r#"
 import base64
 import io
 import json
@@ -585,181 +633,276 @@ from PIL import Image
 from scipy.signal import resample_poly
 from transformers import AutoProcessor
 
-model_dir, metadata_path, pixel_path, feature_path, mask_path = sys.argv[1:]
-body = json.load(sys.stdin)
-processor = AutoProcessor.from_pretrained(model_dir, local_files_only=True, use_fast=False)
-messages = body.get("messages")
-if not isinstance(messages, list) or not messages:
-    raise ValueError("messages must be a nonempty array")
-images = 0
-audios = 0
-for message in messages:
-    role = message.get("role")
-    if role not in ("system", "user", "assistant"):
-        raise ValueError("unsupported message role")
-    content = message.get("content")
-    if isinstance(content, str):
-        message["content"] = [{"type":"text","text":content}]
-        continue
-    if not isinstance(content, list):
-        raise ValueError("message content must be a string or array")
-    rewritten = []
-    for part in content:
-        kind = part.get("type")
-        if kind in ("text", "input_text"):
-            text = part.get("text")
-            if not isinstance(text, str):
-                raise ValueError("text part is missing text")
-            rewritten.append({"type":"text","text":text})
-        elif kind == "image_url":
-            if role != "user" or images >= 1:
-                raise ValueError("exactly one user image is supported")
-            url = part.get("image_url", {}).get("url")
-            prefix = "data:image/png;base64,"
-            if not isinstance(url, str) or not url.startswith(prefix):
-                raise ValueError("image must be a data:image/png;base64 URL; remote URLs are forbidden")
-            image = Image.open(io.BytesIO(base64.b64decode(url[len(prefix):], validate=True))).convert("RGB")
-            rewritten.append({"type":"image","image":image})
-            images += 1
-        elif kind in ("input_audio", "audio"):
-            if role != "user" or audios >= 1:
-                raise ValueError("exactly one user audio clip is supported")
-            item = part.get("input_audio", part)
-            if item.get("format") != "wav" or not isinstance(item.get("data"), str):
-                raise ValueError("audio must contain base64 WAV data and format=wav")
-            audio, rate = sf.read(io.BytesIO(base64.b64decode(item["data"], validate=True)), dtype="float32", always_2d=False)
-            if audio.ndim == 2:
-                audio = audio.mean(axis=1)
-            if audio.size == 0 or not np.isfinite(audio).all():
-                raise ValueError("audio must be finite and nonempty")
-            if rate != 16000:
-                divisor = gcd(int(rate), 16000)
-                audio = resample_poly(audio, 16000 // divisor, int(rate) // divisor).astype(np.float32)
-            rewritten.append({"type":"audio","audio":audio})
-            audios += 1
-        elif kind in ("video", "video_url"):
-            raise ValueError("video is outside the deployed capability")
+model_dir = sys.argv[1]
+processor = AutoProcessor.from_pretrained(
+    model_dir, local_files_only=True, use_fast=False)
+
+def emit(payload):
+    sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+def process(request):
+    body = request["body"]
+    pixel_path = request["pixel_path"]
+    feature_path = request["feature_path"]
+    mask_path = request["mask_path"]
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("messages must be a nonempty array")
+    images = 0
+    audios = 0
+    for message in messages:
+        role = message.get("role")
+        if role not in ("system", "user", "assistant"):
+            raise ValueError("unsupported message role")
+        content = message.get("content")
+        if isinstance(content, str):
+            message["content"] = [{"type":"text","text":content}]
+            continue
+        if not isinstance(content, list):
+            raise ValueError("message content must be a string or array")
+        rewritten = []
+        for part in content:
+            kind = part.get("type")
+            if kind in ("text", "input_text"):
+                text = part.get("text")
+                if not isinstance(text, str):
+                    raise ValueError("text part is missing text")
+                rewritten.append({"type":"text","text":text})
+            elif kind == "image_url":
+                if role != "user" or images >= 1:
+                    raise ValueError("exactly one user image is supported")
+                url = part.get("image_url", {}).get("url")
+                prefix = "data:image/png;base64,"
+                if not isinstance(url, str) or not url.startswith(prefix):
+                    raise ValueError("image must be a data:image/png;base64 URL; remote URLs are forbidden")
+                image = Image.open(io.BytesIO(base64.b64decode(
+                    url[len(prefix):], validate=True))).convert("RGB")
+                rewritten.append({"type":"image","image":image})
+                images += 1
+            elif kind in ("input_audio", "audio"):
+                if role != "user" or audios >= 1:
+                    raise ValueError("exactly one user audio clip is supported")
+                item = part.get("input_audio", part)
+                if item.get("format") != "wav" or not isinstance(item.get("data"), str):
+                    raise ValueError("audio must contain base64 WAV data and format=wav")
+                audio, rate = sf.read(io.BytesIO(base64.b64decode(
+                    item["data"], validate=True)), dtype="float32", always_2d=False)
+                if audio.ndim == 2:
+                    audio = audio.mean(axis=1)
+                if audio.size == 0 or not np.isfinite(audio).all():
+                    raise ValueError("audio must be finite and nonempty")
+                if rate != 16000:
+                    divisor = gcd(int(rate), 16000)
+                    audio = resample_poly(
+                        audio, 16000 // divisor, int(rate) // divisor).astype(np.float32)
+                rewritten.append({"type":"audio","audio":audio})
+                audios += 1
+            elif kind in ("video", "video_url"):
+                raise ValueError("video is outside the deployed capability")
+            else:
+                raise ValueError("unsupported content part: %s" % kind)
+        message["content"] = rewritten
+    inputs = processor.apply_chat_template(
+        messages, add_generation_prompt=True, tokenize=True, return_dict=True,
+        return_tensors="pt", sampling_rate=16000)
+    tokens = inputs["input_ids"][0].cpu().numpy().astype(np.int64).tolist()
+    metadata = {"tokens":tokens,"has_image":images == 1,"has_audio":audios == 1}
+    if images:
+        pixels = inputs["pixel_values"].cpu().numpy().astype(np.float32)
+        grids = inputs["image_grid_thw"].cpu().numpy().astype(np.int64).tolist()
+        np.save(pixel_path, pixels)
+        metadata["grids"] = grids
+    if audios:
+        features = inputs["input_features"][0].cpu().numpy().astype(np.float32)
+        if features.shape[0] == 128:
+            features = features.T
+        mask = inputs.get("feature_attention_mask")
+        if mask is None:
+            mask = np.ones((features.shape[0],), dtype=np.float32)
         else:
-            raise ValueError("unsupported content part: %s" % kind)
-    message["content"] = rewritten
-inputs = processor.apply_chat_template(
-    messages, add_generation_prompt=True, tokenize=True, return_dict=True,
-    return_tensors="pt", sampling_rate=16000)
-tokens = inputs["input_ids"][0].cpu().numpy().astype(np.int64).tolist()
-metadata = {"tokens":tokens,"has_image":images == 1,"has_audio":audios == 1}
-if images:
-    pixels = inputs["pixel_values"].cpu().numpy().astype(np.float32)
-    grids = inputs["image_grid_thw"].cpu().numpy().astype(np.int64).tolist()
-    np.save(pixel_path, pixels)
-    metadata["grids"] = grids
-if audios:
-    features = inputs["input_features"][0].cpu().numpy().astype(np.float32)
-    if features.shape[0] == 128:
-        features = features.T
-    mask = inputs.get("feature_attention_mask")
-    if mask is None:
-        mask = np.ones((features.shape[0],), dtype=np.float32)
-    else:
-        mask = mask[0].cpu().numpy().astype(np.float32).reshape(-1)[:features.shape[0]]
-    valid = int(mask.sum())
-    if valid <= 0 or valid > features.shape[0]:
-        raise ValueError("invalid audio feature mask")
-    features = features[:valid]
-    mask = np.ones((valid,), dtype=np.float32)
-    np.save(feature_path, features)
-    np.save(mask_path, mask)
-    metadata["feature_length"] = valid
-    metadata["audio_token_count"] = sum(token == 151646 for token in tokens)
-with open(metadata_path, "w") as output:
-    json.dump(metadata, output)
+            mask = mask[0].cpu().numpy().astype(np.float32).reshape(-1)[:features.shape[0]]
+        valid = int(mask.sum())
+        if valid <= 0 or valid > features.shape[0]:
+            raise ValueError("invalid audio feature mask")
+        features = features[:valid]
+        mask = np.ones((valid,), dtype=np.float32)
+        np.save(feature_path, features)
+        np.save(mask_path, mask)
+        metadata["feature_length"] = valid
+        metadata["audio_token_count"] = sum(token == 151646 for token in tokens)
+    return metadata
+
+emit({"ready":True})
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    try:
+        emit({"ok":True,"metadata":process(json.loads(line))})
+    except Exception as error:
+        emit({"ok":False,"error":"%s: %s" % (type(error).__name__, error)})
 "#;
-    let body_json = serde_json::to_vec(body).map_err(|error| error.to_string())?;
-    let mut child = Command::new("python3")
-        .arg("-c")
-        .arg(script)
-        .arg(model_dir)
-        .arg(&metadata_path)
-        .arg(&pixel_path)
-        .arg(&feature_path)
-        .arg(&mask_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("launch local Omni processor: {error}"))?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| "local Omni processor stdin is unavailable".to_string())?
-        .write_all(&body_json)
-        .map_err(|error| format!("write local Omni processor request: {error}"))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("wait for local Omni processor: {error}"))?;
-    if !output.status.success() {
-        cleanup(&[&metadata_path, &pixel_path, &feature_path, &mask_path]);
-        return Err(format!(
-            "local Omni processor failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+
+struct ProcessorWorker {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl ProcessorWorker {
+    fn new(model_dir: &Path) -> Result<Self, String> {
+        let mut child = Command::new("python3")
+            .arg("-c")
+            .arg(PROCESSOR_WORKER_SCRIPT)
+            .arg(model_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|error| format!("launch Omni processor worker: {error}"))?;
+        let stdin = match child.stdin.take() {
+            Some(stdin) => stdin,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Omni processor worker stdin is unavailable".into());
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(stdout) => BufReader::new(stdout),
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Omni processor worker stdout is unavailable".into());
+            }
+        };
+        let mut worker = Self {
+            child,
+            stdin,
+            stdout,
+        };
+        let ready = worker.read_response("startup")?;
+        if ready.get("ready").and_then(Value::as_bool) != Some(true) {
+            return Err(format!("Omni processor worker rejected startup: {ready}"));
+        }
+        Ok(worker)
     }
-    let result = (|| {
-        let metadata: Value = serde_json::from_str(
-            &std::fs::read_to_string(&metadata_path)
-                .map_err(|error| format!("read processor metadata: {error}"))?,
-        )
-        .map_err(|error| format!("parse processor metadata: {error}"))?;
-        let tokens = parse_u32_array(&metadata, "tokens")?;
-        let image = if metadata["has_image"].as_bool() == Some(true) {
-            let grids = metadata["grids"]
-                .as_array()
-                .ok_or_else(|| "processor omitted image grids".to_string())?
-                .iter()
-                .map(|grid| {
-                    let values = grid
-                        .as_array()
-                        .ok_or_else(|| "image grid must be an array".to_string())?;
-                    if values.len() != 3 {
-                        return Err("image grid must contain T,H,W".into());
-                    }
-                    Ok([
-                        u32_value(&values[0], "grid T")?,
-                        u32_value(&values[1], "grid H")?,
-                        u32_value(&values[2], "grid W")?,
-                    ])
+
+    fn read_response(&mut self, phase: &str) -> Result<Value, String> {
+        let mut line = String::new();
+        let bytes = self
+            .stdout
+            .read_line(&mut line)
+            .map_err(|error| format!("read Omni processor {phase}: {error}"))?;
+        if bytes == 0 {
+            let status = self
+                .child
+                .try_wait()
+                .map_err(|error| format!("inspect Omni processor worker: {error}"))?;
+            return Err(format!(
+                "Omni processor worker closed stdout during {phase}; status={status:?}"
+            ));
+        }
+        if line.len() > MAX_BODY_BYTES {
+            return Err(format!("Omni processor {phase} response exceeds limit"));
+        }
+        serde_json::from_str(&line)
+            .map_err(|error| format!("parse Omni processor {phase} response: {error}"))
+    }
+
+    fn preprocess(&mut self, body: &Value) -> Result<Prepared, String> {
+        let suffix = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        let prefix = std::env::temp_dir().join(format!(
+            "apxinf-qwen25-omni-{}-{suffix}",
+            std::process::id()
+        ));
+        let pixel_path = prefix.with_extension("pixels.npy");
+        let feature_path = prefix.with_extension("audio.npy");
+        let mask_path = prefix.with_extension("mask.npy");
+        let request = json!({
+            "body": body,
+            "pixel_path": pixel_path,
+            "feature_path": feature_path,
+            "mask_path": mask_path
+        });
+        let result = (|| {
+            serde_json::to_writer(&mut self.stdin, &request)
+                .map_err(|error| format!("serialize Omni processor request: {error}"))?;
+            self.stdin
+                .write_all(b"\n")
+                .and_then(|_| self.stdin.flush())
+                .map_err(|error| format!("write Omni processor request: {error}"))?;
+            let response = self.read_response("request")?;
+            if response.get("ok").and_then(Value::as_bool) != Some(true) {
+                return Err(response
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("processor returned an invalid response")
+                    .to_string());
+            }
+            let metadata = response
+                .get("metadata")
+                .ok_or_else(|| "processor omitted metadata".to_string())?;
+            let tokens = parse_u32_array(metadata, "tokens")?;
+            let image = if metadata["has_image"].as_bool() == Some(true) {
+                let grids = metadata["grids"]
+                    .as_array()
+                    .ok_or_else(|| "processor omitted image grids".to_string())?
+                    .iter()
+                    .map(|grid| {
+                        let values = grid
+                            .as_array()
+                            .ok_or_else(|| "image grid must be an array".to_string())?;
+                        if values.len() != 3 {
+                            return Err("image grid must contain T,H,W".into());
+                        }
+                        Ok([
+                            u32_value(&values[0], "grid T")?,
+                            u32_value(&values[1], "grid H")?,
+                            u32_value(&values[2], "grid W")?,
+                        ])
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let (shape, values) = super::read_npy_f32_to_bf16(&pixel_path)?;
+                Some(PreparedImage {
+                    pixels: Tensor::from_bf16(shape, &values).map_err(|error| error.to_string())?,
+                    grids,
                 })
-                .collect::<Result<Vec<_>, String>>()?;
-            let (shape, values) = super::read_npy_f32_to_bf16(&pixel_path)?;
-            Some(PreparedImage {
-                pixels: Tensor::from_bf16(shape, &values).map_err(|error| error.to_string())?,
-                grids,
+            } else {
+                None
+            };
+            let audio = if metadata["has_audio"].as_bool() == Some(true) {
+                let length = u32_value(&metadata["feature_length"], "feature_length")?;
+                let count = u32_value(&metadata["audio_token_count"], "audio_token_count")?;
+                let (feature_shape, features) = super::read_npy_f32_to_bf16(&feature_path)?;
+                let (mask_shape, mask) = super::read_npy_f32_to_bf16(&mask_path)?;
+                Some(PreparedAudio {
+                    features: Tensor::from_bf16(feature_shape, &features)
+                        .map_err(|error| error.to_string())?,
+                    mask: Tensor::from_bf16(mask_shape, &mask)
+                        .map_err(|error| error.to_string())?,
+                    lengths: vec![length],
+                    counts: vec![count],
+                })
+            } else {
+                None
+            };
+            Ok(Prepared {
+                tokens,
+                image,
+                audio,
             })
-        } else {
-            None
-        };
-        let audio = if metadata["has_audio"].as_bool() == Some(true) {
-            let length = u32_value(&metadata["feature_length"], "feature_length")?;
-            let count = u32_value(&metadata["audio_token_count"], "audio_token_count")?;
-            let (feature_shape, features) = super::read_npy_f32_to_bf16(&feature_path)?;
-            let (mask_shape, mask) = super::read_npy_f32_to_bf16(&mask_path)?;
-            Some(PreparedAudio {
-                features: Tensor::from_bf16(feature_shape, &features)
-                    .map_err(|error| error.to_string())?,
-                mask: Tensor::from_bf16(mask_shape, &mask).map_err(|error| error.to_string())?,
-                lengths: vec![length],
-                counts: vec![count],
-            })
-        } else {
-            None
-        };
-        Ok(Prepared {
-            tokens,
-            image,
-            audio,
-        })
-    })();
-    cleanup(&[&metadata_path, &pixel_path, &feature_path, &mask_path]);
-    result
+        })();
+        cleanup(&[&pixel_path, &feature_path, &mask_path]);
+        result
+    }
+}
+
+impl Drop for ProcessorWorker {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 fn parse_u32_array(value: &Value, key: &str) -> Result<Vec<u32>, String> {

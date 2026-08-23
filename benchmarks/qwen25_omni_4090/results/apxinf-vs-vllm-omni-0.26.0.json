@@ -22,7 +22,7 @@
     "apxinf_decode": "deployed-vision-full-fa2-decode.json",
     "apxinf_context": "deployed-fused-silu-mul-context.json",
     "apxinf_context_32k": "deployed-vision-full-fa2-final-32k.json",
-    "apxinf_multimodal": "deployed-vision-full-fa2-final-multimodal.json",
+    "apxinf_multimodal": "promotion-persistent-processor.json",
     "vllm_quick": "vllm-omni-0.26.0-kv2g-quick.json",
     "vllm_decode": "vllm-omni-0.26.0-kv2g-decode.json",
     "vllm_context": "vllm-omni-0.26.0-kv2g-context.json",
@@ -138,9 +138,9 @@
       "workload": "real_png_1760+16",
       "semantic_result": "both read the visible chart title",
       "apxinf": {
-        "ttft_ms": 758.1962489999999,
-        "tpot_ms": 10.455063599999998,
-        "wall_ms": 6958.651550114155
+        "ttft_ms": 752.172645,
+        "tpot_ms": 10.381736666666665,
+        "wall_ms": 1074.316918849945
       },
       "vllm_omni": {
         "ttft_ms": 231.9645881652832,
@@ -148,18 +148,18 @@
         "wall_ms": 564.7583678364754
       },
       "speedup": {
-        "vllm_ttft": 3.2686,
-        "apxinf_tpot": 2.0963,
-        "vllm_wall": 12.3215
+        "vllm_ttft": 3.2426,
+        "apxinf_tpot": 2.1111,
+        "vllm_wall": 1.9023
       }
     },
     {
       "workload": "real_wav_52+16",
       "semantic_result": "both identify a sine wave",
       "apxinf": {
-        "model_ttft_ms": 22.145447,
-        "model_tpot_ms": 8.15941475,
-        "service_wall_ms": 5937.433309853077
+        "model_ttft_ms": 20.167895,
+        "model_tpot_ms": 8.112909500000001,
+        "service_wall_ms": 151.29221230745316
       },
       "vllm_omni": {
         "client_ttft_ms": 290.40009528398514,
@@ -167,9 +167,9 @@
         "service_wall_ms": 618.9755797386169
       },
       "speedup": {
-        "apxinf_model_ttft": 13.1133,
-        "apxinf_model_tpot": 2.6832,
-        "vllm_service_wall": 9.5924
+        "apxinf_model_ttft": 14.3991,
+        "apxinf_model_tpot": 2.6986,
+        "apxinf_service_wall": 4.0913
       }
     }
   ],
@@ -211,12 +211,12 @@
     ]
   },
   "decision": {
-    "apxinf_strength": "short-to-mid-context single-request text decode",
-    "vllm_omni_strength": "long-context prefill and multimodal encoders/preprocessing",
+    "apxinf_strength": "short-to-mid-context single-request text decode and real-audio service latency",
+    "vllm_omni_strength": "long-context prefill and real-image encoder latency",
     "next_apxinf_priorities": [
-      "move image/audio preprocessing in-process and remove per-request Python startup",
       "pack or reorder indexed vision windows for a batched tiled attention path",
-      "replace the remaining long-prefill text attention path with a tiled FlashAttention-class algorithm"
+      "replace the remaining long-prefill text attention path with a tiled FlashAttention-class algorithm",
+      "replace the resident Python processor only if CPU/RSS or multi-request evidence makes it material"
     ]
   }
 }

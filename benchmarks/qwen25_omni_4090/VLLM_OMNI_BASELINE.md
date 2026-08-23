@@ -13,12 +13,12 @@ nearby but structurally different model.
 The result is not a single winner:
 
 - ApxInf is the stronger short-to-mid-context, single-request text decoder.
-- vLLM-Omni is substantially stronger in long-context prefill and remains
-  stronger on the real image path after ApxInf's indexed-window promotion.
+- vLLM-Omni is substantially stronger in long-context prefill and retains
+  lower real-image TTFT and wall time after ApxInf's processor promotion.
 - Both reach the complete 32,760 prompt + 8 output contract after vLLM's KV
   reservation is aligned to the declared single-request workload.
-- Both understand the frozen real PNG and WAV. vLLM has much lower
-  service-level multimodal latency; ApxInf retains lower text decode TPOT.
+- Both understand the frozen real PNG and WAV. ApxInf now wins real-audio
+  service wall time as well as decode TPOT; vLLM still wins the image path.
 
 The structured authority is
 `results/apxinf-vs-vllm-omni-0.26.0.json`; this document is its human-readable
@@ -100,15 +100,33 @@ for ApxInf at 32K.
 
 | Input | Result | ApxInf | vLLM-Omni | Interpretation |
 |---|---|---:|---:|---|
-| PNG, 1,760 + 16 | both read `TinyLlama-1.1B Decode Throughput vs Position` | TTFT 0.758 s; wall 6.959 s | TTFT 0.232 s; wall 0.565 s | vLLM TTFT 3.27× and wall 12.32× lower |
-| WAV, 52 + 16 | both identify a sine wave | model TTFT 22.15 ms; TPOT 8.16 ms; wall 5.937 s | client TTFT 290.40 ms; TPOT 21.89 ms; wall 0.619 s | ApxInf decode is faster, but vLLM wall is 9.59× lower |
+| PNG, 1,760 + 16 | both read `TinyLlama-1.1B Decode Throughput vs Position` | TTFT 0.752 s; TPOT 10.38 ms; wall 1.074 s | TTFT 0.232 s; TPOT 21.92 ms; wall 0.565 s | vLLM TTFT 3.24× and wall 1.90× lower; ApxInf TPOT 2.11× lower |
+| WAV, 52 + 16 | both identify a sine wave | model TTFT 20.17 ms; TPOT 8.11 ms; wall 0.151 s | client TTFT 290.40 ms; TPOT 21.89 ms; wall 0.619 s | ApxInf TTFT 14.40×, TPOT 2.70× and wall 4.09× lower |
 
 Indexed group plans plus vision-only FA2 reduce ApxInf PNG TTFT by 44.0× and
-wall time by 5.68× relative to its original external-baseline measurement.
-The remaining 12× service-wall gap is now primarily the per-request external
-Python image processor rather than GPU full attention. The WAV split identifies
-the same boundary: ApxInf's model execution is fast, but external processing
-dominates service wall time. vLLM keeps processing in its resident service.
+the persistent processor reduces the remaining PNG wall time by another 6.48×
+relative to the prior deployed result. WAV wall time falls 39.24×. The model
+TTFT/TPOT intervals remain effectively unchanged, while estimated non-model
+overhead falls by 97.25% for PNG and 98.87% for WAV. The image comparison now
+isolates the remaining vision-model work instead of repeated processor startup.
+
+## SGLang compatibility status
+
+This exact checkpoint is not currently a native SGLang-Omni model. Its public
+model list names Qwen3-Omni, while SGLang 0.5.17 resolves
+`Qwen2_5OmniForConditionalGeneration` through `--model-impl transformers`.
+The frozen v0.5.17 source revision is
+`29481685462732237d80d86076d6563e1f658102`. Its generic Transformers
+multimodal processor loads images, but the audio-loading branch is an explicit
+TODO. Therefore SGLang is treated as a compatibility experiment, not as the
+maintained same-model baseline that vLLM-Omni provides.
+
+The checked-in external-engine scripts now support SGLang's `/server_info`
+version endpoint and `audio_url` request schema without changing token counts,
+media assets, sampling or timing. Actual service measurements remain pending
+until the externally owned Qwen3.8 gate releases the GPU. A failure to start,
+an image token-count mismatch or unsupported audio will be retained as a
+capability result rather than hidden by changing the workload.
 
 ## vLLM deployment and observed defects
 
@@ -196,12 +214,12 @@ python3 benchmarks/qwen25_omni_4090/benchmark_vllm_omni_multimodal.py \
 
 The next high-leverage work is not another sub-percent pointwise kernel:
 
-1. Move image/audio processing into the resident service and remove
-   per-request Python startup, especially for audio.
-2. Pack or reorder the 28 indexed vision windows so a batched tiled attention
+1. Pack or reorder the 28 indexed vision windows so a batched tiled attention
    path can replace their remaining 0.504-second GPU interval.
-3. Replace the remaining long-prefill text attention algorithm with a tiled,
+2. Replace the remaining long-prefill text attention algorithm with a tiled,
    FlashAttention-class path while preserving the complete trajectory gate.
+3. Replace the resident Python processor with native Rust only if CPU/RSS or
+   future multi-request evidence makes that boundary material.
 
 Only after these boundaries move should smaller decode-kernel fusions again
 become the primary optimization target.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real PNG/WAV capability and latency gate for vLLM-Omni."""
+"""Real PNG/WAV capability and latency gate for an external engine."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from typing import Any
 
 from benchmark_service import Case, HardwareSampler, utc_now
 from benchmark_vllm_omni import (
+    engine_version,
     get_json,
     health_status,
     stream_openai_chat,
@@ -19,7 +20,8 @@ from benchmark_vllm_omni import (
 )
 
 
-SCHEMA = "apxinf.qwen25_omni.vllm_omni_multimodal.v1"
+VLLM_SCHEMA = "apxinf.qwen25_omni.vllm_omni_multimodal.v1"
+EXTERNAL_SCHEMA = "apxinf.qwen25_omni.external_engine_multimodal.v1"
 
 
 def sha256_file(path: Path) -> str:
@@ -31,7 +33,12 @@ def sha256_file(path: Path) -> str:
 
 
 def request_body(
-    model: str, kind: str, media: Path, prompt: str, output_tokens: int
+    model: str,
+    kind: str,
+    media: Path,
+    prompt: str,
+    output_tokens: int,
+    audio_content_schema: str = "input_audio",
 ) -> dict[str, Any]:
     encoded = base64.b64encode(media.read_bytes()).decode("ascii")
     if kind == "image":
@@ -40,10 +47,20 @@ def request_body(
             "image_url": {"url": f"data:image/png;base64,{encoded}"},
         }
     elif kind == "audio":
-        media_part = {
-            "type": "input_audio",
-            "input_audio": {"format": "wav", "data": encoded},
-        }
+        if audio_content_schema == "input_audio":
+            media_part = {
+                "type": "input_audio",
+                "input_audio": {"format": "wav", "data": encoded},
+            }
+        elif audio_content_schema == "audio_url":
+            media_part = {
+                "type": "audio_url",
+                "audio_url": {"url": f"data:audio/wav;base64,{encoded}"},
+            }
+        else:
+            raise ValueError(
+                f"unsupported audio content schema: {audio_content_schema}"
+            )
     else:
         raise ValueError(f"unsupported media kind: {kind}")
     return {
@@ -76,10 +93,18 @@ def run_case(
     required_text: str,
     timeout: float,
     sampler: HardwareSampler,
+    audio_content_schema: str,
 ) -> dict[str, Any]:
     trial = stream_openai_chat(
         base_url,
-        request_body(model, kind, media, prompt, case.output_tokens),
+        request_body(
+            model,
+            kind,
+            media,
+            prompt,
+            case.output_tokens,
+            audio_content_schema,
+        ),
         case.prompt_tokens,
         case.output_tokens,
         timeout,
@@ -99,6 +124,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8003")
     parser.add_argument("--model")
+    parser.add_argument("--engine-name", default="vLLM-Omni")
+    parser.add_argument("--version-path", default="/version")
+    parser.add_argument("--version-key")
+    parser.add_argument(
+        "--audio-content-schema",
+        choices=("input_audio", "audio_url"),
+        default="input_audio",
+    )
     parser.add_argument(
         "--image", type=Path, default=Path("scripts/roofline_decode_throughput.png")
     )
@@ -124,8 +157,17 @@ def main() -> int:
     audio = args.audio.resolve(strict=True)
     base_url = args.base_url.rstrip("/")
     if health_status(base_url, args.timeout) != 200:
-        raise SystemExit("vLLM-Omni health endpoint is not ready")
-    version = get_json(f"{base_url}/version", args.timeout)
+        raise SystemExit(f"{args.engine_name} health endpoint is not ready")
+    try:
+        version_path, version = engine_version(
+            base_url,
+            args.version_path,
+            args.version_key,
+            args.engine_name,
+            args.timeout,
+        )
+    except RuntimeError as error:
+        raise SystemExit(str(error)) from error
     models = get_json(f"{base_url}/v1/models", args.timeout)
     model = args.model or models["data"][0]["id"]
 
@@ -164,6 +206,7 @@ def main() -> int:
                     item["required_text"],
                     args.timeout,
                     sampler,
+                    args.audio_content_schema,
                 )
                 if not warmup["passed"]:
                     warmup_failure = warmup
@@ -181,6 +224,7 @@ def main() -> int:
                         item["required_text"],
                         args.timeout,
                         sampler,
+                        args.audio_content_schema,
                     )
                     for _ in range(args.repeats)
                 ]
@@ -212,11 +256,14 @@ def main() -> int:
             "sha256": sha256_file(reference_path),
         }
     report = {
-        "schema": SCHEMA,
+        "schema": (
+            VLLM_SCHEMA if args.engine_name == "vLLM-Omni" else EXTERNAL_SCHEMA
+        ),
         "started_at": started_at,
         "completed_at": utc_now(),
-        "engine": "vLLM-Omni",
+        "engine": args.engine_name,
         "engine_version": version,
+        "version_path": version_path,
         "model": model,
         "models_response": models,
         "endpoint": "/v1/chat/completions",
@@ -227,6 +274,7 @@ def main() -> int:
             "ignore_eos": True,
             "stream": True,
             "output_modalities": ["text"],
+            "audio_content_schema": args.audio_content_schema,
             "max_tokens": 16,
             "warmups": args.warmups,
             "repeats": args.repeats,

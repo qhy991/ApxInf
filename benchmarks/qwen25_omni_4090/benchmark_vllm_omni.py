@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single-request vLLM-Omni baseline using its OpenAI streaming API."""
+"""Single-request external-engine baseline using an OpenAI streaming API."""
 
 from __future__ import annotations
 
@@ -24,7 +24,8 @@ from benchmark_service import (
 )
 
 
-SCHEMA = "apxinf.qwen25_omni.vllm_omni_benchmark.v1"
+VLLM_SCHEMA = "apxinf.qwen25_omni.vllm_omni_benchmark.v1"
+EXTERNAL_SCHEMA = "apxinf.qwen25_omni.external_engine_benchmark.v1"
 CHAT_TEMPLATE_OVERHEAD = 20
 
 
@@ -38,6 +39,22 @@ def health_status(base_url: str, timeout: float) -> int:
         f"{base_url.rstrip('/')}/health", timeout=timeout
     ) as response:
         return response.status
+
+
+def engine_version(
+    base_url: str,
+    version_path: str,
+    version_key: str | None,
+    engine_name: str,
+    timeout: float,
+) -> tuple[str, Any]:
+    normalized_path = "/" + version_path.lstrip("/")
+    response = get_json(f"{base_url.rstrip('/')}{normalized_path}", timeout)
+    if version_key is None:
+        return normalized_path, response
+    if version_key not in response:
+        raise RuntimeError(f"{engine_name} version response omitted {version_key}")
+    return normalized_path, {version_key: response[version_key]}
 
 
 def exact_text_prompt(prompt_tokens: int) -> str:
@@ -253,6 +270,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8003")
     parser.add_argument("--model")
+    parser.add_argument("--engine-name", default="vLLM-Omni")
+    parser.add_argument("--version-path", default="/version")
+    parser.add_argument("--version-key")
     parser.add_argument(
         "--suite", choices=("quick", "context", "decode", "all"), default="quick"
     )
@@ -291,14 +311,23 @@ def main() -> int:
         raise SystemExit("warmups must be nonnegative and repeats must be positive")
     base_url = args.base_url.rstrip("/")
     if health_status(base_url, args.timeout) != 200:
-        raise SystemExit("vLLM-Omni health endpoint is not ready")
-    version = get_json(f"{base_url}/version", args.timeout)
+        raise SystemExit(f"{args.engine_name} health endpoint is not ready")
+    try:
+        version_path, version = engine_version(
+            base_url,
+            args.version_path,
+            args.version_key,
+            args.engine_name,
+            args.timeout,
+        )
+    except RuntimeError as error:
+        raise SystemExit(str(error)) from error
     models = get_json(f"{base_url}/v1/models", args.timeout)
     model = args.model
     if model is None:
         rows = models.get("data")
         if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
-            raise SystemExit("vLLM-Omni returned no served model")
+            raise SystemExit(f"{args.engine_name} returned no served model")
         model = rows[0].get("id")
     if not isinstance(model, str) or not model:
         raise SystemExit("served model id is empty")
@@ -351,11 +380,14 @@ def main() -> int:
         if item["trials"]
     ]
     report = {
-        "schema": SCHEMA,
+        "schema": (
+            VLLM_SCHEMA if args.engine_name == "vLLM-Omni" else EXTERNAL_SCHEMA
+        ),
         "started_at": started_at,
         "completed_at": utc_now(),
-        "engine": "vLLM-Omni",
+        "engine": args.engine_name,
         "engine_version": version,
+        "version_path": version_path,
         "base_url": base_url,
         "model": model,
         "models_response": models,
@@ -388,7 +420,7 @@ def main() -> int:
             for item in raw_cases
         ),
         "limitations": [
-            "TTFT/TPOT are client-observed from true vLLM SSE token events",
+            "TTFT/TPOT are client-observed from true SSE token events",
             "ApxInf comparison uses its server-emitted model timing because its current SSE response is buffered",
             "Prefill tokens/s remains a proxy because TTFT includes first-token and service overhead",
         ],
