@@ -27,8 +27,18 @@
     "vllm_decode": "vllm-omni-0.26.0-kv2g-decode.json",
     "vllm_context": "vllm-omni-0.26.0-kv2g-context.json",
     "vllm_multimodal": "vllm-omni-0.26.0-kv2g-multimodal.json",
-    "vllm_environment": "vllm-omni-0.26.0-environment.json"
+    "vllm_environment": "vllm-omni-0.26.0-environment.json",
+    "sglang_compatibility": "sglang-0.5.18-compatibility.json",
+    "sglang_environment": "sglang-0.5.18-environment.json"
   },
+  "excluded_engines": [
+    {
+      "engine": "SGLang",
+      "version": "0.5.18",
+      "status": "server_not_ready",
+      "reason": "The Transformers wrapper routes Qwen2_5OmniConfig through AutoModel.from_config, which is unregistered; no request reaches model execution."
+    }
+  ],
   "fixed_workloads": [
     {
       "workload": "1024+32",

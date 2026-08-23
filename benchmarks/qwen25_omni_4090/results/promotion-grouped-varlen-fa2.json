@@ -206,7 +206,7 @@
     "status": "promote",
     "reason": "The strict selector, operator suite, complete trajectories, repeated no-profiler E2E gain, controls, recovery and causal profile all pass.",
     "deployment": "Promoted, smoke-verified through the runit/Broker authority, then stopped; Broker GPU is idle.",
-    "next_action": "Measure the SGLang 0.5.17 Transformers compatibility path, then re-profile the new PNG critical path before selecting another ApxInf candidate."
+    "next_action": "Use the migrated profile to select the next ApxInf critical path; SGLang 0.5.18 compatibility has been measured separately and fails before weight loading."
   },
   "limitations": [
     "The formal promotion uses five repeated candidate requests against the stable accepted five-request baseline rather than 25 alternating service reload pairs.",
