@@ -2,7 +2,7 @@
 
 `BASELINE.md` owns the current accepted deployment summary. This file retains
 the causal profiles, rejected branches and promotion evidence for each stage;
-the current promotion record is **Promoted shared-cache parallel maximum**
+the current promotion record is **Promoted global-cache parallel maximum**
 below.
 
 ## Contract
@@ -1737,6 +1737,46 @@ The deployed binary SHA-256 is
 
 **Decision: promote shared-cache parallel maximum.** It is exact, removes a
 serial critical interval and improves every measured context cell.
+
+## Promoted global-cache parallel maximum
+
+Primary classification: **PTX/SASS-directed CUDA**. Above the 11,264-column
+shared-memory limit, decode uses an exact global FP32 numerator cache. Its max
+scan was still lane-0 sequential. The promoted version gives every lane
+strided BF16 scores and reduces the maximum through the same 256-thread tree
+as the shared cache. Numerator generation, aligned four-value lane-0 sum,
+division and output layout are unchanged.
+
+The existing `APXINF_SOFTMAX_GLOBAL_EXP_CACHE=1` selector remains the only
+owner. Direct tests at long decode boundaries and 32K require exact BF16
+agreement with the scalar reference.
+
+Adjacent 12K+32 measurements isolate decode:
+
+| Metric | Sequential max | Parallel max | Change |
+|---|---:|---:|---:|
+| TTFT p50 | 1.38236 s | 1.38211 s | unchanged |
+| TPOT p50 | 16.581 ms | 12.941 ms | 21.95% lower |
+| TPOT CV | 0.190% | 0.116% | stable |
+
+At 32K+8, TPOT falls from 35.220 ms to 24.441 ms (30.61%) over three stable
+candidate trials. The 11,264-column shared-cache control remains 12.633 ms.
+All complete trajectories are exact; contract, real PNG/WAV and the 47-test
+CUDA suite pass.
+
+The 12K profile attributes the change directly: 252 global-cache launches
+fall from 48.988 ms to 22.197 ms (54.69% lower), and profiled TPOT falls from
+17.241 ms to 13.428 ms. The report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-12288-global-cache-parallel-interactive.nsys-rep`,
+SHA-256
+`ae7b53fb0a5676d630c810c9fa66dfdac1e48e9ddab7487e33d407acca26b4a6`.
+
+The deployed binary SHA-256 is
+`8feb945de67c7f5566dd5843cddbda559090424e0dfae073c403971af3435ae0`;
+`487915ba...31ea4af8` is the immediate rollback artifact.
+
+**Decision: promote global-cache parallel maximum.** It preserves the exact
+decode contract and materially reduces long-context TPOT.
 
 ### Rejected split-buffer FP32 numerator cache
 

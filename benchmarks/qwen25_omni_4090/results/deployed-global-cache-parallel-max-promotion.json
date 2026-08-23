@@ -1,0 +1,76 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "model": "Qwen/Qwen2.5-Omni-3B",
+  "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "base_revision": "caf6d5b",
+  "classification": "PTX/SASS-directed CUDA",
+  "base_binary_sha256": "487915bac1df5c81bb9c754ba42944b0735f7b029c146b9177348ca731ea4af8",
+  "candidate_binary_sha256": "8feb945de67c7f5566dd5843cddbda559090424e0dfae073c403971af3435ae0",
+  "change": {
+    "description": "parallelize only the maximum scan in the exact global FP32 numerator-cache decode kernel",
+    "new_selector": false,
+    "maximum_value_changed": false,
+    "numerator_changed": false,
+    "sum_order_changed": false,
+    "normalization_changed": false
+  },
+  "correctness": {
+    "targeted_job": "gpuq-8054911d6060",
+    "full_operator_job": "gpuq-cba7c582191a",
+    "operator_tests_passed": 47,
+    "operator_tests_failed": 0,
+    "long_boundary_exact": true,
+    "thirty_two_k_exact": true,
+    "text_trajectories_exact": true,
+    "real_png_exact": true,
+    "real_wav_exact": true,
+    "invalid_request_recovery_passed": true
+  },
+  "adjacent_12288_decode": {
+    "prompt_tokens": 12288,
+    "output_tokens": 32,
+    "base_ttft_seconds": 1.382359489,
+    "candidate_ttft_seconds": 1.382107284,
+    "base_tpot_seconds": 0.016580646258064515,
+    "candidate_tpot_seconds": 0.012941197451612903,
+    "tpot_reduction_percent": 21.95,
+    "base_repeats": 5,
+    "candidate_repeats": 5,
+    "candidate_tpot_cv": 0.0011606439372892391,
+    "reports": [
+      "paired-global-cache-parallel-max-baseline-12288.json",
+      "paired-global-cache-parallel-max-candidate-12288.json"
+    ]
+  },
+  "long_context_decode": {
+    "prompt_tokens": 32760,
+    "output_tokens": 8,
+    "base_tpot_seconds": 0.03522025242857143,
+    "candidate_tpot_seconds": 0.02444082685714286,
+    "tpot_reduction_percent": 30.61,
+    "candidate_repeats": 3,
+    "candidate_tpot_cv": 0.0010381735155041557,
+    "trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9"
+  },
+  "profile_attribution": {
+    "workload": "12288 prompt + 8 output",
+    "base_report_sha256": "051459cdf75f93bb750dc6a1ac2247b99db4567924298918bb96eca10a9c67e2",
+    "candidate_report_sha256": "ae7b53fb0a5676d630c810c9fa66dfdac1e48e9ddab7487e33d407acca26b4a6",
+    "global_cache_instances": 252,
+    "base_global_cache_ms": 48.987903,
+    "candidate_global_cache_ms": 22.19665,
+    "kernel_reduction_percent": 54.69,
+    "base_tpot_seconds": 0.017241169571428572,
+    "candidate_tpot_seconds": 0.013428458428571427
+  },
+  "deployment": {
+    "formal_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf",
+    "rollback_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf.487915bac1df5c81bb9c754ba42944b0735f7b029c146b9177348ca731ea4af8",
+    "formal_health_passed": true,
+    "formal_contract_passed": true,
+    "service_stopped_when_unused": true,
+    "gpu_idle_after_validation": true
+  },
+  "decision": "promote"
+}

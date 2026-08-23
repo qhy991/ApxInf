@@ -6,9 +6,9 @@
   `Qwen/Qwen2.5-Omni-3B@f75b40e3da2003cdd6e1829b1f420ca70797c34e`
 - GPU: NVIDIA GeForce RTX 4090, 24,564 MiB, single request, BF16
 - Deployed binary SHA-256:
-  `487915bac1df5c81bb9c754ba42944b0735f7b029c146b9177348ca731ea4af8`
+  `8feb945de67c7f5566dd5843cddbda559090424e0dfae073c403971af3435ae0`
 - Immediate rollback SHA-256:
-  `2a70b977ac4222634569dbee2406128adcfe93a48e7a09d3525aa8199ee649a8`
+  `487915bac1df5c81bb9c754ba42944b0735f7b029c146b9177348ca731ea4af8`
 - Deployment owner: runit launches the checked-in Broker service definition;
   the service is stopped when unused so other queued work can own the GPU.
 
@@ -23,6 +23,8 @@ single-consumer score buffer once and normalizes that storage in place; larger
 query chunks retain the non-mutating path.
 The shared-memory FP32 numerator cache uses a parallel exact maximum while
 preserving its ordered FP32 sum and normalization.
+The long-decode global FP32 numerator cache uses the same parallel exact
+maximum while preserving its existing ordered global-cache sum.
 For BF16 multi-token attention above 4,096 cached tokens, sequence and GQA
 rows sharing one K/V head are packed into large score and value GEMMs. The
 existing KV-cache representation is unchanged, and the output is restored to
@@ -32,15 +34,16 @@ the model-owned row layout before its next consumer.
 |---|---:|---:|---:|---:|---:|
 | 1,024 + 32 | 5 | 67.18 ms | 70.09 ms | 4.2% lower | 9.359 ms |
 | 8,192 + 8 | 5 | 0.822 s | 0.878 s | 6.4% lower | 10.697 ms |
-| 12,288 + 8 | 5 | 1.386 s | 1.439 s | 3.7% lower | 16.716 ms |
-| 32,760 + 8 | 3 | 5.765 s | 5.859 s | 1.6% lower | 35.220 ms |
+| 12,288 + 32 | 5 paired | 1.382 s | 1.382 s | decode-only | 12.941 ms |
+| 32,760 + 8 | 3 | 5.759 s | 5.765 s | prefill unchanged | 24.441 ms |
 
 All repeated text cases preserve their accepted complete trajectory hashes.
 The exact 32,768-token contract passes with 9,591 MiB minimum sampled memory
 headroom. The 47-test CUDA operator regression, typed invalid-request recovery,
 and real PNG/WAV exact-token gates pass. See `PROFILE.md` and the
-`candidate-shared-cache-parallel-max-*` and
-`deployed-shared-cache-parallel-max-*` records for the latest promotion
+`candidate-global-cache-parallel-max-*`,
+`paired-global-cache-parallel-max-*` and
+`deployed-global-cache-parallel-max-*` records for the latest promotion
 evidence.
 
 ## Original frozen deployment

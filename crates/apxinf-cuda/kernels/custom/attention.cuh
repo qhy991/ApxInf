@@ -378,45 +378,24 @@ __global__ void attention_softmax_bf16_exp_global_cache_kernel(
     uint32_t seq_pos = row / n_heads;
     uint32_t valid_cols = min(seq_pos + kv_offset + 1, cols);
     uint32_t lane = threadIdx.x;
-    __shared__ float max_shared;
-    if (lane == 0) {
-        float max_val = -INFINITY;
-        const __nv_bfloat16* row_scores = scores + row * cols;
-        uint32_t c = 0;
-        if (reinterpret_cast<uintptr_t>(row_scores) % alignof(__nv_bfloat162) == 0) {
-            for (; c + 3 < valid_cols; c += 4) {
-                __nv_bfloat162 packed01 =
-                    reinterpret_cast<const __nv_bfloat162*>(row_scores + c)[0];
-                __nv_bfloat162 packed23 =
-                    reinterpret_cast<const __nv_bfloat162*>(row_scores + c)[1];
-                float2 values01 = __bfloat1622float2(packed01);
-                float2 values23 = __bfloat1622float2(packed23);
-                max_val = fmaxf(max_val, values01.x);
-                max_val = fmaxf(max_val, values01.y);
-                max_val = fmaxf(max_val, values23.x);
-                max_val = fmaxf(max_val, values23.y);
-            }
-        } else {
-            for (; c + 3 < valid_cols; c += 4) {
-                float value0 = __bfloat162float(row_scores[c]);
-                float value1 = __bfloat162float(row_scores[c + 1]);
-                float value2 = __bfloat162float(row_scores[c + 2]);
-                float value3 = __bfloat162float(row_scores[c + 3]);
-                max_val = fmaxf(max_val, value0);
-                max_val = fmaxf(max_val, value1);
-                max_val = fmaxf(max_val, value2);
-                max_val = fmaxf(max_val, value3);
-            }
-        }
-        for (; c < valid_cols; c++) {
-            max_val = fmaxf(max_val, __bfloat162float(row_scores[c]));
-        }
-        max_shared = max_val;
+    __shared__ float max_values[256];
+    float local_max = -INFINITY;
+    const __nv_bfloat16* row_scores = scores + row * cols;
+    for (uint32_t c = lane; c < valid_cols; c += blockDim.x) {
+        local_max = fmaxf(local_max, __bfloat162float(row_scores[c]));
     }
+    max_values[lane] = local_max;
     __syncthreads();
+    for (uint32_t offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+        if (lane < offset) {
+            max_values[lane] = fmaxf(max_values[lane], max_values[lane + offset]);
+        }
+        __syncthreads();
+    }
+    float max_val = max_values[0];
     for (uint32_t c = lane; c < valid_cols; c += blockDim.x) {
         numerators[row * cols + c] =
-            expf(__bfloat162float(scores[row * cols + c]) - max_shared);
+            expf(__bfloat162float(row_scores[c]) - max_val);
     }
     __syncthreads();
     __shared__ float sum_shared;
