@@ -1694,6 +1694,19 @@ The deployed binary SHA-256 is
 **Decision: promote the bounded in-place path.** It composes a stable 8K/12K
 gain while excluding the measured 32K regression.
 
+### Rejected split-buffer FP32 numerator cache
+
+A bit-exact follow-up split each FP32 numerator's raw bits across the consumed
+BF16 score buffer and the BF16 output buffer. This avoided the failed 192 MiB
+FP32 workspace and kept ordered summation in shared memory, but the added two
+16-bit stores and two 16-bit loads were still more expensive than recomputing
+`expf`. At 12K, TTFT regressed from 1.439 s to 1.514 s (5.23%) over five stable
+trials.
+
+**Decision: revert before profiling.** Structured evidence is
+`candidate-split-exp-cache-rejected.json`; the recompute-based bounded
+in-place path remains deployed.
+
 ### Rejected long-prefill global numerator cache
 
 The next candidate stored every exact scaled FP32 softmax numerator so the

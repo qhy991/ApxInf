@@ -1,0 +1,29 @@
+{
+  "schema": "apxinf.qwen25_omni.candidate.v1",
+  "base_revision": "abac164",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "classification": "source/runtime graph and data ownership",
+  "hypothesis": "store one FP32 numerator as two raw 16-bit halves in the consumed score and output buffers to remove the second expf without an FP32 workspace",
+  "candidate_binary_sha256": "d008bf326230f60c60736a1e1bdacf4a86a9ae2a6ae00454a1a8aeec7f24ffd9",
+  "correctness": {
+    "broker_job": "gpuq-e98a8d42d905",
+    "boundaries": [4097, 8192, 12288],
+    "operator_bit_exact": true,
+    "service_trajectory_stable": true,
+    "trajectory_sha256": "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832"
+  },
+  "end_to_end": {
+    "workload": "12288 prompt + 8 output",
+    "base_ttft_p50_seconds": 1.438792926,
+    "candidate_ttft_p50_seconds": 1.514051928,
+    "ttft_regression_percent": 5.23,
+    "candidate_repeats": 5,
+    "candidate_ttft_cv": 0.0016215149409948041,
+    "raw_report": "candidate-split-exp-cache-smoke-12288.json"
+  },
+  "decision": "revert",
+  "reason": "Writing and reading the two raw 16-bit halves costs more than recomputing the second expf on RTX 4090.",
+  "production_source_changed": false,
+  "formal_binary_changed": false,
+  "profile_collected": false
+}
