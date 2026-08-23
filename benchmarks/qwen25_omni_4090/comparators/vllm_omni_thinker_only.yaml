@@ -1,0 +1,30 @@
+# Fair single-GPU text-output baseline for Qwen2.5-Omni-3B.
+# The structural variant excludes Talker and Code2Wav, matching ApxInf's
+# APXINF_DISABLE_TALKER=1 deployment contract.
+pipeline: qwen2_5_omni_thinker_only
+async_chunk: false
+dtype: bfloat16
+enable_prefix_caching: false
+
+stages:
+  - stage_id: 0
+    devices: "0"
+    max_model_len: 32768
+    max_num_batched_tokens: 32768
+    max_num_seqs: 1
+    # One BF16 32K sequence needs about 1.13 GiB of KV on this model. Avoid
+    # vLLM's throughput-oriented auto-reservation (11.45 GiB on the 4090),
+    # which starves long-prefill MLP activations in this single-request test.
+    kv_cache_memory_bytes: 2147483648
+    gpu_memory_utilization: 0.9
+    enforce_eager: true
+    trust_remote_code: true
+    enable_prefix_caching: false
+    mm_processor_cache_gb: 0
+    default_sampling_params:
+      temperature: 0.0
+      top_p: 1.0
+      top_k: -1
+      max_tokens: 128
+      seed: 42
+      repetition_penalty: 1.0

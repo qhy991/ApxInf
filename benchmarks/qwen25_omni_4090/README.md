@@ -5,6 +5,11 @@ the native `Qwen/Qwen2.5-Omni-3B` service. Run the benchmark on the GPU host
 while the service itself is owned by `gpu-run`; the client does not create a
 second CUDA context.
 
+The same-GPU external comparison is owned by `VLLM_OMNI_BASELINE.md`. It pins
+vLLM/vLLM-Omni 0.26.0, the thinker-only BF16 pipeline, exact token-count text
+loads and the same real PNG/WAV assets. Keep those results separate from the
+native ApxInf acceptance baseline.
+
 The timing authority is client-observed wall time plus the service-emitted
 TTFT/TPOT from `/v1/evaluations/generate`. `nvidia-smi` samples are explanatory
 hardware evidence, not a replacement for endpoint timing. The prefill rate is

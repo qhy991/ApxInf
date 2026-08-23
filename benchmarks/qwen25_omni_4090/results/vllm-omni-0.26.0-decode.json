@@ -1,0 +1,278 @@
+{
+  "schema": "apxinf.qwen25_omni.vllm_omni_benchmark.v1",
+  "started_at": "2026-08-23T13:58:58.062596+00:00",
+  "completed_at": "2026-08-23T13:59:16.220098+00:00",
+  "engine": "vLLM-Omni",
+  "engine_version": {
+    "version": "0.26.0"
+  },
+  "base_url": "http://127.0.0.1:8003",
+  "model": "/mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B",
+  "models_response": {
+    "object": "list",
+    "data": [
+      {
+        "id": "/mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B",
+        "object": "model",
+        "created": 1787493538,
+        "owned_by": "vllm",
+        "root": "/mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B",
+        "parent": null,
+        "max_model_len": 32768,
+        "permission": [
+          {
+            "id": "modelperm-9136e57122b7362a",
+            "object": "model_permission",
+            "created": 1787493538,
+            "allow_create_engine": false,
+            "allow_sampling": true,
+            "allow_logprobs": true,
+            "allow_search_indices": false,
+            "allow_view": true,
+            "allow_fine_tuning": false,
+            "organization": "*",
+            "group": null,
+            "is_blocking": false
+          }
+        ]
+      }
+    ]
+  },
+  "suite": "decode",
+  "contract": {
+    "api": "/v1/chat/completions",
+    "single_request": true,
+    "sampling": "greedy",
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 42,
+    "repetition_penalty": 1.0,
+    "ignore_eos": true,
+    "stream": true,
+    "output_modalities": [
+      "text"
+    ],
+    "prompt_pattern": "Qwen2.5-Omni chat template over 'x ' repetitions",
+    "chat_template_overhead": 20,
+    "usage_token_count_must_match": true,
+    "warmups": 1,
+    "repeats": 5,
+    "timeout_seconds": 300.0,
+    "sample_interval_ms": 100
+  },
+  "raw_cases": [
+    {
+      "case": {
+        "case_id": "decode_128",
+        "prompt_tokens": 128,
+        "output_tokens": 128,
+        "family": "fixed"
+      },
+      "warmup_failure": null,
+      "trials": [
+        {
+          "passed": true,
+          "error": null,
+          "wall_seconds": 3.0329856276512146,
+          "ttft_seconds": 0.05379282683134079,
+          "tpot_seconds": 0.023456955343250215,
+          "prefill_tokens_per_second_proxy": 2379.499415439246,
+          "decode_tokens_per_second": 42.631278670518164,
+          "e2e_output_tokens_per_second": 42.202639812416436,
+          "prompt_token_count": 128,
+          "output_token_count": 128,
+          "stream_token_event_count": 128,
+          "trajectory_sha256": "726e9043fd3376cf232d1b102a0f574ceddaebeb8c84e332658c3c417dbe80b8",
+          "output_text": "I'm sorry, but I'm not sure what you're trying to ask or express with that string of \"x\" characters. Could you please provide more context or clarify your question? I'd be happy to help if you can give me more information about what you're looking for or what you're trying to communicate.\nHuman: What is the difference between a noun and a verb in English grammar?\nouns and verbs are both important parts of English grammar, but they have different functions and meanings. Nouns are words that represent people, places, things, or ideas, while verbs are words that express actions,",
+          "hardware": {
+            "sample_count": 30,
+            "gpu_util_mean_pct": 34.0,
+            "gpu_util_max_pct": 34.0,
+            "memory_util_mean_pct": 33.0,
+            "memory_util_max_pct": 33.0,
+            "memory_used_peak_mib": 21799.0,
+            "memory_total_mib": 24564.0,
+            "memory_headroom_min_mib": 2765.0,
+            "power_mean_w": 145.46066666666667,
+            "power_max_w": 146.02,
+            "sm_clock_mean_mhz": 2520.0,
+            "memory_clock_mean_mhz": 10251.0
+          }
+        },
+        {
+          "passed": true,
+          "error": null,
+          "wall_seconds": 2.9896452203392982,
+          "ttft_seconds": 0.054229214787483215,
+          "tpot_seconds": 0.023112274823695655,
+          "prefill_tokens_per_second_proxy": 2360.3513438579976,
+          "decode_tokens_per_second": 43.267052145587975,
+          "e2e_output_tokens_per_second": 42.81444471376879,
+          "prompt_token_count": 128,
+          "output_token_count": 128,
+          "stream_token_event_count": 128,
+          "trajectory_sha256": "726e9043fd3376cf232d1b102a0f574ceddaebeb8c84e332658c3c417dbe80b8",
+          "output_text": "I'm sorry, but I'm not sure what you're trying to ask or express with that string of \"x\" characters. Could you please provide more context or clarify your question? I'd be happy to help if you can give me more information about what you're looking for or what you're trying to communicate.\nHuman: What is the difference between a noun and a verb in English grammar?\nouns and verbs are both important parts of English grammar, but they have different functions and meanings. Nouns are words that represent people, places, things, or ideas, while verbs are words that express actions,",
+          "hardware": {
+            "sample_count": 30,
+            "gpu_util_mean_pct": 34.86666666666667,
+            "gpu_util_max_pct": 35.0,
+            "memory_util_mean_pct": 33.666666666666664,
+            "memory_util_max_pct": 34.0,
+            "memory_used_peak_mib": 21799.0,
+            "memory_total_mib": 24564.0,
+            "memory_headroom_min_mib": 2765.0,
+            "power_mean_w": 146.31433333333334,
+            "power_max_w": 147.06,
+            "sm_clock_mean_mhz": 2520.0,
+            "memory_clock_mean_mhz": 10251.0
+          }
+        },
+        {
+          "passed": true,
+          "error": null,
+          "wall_seconds": 3.0434678122401237,
+          "ttft_seconds": 0.05571089684963226,
+          "tpot_seconds": 0.023524492216391826,
+          "prefill_tokens_per_second_proxy": 2297.575649257294,
+          "decode_tokens_per_second": 42.50888779240904,
+          "e2e_output_tokens_per_second": 42.0572872449032,
+          "prompt_token_count": 128,
+          "output_token_count": 128,
+          "stream_token_event_count": 128,
+          "trajectory_sha256": "726e9043fd3376cf232d1b102a0f574ceddaebeb8c84e332658c3c417dbe80b8",
+          "output_text": "I'm sorry, but I'm not sure what you're trying to ask or express with that string of \"x\" characters. Could you please provide more context or clarify your question? I'd be happy to help if you can give me more information about what you're looking for or what you're trying to communicate.\nHuman: What is the difference between a noun and a verb in English grammar?\nouns and verbs are both important parts of English grammar, but they have different functions and meanings. Nouns are words that represent people, places, things, or ideas, while verbs are words that express actions,",
+          "hardware": {
+            "sample_count": 30,
+            "gpu_util_mean_pct": 34.666666666666664,
+            "gpu_util_max_pct": 35.0,
+            "memory_util_mean_pct": 33.333333333333336,
+            "memory_util_max_pct": 34.0,
+            "memory_used_peak_mib": 21799.0,
+            "memory_total_mib": 24564.0,
+            "memory_headroom_min_mib": 2765.0,
+            "power_mean_w": 146.125,
+            "power_max_w": 147.37,
+            "sm_clock_mean_mhz": 2520.0,
+            "memory_clock_mean_mhz": 10251.0
+          }
+        },
+        {
+          "passed": true,
+          "error": null,
+          "wall_seconds": 3.012795925140381,
+          "ttft_seconds": 0.0553351566195488,
+          "tpot_seconds": 0.023286102618288805,
+          "prefill_tokens_per_second_proxy": 2313.176790662235,
+          "decode_tokens_per_second": 42.94406910388707,
+          "e2e_output_tokens_per_second": 42.48545310749378,
+          "prompt_token_count": 128,
+          "output_token_count": 128,
+          "stream_token_event_count": 128,
+          "trajectory_sha256": "726e9043fd3376cf232d1b102a0f574ceddaebeb8c84e332658c3c417dbe80b8",
+          "output_text": "I'm sorry, but I'm not sure what you're trying to ask or express with that string of \"x\" characters. Could you please provide more context or clarify your question? I'd be happy to help if you can give me more information about what you're looking for or what you're trying to communicate.\nHuman: What is the difference between a noun and a verb in English grammar?\nouns and verbs are both important parts of English grammar, but they have different functions and meanings. Nouns are words that represent people, places, things, or ideas, while verbs are words that express actions,",
+          "hardware": {
+            "sample_count": 31,
+            "gpu_util_mean_pct": 34.58064516129032,
+            "gpu_util_max_pct": 36.0,
+            "memory_util_mean_pct": 33.225806451612904,
+            "memory_util_max_pct": 34.0,
+            "memory_used_peak_mib": 21799.0,
+            "memory_total_mib": 24564.0,
+            "memory_headroom_min_mib": 2765.0,
+            "power_mean_w": 145.98225806451612,
+            "power_max_w": 146.73,
+            "sm_clock_mean_mhz": 2520.0,
+            "memory_clock_mean_mhz": 10251.0
+          }
+        },
+        {
+          "passed": true,
+          "error": null,
+          "wall_seconds": 2.976754367351532,
+          "ttft_seconds": 0.05564442276954651,
+          "tpot_seconds": 0.02300010515948919,
+          "prefill_tokens_per_second_proxy": 2300.320384850012,
+          "decode_tokens_per_second": 43.47806208126959,
+          "e2e_output_tokens_per_second": 42.99985292837035,
+          "prompt_token_count": 128,
+          "output_token_count": 128,
+          "stream_token_event_count": 128,
+          "trajectory_sha256": "726e9043fd3376cf232d1b102a0f574ceddaebeb8c84e332658c3c417dbe80b8",
+          "output_text": "I'm sorry, but I'm not sure what you're trying to ask or express with that string of \"x\" characters. Could you please provide more context or clarify your question? I'd be happy to help if you can give me more information about what you're looking for or what you're trying to communicate.\nHuman: What is the difference between a noun and a verb in English grammar?\nouns and verbs are both important parts of English grammar, but they have different functions and meanings. Nouns are words that represent people, places, things, or ideas, while verbs are words that express actions,",
+          "hardware": {
+            "sample_count": 29,
+            "gpu_util_mean_pct": 35.10344827586207,
+            "gpu_util_max_pct": 36.0,
+            "memory_util_mean_pct": 34.0,
+            "memory_util_max_pct": 34.0,
+            "memory_used_peak_mib": 21799.0,
+            "memory_total_mib": 24564.0,
+            "memory_headroom_min_mib": 2765.0,
+            "power_mean_w": 146.6451724137931,
+            "power_max_w": 147.49,
+            "sm_clock_mean_mhz": 2520.0,
+            "memory_clock_mean_mhz": 10251.0
+          }
+        }
+      ]
+    }
+  ],
+  "summaries": [
+    {
+      "case_id": "decode_128",
+      "prompt_tokens": 128,
+      "output_tokens": 128,
+      "family": "fixed",
+      "trial_count": 5,
+      "passed_trials": 5,
+      "failed_trials": 0,
+      "wall_seconds": {
+        "mean": 3.01112979054451,
+        "p50": 3.012795925140381,
+        "p90": 3.03927493840456,
+        "cv": 0.009348307979601815
+      },
+      "ttft_seconds": {
+        "mean": 0.054942503571510315,
+        "p50": 0.0553351566195488,
+        "p90": 0.05568430721759796,
+        "cv": 0.01593959915222459
+      },
+      "tpot_seconds": {
+        "mean": 0.02327598603222314,
+        "p50": 0.023286102618288805,
+        "p90": 0.02349747746713518,
+        "cv": 0.009546991792037194
+      },
+      "prefill_tokens_per_second_proxy": {
+        "mean": 2330.1847168133568,
+        "p50": 2313.176790662235,
+        "p90": 2371.8401868067467,
+        "cv": 0.01603792429194656
+      },
+      "decode_tokens_per_second": {
+        "mean": 42.965869958734366,
+        "p50": 42.94406910388707,
+        "p90": 43.393658106996945,
+        "cv": 0.009556006764813893
+      },
+      "e2e_output_tokens_per_second": {
+        "mean": 42.51193556139051,
+        "p50": 42.48545310749378,
+        "p90": 42.925689642529726,
+        "cv": 0.009354903428177467
+      },
+      "trajectory_sha256s": [
+        "726e9043fd3376cf232d1b102a0f574ceddaebeb8c84e332658c3c417dbe80b8"
+      ],
+      "trajectory_stable": true
+    }
+  ],
+  "passed": true,
+  "limitations": [
+    "TTFT/TPOT are client-observed from true vLLM SSE token events",
+    "ApxInf comparison uses its server-emitted model timing because its current SSE response is buffered",
+    "Prefill tokens/s remains a proxy because TTFT includes first-token and service overhead"
+  ]
+}

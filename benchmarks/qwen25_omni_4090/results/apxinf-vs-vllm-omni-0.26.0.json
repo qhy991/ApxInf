@@ -1,0 +1,221 @@
+{
+  "schema": "apxinf.qwen25_omni.external_engine_comparison.v1",
+  "model": "Qwen/Qwen2.5-Omni-3B",
+  "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+  "hardware": "NVIDIA GeForce RTX 4090",
+  "contract": {
+    "precision": "bf16",
+    "single_request": true,
+    "max_model_len": 32768,
+    "sampling": "greedy",
+    "ignore_eos": true,
+    "talker_disabled": true,
+    "output_modalities": [
+      "text"
+    ],
+    "prefix_caching": false,
+    "vllm_pipeline": "qwen2_5_omni_thinker_only",
+    "vllm_kv_cache_memory_bytes": 2147483648
+  },
+  "sources": {
+    "apxinf_quick": "deployed-fused-silu-mul-quick.json",
+    "apxinf_decode": "candidate-fused-silu-mul-decode.json",
+    "apxinf_context": "deployed-fused-silu-mul-context.json",
+    "apxinf_multimodal": "deployed-fused-silu-mul-multimodal.json",
+    "vllm_quick": "vllm-omni-0.26.0-kv2g-quick.json",
+    "vllm_decode": "vllm-omni-0.26.0-kv2g-decode.json",
+    "vllm_context": "vllm-omni-0.26.0-kv2g-context.json",
+    "vllm_multimodal": "vllm-omni-0.26.0-kv2g-multimodal.json",
+    "vllm_environment": "vllm-omni-0.26.0-environment.json"
+  },
+  "fixed_workloads": [
+    {
+      "workload": "1024+32",
+      "apxinf": {
+        "ttft_ms": 66.021112,
+        "tpot_ms": 9.368011258064517,
+        "wall_ms": 358.0039292573929
+      },
+      "vllm_omni": {
+        "ttft_ms": 68.29691678285599,
+        "tpot_ms": 22.616674582804402,
+        "wall_ms": 770.2370882034302
+      },
+      "winner": {
+        "ttft": "ApxInf",
+        "tpot": "ApxInf",
+        "wall": "ApxInf"
+      },
+      "speedup": {
+        "apxinf_ttft": 1.0345,
+        "apxinf_tpot": 2.4142,
+        "apxinf_wall": 2.1515
+      }
+    },
+    {
+      "workload": "128+128",
+      "apxinf": {
+        "ttft_ms": 14.959637,
+        "tpot_ms": 8.236856952755906,
+        "wall_ms": 1062.7122223377228
+      },
+      "vllm_omni": {
+        "ttft_ms": 53.09433490037918,
+        "tpot_ms": 22.680946398438432,
+        "wall_ms": 2933.7252974510193
+      },
+      "winner": {
+        "ttft": "ApxInf",
+        "tpot": "ApxInf",
+        "wall": "ApxInf"
+      },
+      "speedup": {
+        "apxinf_ttft": 3.5492,
+        "apxinf_tpot": 2.7536,
+        "apxinf_wall": 2.7606
+      }
+    }
+  ],
+  "context_workloads": [
+    {
+      "workload": "8192+8",
+      "apxinf": {
+        "ttft_ms": 815.886764,
+        "tpot_ms": 10.582180571428571,
+        "wall_ms": 893.0581137537956
+      },
+      "vllm_omni": {
+        "ttft_ms": 512.0159462094307,
+        "tpot_ms": 19.110537001064846,
+        "wall_ms": 647.6844996213913
+      },
+      "speedup": {
+        "vllm_ttft": 1.5935,
+        "apxinf_tpot": 1.8059,
+        "vllm_wall": 1.3788
+      }
+    },
+    {
+      "workload": "12288+8",
+      "apxinf": {
+        "ttft_ms": 1371.692446,
+        "tpot_ms": 13.033548142857143,
+        "wall_ms": 1466.4482548832893
+      },
+      "vllm_omni": {
+        "ttft_ms": 830.2697762846947,
+        "tpot_ms": 19.093908369541168,
+        "wall_ms": 963.1513729691505
+      },
+      "speedup": {
+        "vllm_ttft": 1.6521,
+        "apxinf_tpot": 1.465,
+        "vllm_wall": 1.5226
+      }
+    },
+    {
+      "workload": "32760+8",
+      "apxinf": {
+        "ttft_ms": 5719.399391,
+        "tpot_ms": 24.369777428571427,
+        "wall_ms": 5896.201439201832
+      },
+      "vllm_omni": {
+        "ttft_ms": 2912.2343733906746,
+        "tpot_ms": 17.576508224010468,
+        "wall_ms": 3035.371094942093
+      },
+      "speedup": {
+        "vllm_ttft": 1.9639,
+        "vllm_tpot": 1.3865,
+        "vllm_wall": 1.9425
+      }
+    }
+  ],
+  "multimodal_workloads": [
+    {
+      "workload": "real_png_1760+16",
+      "semantic_result": "both read the visible chart title",
+      "apxinf": {
+        "ttft_ms": 33382.141159,
+        "tpot_ms": 10.331534333333333,
+        "wall_ms": 39555.12563884258
+      },
+      "vllm_omni": {
+        "ttft_ms": 231.9645881652832,
+        "tpot_ms": 21.917180716991426,
+        "wall_ms": 564.7583678364754
+      },
+      "speedup": {
+        "vllm_ttft": 143.9105,
+        "apxinf_tpot": 2.1214,
+        "vllm_wall": 70.039
+      }
+    },
+    {
+      "workload": "real_wav_52+16",
+      "semantic_result": "both identify a sine wave",
+      "apxinf": {
+        "model_ttft_ms": 23.09439,
+        "model_tpot_ms": 8.1498545,
+        "service_wall_ms": 6222.290672361851
+      },
+      "vllm_omni": {
+        "client_ttft_ms": 290.40009528398514,
+        "client_tpot_ms": 21.89320276180903,
+        "service_wall_ms": 618.9755797386169
+      },
+      "speedup": {
+        "apxinf_model_ttft": 12.5745,
+        "apxinf_model_tpot": 2.6863,
+        "vllm_service_wall": 10.0526
+      }
+    }
+  ],
+  "capacity": {
+    "apxinf_max_pass": "32760+8",
+    "vllm_omni_max_pass": "32760+8",
+    "vllm_auto_kv_first_oom": "24576+8",
+    "vllm_auto_kv_reservation_gib": 11.45,
+    "vllm_fixed_kv_reservation_gib": 2.0,
+    "apxinf_peak_memory_mib_at_32k": 15069,
+    "vllm_peak_memory_mib_at_32k": 16565
+  },
+  "roofline": {
+    "hardware_assumptions": {
+      "dense_bf16_tensor_tflops": 165.2,
+      "memory_bandwidth_gbps": 1008.0,
+      "sparsity": false
+    },
+    "decode_128+128": {
+      "apxinf": {
+        "linear_only_mfu_percent": 0.4535,
+        "minimum_bwu_percent": 74.3922,
+        "effective_minimum_bandwidth_gbps": 749.8734
+      },
+      "vllm_omni": {
+        "linear_only_mfu_percent": 0.1647,
+        "minimum_bwu_percent": 27.0164,
+        "effective_minimum_bandwidth_gbps": 272.3255
+      }
+    },
+    "decode_32760+8": {
+      "apxinf_minimum_bwu_percent": 30.0412,
+      "vllm_omni_minimum_bwu_percent": 41.6521
+    },
+    "limitations": [
+      "MFU counts model linear FLOPs only and uses the declared dense BF16 tensor peak",
+      "BWU uses algorithmic weight and KV byte lower bounds, not measured HBM transactions",
+      "nvidia-smi utilization samples are explanatory and are not used for admission"
+    ]
+  },
+  "decision": {
+    "apxinf_strength": "short-to-mid-context single-request text decode",
+    "vllm_omni_strength": "long-context prefill and multimodal encoders/preprocessing",
+    "next_apxinf_priorities": [
+      "replace the remaining long-prefill attention path with a tiled FlashAttention-class algorithm",
+      "optimize or replace the current vision tower execution path",
+      "move image/audio preprocessing in-process and remove per-request Python startup"
+    ]
+  }
+}

@@ -1867,6 +1867,12 @@ The deployed binary SHA-256 is
 removed work, ABBA proves a stable end-to-end prefill gain, decode does not
 regress in the longer control, and all correctness/capacity gates pass.
 
+The subsequent same-GPU external baseline is documented in
+`VLLM_OMNI_BASELINE.md`. It changes the next optimization priority: ApxInf
+wins short single-request decode, while vLLM-Omni wins long prefill and the
+real image path. Long-prefill attention and the vision tower therefore outrank
+another sub-percent pointwise candidate.
+
 ## Promoted short-KV CUDA Graph decode candidate
 
 Primary classification: **source/runtime graph**. The accepted Qwen2.5-Omni
