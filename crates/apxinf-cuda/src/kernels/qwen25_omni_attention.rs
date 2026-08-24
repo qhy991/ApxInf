@@ -36,6 +36,7 @@ pub fn split_cta_write(
     output: &Tensor,
     workspace: &SplitCtaWorkspace,
     split_count: usize,
+    warp_count: usize,
     bucket_kv_len: usize,
     max_seq_len: usize,
     scale: f32,
@@ -55,6 +56,7 @@ pub fn split_cta_write(
     }
     if ctx.caps().sm != 89
         || !matches!(split_count, 4 | 8 | 16)
+        || !matches!(warp_count, 2 | 4 | 8)
         || bucket_kv_len <= 11_264
         || bucket_kv_len > max_seq_len
         || max_seq_len > i32::MAX as usize
@@ -95,6 +97,7 @@ pub fn split_cta_write(
                 workspace.partial_accumulator.ptr(),
                 output.ptr(),
                 split_count as i32,
+                warp_count as i32,
                 bucket_kv_len as i32,
                 max_seq_len as i32,
                 scale,

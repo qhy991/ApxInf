@@ -126,7 +126,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(Error::Cuda)?;
     let workspace = SplitCtaWorkspace::new(context)?;
     let mut records = Vec::new();
-    for split_count in [4usize, 8, 16] {
+    let split_count = 16usize;
+    for warp_count in [2usize, 4, 8] {
         for _ in 0..warmups {
             split_cta_write(
                 context,
@@ -136,6 +137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &output,
                 &workspace,
                 split_count,
+                warp_count,
                 kv_len,
                 max_seq_len,
                 (HEAD_DIM as f32).sqrt().recip(),
@@ -153,6 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &output,
                 &workspace,
                 split_count,
+                warp_count,
                 kv_len,
                 max_seq_len,
                 (HEAD_DIM as f32).sqrt().recip(),
@@ -164,6 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let candidate = backend.to_cpu(&output)?.to_f32_vec()?;
         records.push(serde_json::json!({
             "split_count": split_count,
+            "warp_count": warp_count,
             "milliseconds": milliseconds,
             "speedup_over_baseline": baseline_ms / milliseconds,
             "correctness": error_metrics(&candidate, &baseline_values),

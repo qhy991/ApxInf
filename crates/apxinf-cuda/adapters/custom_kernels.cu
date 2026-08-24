@@ -48,6 +48,24 @@ const int kActionAdaPacked8Mode = [] {
     return -1;
   }();
 
+template <int kWarps>
+cudaError_t launch_qwen25_omni_attention_flash_split_cta_bf16(
+    const void* query, const void* key_cache, const void* value_cache,
+    void* partial_max, void* partial_sum, void* partial_accumulator,
+    int split_count, int bucket_kv_len, int max_seq_len, float scale,
+    const void* position, cudaStream_t stream) {
+  dim3 stage_grid(16, split_count, 1);
+  attention_flash_split_cta_bf16_kernel<16, 2, 128, kWarps><<<
+      stage_grid, kWarps * 32, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(query),
+      static_cast<const __nv_bfloat16*>(key_cache),
+      static_cast<const __nv_bfloat16*>(value_cache),
+      static_cast<float*>(partial_max), static_cast<float*>(partial_sum),
+      static_cast<float*>(partial_accumulator), split_count, bucket_kv_len,
+      max_seq_len, scale, static_cast<const uint32_t*>(position));
+  return cudaGetLastError();
+}
+
 }  // namespace
 
 extern "C" cudaError_t apxinf_im2col1d_bf16(
@@ -231,8 +249,8 @@ extern "C" cudaError_t apxinf_static_qwen35_attention_flash_split_cta_bf16(
 extern "C" cudaError_t apxinf_static_qwen25_omni_attention_flash_split_cta_bf16(
     const void* query, const void* key_cache, const void* value_cache,
     void* partial_max, void* partial_sum, void* partial_accumulator,
-    void* output, int split_count, int bucket_kv_len, int max_seq_len,
-    float scale, const void* position, cudaStream_t stream) {
+    void* output, int split_count, int warp_count, int bucket_kv_len,
+    int max_seq_len, float scale, const void* position, cudaStream_t stream) {
   if (query == nullptr || key_cache == nullptr || value_cache == nullptr ||
       partial_max == nullptr || partial_sum == nullptr ||
       partial_accumulator == nullptr || output == nullptr ||
@@ -241,16 +259,29 @@ extern "C" cudaError_t apxinf_static_qwen25_omni_attention_flash_split_cta_bf16(
       bucket_kv_len > max_seq_len || !(scale > 0.0f)) {
     return cudaErrorInvalidValue;
   }
-  dim3 stage_grid(16, split_count, 1);
-  attention_flash_split_cta_bf16_kernel<16, 2, 128, 8><<<
-      stage_grid, 256, 0, stream>>>(
-      static_cast<const __nv_bfloat16*>(query),
-      static_cast<const __nv_bfloat16*>(key_cache),
-      static_cast<const __nv_bfloat16*>(value_cache),
-      static_cast<float*>(partial_max), static_cast<float*>(partial_sum),
-      static_cast<float*>(partial_accumulator), split_count, bucket_kv_len,
-      max_seq_len, scale, static_cast<const uint32_t*>(position));
-  cudaError_t status = cudaGetLastError();
+  cudaError_t status;
+  switch (warp_count) {
+    case 2:
+      status = launch_qwen25_omni_attention_flash_split_cta_bf16<2>(
+          query, key_cache, value_cache, partial_max, partial_sum,
+          partial_accumulator, split_count, bucket_kv_len, max_seq_len, scale,
+          position, stream);
+      break;
+    case 4:
+      status = launch_qwen25_omni_attention_flash_split_cta_bf16<4>(
+          query, key_cache, value_cache, partial_max, partial_sum,
+          partial_accumulator, split_count, bucket_kv_len, max_seq_len, scale,
+          position, stream);
+      break;
+    case 8:
+      status = launch_qwen25_omni_attention_flash_split_cta_bf16<8>(
+          query, key_cache, value_cache, partial_max, partial_sum,
+          partial_accumulator, split_count, bucket_kv_len, max_seq_len, scale,
+          position, stream);
+      break;
+    default:
+      return cudaErrorInvalidValue;
+  }
   if (status != cudaSuccess) return status;
   attention_flash_split_cta_reduce_bf16_kernel<128, 16><<<
       16, 128, 0, stream>>>(

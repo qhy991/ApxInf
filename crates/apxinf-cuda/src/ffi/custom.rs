@@ -90,6 +90,7 @@ extern "C" {
         partial_accumulator: *mut c_void,
         output: *mut c_void,
         split_count: i32,
+        warp_count: i32,
         bucket_kv_len: i32,
         max_seq_len: i32,
         scale: f32,

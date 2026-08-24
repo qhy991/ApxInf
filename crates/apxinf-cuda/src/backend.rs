@@ -228,6 +228,7 @@ impl CudaBackend {
         layer_idx: usize,
         workspace: &kernels::qwen25_omni_attention::SplitCtaWorkspace,
         split_count: usize,
+        warp_count: usize,
         kv_len: usize,
         max_seq_len: usize,
     ) -> Result<Tensor> {
@@ -263,6 +264,7 @@ impl CudaBackend {
             &output,
             workspace,
             split_count,
+            warp_count,
             kv_len,
             max_seq_len,
             (kernels::qwen25_omni_attention::HEAD_DIM as f32)
