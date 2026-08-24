@@ -20,7 +20,7 @@ use crate::kernels::embedding::lookup;
 use crate::kernels::norm::{layer, rms};
 use crate::kernels::preprocess::{avg_pool1d_bf16, im2col1d_bf16};
 use crate::kernels::qwen25_omni_attention::{
-    grouped2_split_cta_write, split_cta_write, SplitCtaWorkspace,
+    grouped2_split_cta_write, grouped4_split_cta_write, SplitCtaWorkspace,
 };
 use crate::kernels::qwen35_attention;
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
@@ -890,7 +890,7 @@ fn gqa_flattened_long_prefill_matches_scalar_bf16() {
 }
 
 #[test]
-fn qwen25_grouped2_split_cta_matches_accepted_long_decode() {
+fn qwen25_grouped4_split_cta_matches_accepted_long_decode() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     if ctx.caps().sm != 89 {
         return;
@@ -940,28 +940,28 @@ fn qwen25_grouped2_split_cta_matches_accepted_long_decode() {
         .unwrap();
     let workspace = SplitCtaWorkspace::new(&ctx).unwrap();
     let scale = (head_dim as f32).sqrt().recip();
-    split_cta_write(
+    grouped2_split_cta_write(
         &ctx,
         &query,
         cache.k_buffer(0),
         cache.v_buffer(0),
         &accepted,
         &workspace,
-        40,
+        48,
         kv_len,
         max_seq_len,
         scale,
         position.address(),
     )
     .unwrap();
-    grouped2_split_cta_write(
+    grouped4_split_cta_write(
         &ctx,
         &query,
         cache.k_buffer(0),
         cache.v_buffer(0),
         &candidate,
         &workspace,
-        48,
+        64,
         kv_len,
         max_seq_len,
         scale,

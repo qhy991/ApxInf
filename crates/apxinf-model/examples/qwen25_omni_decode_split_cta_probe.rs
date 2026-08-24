@@ -217,7 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "correctness": error_metrics(&candidate, &baseline_values),
         }));
     }
-    for split_count in [64usize, 80, 96, 112, 128] {
+    for split_count in [64usize] {
         for _ in 0..warmups {
             grouped4_split_cta_write(
                 context,

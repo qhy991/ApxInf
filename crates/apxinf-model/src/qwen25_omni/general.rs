@@ -46,7 +46,7 @@ const CHUNKED_PREFILL_THRESHOLD: usize = 1_024;
 #[cfg(any(feature = "cuda", test))]
 const LONG_DECODE_SPLIT_CTA_MIN_KV: usize = 32_761;
 #[cfg(any(feature = "cuda", test))]
-const LONG_DECODE_SPLIT_CTA_COUNT: usize = 48;
+const LONG_DECODE_SPLIT_CTA_COUNT: usize = 64;
 
 #[cfg(any(feature = "cuda", test))]
 fn text_prefill_chunk_size(prompt_tokens: usize, fa2_chunk1024: bool) -> usize {
@@ -771,7 +771,7 @@ impl GeneralQwen25Omni {
                         static PATH_LOGGED: OnceLock<()> = OnceLock::new();
                         if PATH_LOGGED.set(()).is_ok() {
                             eprintln!(
-                                "ApxInf Qwen2.5-Omni long-decode grouped-GQA split-CTA: kv={kv_len}, query_heads_per_cta=2, splits={LONG_DECODE_SPLIT_CTA_COUNT}"
+                                "ApxInf Qwen2.5-Omni long-decode grouped-GQA split-CTA: kv={kv_len}, query_heads_per_cta=4, splits={LONG_DECODE_SPLIT_CTA_COUNT}"
                             );
                         }
                         let cuda = cuda_backend(&*self.backend).ok_or_else(|| {

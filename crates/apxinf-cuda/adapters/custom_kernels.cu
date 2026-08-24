@@ -303,8 +303,7 @@ apxinf_static_qwen25_omni_attention_flash_grouped4_split_cta_bf16(
   if (query == nullptr || key_cache == nullptr || value_cache == nullptr ||
       partial_max == nullptr || partial_sum == nullptr ||
       partial_accumulator == nullptr || output == nullptr ||
-      position == nullptr || split_count < 64 || split_count > 128 ||
-      split_count % 16 != 0 || bucket_kv_len <= 0 ||
+      position == nullptr || split_count != 64 || bucket_kv_len <= 0 ||
       bucket_kv_len > max_seq_len || !(scale > 0.0f)) {
     return cudaErrorInvalidValue;
   }
@@ -319,7 +318,7 @@ apxinf_static_qwen25_omni_attention_flash_grouped4_split_cta_bf16(
       max_seq_len, scale, static_cast<const uint32_t*>(position));
   cudaError_t status = cudaGetLastError();
   if (status != cudaSuccess) return status;
-  attention_flash_split_cta_reduce_bf16_kernel<128, 128><<<
+  attention_flash_split_cta_reduce_bf16_kernel<128, 64><<<
       16, 128, 0, stream>>>(
       static_cast<const float*>(partial_max),
       static_cast<const float*>(partial_sum),

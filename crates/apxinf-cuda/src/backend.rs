@@ -255,7 +255,7 @@ impl CudaBackend {
             Shape::new(vec![1, kernels::qwen25_omni_attention::WIDTH]),
             DType::BF16,
         );
-        kernels::qwen25_omni_attention::grouped2_split_cta_write(
+        kernels::qwen25_omni_attention::grouped4_split_cta_write(
             &self.ctx,
             query,
             cache.k_buffer(layer_idx),
