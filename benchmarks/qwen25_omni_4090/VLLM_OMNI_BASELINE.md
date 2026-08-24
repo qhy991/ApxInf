@@ -12,8 +12,8 @@ nearby but structurally different model.
 
 The result is not a single winner:
 
-- ApxInf is the stronger short single-request text decoder and now wins every
-  frozen 8K/12K/32K prefill TTFT and wall-time cell.
+- ApxInf now wins TTFT, TPOT and wall time in every frozen single-request text
+  cell, including the 32K boundary.
 - The real-image path is within 3% on client wall after ApxInf's
   grouped-varlen FA2 promotion.
 - Both reach the complete 32,760 prompt + 8 output contract after vLLM's KV
@@ -83,12 +83,13 @@ one warmup.
 |---:|---:|---:|---:|---:|---:|---|
 | 8,192 | 0.407 s | 0.512 s | ApxInf 1.259× | 10.69 ms | 19.11 ms | ApxInf 1.337× |
 | 12,288 | 0.655 s | 0.830 s | ApxInf 1.267× | 13.07 ms | 19.09 ms | ApxInf 1.284× |
-| 32,760 | 2.614 s | 2.912 s | ApxInf 1.114× | 24.40 ms | 17.58 ms | ApxInf 1.087× |
+| 32,760 | 2.603 s | 2.912 s | ApxInf 1.119× | 14.09 ms | 17.58 ms | ApxInf 1.120× |
 
 ApxInf's causal FA2 path, FA2-aware 1,024-token chunks and request-scoped early
-FA2 remove the former prefill deficit across all frozen lengths. ApxInf keeps
-the faster decoder through 12K, while vLLM still wins 32K TPOT. The
-minimum-BWU lower bound at 32K is 30.13% for ApxInf and 41.65% for vLLM.
+FA2 remove the former prefill deficit across all frozen lengths. At the 32K
+decode boundary, split-16 CTA attention lowers ApxInf TPOT from 24.35 to 14.09
+ms and reverses the last vLLM text advantage: ApxInf is 1.248× faster. The
+minimum-BWU lower bound at 32K is 51.96% for ApxInf and 41.65% for vLLM.
 
 Both engines pass 32,760 + 8. vLLM's throughput-oriented automatic policy
 reserved 11.45 GiB for 333,552 KV tokens—10.18 simultaneous 32K requests—and

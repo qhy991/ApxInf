@@ -3328,9 +3328,9 @@ single-request BF16 RTX 4090 cells.** Structured evidence is
 `promotion-request-scoped-fa2.json`. This does not claim multi-request,
 non-SM89, training or speech/video generation performance.
 
-## Prepared 32K split-CTA decode attention
+## Promoted 32K split-CTA decode attention
 
-Status: **operator probe passed; model candidate source prepared but untested**.
+Status: **promoted and deployed for the exact post-32K decode cell**.
 The target is one BF16 request at cached KV 32,761–32,767, one token per eager
 decode step, QH/KVH/D=16/2/128, TP1 on RTX 4090. The frozen no-profiler
 baseline is 24.40 ms TPOT with exact trajectory
@@ -3385,11 +3385,40 @@ QH/KVH/D=16/2/128, max context 32,768 and cached TMRoPE position ownership.
 All other decode, prefill, multimodal and selector-off calls retain the
 ordinary path; invalid configuration fails model load.
 
-The operator budget is the three split counts with fixed warmup/iterations.
-Each must meet the existing BF16 reduction tolerance at KV=11,265 and 32,767;
-only a material winner may enter one 32K complete-trajectory smoke. Any token
-mismatch closes the branch before timing. Promotion then requires at least
-four of five paired TPOT wins, at least 10% lower median TPOT, unchanged TTFT,
-short/decode/multimodal controls, Systems attribution and explicit SM89
-QH/KVH/D/long-KV fail-closed gating. No Direct PTX claim is made; the planned
-carrier is source/runtime ownership plus native CUDA.
+The preregistered operator budget remained the three split counts with fixed
+warmup and iterations. Split 16 entered model testing only after passing that
+screen. The real 32,760+8 smoke and all ten alternating A/B requests reproduce
+the frozen trajectory exactly. Five of five pairs win: paired median TPOT
+falls from 24.347 to 14.089 ms (1.726x, 42.06% lower), the slowest pair still
+wins by 1.723x, and candidate TPOT CV is 0.115%. Median paired TTFT changes by
+only +0.067%, while wall time improves by 1.026x.
+
+Matched Systems profiles partition the last six full decode steps between GPU
+argmax commits. Mean step envelope falls from 24.437 to 14.272 ms and GPU busy
+time from 23.552 to 13.526 ms. The incumbent global-cache softmax costs 13.313
+ms/step; split stage plus reduction costs 5.517 ms/step. The request removes
+216 kernel instances per generated token, and the measured 10.026 ms GPU-busy
+reduction explains the 10.258 ms no-profiler TPOT reduction. Raw window and
+kernel tables retain both arms, while the Nsight reports are pinned by hash in
+`promotion-decode-split-cta.json`.
+
+Regression passes quick 5/5, decode 5/5, 4K/8K/12K/32K, real PNG/WAV and
+malformed-media recovery. Model CPU tests are 65/65. CUDA remains 93/95 with
+only the same two accepted-control RTX 4090 FP8 cuBLAS status-15 failures. The
+invalid selector composition fails model load with the declared prerequisite
+error. Relative to the frozen vLLM-Omni 0.26.0 cell, ApxInf now wins 32K TPOT
+by 1.248x (14.089 versus 17.577 ms), in addition to its existing TTFT and wall
+wins.
+
+The deployed binary SHA-256 is
+`f20118547b5fe872ad817211290d4cb180601783f868d3731785a99d2c16dbad`;
+the immediate rollback is
+`5723aa15c388d91a9dd6a0cf0e51c9c306d7f18121889e2f1075f6f02a30baa2`.
+A runit-owned 32K smoke reproduced the exact trajectory at 14.118 ms TPOT and
+logged the `kv=32761, splits=16` path before the service returned down and the
+GPU became idle.
+
+**Decision: promote split-16 long-decode attention only for the frozen SM89
+QH/KVH/D=16/2/128, KV 32,761--32,767 cell.** Structured authority is
+`promotion-decode-split-cta.json`. No Direct PTX, multi-request, non-SM89 or
+other-model performance claim is made.
