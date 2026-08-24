@@ -3249,3 +3249,21 @@ opportunity before FA2 owns the later half.
 profiler spending.** Raw evidence is `omni-fa2-chunk2048-smoke-8k.json`; the
 profile/tuning inputs use the `omni-8192-fa2-chunk1024-current` and
 `omni-8192-m1024-bf16-tuning` names. Production remains on 1,024-token chunks.
+
+## Prepared all-chunks causal FA2 upper-bound probe
+
+Status: **exploratory source only; not a promotable request gate**. The 8K
+profile still spends about 49.2 ms in early-chunk scalar softmax plus 24.8 ms
+in score scaling and associated score/value GEMMs. A one-line compile-time
+probe lowers the causal-FA2 KV threshold from 4,097 to 1 so every 1,024-token
+chunk uses FA2. This estimates whether removing the early materialized path is
+worth introducing an explicit request-scoped model/backend boundary.
+
+The probe is deliberately not valid for deployment: the earlier all-prefill
+FA2 experiment changed frozen 1K and 4K tokens. The only budget is one 8K
+request. It must reproduce the accepted trajectory
+`490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf`
+and beat the accepted 0.6145 s TTFT median by at least 2%. A mismatch or null
+result closes the boundary immediately. An exact material win only authorizes
+designing a request-scoped strict gate; it cannot itself be promoted or
+profiled.

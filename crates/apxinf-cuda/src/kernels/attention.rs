@@ -225,7 +225,10 @@ fn causal_fa2_gqa_prefill_enabled() -> Result<bool> {
 const MAX_SOFTMAX_EXP_CACHE_COLS: usize = 11_264;
 const MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS: usize = 4_096;
 const MAX_INPLACE_SCALE_QUERY_TOKENS: usize = 256;
-const MIN_CAUSAL_FA2_GQA_KV_LEN: usize = 4_097;
+// Exploratory upper-bound probe: let causal FA2 own every chunk. This branch
+// is not promotable without a request-scoped gate because short prompts are a
+// known different numerical cell.
+const MIN_CAUSAL_FA2_GQA_KV_LEN: usize = 1;
 
 fn softmax_exp_cache_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
