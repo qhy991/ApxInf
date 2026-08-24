@@ -3525,3 +3525,63 @@ idle.
 SM89 QH/KVH/D=16/2/128, KV 32,761--32,767 selector.** Structured authority is
 `promotion-decode-split40.json`. No new model, request, hardware or concurrency
 claim is introduced.
+
+### Promoted grouped-GQA KV read ownership
+
+The next rewrite changes ownership rather than launch geometry alone. Each
+stage CTA now owns two adjacent query heads inside the same eight-query-head
+GQA group, loads every K/V element once, and advances two independent
+online-softmax states. Query-head output state, ordering, BF16 conversion and
+the model gate remain separate. Split 48 gives 384 CTAs and bounds persistent
+partials at 399,360 bytes. The shipped CUDA kernel uses 48 registers/thread
+and 9,344 bytes static shared memory, versus 40 registers and 4,672 bytes for
+the split-40 parent.
+
+The SubCUDA transfer set is deliberately mixed. R14 is the accepted attention
+ownership analog, but its B32 numerical-faithfulness contract is not reused.
+The rejected QK CTA-geometry case requires actual shared work rather than
+grouping alone; R2--R4 require a real production-length trajectory despite
+high local cosine; Day3 requires runtime kernel identity and request-level
+timing. This candidate is classified as source/runtime graph, not PTX.
+
+At KV=32,767, accepted split 40 measures 0.05580 ms/layer. Grouped2 split
+40/48/64/80 measure 0.05132/0.04436/0.04628/0.04639 ms; split 48 is 1.258x
+faster than the accepted operator. Every arm has the same continuous-error
+metrics relative to the ordinary decode boundary. A dedicated CUDA regression
+also compares grouped2 split 48 with accepted split 40 at the full KV shape.
+
+The real 32,760+8 smoke preserves the frozen trajectory and logs
+`query_heads_per_cta=2, splits=48`. The initial five A/B pairs win 4/5 but
+contain one retained 11.266 ms candidate high value, so five complementary
+confirmation pairs were added before promotion. Across all ten pairs the
+candidate wins 9/10; paired median TPOT speedup is 1.0329x. Raw medians move
+from 11.231 to 10.863 ms. Overall candidate TPOT CV is 1.125% with the high
+value retained; the five confirmation pairs win 5/5 with 0.168% candidate CV.
+TTFT is unchanged and wall time wins 10/10.
+
+Matched Systems profiles show mean decode envelope falling from 11.398 to
+11.028 ms and GPU busy time from 10.670 to 10.285 ms. The attention stage
+falls from 2.550 to 2.155 ms/step while reduction rises only from 0.113 to
+0.124 ms/step. The net 0.385 ms GPU-busy reduction matches the 0.368 ms raw
+median and 3.19% paired-median no-profiler TPOT saving; other dominant kernels
+remain unchanged.
+
+Regression passes model CPU 65/65, benchmark scripts 15/15, quick 5/5, decode
+5/5, 4K/8K/12K/32K, real PNG/WAV and malformed-media recovery. CUDA is now
+94/96: the new full-KV grouped-GQA contract and every other non-FP8 test pass,
+while the same two RTX 4090 FP8 cuBLAS status-15 controls fail. Relative to
+frozen vLLM-Omni 0.26.0, ApxInf wins 32K TPOT by 1.618x and reaches a 67.39%
+minimum-BWU lower bound.
+
+The deployed binary SHA-256 is
+`2dda4de0a7ba18fff70162f96ff48ba3b49aeb833b9f11df9187854569249a34`;
+the immediate rollback is
+`e6185a50fc90d20177af330b6da3ea225d958715ebd417c8854979d4263f21c7`.
+A runit-owned smoke reproduces the exact trajectory at 10.842 ms TPOT and
+confirms the grouped-GQA split-48 path before the service returns down and the
+GPU becomes idle.
+
+**Decision: promote grouped two-query-head split 48 only inside the already
+accepted SM89 QH/KVH/D=16/2/128, KV 32,761--32,767 selector.** Structured
+authority is `promotion-decode-gqa-share.json`. No new model, request,
+hardware or concurrency claim is introduced.

@@ -76,20 +76,21 @@ bounds, not Nsight memory-transaction counters.
 ## Context gradient
 
 Each row requests eight outputs. Current ApxInf numbers are medians from five
-paired selector-on measurements; vLLM numbers retain their frozen p50 after
-one warmup.
+paired measurements at 8K/12K and ten paired measurements at 32K; vLLM
+numbers retain their frozen p50 after one warmup.
 
 | Prompt | ApxInf TTFT | vLLM TTFT | TTFT winner | ApxInf TPOT | vLLM TPOT | Wall winner |
 |---:|---:|---:|---:|---:|---:|---|
 | 8,192 | 0.407 s | 0.512 s | ApxInf 1.259× | 10.69 ms | 19.11 ms | ApxInf 1.337× |
 | 12,288 | 0.655 s | 0.830 s | ApxInf 1.267× | 13.07 ms | 19.09 ms | ApxInf 1.284× |
-| 32,760 | 2.602 s | 2.912 s | ApxInf 1.119× | 11.22 ms | 17.58 ms | ApxInf 1.129× |
+| 32,760 | 2.602 s | 2.912 s | ApxInf 1.119× | 10.86 ms | 17.58 ms | ApxInf 1.130× |
 
 ApxInf's causal FA2 path, FA2-aware 1,024-token chunks and request-scoped early
 FA2 remove the former prefill deficit across all frozen lengths. At the 32K
-decode boundary, split-40 CTA attention lowers ApxInf TPOT from 24.35 to 11.22
-ms and reverses the last vLLM text advantage: ApxInf is 1.566× faster. The
-minimum-BWU lower bound at 32K is 65.24% for ApxInf and 41.65% for vLLM.
+decode boundary, grouped-GQA split-48 attention lowers ApxInf TPOT from 24.35
+to 10.86 ms and reverses the last vLLM text advantage: ApxInf is 1.618×
+faster. The minimum-BWU lower bound at 32K is 67.39% for ApxInf and 41.65%
+for vLLM.
 
 Both engines pass 32,760 + 8. vLLM's throughput-oriented automatic policy
 reserved 11.45 GiB for 333,552 KV tokens—10.18 simultaneous 32K requests—and

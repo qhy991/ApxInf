@@ -25,7 +25,7 @@ use crate::kernels::qwen25_omni_attention::{
 use crate::kernels::qwen35_attention;
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
 use crate::kernels::selection::argmax_bf16_into;
-use crate::{CudaDeviceAddress, CudaKVCache};
+use crate::CudaKVCache;
 
 fn gpu_ptr(tensor: &Tensor) -> Result<*mut std::ffi::c_void> {
     Ok(CudaBuffer::from_tensor(tensor).map_err(Error::Cuda)?.ptr())

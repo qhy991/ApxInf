@@ -6,9 +6,9 @@
   `Qwen/Qwen2.5-Omni-3B@f75b40e3da2003cdd6e1829b1f420ca70797c34e`
 - GPU: NVIDIA GeForce RTX 4090, 24,564 MiB, single request, BF16
 - Deployed binary SHA-256:
-  `e6185a50fc90d20177af330b6da3ea225d958715ebd417c8854979d4263f21c7`
+  `2dda4de0a7ba18fff70162f96ff48ba3b49aeb833b9f11df9187854569249a34`
 - Immediate rollback SHA-256:
-  `cf77816bd7add10c0061523ce0f52f69aefdfed2065a42734da93b8c44b2fb01`
+  `e6185a50fc90d20177af330b6da3ea225d958715ebd417c8854979d4263f21c7`
 - Deployment owner: runit launches the checked-in Broker service definition;
   the service is stopped when unused so other queued work can own the GPU.
 
@@ -57,7 +57,9 @@ the first four chunks through causal FA2 below the default 4,097-KV scheduling
 threshold. The model owns the total-prompt gate, so short, decode, multimodal
 and longer requests keep their previous attention call.
 At the opposite boundary, one persistent split-CTA workspace lets only
-one-token decode at KV 32,761--32,767 use split-40 online-softmax attention.
+one-token decode at KV 32,761--32,767 group adjacent query-head pairs that
+share one KV head and use split-48 online-softmax attention. Each query head
+retains an independent numerical state; only K/V read ownership is shared.
 The model fails closed unless the deployment is SM89 with QH/KVH/D=16/2/128,
 max context 32,768 and cached TMRoPE position ownership. Every shorter decode,
 prefill and multimodal call retains the previous path.
@@ -69,7 +71,7 @@ prefill and multimodal call retains the previous path.
 | 7,168 + 8 control | 1 | 0.6252 s | same inactive path | control | 10.392 ms |
 | 8,192 + 8 | 5 paired | 0.4065 s | 0.6140 s | 1.511× median | 10.694 ms |
 | 12,288 + 8 | 5 paired | 0.6552 s | 0.8661 s | 1.322× median | 13.075 ms |
-| 32,760 + 8 | 5 paired | 2.6024 s | 2.6026 s | unchanged | 11.221 ms |
+| 32,760 + 8 | 10 paired | 2.6023 s | 2.6029 s | unchanged | 10.863 ms |
 
 The resident processor improves service wall time independently of model
 execution:
@@ -81,10 +83,10 @@ execution:
 
 All repeated text cases preserve their accepted complete trajectory hashes.
 The exact 32,768-token contract, malformed-media recovery and real PNG/WAV
-exact-token gates pass. All 93 non-FP8 CUDA tests and all 65 model CPU tests
+exact-token gates pass. All 94 non-FP8 CUDA tests and all 65 model CPU tests
 pass. The same two RTX 4090
 FP8 cuBLAS status-15 failures remain explicit known control failures. See
-`PROFILE.md` and `promotion-decode-split40.json` for the latest promotion
+`PROFILE.md` and `promotion-decode-gqa-share.json` for the latest promotion
 evidence.
 
 ## Original frozen deployment
