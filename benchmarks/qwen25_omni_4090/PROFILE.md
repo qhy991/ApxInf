@@ -3327,3 +3327,49 @@ A runit-owned 8K/12K smoke reproduced both exact trajectories at 0.415 and
 single-request BF16 RTX 4090 cells.** Structured evidence is
 `promotion-request-scoped-fa2.json`. This does not claim multi-request,
 non-SM89, training or speech/video generation performance.
+
+## Prepared 32K split-CTA decode attention
+
+Status: **baseline reconstructed; CUDA candidate not yet implemented**.
+The target is one BF16 request at cached KV 32,761–32,767, one token per eager
+decode step, QH/KVH/D=16/2/128, TP1 on RTX 4090. The frozen no-profiler
+baseline is 24.40 ms TPOT with exact trajectory
+`f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9`;
+vLLM-Omni 0.26.0 records 17.58 ms on the matched external cell.
+
+`analyze_decode_windows.py` uses the last seven GPU argmax token commits to
+extract six complete decode intervals from the 32K Systems SQLite authority.
+Mean envelope is 25.16 ms, GPU busy is 23.55 ms and device gaps are only
+1.61 ms. The exact global-cache softmax consumes 79.88 ms across six steps,
+or 13.31 ms/step and 55% of TPOT. Remaining GEMM/GEMV work is about 9.2
+ms/step. Host launch removal has a small ceiling; attention ownership is the
+next boundary. Structured output is `omni-32760-decode-window-analysis.json`.
+
+The SubCUDA transfer set is deliberately mixed:
+
+- accepted analog `omoe-qwen35-tp2-r14-zero-copy-batched-attention` proves
+  that changing attention ownership and planning can survive E2E, but its
+  B32/SM100 numerical-faithfulness contract is not transferable to exact B1;
+- rejected counterexample `omoe-qwen35-tp2-r02-r04-batch-attention-rejects`
+  proves a 3.9× operator win must stop when the real post-32K token/logprob
+  changes;
+- attribution case `day3-sglang-amdahl-path-attribution` requires runtime
+  kernel identity and request-level timing rather than projecting a harness
+  speedup.
+
+The bounded hypothesis adapts the repository's existing Qwen3.5 split-CTA
+online-softmax pattern to the exact Qwen2.5 shape. Each query head partitions
+KV across 4/8/16 CTAs, writes FP32 `(max,sum,accumulator)` partials, and a
+second kernel merges them. Split 8 supplies 128 CTAs—one nominal RTX 4090
+wave—while adding only about 66 KiB of persistent partial workspace. The
+accepted global-cache path remains selector-off and no cache ownership or KV
+layout changes.
+
+The operator budget is the three split counts with fixed warmup/iterations.
+Each must meet the existing BF16 reduction tolerance at KV=11,265 and 32,767;
+only a material winner may enter one 32K complete-trajectory smoke. Any token
+mismatch closes the branch before timing. Promotion then requires at least
+four of five paired TPOT wins, at least 10% lower median TPOT, unchanged TTFT,
+short/decode/multimodal controls, Systems attribution and explicit SM89
+QH/KVH/D/long-KV fail-closed gating. No Direct PTX claim is made; the planned
+carrier is source/runtime ownership plus native CUDA.
