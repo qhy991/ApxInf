@@ -1,0 +1,199 @@
+{
+  "format": "apxinf-qwen35-metal-w8-boundary-tail-head-v1-real-gate-summary-v2",
+  "created_at_local_date": "2026-08-25",
+  "code_commit": "820ee4ed98f66feaec0324e1a8870a7eb0967531",
+  "classification": {
+    "quality_gate_passed": true,
+    "formal_performance_result": false,
+    "promotion_status": "candidate_only_not_promoted",
+    "timing_use": "single-pass diagnostic context only; never formal promotion evidence",
+    "reasons_not_formal": [
+      "the host started with nonzero system swap and system swap was not invariant",
+      "the host was not under quiet-host custody",
+      "only one observation per mode was collected",
+      "no ABBA/BAAB campaign was run",
+      "/usr/bin/time resource observations are not atomically bound into the four gate receipts"
+    ],
+    "default_reachability": false
+  },
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "checkpoint_sha256": "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
+    "prompt": "Hello",
+    "prompt_token_ids": [
+      248045,
+      846,
+      198,
+      9419,
+      248046,
+      198,
+      248045,
+      74455,
+      198,
+      248068,
+      271,
+      248069,
+      271
+    ],
+    "teacher_forced_comparisons": 128,
+    "free_run_generated_tokens": 128,
+    "eos_stopping": false,
+    "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1",
+    "cpu_oracle_constructor": "GeneralQwen35::from_weights",
+    "candidate_oracle_source": "same-process-cpu-f32-from-pinned-artifacts"
+  },
+  "receipt_integrity": {
+    "cpu_teacher": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-v1-cpu-teacher-v2-20260825.json",
+      "sha256": "9f4477517ef0f7ff2f112f66fe2a051fc22e884f32fb3f18bea60bd9cb1447b5",
+      "size": 44576,
+      "format": "apxinf-qwen35-metal-w8-boundary-tail-head-v1-cpu-teacher-v2",
+      "passed": true
+    },
+    "candidate_teacher": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-v1-teacher-gate-v2-20260825.json",
+      "sha256": "e0956a575aa8754487412ce4c642153d67547d69d5f51d711a9ae9a72e4cded4",
+      "size": 67561,
+      "format": "apxinf-qwen35-metal-w8-boundary-tail-head-v1-teacher-gate-v2",
+      "passed": true,
+      "input_receipt_sha256": "9f4477517ef0f7ff2f112f66fe2a051fc22e884f32fb3f18bea60bd9cb1447b5",
+      "input_receipt_verified_at_publication": true
+    },
+    "cpu_free": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-v1-cpu-free-v2-20260825.json",
+      "sha256": "af242a97a68f8c5fbb31cd6e271068d79212f5f409677a9dc3b2570940300f86",
+      "size": 44016,
+      "format": "apxinf-qwen35-metal-w8-boundary-tail-head-v1-cpu-free-run-v2",
+      "passed": true
+    },
+    "candidate_free": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-v1-free-gate-v2-20260825.json",
+      "sha256": "1135e183b287e975c6a7b99054c8a9adcebb2b28277900a683fa06f420c17311",
+      "size": 56965,
+      "format": "apxinf-qwen35-metal-w8-boundary-tail-head-v1-free-run-gate-v2",
+      "passed": true,
+      "input_receipt_sha256": "af242a97a68f8c5fbb31cd6e271068d79212f5f409677a9dc3b2570940300f86",
+      "input_receipt_verified_at_publication": true
+    },
+    "all_four_identity_records_equal": true,
+    "identity_record_jq_cS_with_trailing_lf_sha256": "3a91e21d6fbf9ca00533436e36671503f02e97cb8501cff5ef887416e28bee67",
+    "all_four_end_custody_records_equal": true,
+    "end_custody_record_jq_cS_with_trailing_lf_sha256": "29a649479033a6f480e1adcf54e4d7b005129fe0c1426d75e02986267764533c"
+  },
+  "quality_gate": {
+    "teacher": {
+      "teacher_input_ids_compact_json_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe",
+      "cpu_expected_output_ids_compact_json_sha256": "52731c5723bb55d242f9cab3beb524c51a29878c0818ca819d6b038e71ce19cf",
+      "candidate_frozen_cpu_output_ids_compact_json_sha256": "52731c5723bb55d242f9cab3beb524c51a29878c0818ca819d6b038e71ce19cf",
+      "candidate_normalized_hidden_f32_winner_ids_compact_json_sha256": "52731c5723bb55d242f9cab3beb524c51a29878c0818ca819d6b038e71ce19cf",
+      "candidate_direct_f32_reranked_ids_compact_json_sha256": "52731c5723bb55d242f9cab3beb524c51a29878c0818ca819d6b038e71ce19cf",
+      "top4_candidate_arrays_compact_json_sha256": "ab6049a5fe86456d31d8c08d27c219b5bf7f07aace90261a51900d33a5dceb85",
+      "body_mismatches": 0,
+      "top4_mismatches": 0,
+      "direct_rerank_mismatches": 0,
+      "end_to_end_mismatches": 0,
+      "exact_128_of_128": true,
+      "prefill_and_final_path_checks_all_valid": true
+    },
+    "free_run": {
+      "cpu_expected_token_ids_compact_json_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe",
+      "candidate_generated_token_ids_compact_json_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe",
+      "mismatches": 0,
+      "exact_128_token_trajectory": true,
+      "path_checks_all_valid": true
+    },
+    "all_four_receipts_passed": true
+  },
+  "custody": {
+    "gate_binary": {
+      "sha256": "57cfd1163e065e2b993f4602bf3dca202a78754883a1991fe75b64e0662a480b",
+      "size": 9542728,
+      "build_profile": "release",
+      "features": [
+        "accelerate",
+        "metal-w8"
+      ]
+    },
+    "model_load_binding": {
+      "small_artifacts": "owned bytes retained from start-attested file descriptors",
+      "checkpoint": "mmap from the start-attested pinned file descriptor",
+      "start_and_end_identity_fields": [
+        "device",
+        "inode",
+        "size",
+        "nlink",
+        "ctime",
+        "sha256"
+      ]
+    },
+    "source_set": {
+      "set_id": "boundary-tail-head-v1-explicit-audited-source-set-v3",
+      "coverage": "explicit-non-transitive-source-set-v1",
+      "rust_bridge_manifest_files": 41,
+      "compiled_metal_shader_files": 6,
+      "binary_attestation_authoritative_for_full_executable": true
+    },
+    "output_publication": "fsynced temporary file plus renameatx_np RENAME_EXCL through a pinned parent directory descriptor",
+    "end_custody_verified_in_all_four_receipts": true
+  },
+  "aggregate_buffer_ledger": {
+    "scope": "resident-mtlbuffer-only",
+    "allocated_buffers": 494,
+    "shared_buffers": 443,
+    "private_buffers": 51,
+    "total_persistent_mtlbuffer_bytes": 799543312,
+    "command_buffers_per_decode": 7,
+    "compute_encoders_per_decode": 24,
+    "kernel_dispatches_per_decode": 267,
+    "host_to_device_bytes_per_decode": 28672,
+    "device_to_host_bytes_per_decode": 28688,
+    "state_host_transfer_bytes_per_decode": 0,
+    "component_sum_recomputed_and_exact": true
+  },
+  "diagnostic_timing": {
+    "cpu_teacher_decode_mean_ms": 48.439475257812504,
+    "candidate_teacher_decode_mean_ms": 32.176081703125,
+    "candidate_teacher_speedup_vs_cpu": 1.5054497842447974,
+    "cpu_free_generation_tps": 20.133987191870585,
+    "candidate_free_generation_tps": 66.33672849846097,
+    "candidate_free_speedup_vs_cpu": 3.294763618665928,
+    "cpu_free_ttft_ms": 152.304916,
+    "candidate_free_ttft_ms": 140.958833,
+    "cpu_free_tpot_ms": 49.66726115748032,
+    "candidate_free_tpot_ms": 15.07460531496063,
+    "classification": "uncontrolled-host single-pass diagnostic timing only"
+  },
+  "resource_observations": {
+    "source": "/usr/bin/time -l orchestrator observations; not embedded in gate receipts",
+    "rss_limit_bytes": 6442450944,
+    "runs": {
+      "cpu_teacher": {
+        "maximum_resident_set_size_bytes": 4732485632,
+        "child_swaps": 0
+      },
+      "candidate_teacher": {
+        "maximum_resident_set_size_bytes": 5905956864,
+        "child_swaps": 0
+      },
+      "cpu_free": {
+        "maximum_resident_set_size_bytes": 4704632832,
+        "child_swaps": 0
+      },
+      "candidate_free": {
+        "maximum_resident_set_size_bytes": 5905612800,
+        "child_swaps": 0
+      }
+    },
+    "all_processes_below_rss_limit": true,
+    "all_child_swap_counts_zero": true,
+    "system_swap_before": "5529.19 MiB used",
+    "system_swap_after": "5269.12 MiB used",
+    "system_swap_invariant": false,
+    "host": {
+      "hardware": "Apple M4, 16 GiB unified memory",
+      "os": "macOS 26.2 (25C56)",
+      "quiet_host": false
+    }
+  }
+}
