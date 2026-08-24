@@ -1,0 +1,118 @@
+{
+  "job": "gpuq-0efac7cb502c",
+  "implementation_commit": "b872c3708d38d2d335f3c87d7fb96e643298296a",
+  "binary_sha256": "8e8577d993e338048347279238048d091212d74eb262c2d9abb3b991224d29d5",
+  "decision": "reject grouped8; every screened split is slower than accepted grouped4 split64",
+  "baseline_ms": 0.49062652999999995,
+  "contract": {
+    "dtype": "bf16",
+    "head_dim": 128,
+    "iterations": 100,
+    "kv_heads": 2,
+    "kv_len": 32767,
+    "max_seq_len": 32768,
+    "query_heads": 16,
+    "warmups": 10
+  },
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "records": [
+    {
+      "correctness": {
+        "cosine": 0.9999980359902577,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.000568389892578125
+      },
+      "implementation": "split_cta",
+      "milliseconds": 0.05586311,
+      "query_heads_per_cta": 1,
+      "speedup_over_baseline": 8.782656926905787,
+      "split_count": 40
+    },
+    {
+      "correctness": {
+        "cosine": 0.9999980359902577,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.000568389892578125
+      },
+      "implementation": "grouped2_split_cta",
+      "milliseconds": 0.04449535999999999,
+      "query_heads_per_cta": 2,
+      "speedup_over_baseline": 11.026465006688339,
+      "split_count": 48
+    },
+    {
+      "correctness": {
+        "cosine": 0.9999980359902577,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.000568389892578125
+      },
+      "implementation": "grouped4_split_cta",
+      "milliseconds": 0.0388793,
+      "query_heads_per_cta": 4,
+      "speedup_over_baseline": 12.619222311101279,
+      "split_count": 64
+    },
+    {
+      "correctness": {
+        "cosine": 0.9999980359902577,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.000568389892578125
+      },
+      "implementation": "grouped8_split_cta",
+      "milliseconds": 0.055208009999999995,
+      "query_heads_per_cta": 8,
+      "speedup_over_baseline": 8.886872212927074,
+      "split_count": 96
+    },
+    {
+      "correctness": {
+        "cosine": 0.9999980359902577,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.000568389892578125
+      },
+      "implementation": "grouped8_split_cta",
+      "milliseconds": 0.05034283999999999,
+      "query_heads_per_cta": 8,
+      "speedup_over_baseline": 9.745706241443669,
+      "split_count": 112
+    },
+    {
+      "correctness": {
+        "cosine": 0.9999980292853013,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.0005702972412109375
+      },
+      "implementation": "grouped8_split_cta",
+      "milliseconds": 0.04692075,
+      "query_heads_per_cta": 8,
+      "speedup_over_baseline": 10.456493768748368,
+      "split_count": 128
+    },
+    {
+      "correctness": {
+        "cosine": 0.9999980359902577,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.000568389892578125
+      },
+      "implementation": "grouped8_split_cta",
+      "milliseconds": 0.05946619,
+      "query_heads_per_cta": 8,
+      "speedup_over_baseline": 8.250512265877466,
+      "split_count": 144
+    },
+    {
+      "correctness": {
+        "cosine": 0.9999980359902577,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.000568389892578125
+      },
+      "implementation": "grouped8_split_cta",
+      "milliseconds": 0.056211409999999996,
+      "query_heads_per_cta": 8,
+      "speedup_over_baseline": 8.72823738098724,
+      "split_count": 160
+    }
+  ],
+  "schema": "apxinf.qwen25_omni.decode_split_cta_probe.v1",
+  "sm": 89
+}

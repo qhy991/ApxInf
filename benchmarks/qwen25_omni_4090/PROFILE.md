@@ -3624,3 +3624,18 @@ GPU becomes idle.
 **Decision: promote grouped four-query-head split 64 only inside the already
 accepted SM89 QH/KVH/D=16/2/128, KV 32,761--32,767 selector.** Structured
 authority is `promotion-decode-gqa4.json`; no broader claim is introduced.
+
+### Rejected eight-query-head GQA ownership
+
+The final same-mechanism screen lets one CTA own all eight query heads sharing
+one KV head. Grouped4 split 64 reproduces at 0.03888 ms/layer. Grouped8 split
+96/112/128/144/160 measure 0.05521/0.05034/0.04692/0.05947/0.05621 ms.
+Every arm passes the operator numerical gate, but even the best split-128 arm
+is 20.7% slower than the deployed grouped4 path.
+
+**Decision: reject grouped8 at the operator gate.** The additional per-CTA
+query/accumulator state and lower independent-CTA supply outweigh further KV
+read sharing, so no model smoke, paired timing or profiler budget is spent.
+Raw authority is `omni-32767-decode-gqa8-screen.json`; the experimental source
+remains isolated on `codex/omni-long-decode-gqa8-probe` and does not enter the
+serving branch.
