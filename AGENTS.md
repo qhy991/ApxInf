@@ -14,7 +14,8 @@
 - Never set `CUDA_VISIBLE_DEVICES`; the broker owns physical assignment.
 - Never bypass an unavailable or queued broker. Inspect with `gpuq status` and
   keep the original `gpu-run` client alive while queued.
-- The Qwen3.8 reference service is owned by
-  `apxinf-qwen38-broker.service`. Stop it only through systemd when an authorized
-  exclusive Omni phase needs the card, and restore it after a failed or
-  non-promoted Omni run.
+- The Qwen3.8 reference service is owned by runit at
+  `/opt/devmachine/init/service/apxinf-qwen38-broker`. Inspect it with `sv status`
+  and change it only through `sv up|down` on that directory. Keep it down while
+  no Qwen3.8 request or experiment owns the card; start it on demand rather than
+  restoring it automatically after an Omni run.
