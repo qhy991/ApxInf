@@ -249,7 +249,7 @@ impl GeneralQwen25Omni {
         );
         #[cfg(feature = "cuda")]
         let long_decode_split_cta = if long_decode_split_cta_enabled()? {
-            if !parse_binary_env("APXINF_TMROPE_POSITION_CACHE")? {
+            if !parse_binary_env("APXINF_TMROPE_POSITION_CACHE").map_err(Error::Other)? {
                 return Err(Error::Other(
                     "APXINF_QWEN25_LONG_DECODE_SPLIT_CTA=1 requires APXINF_TMROPE_POSITION_CACHE=1"
                         .into(),
