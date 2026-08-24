@@ -38,6 +38,8 @@ const CHUNKED_PREFILL_MID_MAX_PROMPT: usize = 12_288;
 #[cfg(any(feature = "cuda", test))]
 const CHUNKED_PREFILL_LARGE_SIZE: usize = 1_024;
 #[cfg(any(feature = "cuda", test))]
+const CHUNKED_PREFILL_FA2_XL_SIZE: usize = 2_048;
+#[cfg(any(feature = "cuda", test))]
 const CHUNKED_PREFILL_FA2_LARGE_MIN_PROMPT: usize = 8_192;
 #[cfg(any(feature = "cuda", test))]
 const CHUNKED_PREFILL_FA2_LARGE_MAX_PROMPT: usize = 12_288;
@@ -45,8 +47,18 @@ const CHUNKED_PREFILL_FA2_LARGE_MAX_PROMPT: usize = 12_288;
 const CHUNKED_PREFILL_THRESHOLD: usize = 1_024;
 
 #[cfg(any(feature = "cuda", test))]
-fn text_prefill_chunk_size(prompt_tokens: usize, fa2_chunk1024: bool) -> usize {
-    if fa2_chunk1024
+fn text_prefill_chunk_size(
+    prompt_tokens: usize,
+    fa2_chunk1024: bool,
+    fa2_chunk2048: bool,
+) -> usize {
+    if fa2_chunk2048
+        && fa2_chunk1024
+        && (CHUNKED_PREFILL_FA2_LARGE_MIN_PROMPT..=CHUNKED_PREFILL_FA2_LARGE_MAX_PROMPT)
+            .contains(&prompt_tokens)
+    {
+        CHUNKED_PREFILL_FA2_XL_SIZE
+    } else if fa2_chunk1024
         && (CHUNKED_PREFILL_FA2_LARGE_MIN_PROMPT..=CHUNKED_PREFILL_FA2_LARGE_MAX_PROMPT)
             .contains(&prompt_tokens)
     {
@@ -149,6 +161,24 @@ fn fa2_chunk1024_enabled() -> Result<bool> {
 }
 
 #[cfg(feature = "cuda")]
+fn fa2_chunk2048_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| {
+            let enabled = parse_binary_env("APXINF_QWEN25_FA2_CHUNK2048")?;
+            if enabled && !fa2_chunk1024_enabled().map_err(|error| error.to_string())? {
+                return Err(
+                    "APXINF_QWEN25_FA2_CHUNK2048=1 requires APXINF_QWEN25_FA2_CHUNK1024=1"
+                        .into(),
+                );
+            }
+            Ok(enabled)
+        })
+        .clone()
+        .map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
 fn gpu_last_row_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
     ENABLED
@@ -205,6 +235,7 @@ impl GeneralQwen25Omni {
         #[cfg(feature = "cuda")]
         let decode_graph = {
             let fa2_chunk1024 = fa2_chunk1024_enabled()?;
+            let _fa2_chunk2048 = fa2_chunk2048_enabled()?;
             if fa2_chunk1024 && !chunked_prefill_enabled()? {
                 return Err(Error::Other(
                     "APXINF_QWEN25_FA2_CHUNK1024=1 requires APXINF_QWEN25_CHUNKED_PREFILL=1"
@@ -548,7 +579,9 @@ impl GeneralQwen25Omni {
             ));
         }
         let fa2_chunk1024 = fa2_chunk1024_enabled()?;
-        let chunk_size = text_prefill_chunk_size(token_ids.len(), fa2_chunk1024);
+        let fa2_chunk2048 = fa2_chunk2048_enabled()?;
+        let chunk_size =
+            text_prefill_chunk_size(token_ids.len(), fa2_chunk1024, fa2_chunk2048);
         if fa2_chunk1024
             && (CHUNKED_PREFILL_FA2_LARGE_MIN_PROMPT
                 ..=CHUNKED_PREFILL_FA2_LARGE_MAX_PROMPT)
@@ -557,7 +590,7 @@ impl GeneralQwen25Omni {
             static PATH_LOGGED: OnceLock<()> = OnceLock::new();
             if PATH_LOGGED.set(()).is_ok() {
                 eprintln!(
-                    "ApxInf Qwen2.5-Omni FA2 chunk1024 prefill: prompt={}, chunk={chunk_size}",
+                    "ApxInf Qwen2.5-Omni FA2 large-chunk prefill: prompt={}, chunk={chunk_size}",
                     token_ids.len()
                 );
             }
@@ -1141,16 +1174,24 @@ mod tests {
 
     #[test]
     fn fa2_chunk1024_changes_only_the_frozen_8k_to_12k_cell() {
-        assert_eq!(text_prefill_chunk_size(2_048, false), 512);
-        assert_eq!(text_prefill_chunk_size(4_096, false), 256);
-        assert_eq!(text_prefill_chunk_size(8_192, false), 256);
-        assert_eq!(text_prefill_chunk_size(12_288, false), 256);
-        assert_eq!(text_prefill_chunk_size(12_289, false), 1_024);
+        assert_eq!(text_prefill_chunk_size(2_048, false, false), 512);
+        assert_eq!(text_prefill_chunk_size(4_096, false, false), 256);
+        assert_eq!(text_prefill_chunk_size(8_192, false, false), 256);
+        assert_eq!(text_prefill_chunk_size(12_288, false, false), 256);
+        assert_eq!(text_prefill_chunk_size(12_289, false, false), 1_024);
 
-        assert_eq!(text_prefill_chunk_size(7_168, true), 256);
-        assert_eq!(text_prefill_chunk_size(8_192, true), 1_024);
-        assert_eq!(text_prefill_chunk_size(12_288, true), 1_024);
-        assert_eq!(text_prefill_chunk_size(12_289, true), 1_024);
+        assert_eq!(text_prefill_chunk_size(7_168, true, false), 256);
+        assert_eq!(text_prefill_chunk_size(8_192, true, false), 1_024);
+        assert_eq!(text_prefill_chunk_size(12_288, true, false), 1_024);
+        assert_eq!(text_prefill_chunk_size(12_289, true, false), 1_024);
+    }
+
+    #[test]
+    fn fa2_chunk2048_overrides_only_the_existing_1024_target_cell() {
+        assert_eq!(text_prefill_chunk_size(7_168, true, true), 256);
+        assert_eq!(text_prefill_chunk_size(8_192, true, true), 2_048);
+        assert_eq!(text_prefill_chunk_size(12_288, true, true), 2_048);
+        assert_eq!(text_prefill_chunk_size(12_289, true, true), 1_024);
     }
 
     #[test]

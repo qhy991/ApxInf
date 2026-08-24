@@ -1,0 +1,77 @@
+{
+  "contract": {
+    "benchmark_iterations": 20,
+    "cache_state": "cold_l2",
+    "max_algorithms": 16,
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "prompt_rows": 1024,
+    "warmup_iterations": 5
+  },
+  "cublas": "12.3.2",
+  "cuda": "12.3",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "records": [
+    {
+      "best_speedup_over_vendor": 0.998904217652188,
+      "cublaslt_best_ms": 0.05985599011182785,
+      "cublaslt_best_rank": 0,
+      "cublaslt_default_ms": 0.05985599011182785,
+      "cublaslt_returned_algorithms": 8,
+      "k": 2048,
+      "m": 1024,
+      "n": 2048,
+      "name": "q_o",
+      "vendor_ms": 0.0597904009744525
+    },
+    {
+      "best_speedup_over_vendor": 1.0001818340652968,
+      "cublaslt_best_ms": 0.01759040169417858,
+      "cublaslt_best_rank": 0,
+      "cublaslt_default_ms": 0.01759040169417858,
+      "cublaslt_returned_algorithms": 8,
+      "k": 2048,
+      "m": 1024,
+      "n": 256,
+      "name": "k_v",
+      "vendor_ms": 0.01759360022842884
+    },
+    {
+      "best_speedup_over_vendor": 1.0464912580946648,
+      "cublaslt_best_ms": 0.07836319506168365,
+      "cublaslt_best_rank": 2,
+      "cublaslt_default_ms": 0.08257599920034409,
+      "cublaslt_returned_algorithms": 8,
+      "k": 2048,
+      "m": 1024,
+      "n": 2560,
+      "name": "packed_qkv",
+      "vendor_ms": 0.08200639858841896
+    },
+    {
+      "best_speedup_over_vendor": 1.0533907169679604,
+      "cublaslt_best_ms": 0.28909918665885925,
+      "cublaslt_best_rank": 1,
+      "cublaslt_default_ms": 0.3044944405555725,
+      "cublaslt_returned_algorithms": 8,
+      "k": 2048,
+      "m": 1024,
+      "n": 11008,
+      "name": "gate_up",
+      "vendor_ms": 0.30453439950942995
+    },
+    {
+      "best_speedup_over_vendor": 0.9998496777467668,
+      "cublaslt_best_ms": 0.28728318214416504,
+      "cublaslt_best_rank": 0,
+      "cublaslt_default_ms": 0.28728318214416504,
+      "cublaslt_returned_algorithms": 8,
+      "k": 11008,
+      "m": 1024,
+      "n": 2048,
+      "name": "down",
+      "vendor_ms": 0.2872399970889091
+    }
+  ],
+  "schema": "apxinf.qwen25_omni.bf16_tuning_probe.v1",
+  "sm": 89
+}

@@ -3225,3 +3225,29 @@ reported the GPU idle.
 single-request BF16 RTX 4090 cells.** Structured evidence and the raw-file
 index are `promotion-fa2-chunk1024.json`. This does not claim multi-request
 performance, non-SM89 performance, training, or speech/video generation.
+
+## Prepared FA2-aware 2,048-token chunk probe
+
+Status: **source prepared; no candidate GPU result and no deployment change**.
+The promoted 8K profile contains 11,421 kernels and 666.4 ms summed GPU kernel
+time. FA2 is only 52.8 ms (7.9%); four M=1,024 GEMM families total about
+411.8 ms. The exact M1024 cold-L2 tuning probe closes a tactic-only branch:
+Down projection rank 0 measures 0.28728 ms versus 0.28724 ms vendor, Q/O and
+K/V are also null, while the already installed packed-QKV rank 2 and Gate/Up
+rank 1 wins reproduce. No sixth tactic is justified.
+
+The remaining bounded hypothesis halves the target schedule from eight to four
+chunks at 8K and from twelve to six at 12K. The temporary
+`APXINF_QWEN25_FA2_CHUNK2048=1` probe requires the accepted
+`APXINF_QWEN25_FA2_CHUNK1024=1`; it changes only the same 8,192–12,288 reset
+text cell. Selector-off, shorter and longer prompts, decode and multimodal
+paths are unchanged. A pure policy test freezes those boundaries and the
+service log reports the actual selected size.
+
+The first GPU budget is correctness only: one 8K request must reproduce
+`490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf`.
+Only an exact pass admits one 12K request and then five alternating pairs.
+Promotion requires exact trajectories, at least four of five wins and at least
+2% lower median TTFT at both 8K and 12K, with unchanged 32K control. Any
+mismatch or median regression closes the 2,048-token chunk axis before
+profiling.
