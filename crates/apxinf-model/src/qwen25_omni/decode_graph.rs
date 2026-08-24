@@ -78,10 +78,16 @@ struct DecodeWorkspace {
     positions: HostMappedBuffer,
     selected_token: HostMappedBuffer,
     argmax_partials: CudaBuffer,
+    long_attention: Option<kernels::qwen25_omni_attention::SplitCtaWorkspace>,
 }
 
 impl DecodeWorkspace {
-    fn new(device: usize, config: &Qwen25OmniDecodeGraphConfig) -> Result<Self> {
+    fn new(
+        context: &CudaContext,
+        config: &Qwen25OmniDecodeGraphConfig,
+        grouped_long_attention: bool,
+    ) -> Result<Self> {
+        let device = context.device_id();
         let element_bytes = DType::BF16.size_in_bytes();
         let allocate = |elements: usize| {
             CudaBuffer::alloc_zeros(elements * element_bytes, device).map_err(Error::Cuda)
@@ -116,6 +122,9 @@ impl DecodeWorkspace {
                 device,
             )
             .map_err(Error::Cuda)?,
+            long_attention: grouped_long_attention
+                .then(|| kernels::qwen25_omni_attention::SplitCtaWorkspace::new(context))
+                .transpose()?,
         })
     }
 }
@@ -367,20 +376,53 @@ fn decode_forward_capturable(
                 cache_position,
             )?;
         }
-        kernels::attention::flash_bf16_into(
-            context,
-            &workspace.q_rope,
-            cache.k_buffer(index),
-            cache.v_buffer(index),
-            &workspace.attn_out,
-            config.n_heads,
-            config.n_kv_heads,
-            config.head_dim,
-            config.max_seq_len,
-            config.max_seq_len,
-            (config.head_dim as f32).sqrt().recip(),
-            cache_position,
-        )?;
+        if let Some(long_attention) = workspace.long_attention.as_ref() {
+            let element_bytes = DType::BF16.size_in_bytes();
+            let query = workspace
+                .q_rope
+                .view(0, config.n_heads * config.head_dim * element_bytes)
+                .map_err(Error::Cuda)?
+                .into_tensor(
+                    Shape::new(vec![1, config.n_heads, config.head_dim]),
+                    DType::BF16,
+                );
+            let output = workspace
+                .attn_out
+                .view(0, config.n_heads * config.head_dim * element_bytes)
+                .map_err(Error::Cuda)?
+                .into_tensor(
+                    Shape::new(vec![1, config.n_heads * config.head_dim]),
+                    DType::BF16,
+                );
+            kernels::qwen25_omni_attention::grouped4_split_cta_write(
+                context,
+                &query,
+                cache.k_buffer(index),
+                cache.v_buffer(index),
+                &output,
+                long_attention,
+                64,
+                config.max_seq_len,
+                config.max_seq_len,
+                (config.head_dim as f32).sqrt().recip(),
+                cache_position,
+            )?;
+        } else {
+            kernels::attention::flash_bf16_into(
+                context,
+                &workspace.q_rope,
+                cache.k_buffer(index),
+                cache.v_buffer(index),
+                &workspace.attn_out,
+                config.n_heads,
+                config.n_kv_heads,
+                config.head_dim,
+                config.max_seq_len,
+                config.max_seq_len,
+                (config.head_dim as f32).sqrt().recip(),
+                cache_position,
+            )?;
+        }
         kernels::gemm::write(
             context,
             DType::BF16,
@@ -520,6 +562,7 @@ impl Qwen25OmniDecodeGraph {
         config: Qwen25OmniDecodeGraphConfig,
         select_token: bool,
         fuse_tmrope_kv: bool,
+        grouped_long_attention: bool,
     ) -> Result<Self> {
         if config.n_layers == 0
             || config.n_heads == 0
@@ -532,7 +575,11 @@ impl Qwen25OmniDecodeGraph {
             ));
         }
         Ok(Self {
-            workspace: DecodeWorkspace::new(backend.device_id(), &config)?,
+            workspace: DecodeWorkspace::new(
+                backend.context(),
+                &config,
+                grouped_long_attention,
+            )?,
             config,
             graph: None,
             select_token,
