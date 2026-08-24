@@ -160,5 +160,7 @@ serialized service has one request owner, so this optimization does not imply
 a parallel processor protocol or scheduler.
 The Broker-owned runit reference is checked in at
 `service/apxinf-qwen25-omni-broker.run`; it is the environment and launch
-authority for reproducing the promoted service. Unset or `0` preserves the
+authority for reproducing the promoted service. It requires
+`agent-gpu-broker>=0.5.0` so a resident service can declare its advisory ETA as
+`unknown` without fabricating a year-long completion time. Unset or `0` preserves the
 corresponding native path, while invalid values fail closed.
