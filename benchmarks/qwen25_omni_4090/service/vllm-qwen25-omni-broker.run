@@ -5,7 +5,7 @@ exec chpst -u gpuq:gpuq-users /usr/local/bin/gpu-run \
   --owner codex-apxinf --label vllm-omni-qwen25-thinker \
   --mode exclusive --gpu-count 1 \
   --cwd /mnt/user_dir/hanjinchen/apxinf-qwen25-omni-3b \
-  --estimate 8760h --queue-timeout 24h --run-timeout 8760h -- \
+  --estimate unknown --queue-timeout 24h --run-timeout 8760h -- \
   env \
   SETUPTOOLS_USE_DISTUTILS=local \
   HF_HOME=/var/lib/agent-gpu-broker/hf-cache \
