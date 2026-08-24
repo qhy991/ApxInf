@@ -10,6 +10,8 @@ use crate::kernels::attention::{
     softmax_causal_bf16_scaled_plain_gqa_packed, softmax_causal_with_exp_cache,
     softmax_causal_with_global_exp_cache, split_gqa_qkv_bias_bf16, vision,
 };
+#[cfg(apxinf_fa2_causal_sm80)]
+use crate::kernels::attention::causal_fa2_gqa_prefill;
 #[cfg(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80))]
 use crate::kernels::attention::grouped_varlen_fa2;
 use crate::kernels::cache::append;
@@ -880,6 +882,76 @@ fn gqa_flattened_long_prefill_matches_scalar_bf16() {
     .unwrap();
     assert_bf16_close_reduction(
         &download_bf16_as_fp32(&flattened).unwrap(),
+        &download_bf16_as_fp32(&scalar).unwrap(),
+    );
+}
+
+#[cfg(apxinf_fa2_causal_sm80)]
+#[test]
+fn causal_fa2_long_gqa_prefill_matches_scalar_contract() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (query_tokens, key_tokens, query_heads, kv_heads, head_dim, max_seq_len) =
+        (4usize, 4_097usize, 16usize, 2usize, 128usize, 4_100usize);
+    let q_values = (0..query_tokens * query_heads * head_dim)
+        .map(|index| ((index as f32 * 0.031) - 2.0).sin())
+        .collect::<Vec<_>>();
+    let k_values = (0..key_tokens * kv_heads * head_dim)
+        .map(|index| ((index as f32 * 0.047) - 1.0).cos())
+        .collect::<Vec<_>>();
+    let v_values = (0..key_tokens * kv_heads * head_dim)
+        .map(|index| ((index as f32 * 0.013) - 0.75).sin())
+        .collect::<Vec<_>>();
+    let query = upload_fp32_as_bf16(
+        &ctx,
+        &q_values,
+        vec![query_tokens, query_heads, head_dim],
+    )
+    .unwrap();
+    let key = upload_fp32_as_bf16(
+        &ctx,
+        &k_values,
+        vec![key_tokens, kv_heads, head_dim],
+    )
+    .unwrap();
+    let value = upload_fp32_as_bf16(
+        &ctx,
+        &v_values,
+        vec![key_tokens, kv_heads, head_dim],
+    )
+    .unwrap();
+    let cache = CudaKVCache::new(ctx.device_id(), 1, kv_heads, head_dim, max_seq_len).unwrap();
+    cache
+        .append(&ctx, 0, &key, &value, key_tokens)
+        .unwrap();
+    let scalar = sdpa_with_batched_prefill(
+        &ctx,
+        &query,
+        &cache,
+        0,
+        query_heads,
+        kv_heads,
+        head_dim,
+        key_tokens,
+        max_seq_len,
+        (key_tokens - query_tokens) as u32,
+        false,
+    )
+    .unwrap();
+    let candidate = causal_fa2_gqa_prefill(
+        &ctx,
+        &query,
+        cache.k_buffer(0),
+        cache.v_buffer(0),
+        query_tokens,
+        query_heads,
+        kv_heads,
+        head_dim,
+        key_tokens,
+        max_seq_len,
+    )
+    .unwrap();
+    assert_bf16_close_reduction(
+        &download_bf16_as_fp32(&candidate).unwrap(),
         &download_bf16_as_fp32(&scalar).unwrap(),
     );
 }

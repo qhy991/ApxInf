@@ -204,9 +204,28 @@ fn batched_gqa_prefill_enabled() -> Result<bool> {
         .map_err(Error::Other)
 }
 
+fn causal_fa2_gqa_prefill_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| match std::env::var("APXINF_FA2_GQA_PREFILL") {
+            Err(std::env::VarError::NotPresent) => Ok(false),
+            Ok(value) if value == "0" => Ok(false),
+            Ok(value) if value == "1" => Ok(true),
+            Ok(value) => Err(format!(
+                "APXINF_FA2_GQA_PREFILL must be 0 or 1, got `{value}`"
+            )),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("APXINF_FA2_GQA_PREFILL must be UTF-8".into())
+            }
+        })
+        .clone()
+        .map_err(Error::Other)
+}
+
 const MAX_SOFTMAX_EXP_CACHE_COLS: usize = 11_264;
 const MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS: usize = 4_096;
 const MAX_INPLACE_SCALE_QUERY_TOKENS: usize = 256;
+const MIN_CAUSAL_FA2_GQA_KV_LEN: usize = 4_097;
 
 fn softmax_exp_cache_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
@@ -626,6 +645,97 @@ fn gqa_values_flattened(
         .map_err(Error::Cuda)
 }
 
+#[cfg(apxinf_fa2_causal_sm80)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn causal_fa2_gqa_prefill(
+    ctx: &CudaContext,
+    query: &Tensor,
+    key_cache: &CudaBuffer,
+    value_cache: &CudaBuffer,
+    query_tokens: usize,
+    query_heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    key_tokens: usize,
+    max_seq_len: usize,
+) -> Result<Tensor> {
+    let query_dims = query.shape().dims();
+    if query.device() != Device::Cuda(ctx.device_id())
+        || query.dtype() != DType::BF16
+        || query_dims != [query_tokens, query_heads, head_dim]
+        || query_tokens <= 1
+        || query_tokens > key_tokens
+        || key_tokens < MIN_CAUSAL_FA2_GQA_KV_LEN
+        || key_tokens > max_seq_len
+        || query_heads != 16
+        || kv_heads != 2
+        || head_dim != 128
+    {
+        return Err(Error::Other(format!(
+            "causal GQA FA2 supports only CUDA BF16 suffix prefill [q,16,128], kv_heads=2 and kv_len {MIN_CAUSAL_FA2_GQA_KV_LEN}..=max; got {:?}, q={query_tokens}, kv={key_tokens}/{max_seq_len}, heads={query_heads}/{kv_heads}, dim={head_dim}",
+            query_dims
+        )));
+    }
+    if key_cache.device() != ctx.device_id() || value_cache.device() != ctx.device_id() {
+        return Err(Error::Other(
+            "causal GQA FA2 cache crosses CUDA devices".into(),
+        ));
+    }
+    let cache_bytes = kv_heads
+        .checked_mul(max_seq_len)
+        .and_then(|value| value.checked_mul(head_dim))
+        .and_then(|value| value.checked_mul(DType::BF16.size_in_bytes()))
+        .ok_or_else(|| Error::Other("causal GQA FA2 cache size overflow".into()))?;
+    if key_cache.len() < cache_bytes || value_cache.len() < cache_bytes {
+        return Err(Error::Other(format!(
+            "causal GQA FA2 cache is too small: need {cache_bytes}, got {}/{}",
+            key_cache.len(),
+            value_cache.len()
+        )));
+    }
+
+    let output = uninitialized_buffer(ctx, query.size_in_bytes())?;
+    let lse_bytes = query_tokens
+        .checked_mul(query_heads)
+        .and_then(|value| value.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| Error::Other("causal GQA FA2 LSE size overflow".into()))?;
+    let softmax_lse = uninitialized_buffer(ctx, lse_bytes)?;
+    let dimension = |name: &str, value: usize| {
+        i32::try_from(value)
+            .map_err(|_| Error::Other(format!("causal GQA FA2 {name} exceeds i32")))
+    };
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_static_fa2_causal_strided_kv_bf16(
+            gpu_ptr(query)?,
+            key_cache.ptr(),
+            value_cache.ptr(),
+            output.ptr(),
+            softmax_lse.ptr(),
+            dimension("query tokens", query_tokens)?,
+            dimension("key tokens", key_tokens)?,
+            dimension("query heads", query_heads)?,
+            dimension("KV heads", kv_heads)?,
+            dimension("head dimension", head_dim)?,
+            dimension("maximum sequence length", max_seq_len)?,
+            (head_dim as f32).sqrt().recip(),
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+    static PATH_LOGGED: OnceLock<()> = OnceLock::new();
+    if PATH_LOGGED.set(()).is_ok() {
+        eprintln!(
+            "ApxInf causal GQA FA2 long prefill: query={query_tokens}, kv={key_tokens}, heads={query_heads}/{kv_heads}, dim={head_dim}"
+        );
+    }
+    Ok(make_gpu_tensor(
+        Shape::new(vec![query_tokens, query_heads * head_dim]),
+        DType::BF16,
+        ctx.device_id(),
+        output,
+    ))
+}
+
 /// GQA scaled-dot-product attention over an existing CUDA KV cache.
 #[allow(clippy::too_many_arguments)]
 pub fn sdpa(
@@ -701,6 +811,46 @@ pub(crate) fn sdpa_with_batched_prefill(
     let gqa_ratio = n_heads / n_kv_heads;
     let dtype = query.dtype();
     let element_bytes = dtype.size_in_bytes();
+    if causal_fa2_gqa_prefill_enabled()?
+        && seq_len > 1
+        && kv_len >= MIN_CAUSAL_FA2_GQA_KV_LEN
+    {
+        if !use_batched_prefill {
+            return Err(Error::Other(
+                "causal GQA FA2 long prefill requires APXINF_BATCHED_GQA_PREFILL=1".into(),
+            ));
+        }
+        if usize::try_from(kv_offset)
+            .ok()
+            .and_then(|offset| offset.checked_add(seq_len))
+            != Some(kv_len)
+        {
+            return Err(Error::Other(format!(
+                "causal GQA FA2 requires suffix queries: offset {kv_offset} + query {seq_len} != kv {kv_len}"
+            )));
+        }
+        #[cfg(apxinf_fa2_causal_sm80)]
+        {
+            return causal_fa2_gqa_prefill(
+                ctx,
+                query,
+                cache.k_buffer(layer_idx),
+                cache.v_buffer(layer_idx),
+                seq_len,
+                n_heads,
+                n_kv_heads,
+                head_dim,
+                kv_len,
+                max_seq_len,
+            );
+        }
+        #[cfg(not(apxinf_fa2_causal_sm80))]
+        {
+            return Err(Error::Other(
+                "causal GQA FA2 long prefill is unavailable for this CUDA target".into(),
+            ));
+        }
+    }
     let use_flattened_prefill = use_batched_prefill
         && dtype == DType::BF16
         && seq_len > 1

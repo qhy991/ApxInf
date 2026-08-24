@@ -117,6 +117,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(apxinf_cutlass_int8_sm80)");
     println!("cargo:rustc-check-cfg=cfg(apxinf_fa2_sm80)");
     println!("cargo:rustc-check-cfg=cfg(apxinf_fa2_vision_sm80)");
+    println!("cargo:rustc-check-cfg=cfg(apxinf_fa2_causal_sm80)");
     println!("cargo:rustc-check-cfg=cfg(apxinf_fa2_f16_sm100)");
     println!("cargo:rustc-check-cfg=cfg(apxinf_fa2_direct_e4m3_sm100)");
     println!("cargo:rustc-check-cfg=cfg(apxinf_marlin_sm89)");
@@ -410,6 +411,8 @@ fn main() {
                 && nvcc_arch.as_deref().is_some_and(is_cutlass_sm100_family);
             if fa2_sm80 || fa2_f16_sm100 {
                 let fa2_hdim96 = fa2_root.join("flash_attn/flash_fwd_hdim96_bf16_sm80.cu");
+                let fa2_hdim128_causal =
+                    fa2_root.join("flash_attn/flash_fwd_hdim128_bf16_causal_sm80.cu");
                 let fa2_hdim256 = fa2_root.join("flash_attn/flash_fwd_hdim256_bf16_sm80.cu");
                 let fa2_f16_hdim96 = fa2_root.join("flash_attn/flash_fwd_hdim96_fp16.cu");
                 let fa2_f16_hdim256 = fa2_root.join("flash_attn/flash_fwd_hdim256_fp16.cu");
@@ -425,6 +428,13 @@ fn main() {
                     "vendored FlashAttention-2 sources are incomplete under {}",
                     fa2_root.display()
                 );
+                if fa2_sm80 {
+                    assert!(
+                        fa2_hdim128_causal.is_file(),
+                        "vendored causal FlashAttention-2 source is missing under {}",
+                        fa2_root.display()
+                    );
+                }
                 if fa2_bf16_hdim96_only {
                     fa2_sources.extend([fa2_wrapper.clone(), fa2_hdim96]);
                 } else {
@@ -435,6 +445,9 @@ fn main() {
                         fa2_f16_hdim96,
                         fa2_f16_hdim256,
                     ]);
+                }
+                if fa2_sm80 {
+                    fa2_sources.push(fa2_hdim128_causal);
                 }
                 if fa2_f16_sm100 {
                     println!("cargo:rustc-cfg=apxinf_fa2_f16_sm100");
@@ -455,6 +468,7 @@ fn main() {
                 fa2_includes.extend([fa2_root.clone(), fa2_cutlass]);
                 kernel_files.extend(fa2_sources.iter().cloned());
                 if fa2_sm80 {
+                    println!("cargo:rustc-cfg=apxinf_fa2_causal_sm80");
                     if fa2_bf16_hdim96_only {
                         println!("cargo:rustc-cfg=apxinf_fa2_vision_sm80");
                     } else {
@@ -566,6 +580,9 @@ fn main() {
                         ]);
                         if fa2_bf16_hdim96_only {
                             cmd.arg("-DAPXINF_FA2_BF16_HDIM96_ONLY=1");
+                        }
+                        if fa2_sm80 {
+                            cmd.arg("-DAPXINF_FA2_CAUSAL_HDIM128=1");
                         }
                         for include in &fa2_includes {
                             cmd.arg(format!("-I{}", include.display()));
