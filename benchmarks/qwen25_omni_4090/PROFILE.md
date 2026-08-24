@@ -3225,3 +3225,27 @@ reported the GPU idle.
 single-request BF16 RTX 4090 cells.** Structured evidence and the raw-file
 index are `promotion-fa2-chunk1024.json`. This does not claim multi-request
 performance, non-SM89 performance, training, or speech/video generation.
+
+## Rejected post-promotion 2,048-token chunks
+
+The promoted 8K profile contains 11,421 kernels and 666.4 ms summed GPU kernel
+time. FA2 is only 52.8 ms; four M=1,024 GEMM families total about 411.8 ms.
+An exact cold-L2 tuning probe first closed the lower-risk tactic branch:
+M1024 Down rank 0 measures 0.28728 ms versus 0.28724 ms vendor, Q/O and K/V
+are also null, while the installed packed-QKV rank 2 and Gate/Up rank 1 wins
+reproduce. No sixth tactic is justified. The current 8K report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-8192-fa2-chunk1024-current-interactive.nsys-rep`,
+size 1,443,341 bytes, SHA-256
+`75ee162fca9c902bf611fa37766e9e1a164099ce8dc55aeb1e1636157041cb91`.
+
+A bounded probe on branch `codex/omni-fa2-chunk2048-probe` then halved the
+schedule from eight to four chunks. Its one permitted 8K request reproduced
+the accepted trajectory and logged `chunk=2048`, but TTFT regressed from the
+accepted 0.6145 s median to 0.6900 s (12.28%); wall rose from 0.6917 to
+0.7687 s. The larger first scalar-attention chunks erase the launch-count
+opportunity before FA2 owns the later half.
+
+**Decision: reject and close the 2,048-token chunk axis without 12K, AB/BA or
+profiler spending.** Raw evidence is `omni-fa2-chunk2048-smoke-8k.json`; the
+profile/tuning inputs use the `omni-8192-fa2-chunk1024-current` and
+`omni-8192-m1024-bf16-tuning` names. Production remains on 1,024-token chunks.
