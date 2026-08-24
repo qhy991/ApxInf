@@ -1,0 +1,89 @@
+{
+  "format": "apxinf-balanced-benchmark-evidence-v1",
+  "recorded_on": "2026-08-24",
+  "purpose": "Confirm the OMoE-derived contiguous [K,V] GDN state traversal win against the pre-change release binary.",
+  "host": {
+    "os": "macOS 26.2 (25C56)",
+    "arch": "arm64",
+    "cpu": "Apple M4",
+    "post_run_thermal_status": "No thermal or performance warning level recorded"
+  },
+  "model": {
+    "repo_id": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "local_path": "/Users/haiyan-mini/Agent4Kernel/.apxinf-models/Qwen3.5-0.8B-2fc063647-staged"
+  },
+  "command_contract": {
+    "subcommand": "generate",
+    "prompt": "Hello",
+    "prompt_tokens": 13,
+    "max_new_tokens": 100,
+    "max_context": 128,
+    "stop_on_eos": false,
+    "device": "cpu",
+    "dtype": "fp32",
+    "matmul_feature": "accelerate",
+    "fresh_process_per_run": true
+  },
+  "binaries": {
+    "control": {
+      "path": "/tmp/apxinf-qwen35-before-gdn-layout",
+      "size": 8147344,
+      "sha256": "ef15cfcfe0a18743946cbd5558a21284d6d39673626528d6be4153668802e9a1"
+    },
+    "candidate": {
+      "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/target/release/apxinf",
+      "size": 8163904,
+      "sha256": "d9cb4de44b236b5b3f216a81079b11102220939a2b179cbc2678442ff947803b"
+    }
+  },
+  "schedule": [
+    "control",
+    "candidate",
+    "candidate",
+    "control",
+    "control",
+    "candidate",
+    "candidate",
+    "control",
+    "control",
+    "candidate",
+    "candidate",
+    "control"
+  ],
+  "runs": [
+    {"run": 1, "variant": "control", "generation_tps": 17.054077871808076, "ttft_ms": 293.090042, "tpot_ms": 58.6370021010101, "total_latency_ms": 6098.15325},
+    {"run": 2, "variant": "candidate", "generation_tps": 18.39648465982359, "ttft_ms": 178.157833, "tpot_ms": 54.35821128282828, "total_latency_ms": 5559.62075},
+    {"run": 3, "variant": "candidate", "generation_tps": 18.235975455406354, "ttft_ms": 166.752875, "tpot_ms": 54.83666077777778, "total_latency_ms": 5595.582292},
+    {"run": 4, "variant": "control", "generation_tps": 16.653411924541036, "ttft_ms": 222.065292, "tpot_ms": 60.04775505050505, "total_latency_ms": 6166.793042},
+    {"run": 5, "variant": "control", "generation_tps": 15.807698339287267, "ttft_ms": 223.66675, "tpot_ms": 63.26031649494949, "total_latency_ms": 6486.438083},
+    {"run": 6, "variant": "candidate", "generation_tps": 18.278616379823557, "ttft_ms": 207.977334, "tpot_ms": 54.708736111111115, "total_latency_ms": 5624.142209},
+    {"run": 7, "variant": "candidate", "generation_tps": 17.33685935188789, "ttft_ms": 175.039, "tpot_ms": 57.680574070707074, "total_latency_ms": 5885.415833},
+    {"run": 8, "variant": "control", "generation_tps": 16.89779894526325, "ttft_ms": 291.981375, "tpot_ms": 59.17930514141414, "total_latency_ms": 6150.732584},
+    {"run": 9, "variant": "control", "generation_tps": 16.333655105458984, "ttft_ms": 238.543625, "tpot_ms": 61.22328367676767, "total_latency_ms": 6299.648709},
+    {"run": 10, "variant": "candidate", "generation_tps": 17.144945958382195, "ttft_ms": 523.601334, "tpot_ms": 58.32622642424243, "total_latency_ms": 6297.89775},
+    {"run": 11, "variant": "candidate", "generation_tps": 17.716533321544166, "ttft_ms": 292.2035, "tpot_ms": 56.44445117171717, "total_latency_ms": 5880.204166},
+    {"run": 12, "variant": "control", "generation_tps": 16.673275978527094, "ttft_ms": 383.607625, "tpot_ms": 59.97621590909091, "total_latency_ms": 6321.253}
+  ],
+  "summary": {
+    "control_median_generation_tps": 16.663343951534067,
+    "candidate_median_generation_tps": 17.97625438847526,
+    "median_ratio": 1.078790334086594,
+    "median_improvement_percent": 7.8790334086594,
+    "control_min_generation_tps": 15.807698339287267,
+    "control_max_generation_tps": 17.054077871808076,
+    "candidate_min_generation_tps": 17.144945958382195,
+    "candidate_max_generation_tps": 18.39648465982359,
+    "candidate_min_exceeds_control_max": true
+  },
+  "trajectory": {
+    "all_runs_identical": true,
+    "generated_token_count": 100,
+    "canonical_json_sha256": "79e574ba6c3c81eda6f78c9d0412f2f91e6b3f6137e7cb7c146c7714d1a96578"
+  },
+  "limitations": [
+    "This is a local bring-up comparison, not the final benchmark contract.",
+    "Background load, die temperature, and cache residency were not actively controlled.",
+    "The /tmp control binary is ephemeral; its hash and size, rather than its path, are its durable identity."
+  ]
+}

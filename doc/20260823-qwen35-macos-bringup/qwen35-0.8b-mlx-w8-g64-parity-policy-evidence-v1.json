@@ -1,0 +1,101 @@
+{
+  "evidence": {
+    "builder": {
+      "script_sha256": "f1b479e8846b819ae8a3ddc3b52c61b75039f40598fd5802a39564c4bf795497",
+      "tests_sha256": "90e5b75ebdfda5e2eef914e95f6d938a3946b8382d74c2732c6447239432fee0"
+    },
+    "bundle": {
+      "artifacts": {
+        "config.json": {
+          "sha256": "a8930af271fb7ca24368422e201c92e19690201bf1ac196e45e6d689ff893607",
+          "size": 3855
+        },
+        "model.safetensors": {
+          "sha256": "7829b5847039ff090eefc73eebf63dbfa634c880e462867b9bc356ac6aec2e06",
+          "size": 813739624
+        },
+        "model.safetensors.index.json": {
+          "sha256": "7c8c2cbf1df7f523a204867e9013436678c1db291810c59fe9f8d295e7e17ac2",
+          "size": 59510
+        }
+      },
+      "directory": "/Users/haiyan-mini/Agent4Kernel/ApxInf/.apxinf/models/Qwen3.5-0.8B-mlx-w8-g64-gdn-outproj-parity-v1",
+      "manifest_sha256": "8685f2ed5246379287761eebd026c711ed23ccdbe68882f0e96a48cdad9a49f1",
+      "no_replace_publication": true,
+      "retained_bf16_tensor_count": 7,
+      "tensor_count": 680,
+      "verified_offline": true,
+      "verified_only_without_mlx_load": true,
+      "w8_tensor_count": 180
+    },
+    "parity": {
+      "error_steps": [],
+      "first100_free_run_sha256": "bb7789354b4936d0c83286cdf7ca40e71874d9a3e543aa1c138667fa64c0d5c7",
+      "first10_free_run_ids": [
+        11,
+        271,
+        40,
+        1044,
+        3133,
+        440,
+        264,
+        12654,
+        5148,
+        421
+      ],
+      "first10_free_run_sha256": "6dc93669ffde4e6905f9818ef89a2b82f9f155bbe3462fd5a2c0c3e7866f8430",
+      "prompt": "Hello",
+      "raw_prompt_ids": [
+        9419
+      ],
+      "repeat_count": 2,
+      "repeated_identically": true,
+      "teacher_exact": 128,
+      "teacher_ids_sha256": "35c9912981f47d93414d42fc8bd627e4e500a64535193790d488f913f82b2606",
+      "teacher_steps": 128
+    },
+    "performance": {
+      "formal_admission": false,
+      "note": "Noisy diagnostic timing is intentionally excluded from the preset admission contract."
+    },
+    "tests": {
+      "builder_tests_passed": 18,
+      "offline": true,
+      "python_tests_passed": 229
+    }
+  },
+  "format": "apxinf-qwen35-mlx-hybrid-policy-evidence-v1",
+  "policy": {
+    "ledger": {
+      "estimated_total_parameter_bytes": 813652672,
+      "output_tensor_count": 680,
+      "quantized_logical_weight_count": 737214464,
+      "quantized_module_count": 180,
+      "quantized_module_parameter_bytes": 783290368,
+      "retained_bf16_logical_weight_count": 14680064,
+      "retained_bf16_module_count": 7,
+      "retained_bf16_weight_bytes": 29360128
+    },
+    "preset": "qwen35-0.8b-affine-w8-g64-gdn-outproj-parity-v1",
+    "quantization": {
+      "bits": 8,
+      "group_size": 64,
+      "mode": "affine"
+    },
+    "retained_bf16_paths": [
+      "language_model.model.layers.12.linear_attn.out_proj",
+      "language_model.model.layers.13.linear_attn.out_proj",
+      "language_model.model.layers.14.linear_attn.out_proj",
+      "language_model.model.layers.17.linear_attn.out_proj",
+      "language_model.model.layers.18.linear_attn.out_proj",
+      "language_model.model.layers.20.linear_attn.out_proj",
+      "language_model.model.layers.21.linear_attn.out_proj"
+    ],
+    "source": {
+      "config_sha256": "b90b86f35c8e6925ef74ee04d0e758f0a845c83a42089ad82bbaa948de9b4204",
+      "language_schema_sha256": "bdcfd67329be7cc4edfd2f85fb9c4753f3c9faab0ad7cd666d67fc995d0fbd27",
+      "language_tensor_count": 320,
+      "revision": "2fc06364715b967f1860aea9cf38778875588b17"
+    }
+  }
+}

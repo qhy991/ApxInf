@@ -1,0 +1,334 @@
+{
+  "format": "apxinf-mlx-chinese-o-proj-counterfactual-rejection-evidence-v1",
+  "schema_version": 1,
+  "status": "REAL_REJECTED_CANONICAL_STEP9",
+  "content_sha256": "43c9b7adc03dc2614dcfee0d3ffab9d0de15ee04e7b7acb7bbc1d96c16515309",
+  "recorded_date": "2026-08-24",
+  "evidence_class": "operator-supervised-in-memory-screen-summary-v1",
+  "policy_status": {
+    "artifact_path": "doc/20260823-qwen35-macos-bringup/qwen35-0.8b-mlx-w8-g64-chinese-top1-counterfactual-policy-v3.json",
+    "artifact_declared_status": "unvalidated-candidate",
+    "effective_status": "REAL_REJECTED_CANONICAL_STEP9",
+    "effective_status_source": "this-rejection-evidence",
+    "frozen_policy_unchanged": true,
+    "policy_is_build_authorization": false
+  },
+  "custody": {
+    "source": {
+      "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+      "manifest_sha256": "436821ae50e981b9176784ac6ff9548742a865d60d726c58d3bfa9f76d86b500"
+    },
+    "parent": {
+      "preset": "qwen35-0.8b-affine-w8-g64-gdn-outproj-async-chat-parity-v2",
+      "policy_sha256": "64a2ba1741fd5a76a7e72580ce9188d1554e1488ce6504b20054bf42479eaf8f",
+      "bundle_manifest_sha256": "5f65527db17cd4fb7a1a46ca6ab3940a8bcc8225c620ca10d3016265d2bf8553"
+    },
+    "reference": {
+      "precision": "bf16",
+      "bundle_manifest_sha256": "fdce8bac86b1bbc888cac0139065f0291a9a57ce7f448e591b748f4baaad5dea"
+    },
+    "diagnostic": {
+      "artifact_path": "doc/20260823-qwen35-macos-bringup/qwen35-hybrid-w8-bf16-g64-chinese-state-aligned-diagnostic-v1.json",
+      "artifact_sha256": "1b30a3a7f6d609a8265112bde3189b7638a9072561530b852ec86dbc4794b73d",
+      "content_sha256": "e0c207bf46a62b643e3aeadc9398aea0d983426585d9b13ce25d21ce35d21a7f"
+    },
+    "policy": {
+      "artifact_path": "doc/20260823-qwen35-macos-bringup/qwen35-0.8b-mlx-w8-g64-chinese-top1-counterfactual-policy-v3.json",
+      "artifact_sha256": "e8b5ea2e3a5804772f5c1a3c9936abdc2eabde08b470dc49bebbfd8b02d0df7a",
+      "policy_sha256": "7030fe5a7c4dd55cbf158750e9da3a67c7f8e65944b8f8835c75b1093e12eec9"
+    },
+    "builder": {
+      "path": "scripts/build_mlx_bundle.py",
+      "sha256": "cddd7b806cba69cad062c418c2ca866baad45f5abfc58eb87bbf7e9011881523"
+    },
+    "runtime": {
+      "python": {
+        "implementation": "CPython",
+        "version": "3.14.3",
+        "executable": "/Users/haiyan-mini/Agent4Kernel/ApxInf/.apxinf/toolchains/mlx-lm-0.31.3-copies/bin/python3.14"
+      },
+      "packages": {
+        "huggingface-hub": "1.28.0",
+        "mlx": "0.32.1",
+        "mlx-lm": "0.31.3",
+        "mlx-metal": "0.32.1",
+        "numpy": "2.5.2",
+        "safetensors": "0.8.0",
+        "tokenizers": "0.22.2",
+        "transformers": "5.15.1"
+      }
+    }
+  },
+  "real_build_attempt": {
+    "preset": "qwen35-0.8b-affine-w8-g64-gdn3-l19-o-proj-chinese-counterfactual-v3",
+    "target_path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/.apxinf/models/Qwen3.5-0.8B-mlx-w8-g64-gdn3-l19-o-proj-chinese-counterfactual-v3",
+    "phase": "pre-save-in-memory-canonical-teacher-forced",
+    "repeat_number": 1,
+    "requested_teacher_steps": 128,
+    "mismatch_indices": [
+      9
+    ],
+    "expected_token_id_at_step9": 25677,
+    "actual_token_id_at_step9": 248046,
+    "actual_token_provenance": "independent-same-harness-first10-reproduction-v1",
+    "error_message": "selective teacher-forced quality gate diverged from BF16 teacher at steps [9]",
+    "process_exit_code": 2,
+    "elapsed_seconds_observed": 4.14,
+    "max_rss_bytes_observed": 1948205056,
+    "swaps_observed": 0,
+    "save_started": false,
+    "cli_error_emitted": true,
+    "canonical_build_receipt_published": false,
+    "target_published": false,
+    "formal_performance_claim": false
+  },
+  "parent_control": {
+    "bundle_manifest_sha256": "5f65527db17cd4fb7a1a46ca6ab3940a8bcc8225c620ca10d3016265d2bf8553",
+    "harness": "build_mlx_bundle._load_mlx_api.teacher_forced_step",
+    "teacher_steps_screened": 10,
+    "observed_run_count": 1,
+    "expected_token_ids": [
+      9419,
+      0,
+      2500,
+      628,
+      353,
+      1438,
+      488,
+      3242,
+      30,
+      25677
+    ],
+    "observed_token_ids": [
+      9419,
+      0,
+      2500,
+      628,
+      353,
+      1438,
+      488,
+      3242,
+      30,
+      25677
+    ],
+    "mismatch_indices": [],
+    "result": "passed-parent-control-observation",
+    "repeatability_claim": false,
+    "max_rss_observation": "approximately 1.249 GB",
+    "swaps_observed": 0,
+    "formal_performance_claim": false
+  },
+  "screen": {
+    "scope": "all-nonempty-subsets-of-diagnostic-top3-self-attn-o-proj-v1",
+    "operator_supervised": true,
+    "raw_machine_generated_sidecar_available": false,
+    "formal_acceptance_evidence": false,
+    "fresh_process_per_case": true,
+    "save_attempted": false,
+    "target_publish_attempted": false,
+    "network": "offline-runtime-guard",
+    "harness": "build_mlx_bundle._load_mlx_api.teacher_forced_step",
+    "global_quantization": {
+      "bits": 8,
+      "group_size": 64,
+      "mode": "affine"
+    },
+    "certified_parent_retained_bf16_paths": [
+      "language_model.model.layers.12.linear_attn.out_proj",
+      "language_model.model.layers.14.linear_attn.out_proj",
+      "language_model.model.layers.20.linear_attn.out_proj"
+    ],
+    "diagnostic_candidates": [
+      {
+        "rank": 1,
+        "path": "language_model.model.layers.19.self_attn.o_proj",
+        "relative_l1_error_ppm": 17488
+      },
+      {
+        "rank": 2,
+        "path": "language_model.model.layers.11.self_attn.o_proj",
+        "relative_l1_error_ppm": 16311
+      },
+      {
+        "rank": 3,
+        "path": "language_model.model.layers.7.self_attn.o_proj",
+        "relative_l1_error_ppm": 14828
+      }
+    ],
+    "case_count": 7,
+    "exhaustive_nonempty_subsets_of_diagnostic_top3": true,
+    "cases": [
+      {
+        "case_id": "rank1-l19",
+        "observed_run_count": 2,
+        "observations": [
+          {
+            "kind": "real-build-pre-save-teacher-repeat1",
+            "mismatch_indices": [
+              9
+            ],
+            "actual_token_id_was_not_emitted_by_cli_error": true
+          },
+          {
+            "kind": "independent-first10-reproduction",
+            "mismatch_indices": [
+              9
+            ],
+            "actual_token_id_at_step9": 248046
+          }
+        ],
+        "diagnostic_ranks": [
+          1
+        ],
+        "restored_paths": [
+          "language_model.model.layers.19.self_attn.o_proj"
+        ]
+      },
+      {
+        "case_id": "rank2-l11",
+        "observed_run_count": 1,
+        "diagnostic_ranks": [
+          2
+        ],
+        "restored_paths": [
+          "language_model.model.layers.11.self_attn.o_proj"
+        ]
+      },
+      {
+        "case_id": "rank3-l7",
+        "observed_run_count": 1,
+        "diagnostic_ranks": [
+          3
+        ],
+        "restored_paths": [
+          "language_model.model.layers.7.self_attn.o_proj"
+        ]
+      },
+      {
+        "case_id": "rank1-rank2-l19-l11",
+        "observed_run_count": 1,
+        "diagnostic_ranks": [
+          1,
+          2
+        ],
+        "restored_paths": [
+          "language_model.model.layers.19.self_attn.o_proj",
+          "language_model.model.layers.11.self_attn.o_proj"
+        ]
+      },
+      {
+        "case_id": "rank1-rank3-l19-l7",
+        "observed_run_count": 1,
+        "diagnostic_ranks": [
+          1,
+          3
+        ],
+        "restored_paths": [
+          "language_model.model.layers.19.self_attn.o_proj",
+          "language_model.model.layers.7.self_attn.o_proj"
+        ]
+      },
+      {
+        "case_id": "rank2-rank3-l11-l7",
+        "observed_run_count": 1,
+        "diagnostic_ranks": [
+          2,
+          3
+        ],
+        "restored_paths": [
+          "language_model.model.layers.11.self_attn.o_proj",
+          "language_model.model.layers.7.self_attn.o_proj"
+        ]
+      },
+      {
+        "case_id": "rank1-rank2-rank3-l19-l11-l7",
+        "observed_run_count": 1,
+        "diagnostic_ranks": [
+          1,
+          2,
+          3
+        ],
+        "restored_paths": [
+          "language_model.model.layers.19.self_attn.o_proj",
+          "language_model.model.layers.11.self_attn.o_proj",
+          "language_model.model.layers.7.self_attn.o_proj"
+        ]
+      }
+    ],
+    "shared_result": {
+      "teacher_steps_screened": 10,
+      "token_pattern_observed_across_all_seven_cases": true,
+      "not_a_per_case_repeat_claim": true,
+      "expected_token_ids": [
+        9419,
+        0,
+        2500,
+        628,
+        353,
+        1438,
+        488,
+        3242,
+        30,
+        25677
+      ],
+      "expected_token_ids_sha256": "a3382db9d7097d3702e935cd53a1589256a8d123e614504f5bdf646cec36d200",
+      "observed_token_ids": [
+        9419,
+        0,
+        2500,
+        628,
+        353,
+        1438,
+        488,
+        3242,
+        30,
+        248046
+      ],
+      "observed_token_ids_sha256": "6963af09c768136d9af78483c322525a23b1045cf2cb10ac323c6622fd34e83d",
+      "mismatch_indices": [
+        9
+      ],
+      "expected_token_id_at_step9": 25677,
+      "actual_token_id_at_step9": 248046,
+      "all_other_first10_positions_exact": true,
+      "result": "rejected-canonical-prefix-exact",
+      "max_rss_observation": "approximately 1.95 GB per fresh process",
+      "swaps_observed": 0
+    },
+    "limitations": [
+      "operator-supervised summary with no machine-generated raw screen sidecar",
+      "parent control and six of seven candidate cases each have one observed run only",
+      "first10 teacher-forced screening is not the complete canonical128 teacher-and-free-run gate",
+      "no candidate bundle was saved or reloaded",
+      "no four-prompt quality gate was run",
+      "module-causal attribution is not claimed",
+      "formal performance is not claimed"
+    ]
+  },
+  "artifact_state": {
+    "closure_inspection_date": "2026-08-24",
+    "candidate_target": {
+      "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/.apxinf/models/Qwen3.5-0.8B-mlx-w8-g64-gdn3-l19-o-proj-chinese-counterfactual-v3",
+      "exists": false,
+      "published": false
+    },
+    "four_prompt_quality_evidence_target": {
+      "path": "doc/20260823-qwen35-macos-bringup/qwen35-hybrid-w8-bf16-g64-chinese-top1-counterfactual-v3-multi-prompt-quality-v1.json",
+      "exists": false,
+      "published": false
+    }
+  },
+  "decision": {
+    "top1_v3": "REJECT",
+    "top3_o_proj_restore": "STOP",
+    "top3_nonempty_subset_screen": "EXHAUSTED",
+    "top4_screen": "DO_NOT_RUN",
+    "additional_combinations": "DO_NOT_RUN",
+    "parent_v2_replacement": false,
+    "candidate_target_published": false,
+    "four_prompt_quality_gate_run": false,
+    "formal_performance_claim": false,
+    "general_parity_claim": false,
+    "causal_attribution_claim": false
+  }
+}

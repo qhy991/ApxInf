@@ -1,0 +1,144 @@
+{
+  "format": "apxinf-mlx-serve-cli-evidence-v1",
+  "date": "2026-08-24",
+  "status": "passed",
+  "scope": {
+    "command": "apxinf mlx-serve",
+    "kind": "local persistent MLX JSONL application boundary",
+    "http_added": false,
+    "network_listener_added": false,
+    "automatic_download_added": false,
+    "real_model_launched_for_this_slice": false
+  },
+  "protocol": {
+    "protocol": "apxinf-mlx-cli-v1",
+    "transport": "local-stdin-stdout-jsonl-v1",
+    "request_format": "apxinf-mlx-cli-request-v1",
+    "ready_format": "apxinf-mlx-cli-ready-v1",
+    "success_format": "apxinf-mlx-cli-response-v1",
+    "recoverable_error_format": "apxinf-mlx-cli-response-error-v1",
+    "shutdown_format": "apxinf-mlx-cli-shutdown-v1",
+    "fatal_error_format": "apxinf-mlx-cli-fatal-error-v1",
+    "operations": [
+      "generate",
+      "session_generate",
+      "session_reset",
+      "shutdown"
+    ],
+    "limits": {
+      "max_input_line_bytes": 1048576,
+      "max_output_line_bytes": 4194304,
+      "max_prompt_tokens": 131072,
+      "max_generated_tokens": 65536,
+      "max_requests": 1000000,
+      "max_timeout_seconds": 3600
+    }
+  },
+  "boundary_semantics": {
+    "worker_start_and_model_load_count": "once per command process",
+    "python_protocol_forwarded_directly": false,
+    "nested_receipts_are_rust_validated": true,
+    "request_fields_are_exact": true,
+    "duplicate_json_keys_rejected": true,
+    "unknown_fields_rejected": true,
+    "duplicate_request_ids_rejected": true,
+    "partial_or_oversize_input_action": "immediately abort the worker process group without a graceful request, emit fatal stderr receipt, exit 2",
+    "unexpected_worker_or_stdout_boundary_action": "immediately abort the worker process group, emit fatal stderr receipt, exit 3",
+    "ordinary_model_error_action": "only generation_failed and invalid_model emit a request-correlated recoverable error and continue",
+    "expected_session_model_or_cache_error_action": "only generation_failed, invalid_model, session_cache_failed, and session_cache_limit recover after invalidating the affected session",
+    "unknown_worker_error_action": "fatal stderr receipt, immediate process-group abort, exit 3",
+    "direct_service_unknown_worker_error_action": "MlxService terminates immediately; a subsequent Rust API request is rejected as closed",
+    "explicit_shutdown_action": "validate acknowledgement, sweep the original process group before leader reap, emit shutdown receipt, exit 0",
+    "unexpected_eof_action": "immediately abort without waiting for the configured worker timeout, emit fatal stderr receipt, exit 2",
+    "path_policy": "absolute existing direct model, Python, and runner paths; symlinks rejected"
+  },
+  "session_semantics": {
+    "cache_policy": "exact-append-only-in-process-lru-v1",
+    "request_contains_complete_prefix": true,
+    "committed_prefix": "complete prompt plus every token yielded by generate_step; the next predicted but not yet yielded token is not committed",
+    "changed_missing_or_branched_old_token_action": "reject before cache mutation; never silently fall back to fresh generation",
+    "reset_requires_bound_session": true,
+    "reset_returns_rust_validated_service_receipt": true,
+    "max_sessions": 4,
+    "max_live_logical_cache_bytes": 536870912,
+    "eviction": "explicit LRU eviction reported by the service receipt",
+    "post_mutation_failure": "invalidate the entire affected session because Qwen3.5 Gated DeltaNet recurrent cache cannot be cloned or rolled back safely"
+  },
+  "tdd": {
+    "initial_red": "mlx_serve_command_parses_explicit_local_boundary initially failed to compile because Command had no MlxServe variant",
+    "p1_red": [
+      "unknown_worker_error_code_is_fatal observed exit 2 because ordinary generate treated every Worker code as recoverable",
+      "explicit_shutdown_reaps_pipe_inheriting_descendants exceeded 750 ms because a descendant retained the pipes after its parent exited",
+      "bad_input_aborts_immediately_even_when_worker_ignores_shutdown exceeded 750 ms because EOF attempted graceful shutdown with a 3600-second configured timeout",
+      "follow-up review found MlxService::generate only terminated Boundary errors, so its direct API could continue after an unknown Worker code"
+    ],
+    "green": "all three P1 tracer-bullet tests and the full fake CLI regression pass"
+  },
+  "tests": {
+    "cli_subprocess_command": "cargo test --test mlx_serve_cli --no-default-features",
+    "cli_subprocess_passed": 8,
+    "cli_subprocess_failed": 0,
+    "cli_subprocess_coverage": [
+      "two generation requests start and load the fake worker once",
+      "exact session append, branch rejection, reset, failure invalidation, and recovery",
+      "malformed JSON, duplicate keys, unknown fields, and oversized lines fail closed",
+      "duplicate request ID and unexpected EOF exit nonzero and reap the worker",
+      "symlinked Python is rejected before worker start",
+      "unknown worker error codes are fatal rather than implicitly recoverable",
+      "valid shutdown kills pipe-inheriting descendants before leader reap",
+      "EOF and oversized input abort within 750 ms even when timeout is 3600 seconds and the worker ignores shutdown"
+    ],
+    "cli_unit_command": "cargo test --bin apxinf mlx_service_cli::tests --no-default-features",
+    "cli_unit_passed": 3,
+    "cli_unit_failed": 0,
+    "direct_service_unit_command": "cargo test --bin apxinf mlx_service::tests --no-default-features -- --test-threads=1",
+    "direct_service_unit_passed": 5,
+    "direct_service_unit_failed": 0,
+    "direct_service_real_ignored": 2,
+    "full_binary_serial_command": "cargo test --bin apxinf --no-default-features -- --test-threads=1",
+    "full_binary_serial_passed": 46,
+    "full_binary_serial_failed": 0,
+    "full_binary_serial_real_ignored": 2,
+    "feature_check_command": "cargo check --bin apxinf --features accelerate,metal-w8",
+    "feature_check_passed": true,
+    "format_check_passed": true,
+    "clippy": "unavailable in the installed Rust toolchain"
+  },
+  "host_noise_observation": {
+    "parallel_full_run_accepted_as_benchmark": false,
+    "observation": "one earlier parallel run hit pre-existing wall-clock startup/provider assertions under host contention; the final serial full binary suite passed 46 of 46 non-real tests",
+    "formal_performance_claim": false
+  },
+  "frozen_real_service_evidence": {
+    "path": "doc/20260823-qwen35-macos-bringup/mlx-session-prefix-cache-evidence-20260824.json",
+    "sha256": "3d3cf0afed47b9bcca3f4cf847ba62462940e74436e0b4f079f87886eee64a3e",
+    "model": "Qwen/Qwen3.5-0.8B",
+    "canonical_prompt_token_count": 13,
+    "first_generation_token_count": 9,
+    "committed_prefix_token_count_before_append": 22,
+    "appended_second_turn_token_count": 16,
+    "fresh_full_prompt_token_count": 38,
+    "second_generation_token_count": 10,
+    "session_vs_fresh_generated_token_ids_exact": true,
+    "reset_passed": true,
+    "clean_shutdown_passed": true,
+    "wall_seconds": 32.78,
+    "maximum_resident_set_bytes": 1227210752,
+    "process_swaps": 0,
+    "interpretation": "correctness and candidate timing only; no speedup claim because the host had high background CPU load"
+  },
+  "source_sha256": {
+    "src/main.rs": "504ee822dfe887fb0248f8e4e4e7ae070152f1f8986aac1715acd8536351bce5",
+    "src/mlx_service.rs": "702db755ca58e495d6c5f7571e38af8714c9aab004516812fd17dc5858745e73",
+    "src/mlx_service_cli.rs": "49dda1a58aaf8bff24e5e5116f3626aca2b5c9c9bbc4ec8472885c5c02aa464e",
+    "tests/mlx_serve_cli.rs": "ff7d875dc9ff26bf5deafe9193156636332c34455154bc0e61a9d07bf5ce03e8",
+    "doc/20260823-qwen35-macos-bringup/mlx-serve-cli-20260824.md": "f6ec680af62b7855b8b9681c634762955392d46a540976d09a30ce77807627d6",
+    "README.md": "f4f858d0b62a5ad3d9f2d104400426ec78ff52b9d7020edfd8f4e37ee8d880dd"
+  },
+  "limitations": [
+    "the command is a serial local application boundary, not an HTTP, OpenAI-compatible, or SSE endpoint",
+    "sessions and duplicate-request-ID memory are process-local and disappear on shutdown",
+    "the 512 MiB cache limit is logical cache nbytes, not allocator reservations or total process RSS",
+    "Qwen3.5 recurrent cache cannot support safe trimming or branching with the pinned mlx-lm API"
+  ]
+}

@@ -1,0 +1,268 @@
+{
+  "format": "apxinf-qwen35-macos-mlx-provider-screen-v1",
+  "date": "2026-08-24",
+  "host": {
+    "chip": "Apple M4",
+    "cpu_cores": 10,
+    "memory_gib": 16,
+    "machine_model": "Mac16,10"
+  },
+  "source": {
+    "repo_id": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "scope": "text-only",
+    "prompt_token_ids": [
+      248045,
+      846,
+      198,
+      9419,
+      248046,
+      198,
+      248045,
+      74455,
+      198,
+      248068,
+      271,
+      248069,
+      271
+    ],
+    "frozen_ten_token_ids": [
+      9419,
+      0,
+      2500,
+      628,
+      353,
+      1438,
+      488,
+      3242,
+      30,
+      25677
+    ]
+  },
+  "toolchain": {
+    "python": "3.14.3",
+    "mlx": "0.32.1",
+    "mlx_lm": "0.31.3",
+    "mlx_metal": "0.32.1",
+    "transformers": "5.15.1",
+    "safetensors": "0.8.0"
+  },
+  "conversion_audit": {
+    "finding": "mlx_lm.convert follows text_config.dtype=bfloat16 and casts the 18 F32 gated-DeltaNet norm tensors to BF16; direct loading of the pinned HF bundle preserves their checkpoint dtype",
+    "affected_f32_values": 2304,
+    "default_policy": "load the pinned HF bundle directly, or save/quantize the already-sanitized MLX model without the blanket dtype cast",
+    "mixed_precision_outputs": [
+      {
+        "id": "mlx-mixed",
+        "weight_bytes": 1504832503,
+        "weight_sha256": "9f15a697351663782677905113b22bb3052d17f5591dddf6c50fb049fd15baa2",
+        "forced_100_token_sha256": "9db6c30a6ba3cd24d028a1ad0ba8a6beb9291b3a9ca2365377beaaf21d084196",
+        "matches_direct_hf_trajectory": true
+      },
+      {
+        "id": "mlx-mixed-affine-w8-g64",
+        "weight_bytes": 799978896,
+        "weight_sha256": "f5fc139e76adc21f40f539468acb0a80397cd885a20a93d45de983007067ec56",
+        "cached_teacher_top1_matches": 126,
+        "cached_teacher_total": 128
+      },
+      {
+        "id": "mlx-mixed-affine-w4-g64",
+        "weight_bytes": 424031372,
+        "weight_sha256": "f9d3b690c3fb4d56a1d2f1846abc79c8c45dd2d9a915580df953defd845ebcea",
+        "cached_teacher_top1_matches": 114,
+        "cached_teacher_total": 128
+      }
+    ]
+  },
+  "method": {
+    "sampler": "greedy-argmax",
+    "warmup_tokens": 10,
+    "forced_decode_tokens": 100,
+    "repeats": 6,
+    "offline": true,
+    "quality_path": "cached teacher forcing against MLX BF16 on the same 128-token forced trajectory",
+    "limits": [
+      "The machine was not thermally isolated and background desktop services remained active.",
+      "The 128-token teacher-forced screen is an acceptance input, not a broad downstream quality evaluation.",
+      "Forced decode intentionally continues beyond EOS to measure a fixed amount of work."
+    ]
+  },
+  "variants": [
+    {
+      "id": "mlx-bf16",
+      "default_eligible": true,
+      "quantization": null,
+      "ten_token_ids": [
+        9419,
+        0,
+        2500,
+        628,
+        353,
+        1438,
+        488,
+        3242,
+        30,
+        25677
+      ],
+      "ten_token_exact": true,
+      "forced_100_token_sha256": "9db6c30a6ba3cd24d028a1ad0ba8a6beb9291b3a9ca2365377beaaf21d084196",
+      "decode_tps": {
+        "median": 52.36842143821641,
+        "min": 52.21278255018604,
+        "max": 54.131957729235495,
+        "samples": [
+          54.131957729235495,
+          52.37646643352993,
+          52.36037644290289,
+          53.85051832386185,
+          52.27791209077784,
+          52.21278255018604
+        ]
+      },
+      "ttft_seconds": {
+        "min": 0.053150917003222276,
+        "max": 0.07389937499829102
+      },
+      "mlx_peak_memory_bytes": 1555643180,
+      "process_max_rss_bytes": 1924546560,
+      "process_swaps": 0
+    },
+    {
+      "id": "mlx-affine-w8-g64",
+      "default_eligible": false,
+      "policy": "explicit quality/performance tradeoff",
+      "quantization": {
+        "mode": "affine",
+        "bits": 8,
+        "group_size": 64,
+        "reported_bits_per_weight": 8.505
+      },
+      "weight_file": {
+        "bytes": 799974306,
+        "sha256": "1194190378de961b4416f313610a3dba53993a1ec49187b801c45ce80e3ab4ed"
+      },
+      "ten_token_ids": [
+        9419,
+        0,
+        2500,
+        628,
+        353,
+        1438,
+        488,
+        3242,
+        30,
+        248046
+      ],
+      "ten_token_exact": false,
+      "forced_100_token_sha256": "d0ebb853e0a48b31e6b5569b1ea11ffaec4bbfcff3f0edfc3b758b01265603f6",
+      "decode_tps": {
+        "median": 92.62920469923438,
+        "min": 90.25998979796023,
+        "max": 93.57476149874377,
+        "samples": [
+          93.25198635359033,
+          90.36437380003576,
+          90.25998979796023,
+          93.29009432343523,
+          92.00642304487842,
+          93.57476149874377
+        ],
+        "ratio_to_bf16_median": 1.7687988706804372
+      },
+      "mlx_peak_memory_bytes": 850053420,
+      "cached_teacher_gate": {
+        "reference_steps": 128,
+        "top1_matches": 126,
+        "top1_rate": 0.984375,
+        "mismatch_positions_zero_based": [
+          9,
+          15
+        ],
+        "top20_overlap_mean": 19.1875,
+        "top20_overlap_min": 14,
+        "cosine_mean": 0.9986385563388467,
+        "cosine_min": 0.9874642491340637,
+        "nrmse_mean": 0.04044468632491771,
+        "nrmse_max": 0.1629590094089508
+      }
+    },
+    {
+      "id": "mlx-affine-w4-g64",
+      "default_eligible": false,
+      "policy": "experimental speed-first only",
+      "quantization": {
+        "mode": "affine",
+        "bits": 4,
+        "group_size": 64,
+        "reported_bits_per_weight": 4.508
+      },
+      "weight_file": {
+        "bytes": 424026782,
+        "sha256": "268de1e6659fda36822fe5b4043b916be0840a8f6c533305f96feefcf1ad983d"
+      },
+      "ten_token_ids": [
+        9419,
+        0,
+        2500,
+        628,
+        353,
+        1438,
+        488,
+        3242,
+        30,
+        248046
+      ],
+      "ten_token_exact": false,
+      "forced_100_token_sha256": "f9bb6d947c0cd8e900a6b06bd66210da5585a2ebfe084fe83e568decdbe0ab0e",
+      "decode_tps": {
+        "median": 154.30914467590844,
+        "min": 149.27431378015285,
+        "max": 163.9657969393742,
+        "samples": [
+          155.90199284568334,
+          152.44751411907677,
+          152.71629650613352,
+          149.27431378015285,
+          163.9657969393742,
+          160.11790500395114
+        ],
+        "ratio_to_bf16_median": 2.946606761060392
+      },
+      "standalone_mlx_peak_memory_bytes": 474357328,
+      "cached_teacher_gate": {
+        "reference_steps": 128,
+        "top1_matches": 114,
+        "top1_rate": 0.890625,
+        "mismatch_positions_zero_based": [
+          9,
+          15,
+          25,
+          28,
+          29,
+          31,
+          47,
+          59,
+          76,
+          82,
+          101,
+          110,
+          112,
+          120
+        ],
+        "top20_overlap_mean": 14.7890625,
+        "top20_overlap_min": 1,
+        "cosine_mean": 0.918257029959932,
+        "cosine_min": 0.4771898686885834,
+        "nrmse_mean": 0.3589269040385261,
+        "nrmse_max": 1.286999225616455
+      }
+    }
+  ],
+  "decision": {
+    "default_macos_provider": "mlx-bf16",
+    "opt_in_speed_provider": "mlx-affine-w8-g64",
+    "rejected_as_default": "mlx-affine-w4-g64",
+    "native_next_slice": "decode-only W8 tied lm_head plus fused Metal argmax"
+  }
+}

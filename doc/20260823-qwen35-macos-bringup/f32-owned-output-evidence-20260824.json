@@ -1,0 +1,61 @@
+{
+  "format": "apxinf-f32-owned-output-evidence-v1",
+  "date": "2026-08-24",
+  "scope": {
+    "implementation": "CPU operation outputs transfer ownership of their existing Vec<f32> into Tensor storage",
+    "mathematics_changed": false,
+    "performance_claim": null,
+    "performance_status": "not formally benchmarked on the noisy host"
+  },
+  "mechanism": {
+    "storage_variant": "Storage::CpuF32(Arc<Vec<f32>>)",
+    "constructor": "Tensor::from_f32_vec",
+    "copy_eliminated": "the post-operation Vec<f32>-to-Vec<u8> materialization",
+    "copy_on_write_preserved": true,
+    "pointer_identity_unit_test": true
+  },
+  "source_sha256": {
+    "crates/apxinf-core/src/storage.rs": "99b63ddc67528757ef0936c0dbbefe5209e3a5e2c9ff2ad4e4b8146bd4aa3051",
+    "crates/apxinf-core/src/tensor.rs": "83a942dc8c0ffcdd079f0631e0c845ef21429d1fcbd97f94b8b34f6473f0e6fe",
+    "crates/apxinf-core/src/op_impls/cpu.rs": "a12cb22449abbd51134437157ce7c79ad3cc04e958fd0830c641a15d0debef59",
+    "crates/apxinf-model/src/llama/model.rs": "9e38534b3c6ef7b4aa71f983485b04102f6a9c9204ae022399efc16996657a81"
+  },
+  "tests": [
+    {
+      "command": "cargo test -p apxinf-core",
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "command": "cargo test -p apxinf-core --features accelerate",
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "command": "cargo test -p apxinf-model --features accelerate,metal-w8 qwen35 --lib",
+      "passed": 22,
+      "failed": 0
+    }
+  ],
+  "real_checkpoint_oracle": {
+    "repo_id": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "receipt_path": "/tmp/apxinf-qwen35-oracle-f32-owned-20260824.json",
+    "receipt_sha256": "6d755fc8b308c63810ea3acc689cb277a3afa88f5aabe8d35c3d682ecb71e141",
+    "verification_passed": true,
+    "frozen_greedy_token_ids": [
+      9419,
+      0,
+      2500,
+      628,
+      353,
+      1438,
+      488,
+      3242,
+      30,
+      25677
+    ],
+    "process_swaps": 0,
+    "maximum_resident_set_size_bytes": 4677386240
+  }
+}

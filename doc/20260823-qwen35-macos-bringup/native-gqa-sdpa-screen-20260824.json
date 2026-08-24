@@ -1,0 +1,119 @@
+{
+  "format": "apxinf-qwen35-native-gqa-sdpa-screen-v2",
+  "date": "2026-08-24",
+  "host": {
+    "chip": "Apple M4",
+    "machine_model": "Mac16,10",
+    "memory_gib": 16,
+    "background_contaminated": true
+  },
+  "implementation": {
+    "cache_layout": "flat-[layer,kv_head,position,head_dim]-f32",
+    "query_heads": 8,
+    "kv_heads": 2,
+    "head_dim": 256,
+    "dispatch_min_kv_length": 128,
+    "backend": "Apple Accelerate CBLAS SGEMM",
+    "source_sha256": {
+      "crates/apxinf-core/src/kv_cache.rs": "f06ddd0ddf8cb489b3eb879481aa769b36a02a8da3f4695310c0f17b836bdc2e",
+      "crates/apxinf-core/src/op_impls/cpu.rs": "cb87ebc9b7e094e3f90dde49e99a670d796360c3585c5b8163932726f87726a7",
+      "crates/apxinf-core/examples/sdpa_screen.rs": "2ae8f5cacc20eb9e143f9cef0785162a17fa2e41711576772daae65b9f0b3771",
+      "crates/apxinf-core/examples/sdpa_prefill_screen.rs": "29b0ffa32da26e40d5977be092a4279d9d45ae1636c3c28e4d129d69dd4d5a19"
+    }
+  },
+  "method": {
+    "build": "release+accelerate",
+    "decode_orders": ["grouped-scalar", "scalar-grouped", "scalar-grouped", "grouped-scalar", "grouped-scalar", "scalar-grouped"],
+    "decode_repetitions_by_context": {
+      "128": 300,
+      "512": 120,
+      "1024": 60,
+      "4096": 20
+    },
+    "prefill_orders": ["grouped-scalar", "scalar-grouped", "scalar-grouped", "grouped-scalar"],
+    "prefill_repetitions_by_sequence": {
+      "128": 8,
+      "256": 3,
+      "512": 1
+    },
+    "reducer": "median per-call time within each alternating screen",
+    "scalar_reference_preserved": true,
+    "captured_under_host_noise": true,
+    "formal_product_gate": false
+  },
+  "results": [
+    {
+      "kv_length": 128,
+      "grouped_us": 24.199,
+      "scalar_us": 316.412,
+      "speedup": 13.075,
+      "max_abs_error": 1.118e-7
+    },
+    {
+      "kv_length": 512,
+      "grouped_us": 77.070,
+      "scalar_us": 1120.521,
+      "speedup": 14.539,
+      "max_abs_error": 4.494e-8
+    },
+    {
+      "kv_length": 1024,
+      "grouped_us": 94.121,
+      "scalar_us": 1641.399,
+      "speedup": 17.439,
+      "max_abs_error": 4.779e-8
+    },
+    {
+      "kv_length": 4096,
+      "grouped_us": 590.822,
+      "scalar_us": 6469.235,
+      "speedup": 10.950,
+      "max_abs_error": 2.302e-8
+    }
+  ],
+  "prefill_results": [
+    {
+      "sequence_length": 128,
+      "grouped_ms": 14.477,
+      "scalar_ms": 14.564,
+      "speedup": 1.006,
+      "max_abs_error": 2.086e-7
+    },
+    {
+      "sequence_length": 256,
+      "grouped_ms": 18.317,
+      "scalar_ms": 58.424,
+      "speedup": 3.190,
+      "max_abs_error": 2.831e-7
+    },
+    {
+      "sequence_length": 512,
+      "grouped_ms": 25.486,
+      "scalar_ms": 207.802,
+      "speedup": 8.154,
+      "max_abs_error": 2.831e-7
+    }
+  ],
+  "frozen_full_model_oracle": {
+    "passed": true,
+    "max_context": 32,
+    "comparison_receipt_sha256": "d440a40b9add739718ccc718b8bad39470d41fda5d2552c383cad115b544f91e",
+    "checks": {
+      "transformers_logits": true,
+      "convolution_states_108": true,
+      "recurrent_states_36": true,
+      "cached_vs_fresh": true,
+      "top20": true,
+      "frozen_ten_tokens": true
+    },
+    "max_rss_bytes": 3787636736,
+    "process_swaps": 0,
+    "coverage_limit": "The frozen oracle covers copy-on-write and flat-cache semantics at short context; the retained scalar primitive oracle covers the grouped path at 128-4096."
+  },
+  "decision": {
+    "status": "primitive-screen-pass",
+    "scope": "long-context CPU decode and causal-prefill SDPA primitives only",
+    "next_gate": "frozen full-model oracle followed by quiet-host long-context end-to-end ABBA/BAAB",
+    "claim_limit": "operator speedups are not end-to-end token-throughput or TTFT claims; absolute times were captured on a noisy host"
+  }
+}

@@ -1,0 +1,158 @@
+{
+  "format": "apxinf-mlx-session-prefix-cache-evidence-v1",
+  "date": "2026-08-24",
+  "status": "passed",
+  "scope": {
+    "provider": "mlx-lm==0.31.3",
+    "model": "Qwen/Qwen3.5-0.8B",
+    "kind": "explicit exact-append in-process session cache",
+    "formal_benchmark": false,
+    "ordinary_generate_semantics_changed": false,
+    "http_added": false,
+    "cli_surface_added": true
+  },
+  "decision": {
+    "accepted": "same-session exact append of a complete committed prefix",
+    "rejected": [
+      "automatic longest-common-prefix lookup",
+      "prefix branching",
+      "prefix trimming",
+      "cross-model reuse",
+      "fallback to fresh generation for a missing or mismatched session"
+    ],
+    "reason": "Qwen3.5 uses 18 non-trimmable Gated DeltaNet ArraysCache instances plus 6 KVCache instances; its recurrent state has no safe rollback or branch contract in the pinned API"
+  },
+  "mlx_api_lock": {
+    "python_version": "3.14.3",
+    "mlx_version": "0.32.1",
+    "mlx_lm_version": "0.31.3",
+    "generate_py_sha256": "270778ad53eaca55a8533d82e6752660fe5d2605c4aa0879b48a50a91f69345f",
+    "cache_py_sha256": "819ed95dcbf755652363cfdb15a639890447abb534a06dcefd52c7fff5055750",
+    "qwen3_5_py_sha256": "f0daa30bba5cb521c8bdfa7093101a544c6a37bbba09bca582288219cb04ae3a",
+    "generate_step_prompt_cache_argument_required": true,
+    "committed_cache_position": "complete_prompt_plus_every_yielded_generated_token",
+    "next_predicted_token_in_cache": false
+  },
+  "protocol": {
+    "session_protocol": "apxinf-mlx-session-v1",
+    "request_format": "apxinf-mlx-session-request-v1",
+    "response_format": "apxinf-mlx-session-response-v1",
+    "control_format": "apxinf-mlx-session-control-v1",
+    "cache_policy": "exact-append-only-in-process-lru-v1",
+    "binding_fields": [
+      "session_id",
+      "prefix_token_count",
+      "prefix_token_ids_sha256",
+      "model_config_sha256",
+      "model_bundle_sha256",
+      "greedy_strategy",
+      "cache_policy"
+    ],
+    "max_sessions": 4,
+    "max_live_logical_cache_bytes": 536870912,
+    "reset_requires_exact_current_prefix": true,
+    "post_mutation_failure_action": "invalidate_entire_session"
+  },
+  "model_identity": {
+    "bundle_directory": "/Users/haiyan-mini/Agent4Kernel/ApxInf/.apxinf/models/Qwen3.5-0.8B-mlx-w8-g64-gdn-outproj-async-chat-parity-v2",
+    "config_sha256": "f7daeaf21b2fc4081c2e2f4607794f9af701531d890630fcdc10c9bb983c239c",
+    "bundle_manifest_sha256": "002106155df248f0446cb33b329f9ea58c9c8ead41b9e338a70e2fdd483a7496",
+    "bundle_file_count": 7,
+    "bundle_total_bytes": 818772712,
+    "greedy_strategy": "mlx-generate-step-argmax-v1"
+  },
+  "fake_tests": {
+    "python_command": "PYTHONDONTWRITEBYTECODE=1 .apxinf/toolchains/mlx-lm-0.31.3-copies/bin/python3.14 -m unittest tests.python.test_apxinf_mlx_serve tests.python.test_apxinf_mlx_generate",
+    "python_passed": 18,
+    "python_failed": 0,
+    "covered": [
+      "ordinary requests receive no prompt_cache",
+      "complete generated output is part of the next committed prefix",
+      "only the appended suffix is evaluated",
+      "changed or missing old tokens are rejected before mutation",
+      "strategy or model binding mismatch is rejected",
+      "failure after partial cache mutation invalidates the session",
+      "LRU byte eviction is explicit",
+      "reset releases a bound session",
+      "duplicate request IDs and duplicate JSON keys fail closed"
+    ],
+    "rust_command": "cargo test --bin apxinf mlx_service::tests --no-default-features",
+    "rust_passed": 5,
+    "rust_failed": 0,
+    "rust_ignored_real_tests": 2,
+    "full_python_regression_command": "PYTHONDONTWRITEBYTECODE=1 .apxinf/toolchains/mlx-lm-0.31.3-copies/bin/python3.14 -m unittest discover -s tests/python",
+    "full_python_regression_passed": 264,
+    "full_python_regression_failed": 0
+  },
+  "real_two_turn_smoke": {
+    "test": "mlx_service::tests::locked_real_session_append_matches_fresh_full_prompt",
+    "passed": true,
+    "canonical_prompt_token_count": 13,
+    "first_generation_token_count": 9,
+    "first_generation_token_ids": [
+      9419,
+      0,
+      2500,
+      628,
+      353,
+      1438,
+      488,
+      3242,
+      30
+    ],
+    "committed_prefix_token_count_before_append": 22,
+    "appended_second_turn_token_count": 16,
+    "fresh_full_prompt_token_count": 38,
+    "second_generation_token_count": 10,
+    "session_vs_fresh_generated_token_ids_exact": true,
+    "reset_passed": true,
+    "clean_shutdown_passed": true,
+    "process": {
+      "wall_seconds": 32.78,
+      "maximum_resident_set_bytes": 1227210752,
+      "process_swaps": 0
+    },
+    "performance_interpretation": "correctness and candidate timing only; the host had high background CPU load and existing system swap, so no speedup is claimed"
+  },
+  "post_real_smoke_changes": {
+    "current_code_model_rerun": false,
+    "reason_not_rerun": "The parent task explicitly stopped additional model launches after the successful smoke.",
+    "model_path_equivalence": "The current service delegates cache construction to mlx_lm.models.cache.make_prompt_cache; for the pinned Qwen3.5 model that frozen function calls the same model.make_cache method exercised by the real smoke.",
+    "non_model_hardening": [
+      "resident reset integrity failures now invalidate before returning an error",
+      "the Rust boundary rejects unknown evictions and session-count divergence",
+      "the Rust boundary terminates on any unexpected session worker error",
+      "the direct ordinary-generate API terminates on worker codes outside generation_failed and invalid_model",
+      "all termination paths sweep the owned worker process group before leader reap"
+    ],
+    "fake_and_full_regressions_after_changes": true
+  },
+  "current_source_sha256": {
+    "scripts/apxinf_mlx_serve.py": "cad64588d9bb0765f1c545ca1b06042612704156f01e4083fec057a034a7b4b0",
+    "src/mlx_service.rs": "702db755ca58e495d6c5f7571e38af8714c9aab004516812fd17dc5858745e73",
+    "tests/python/test_apxinf_mlx_serve.py": "95ea34aeb09b049c0c9cce68a3e15cd7c2300ae2be0a88b772b82c1eee0faac0",
+    "tests/python/test_apxinf_mlx_generate.py": "c9ff4938c8d0c3d0c798ca8229d72ab9eb68dcfcc59e3beb4b2b19d8fb54b92d"
+  },
+  "local_cli_exposure_after_smoke": {
+    "model_execution_rerun": false,
+    "reason_not_rerun": "The next slice was explicitly restricted to fake workers and frozen real-service evidence.",
+    "service_changes": [
+      "retain and expose the already Rust-validated ready receipt",
+      "return the already Rust-validated reset receipt to the outer application layer",
+      "keep only generation_failed, invalid_model, session_cache_failed, and session_cache_limit session errors recoverable after invalidating the affected session",
+      "abort immediately on malformed outer input without waiting for the configurable worker timeout",
+      "sweep the original worker process group before reaping its leader, including after a valid graceful acknowledgement"
+    ],
+    "application_boundary": "apxinf-mlx-cli-v1",
+    "fake_cli_subprocess_tests_passed": 8,
+    "full_rust_serial_tests_passed": 46,
+    "full_rust_real_tests_ignored": 2
+  },
+  "limitations": [
+    "the 512 MiB bound covers live logical session-cache nbytes, not allocator reservations or process RSS",
+    "sessions are serial, process-local, and lost on shutdown or worker failure",
+    "Qwen3.5 recurrent cache is mutated in place, so failed appends invalidate instead of rolling back",
+    "no formal noisy-host throughput or TTFT speedup claim",
+    "the local CLI is not an HTTP, OpenAI-compatible, or SSE endpoint"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "format": "apxinf-accelerate-sgemv-screen-summary-v1",
+  "date": "2026-08-24",
+  "target": {
+    "arch": "arm64",
+    "cpu": "Apple M4",
+    "framework": "Apple Accelerate",
+    "workload": "Qwen3.5-0.8B text-only decode, batch=1"
+  },
+  "method": {
+    "pairs_per_shape_per_run": 9,
+    "order": "alternating sgemm/sgemv within each pair",
+    "statistic": "per-shape median, then exact call-count weighted sum",
+    "numerics": "compare complete output vectors after both calls",
+    "promotion_threshold": "at least 5% projected weighted decode improvement before an ApxInf candidate"
+  },
+  "shape_call_contract": [
+    {"name": "linear_qkv", "k": 1024, "n": 6144, "calls": 18, "rhs_transposed": false},
+    {"name": "linear_z", "k": 1024, "n": 2048, "calls": 18, "rhs_transposed": false},
+    {"name": "linear_out", "k": 2048, "n": 1024, "calls": 18, "rhs_transposed": false},
+    {"name": "full_q", "k": 1024, "n": 2048, "calls": 6, "rhs_transposed": false},
+    {"name": "full_kv", "k": 1024, "n": 512, "calls": 12, "rhs_transposed": false},
+    {"name": "mlp_gate_up", "k": 1024, "n": 3584, "calls": 48, "rhs_transposed": false},
+    {"name": "mlp_down", "k": 3584, "n": 1024, "calls": 24, "rhs_transposed": false},
+    {"name": "tied_lm_head", "k": 1024, "n": 248320, "calls": 1, "rhs_transposed": true}
+  ],
+  "independent_run_weighted_sgemv_over_sgemm": [
+    0.982910,
+    0.983719,
+    1.005213,
+    0.991960
+  ],
+  "all_observed_max_abs": 0.0,
+  "median_ratio": 0.9878395,
+  "projected_improvement_percent": 1.21605,
+  "decision": {
+    "status": "rejected",
+    "reason": "The measured projected improvement is far below the frozen 5% candidate threshold; no runtime dispatch change was made."
+  }
+}

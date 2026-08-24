@@ -8,6 +8,79 @@ target machine.
 The CUDA kernels, CUTLASS, and FlashAttention sources needed by PI0.5 are
 vendored in this repository, so no external source checkout is required.
 
+## macOS Qwen3.5 quickstart
+
+Apple Silicon can run the text-only `Qwen/Qwen3.5-0.8B` tracer through either
+the native CPU/Accelerate runtime or a trusted local-only MLX provider.
+The native build also has an explicit Metal W8 output-head option for both the
+first generated token and cached decode. It keeps only four GPU candidates and
+reranks them from the original F32 embedding before choosing a token:
+
+```bash
+cargo build --release --features accelerate,metal-w8
+
+target/release/apxinf generate \
+  --model /absolute/path/to/Qwen3.5-0.8B \
+  --prompt Hello --max-tokens 100 --max-context 4096 \
+  --device cpu --dtype fp32
+
+# Optional native head-only lane; never enabled implicitly.
+target/release/apxinf generate \
+  --model /absolute/path/to/Qwen3.5-0.8B \
+  --prompt Hello --max-tokens 100 --max-context 4096 \
+  --device cpu --dtype fp32 --metal-w8-lm-head
+
+# Complete decode MLP blocks only (all 24 layers; CPU/F32 head).
+target/release/apxinf generate \
+  --model /absolute/path/to/Qwen3.5-0.8B \
+  --prompt Hello --max-tokens 100 --max-context 4096 \
+  --device cpu --dtype fp32 --metal-w8-mlp-block
+
+# Quality-gated topology with synthetically verified CLI wiring:
+# all MLP blocks plus the v2 head.
+target/release/apxinf generate \
+  --model /absolute/path/to/Qwen3.5-0.8B \
+  --prompt Hello --max-tokens 100 --max-context 4096 --json \
+  --device cpu --dtype fp32 \
+  --metal-w8-mlp-block --metal-w8-lm-head
+```
+
+Both Metal flags are accepted only by the native Qwen3.5 Apple-Silicon
+CPU/F32 route in a `metal-w8` build. MLX, CUDA, BF16, other model families, and
+feature-missing binaries reject the request instead of ignoring it. JSON mode
+includes the requested flags plus actual per-layer MLP and per-phase head hit
+counts under `generation_path`.
+
+For the fastest parity-eligible Mac route, create an isolated environment with
+a direct executable (`--copies` matters because the Rust boundary rejects a
+symlink interpreter), then select MLX explicitly:
+
+```bash
+python3.14 -m venv --copies .apxinf/toolchains/mlx
+.apxinf/toolchains/mlx/bin/python3.14 -m pip install \
+  'mlx==0.32.1' 'mlx-lm==0.31.3' 'mlx-metal==0.32.1' \
+  'safetensors==0.8.0' 'transformers==5.15.1' \
+  'tokenizers==0.22.2' 'huggingface-hub==1.28.0' 'numpy==2.5.2'
+
+target/release/apxinf generate \
+  --model /absolute/path/to/Qwen3.5-0.8B \
+  --prompt Hello --max-tokens 100 --max-context 4096 \
+  --provider mlx \
+  --mlx-python "$PWD/.apxinf/toolchains/mlx/bin/python3.14" \
+  --mlx-runner "$PWD/scripts/apxinf_mlx_generate.py"
+```
+
+The MLX worker receives raw token IDs, loads only the local model directory,
+clears ambient credentials and proxy settings, requests Hugging Face
+local-files/offline behavior, and disables remote code. This is a policy under
+explicitly trusted pinned dependencies, not an OS-level network sandbox.
+Native remains the independent oracle and fallback. On the development M4/16
+GB machine, the frozen BF16 route measured about 52 token/s at roughly 1.6 GB
+MLX peak allocation; MLX W8 and W4 bundles are faster but are explicit quality
+tiers with body-level numerical drift, not parity claims.
+The exact model revision, oracle, measurements, and limitations are documented
+in [the Qwen3.5 macOS bring-up](doc/20260823-qwen35-macos-bringup/README.md).
+
 ## 1. NVIDIA build environment
 
 Use a Linux host with an NVIDIA driver and a complete CUDA toolkit. The build
