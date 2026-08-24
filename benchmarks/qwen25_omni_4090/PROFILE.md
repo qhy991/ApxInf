@@ -3250,9 +3250,9 @@ profiler spending.** Raw evidence is `omni-fa2-chunk2048-smoke-8k.json`; the
 profile/tuning inputs use the `omni-8192-fa2-chunk1024-current` and
 `omni-8192-m1024-bf16-tuning` names. Production remains on 1,024-token chunks.
 
-## Prepared all-chunks causal FA2 upper-bound probe
+## Validated all-chunks causal FA2 upper-bound probe
 
-Status: **exploratory source only; not a promotable request gate**. The 8K
+Status: **upper bound passed; exploratory source remains unpromotable**. The 8K
 profile still spends about 49.2 ms in early-chunk scalar softmax plus 24.8 ms
 in score scaling and associated score/value GEMMs. A one-line compile-time
 probe lowers the causal-FA2 KV threshold from 4,097 to 1 so every 1,024-token
@@ -3267,3 +3267,15 @@ and beat the accepted 0.6145 s TTFT median by at least 2%. A mismatch or null
 result closes the boundary immediately. An exact material win only authorizes
 designing a request-scoped strict gate; it cannot itself be promoted or
 profiled.
+
+The one permitted request passed: the log proves the first `query=1024,
+kv=1024` chunk used FA2, the complete trajectory stayed exact, and TTFT fell
+from the accepted 0.6145 s median to 0.4120 s (32.95% lower). Client wall fell
+from 0.6917 to 0.4909 s. This also beats the frozen vLLM-Omni 0.26.0 8K TTFT
+of 0.5120 s, but the comparison is exploratory because the compile-time probe
+would also alter unsupported short requests.
+
+**Decision: continue only by implementing a request-scoped 8K–12K model/CUDA
+extension that leaves 1K, 4K, decode, multimodal and selector-off paths
+unchanged.** Raw evidence is `omni-fa2-allchunks-smoke-8k.json`. The probe
+binary is not deployed and no profile was spent.
