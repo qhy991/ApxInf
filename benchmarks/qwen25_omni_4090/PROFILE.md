@@ -3029,32 +3029,109 @@ to release an already queued Qwen3.8 qualification job. This is an invalid
 infrastructure attempt, not correctness or performance evidence; the 8K token
 gate remains unexecuted.
 
-## Prepared long-only causal FA2 requalification
+## Promoted long-only causal FA2 prefill
 
-Status: **source prepared; no GPU result and no deployment change**. The former
-FA2 experiment selected fused causal attention for every multi-token prefill and
-changed the frozen first token at both 1K and 4K. The new bounded candidate does
-not revisit those rejected cells. `APXINF_FA2_GQA_PREFILL=1` composes with the
-accepted batched-GQA selector only for BF16 suffix-prefill calls whose accumulated
-KV length is at least 4,097, with the exact Qwen2.5-Omni shape QH/KVH/D =
-16/2/128 on an SM80-family build. Decode, 1K, 4K, multimodal attention and the
-selector-off path remain native; an unavailable kernel, non-suffix request or
-shape mismatch fails explicitly.
+Primary classification: **model/runtime graph rewrite plus shape-bounded CUDA
+specialization**. `APXINF_FA2_GQA_PREFILL=1` composes with the accepted
+batched-GQA selector only for BF16 suffix-prefill calls whose accumulated KV
+length is at least 4,097 and whose QH/KVH/D shape is exactly 16/2/128. Decode,
+at-most-4K prefill, multimodal attention and selector-off execution remain on
+their accepted paths. Unavailable kernels, non-suffix requests and shape
+mismatches fail explicitly instead of silently falling back.
 
-The minimal `core-fa2` carrier adds one SM89 64x64, no-dropout, causal head-128
-specialization beside the accepted non-causal vision head-96 specialization.
-It consumes the existing head-major KV cache through explicit row/head strides
-and returns the ordinary flattened model-owned output layout. A direct operator
-test compares the complete suffix-attention output against the existing scalar
-contract at the 4,097 boundary.
+The `core-fa2` carrier adds one SM89 64x64, no-dropout, causal head-128
+specialization beside the accepted non-causal vision specialization. It reads
+the existing head-major KV cache through explicit row/head strides and returns
+the ordinary flattened model-owned output. The direct 4,097-boundary operator
+contract passes against the scalar implementation.
 
-The first GPU budget is correctness only: `8192+8`, zero warmups, one request,
-greedy sampling, exact complete trajectory SHA-256
-`490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf`.
-Any mismatch closes the candidate without 12K/32K timing. Only an exact 8K pass
-admits the 12K and 32K hashes
-(`57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832`
-and `f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9`),
-followed by at least five alternating accepted/candidate no-profiler pairs.
-Nsight Systems is spent only after a repeated end-to-end win. Until those gates
-pass, this branch makes no performance or promotion claim.
+### Exactness and no-profiler admission
+
+The predeclared 8K correctness-only request passed before 12K or 32K was run.
+All later complete trajectories stayed exact, including 30 formal ABBA
+requests and 40 measured boundary requests. The frozen long hashes are:
+
+| Workload | Complete trajectory SHA-256 |
+|---|---|
+| 8,192 + 8 | `490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf` |
+| 12,288 + 8 | `57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832` |
+| 32,760 + 8 | `f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9` |
+
+Five pairs alternated `AB / BA / AB / BA / AB`. A and B used the same binary
+SHA-256
+`d28373c62dd6e0adae899ef856ea3461d40a279982a2757394babefcaea4848a`;
+only the process-start selector changed. Each service had one warmup before one
+measured request per length.
+
+| Workload | Selector-off TTFT median | FA2 TTFT median | Paired TTFT speedup median | FA2 wall median | Paired wall speedup median |
+|---|---:|---:|---:|---:|---:|
+| 8,192 + 8 | 0.8154 s | 0.7076 s | 1.153× | 0.7848 s | 1.138× |
+| 12,288 + 8 | 1.3730 s | 1.0871 s | 1.263× | 1.1813 s | 1.243× |
+| 32,760 + 8 | 5.6934 s | 2.6084 s | 2.181× | 2.7869 s | 2.105× |
+
+One fifth-pair 8K candidate request took 1.0082 s and lost that pair; it is
+retained in the paired statistics. The other four 8K pairs won, and three
+additional exact candidate requests measured 0.7104 s mean TTFT with 0.092%
+CV. This is recorded as an observed transient outlier, not deleted evidence.
+All five 12K and 32K pairs won; their worst paired TTFT speedups were 1.258×
+and 2.180×.
+
+The selector's lower boundary was screened separately with one warmup and five
+requests per mode:
+
+| Prompt + 8 | Selector-off TTFT p50 | FA2 TTFT p50 | Speedup | Trajectory |
+|---:|---:|---:|---:|---|
+| 4,352 | 0.4179 s | 0.4137 s | 1.010× | exact/stable |
+| 5,120 | 0.4876 s | 0.4682 s | 1.041× | exact/stable |
+| 6,144 | 0.5901 s | 0.5455 s | 1.082× | exact/stable |
+| 7,168 | 0.7004 s | 0.6266 s | 1.118× | exact/stable |
+
+This measured crossover admits the 4,097 threshold without an untested
+4K-to-8K performance region.
+
+### Matched Systems attribution
+
+Only after the repeated end-to-end win, matched 32K selector-off/on profiles
+captured one warmed request each. Profiler timing is not admission timing. The
+selector-off report contains 29,301 kernels and 5.7507 s summed GPU kernel
+time; FA2 contains 25,269 kernels and 2.7359 s, a 2.102× reduction in summed
+kernel work.
+
+The selector-off path spends 2.6155 s in 1,008 scalar softmax kernels. FA2
+replaces them and the associated materialized QK/PV work with 1,008 fused
+kernels totaling 1.0490 s. It also removes 4,032 kernel launches, all 4,032
+device-to-device copies, and 3,024 async allocation/free pairs. Summed CUDA API
+durations are not interpreted as wall time.
+
+The reports remain on the GPU host:
+
+- selector off: `omni-32760-long-fa2-baseline-interactive.nsys-rep`, 3,704,930
+  bytes, SHA-256
+  `2213331d3e3f9ef705df5e0ac7e614ee9690809c5f8fb3e11892760b7dae037e`;
+- FA2: `omni-32760-long-fa2-candidate-interactive.nsys-rep`, 2,949,923 bytes,
+  SHA-256
+  `87b6bc72a46ce3ce20e5fb57b8a8634b1333c4a7be9955bae83cef57d0b1b1aa`.
+
+### Regression and decision
+
+The selector-on service passes repeated 1K, 128+128 decode, 4K boundary and
+8K stability trajectories, real PNG, real WAV and malformed-media recovery.
+The CUDA binary passes 85 non-FP8 tests, including the new FA2 contract. Two
+FP8 GEMM tests return cuBLAS status 15 on RTX 4090; the accepted control binary
+fails the same tests with the same status, so they are preserved as known
+hardware/test-applicability failures rather than misreported as candidate
+successes or regressions.
+
+The promoted binary SHA-256 is
+`d28373c62dd6e0adae899ef856ea3461d40a279982a2757394babefcaea4848a`;
+the immediate rollback is
+`942eea1b67eb173b0494dd6ec83d8b7559fc081612b0694de168de224bcda269`.
+A runit-owned 12K deployment smoke reproduced the exact trajectory at 1.093 s
+TTFT. The service was then returned to its declared down state and the Broker
+reported the GPU idle.
+
+**Decision: promote the long-only causal FA2 selector for the tested
+single-request BF16 RTX 4090 service.** The structured decision and raw-file
+index are `promotion-causal-fa2-long-prefill.json`. This does not claim
+multi-request performance, non-SM89 portability, training, or speech/video
+generation.

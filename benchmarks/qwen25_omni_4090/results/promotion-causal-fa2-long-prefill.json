@@ -1,0 +1,245 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "completed_at": "2026-08-24T13:10:20+08:00",
+  "decision": {
+    "status": "promote",
+    "scope": "single-request BF16 Qwen2.5-Omni text suffix prefill on RTX 4090 with accumulated KV length at least 4097",
+    "reason": "Exact complete trajectories pass at every admitted boundary, five alternating selector-off/on pairs show repeated end-to-end gains at 8K, 12K and 32K, the 4352-7168 crossover screen has no regression, and matched Systems profiles attribute the gain to replacing the materialized scalar GQA attention path with causal FA2.",
+    "deployment_selector": "APXINF_FA2_GQA_PREFILL=1"
+  },
+  "contract": {
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "hardware": "NVIDIA GeForce RTX 4090",
+    "precision": "bf16",
+    "concurrency": 1,
+    "sampling": "greedy",
+    "max_model_len": 32768,
+    "prompt_lengths": [4352, 5120, 6144, 7168, 8192, 12288, 32760],
+    "output_tokens": 8,
+    "timing_authority": "client-observed no-profiler wall plus service-emitted TTFT/TPOT",
+    "profile_role": "causal attribution only; profiler timing is not admission timing"
+  },
+  "implementation": {
+    "upstream_compatible_commit": "1f5f06b3b2fdf3c58d5bfa8baf833715f87d3afe",
+    "candidate_binary": "/opt/apxinf/qwen25-omni-long-fa2-target-316e7f2/release/apxinf",
+    "candidate_binary_sha256": "d28373c62dd6e0adae899ef856ea3461d40a279982a2757394babefcaea4848a",
+    "matched_baseline": "the same candidate binary with APXINF_FA2_GQA_PREFILL=0",
+    "build": "sm_89 plus core-fa2",
+    "selector_boundary": {
+      "minimum_accumulated_kv_tokens": 4097,
+      "query_heads": 16,
+      "kv_heads": 2,
+      "head_dim": 128,
+      "dtype": "bf16",
+      "request_form": "suffix prefill"
+    },
+    "unmatched_paths": "decode, at-most-4K prefill, multimodal attention, selector-off, non-suffix requests and unmatched shapes remain native or fail explicitly"
+  },
+  "correctness": {
+    "operator_job": "gpuq-e428db2762ca",
+    "operator_contract": "causal_fa2_long_gqa_prefill_matches_scalar_contract",
+    "operator_result": "1 passed",
+    "complete_trajectory_sha256": {
+      "8192+8": "490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf",
+      "12288+8": "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832",
+      "32760+8": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9"
+    },
+    "initial_gate": {
+      "passed": true,
+      "raw": [
+        "candidate-causal-fa2-long-gate-8192.json",
+        "candidate-causal-fa2-long-gate-12k32k.json"
+      ]
+    },
+    "formal_abba_trajectories": {
+      "passed": true,
+      "measured_requests": 30,
+      "all_exact": true,
+      "all_stable": true
+    },
+    "boundary_trajectories": {
+      "passed": true,
+      "measured_requests": 40,
+      "all_stable": true
+    }
+  },
+  "no_profiler": {
+    "broker_job": "gpuq-6fab80f406e7",
+    "broker_version": "0.5.3",
+    "binary_control": "same SHA-256 for A and B; only the process-start selector differs",
+    "order": ["A", "B", "B", "A", "A", "B", "B", "A", "A", "B"],
+    "pairs": 5,
+    "warmups_per_service": 1,
+    "measured_requests_per_length_per_mode": 5,
+    "paired_results": [
+      {
+        "prompt_tokens": 8192,
+        "baseline_ttft_median_seconds": 0.815366187,
+        "candidate_ttft_median_seconds": 0.7076150410000001,
+        "paired_ttft_speedup_median": 1.1525642529430298,
+        "paired_ttft_speedup_min": 0.8097632284810309,
+        "paired_ttft_reduction_median_pct": 13.236941242404715,
+        "baseline_wall_median_seconds": 0.8923154547810555,
+        "candidate_wall_median_seconds": 0.7848035022616386,
+        "paired_wall_speedup_median": 1.137914573379968,
+        "candidate_tpot_median_seconds": 0.010565178857142858
+      },
+      {
+        "prompt_tokens": 12288,
+        "baseline_ttft_median_seconds": 1.373025047,
+        "candidate_ttft_median_seconds": 1.087148019,
+        "paired_ttft_speedup_median": 1.2629051513162863,
+        "paired_ttft_speedup_min": 1.2582091086569136,
+        "paired_ttft_reduction_median_pct": 20.817489820377126,
+        "baseline_wall_median_seconds": 1.4682674407958984,
+        "candidate_wall_median_seconds": 1.1812507212162018,
+        "paired_wall_speedup_median": 1.2429646941338335,
+        "candidate_tpot_median_seconds": 0.012903047428571427
+      },
+      {
+        "prompt_tokens": 32760,
+        "baseline_ttft_median_seconds": 5.693398306,
+        "candidate_ttft_median_seconds": 2.608430053,
+        "paired_ttft_speedup_median": 2.181344381141289,
+        "paired_ttft_speedup_min": 2.179869417174664,
+        "paired_ttft_reduction_median_pct": 54.1567114002973,
+        "baseline_wall_median_seconds": 5.871569499373436,
+        "candidate_wall_median_seconds": 2.786877430975437,
+        "paired_wall_speedup_median": 2.105145790840768,
+        "candidate_tpot_median_seconds": 0.024408472999999997
+      }
+    ],
+    "observed_outlier": {
+      "kept": true,
+      "case": "fifth candidate 8192+8 request",
+      "ttft_seconds": 1.008156433,
+      "effect": "the fifth 8K pair lost while the other four pairs won",
+      "followup": "three additional selector-on 8K requests were exact and stable at 0.7103969387 seconds mean TTFT with 0.0924 percent CV",
+      "interpretation": "observed transient noise, not silently excluded from paired statistics"
+    },
+    "raw_pattern": "omni-long-fa2-abba-s??-p?-?.json"
+  },
+  "boundary_screen": {
+    "broker_job": "gpuq-ee5a73d92a6d",
+    "protocol": "one warmup and five measured requests for selector-off followed by selector-on",
+    "results": [
+      {
+        "prompt_tokens": 4352,
+        "baseline_ttft_p50_seconds": 0.417859915,
+        "candidate_ttft_p50_seconds": 0.413650513,
+        "ttft_speedup": 1.0101762281629276,
+        "trajectory_sha256": "fc5e105836ce07d9536f6679ad12bf672fdc5cf1c0574150fee7c874545d7a11"
+      },
+      {
+        "prompt_tokens": 5120,
+        "baseline_ttft_p50_seconds": 0.487578982,
+        "candidate_ttft_p50_seconds": 0.468202449,
+        "ttft_speedup": 1.0413849458527715,
+        "trajectory_sha256": "0fefbd986f0465b3450089644660aa95f44768f849a5615c468106c54f5e1786"
+      },
+      {
+        "prompt_tokens": 6144,
+        "baseline_ttft_p50_seconds": 0.5900740459999999,
+        "candidate_ttft_p50_seconds": 0.54545731,
+        "ttft_speedup": 1.0817969347592022,
+        "trajectory_sha256": "ce5dfdf60a5160a4cab2ac3125783bb8eddec0fc3a640841d1f828933435a00d"
+      },
+      {
+        "prompt_tokens": 7168,
+        "baseline_ttft_p50_seconds": 0.700369998,
+        "candidate_ttft_p50_seconds": 0.626600744,
+        "ttft_speedup": 1.1177292793000577,
+        "trajectory_sha256": "c06cdd72bea947c852bb91661789c17a59792f6eeb70675262cecdc363cf4eac"
+      }
+    ],
+    "raw": ["omni-long-fa2-boundary-A.json", "omni-long-fa2-boundary-B.json"]
+  },
+  "systems_profile": {
+    "broker_job": "gpuq-80293a392922",
+    "workload": "32760 prompt + 8 output after one unprofiled warmup",
+    "baseline": {
+      "report": "/var/lib/agent-gpu-broker/profiles/omni-32760-long-fa2-baseline-interactive.nsys-rep",
+      "report_size_bytes": 3704930,
+      "report_sha256": "2213331d3e3f9ef705df5e0ac7e614ee9690809c5f8fb3e11892760b7dae037e",
+      "kernel_total_seconds": 5.750703887,
+      "kernel_instances": 29301
+    },
+    "candidate": {
+      "report": "/var/lib/agent-gpu-broker/profiles/omni-32760-long-fa2-candidate-interactive.nsys-rep",
+      "report_size_bytes": 2949923,
+      "report_sha256": "87b6bc72a46ce3ce20e5fb57b8a8634b1333c4a7be9955bae83cef57d0b1b1aa",
+      "kernel_total_seconds": 2.735895291,
+      "kernel_instances": 25269
+    },
+    "attribution": {
+      "kernel_time_speedup": 2.1019458989960302,
+      "kernel_time_reduction_pct": 52.42503622583064,
+      "removed_scalar_softmax_instances": 1008,
+      "removed_scalar_softmax_seconds": 2.615542043,
+      "added_fa2_instances": 1008,
+      "added_fa2_seconds": 1.049022987,
+      "direct_attention_kernel_speedup": 2.493312420617147,
+      "removed_kernel_launches": 4032,
+      "removed_device_to_device_copies": 4032,
+      "removed_async_allocations": 3024,
+      "removed_async_frees": 3024,
+      "interpretation": "FA2 removes score/value materialization, scalar softmax and their launch/allocation/copy work; summed CUDA API durations are not treated as wall time."
+    },
+    "raw_stats": [
+      "omni-32760-long-fa2-baseline-stats_cuda_gpu_kern_sum.csv",
+      "omni-32760-long-fa2-baseline-stats_cuda_api_sum.csv",
+      "omni-32760-long-fa2-baseline-stats_cuda_gpu_mem_time_sum.csv",
+      "omni-32760-long-fa2-candidate-stats_cuda_gpu_kern_sum.csv",
+      "omni-32760-long-fa2-candidate-stats_cuda_api_sum.csv",
+      "omni-32760-long-fa2-candidate-stats_cuda_gpu_mem_time_sum.csv"
+    ]
+  },
+  "regression": {
+    "broker_job": "gpuq-26b636a1ae63",
+    "quick": "5 of 5 exact and stable",
+    "decode": "5 of 5 exact and stable",
+    "4096_boundary": "3 of 3 exact and stable; selector remains inactive",
+    "8192_followup": "3 of 3 exact and stable",
+    "real_png": "exact accepted tokens, no fallback",
+    "real_wav": "exact accepted tokens, no fallback",
+    "malformed_media_recovery": "HTTP 422 followed by healthy exact PNG request",
+    "cuda_suite": {
+      "candidate_job": "gpuq-bb3125f25822",
+      "candidate_result": "85 passed, 2 failed",
+      "candidate_relevant_result": "all 85 non-FP8 tests passed, including the new causal FA2 contract",
+      "known_failures": [
+        "tests::fp8::fp8_identity_gemm_runs_on_device",
+        "tests::fp8::fp8_large_k_gemm_matches_quantized_cpu_reference"
+      ],
+      "accepted_control_job": "gpuq-b93b5657761d",
+      "accepted_control_result": "the same two FP8 tests fail with the same cuBLAS status 15 on RTX 4090",
+      "assessment": "pre-existing hardware/test applicability failures, not a candidate regression"
+    },
+    "raw_pattern": "omni-long-fa2-acceptance-*.json"
+  },
+  "deployment": {
+    "installed_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf",
+    "installed_binary_sha256": "d28373c62dd6e0adae899ef856ea3461d40a279982a2757394babefcaea4848a",
+    "rollback_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf.rollback-942eea1b67eb173b",
+    "rollback_binary_sha256": "942eea1b67eb173b0494dd6ec83d8b7559fc081612b0694de168de224bcda269",
+    "runit_definition_sha256": "f1a1906400f36d05ff7f807ac30542414a8daf7c70d75ceba5b46717c3d45dd1",
+    "runit_broker_job": "gpuq-bb5fb76323f1",
+    "smoke": {
+      "workload": "12288 prompt + 8 output",
+      "passed": true,
+      "ttft_seconds": 1.092838886,
+      "trajectory_sha256": "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832",
+      "raw": "deployed-causal-fa2-smoke-12288.json"
+    },
+    "final_service_state": "down",
+    "final_gpu_state": "idle"
+  },
+  "non_claims": [
+    "multi-request or continuous-batching performance",
+    "non-SM89 performance or portability",
+    "training",
+    "speech or video generation",
+    "profiler timing as an admission metric"
+  ]
+}

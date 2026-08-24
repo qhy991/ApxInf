@@ -99,6 +99,7 @@ then requires a valid PNG to reproduce the frozen complete token sequence.
 
 The accepted deployment keeps all optimized paths explicit through
 `APXINF_OMNI_PERSISTENT_PROCESSOR=1`, `APXINF_BATCHED_GQA_PREFILL=1`,
+`APXINF_FA2_GQA_PREFILL=1`,
 `APXINF_STREAM_ORDERED_ALLOC=1` and
 `APXINF_TMROPE_POSITION_CACHE=1`,
 `APXINF_TMROPE_POSITION_CACHE_PREFILL=1`, `APXINF_SOFTMAX_EXP_CACHE=1`,
@@ -133,7 +134,13 @@ per text or multimodal prefill slice instead of once per Q/K layer call. The
 batched-GQA selector additionally packs BF16 prefill query rows by KV head
 above 4,096 cached tokens, flattens sequence and GQA rows into large score and
 value GEMMs, and restores the existing output layout without changing the KV
-cache. GEMM, softmax, pointwise, normalization, RoPE, embedding and QKV-split
+cache. For BF16 suffix prefill with accumulated KV length at least 4,097 and
+the exact QH/KVH/D=16/2/128 shape, the causal-FA2 selector replaces that
+materialized score/value path with the SM89 HeadDim128 specialization. It
+consumes the same cache through explicit strides and returns the same flattened
+layout. Decode, at-most-4K, multimodal and unmatched shapes retain their named
+paths; unavailable or malformed admitted calls fail explicitly. GEMM, softmax,
+pointwise, normalization, RoPE, embedding and QKV-split
 outputs that are fully overwritten use uninitialized stream-ordered storage,
 avoiding a redundant device memset; cache, prefix, partial-write and
 accumulator contracts retain zero initialization. Short prefill and decode

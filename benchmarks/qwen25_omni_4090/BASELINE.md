@@ -6,9 +6,9 @@
   `Qwen/Qwen2.5-Omni-3B@f75b40e3da2003cdd6e1829b1f420ca70797c34e`
 - GPU: NVIDIA GeForce RTX 4090, 24,564 MiB, single request, BF16
 - Deployed binary SHA-256:
-  `942eea1b67eb173b0494dd6ec83d8b7559fc081612b0694de168de224bcda269`
+  `d28373c62dd6e0adae899ef856ea3461d40a279982a2757394babefcaea4848a`
 - Immediate rollback SHA-256:
-  `20165551d65748aa9fba00c06fe5d40d5126b88a69cb070b9c9230d5730b153d`
+  `942eea1b67eb173b0494dd6ec83d8b7559fc081612b0694de168de224bcda269`
 - Deployment owner: runit launches the checked-in Broker service definition;
   the service is stopped when unused so other queued work can own the GPU.
 
@@ -40,17 +40,22 @@ The service also creates one processor worker at startup and reuses its loaded
 Transformers `AutoProcessor` for every serialized chat request. This removes
 per-request Python startup and model-processor construction without changing
 the processor-owned image/audio tensors or tokenization.
-For BF16 multi-token attention above 4,096 cached tokens, sequence and GQA
-rows sharing one K/V head are packed into large score and value GEMMs. The
-existing KV-cache representation is unchanged, and the output is restored to
-the model-owned row layout before its next consumer.
+For BF16 suffix prefill above 4,096 accumulated KV tokens, the exact
+QH/KVH/D=16/2/128 text-attention shape uses a causal SM89 FlashAttention-2
+specialization. It reads the existing head-major KV cache through explicit
+strides and returns the model-owned flattened output without materializing the
+prior score/value path. The selector-off flattened-GQA implementation remains
+the matched rollback path; decode, at-most-4K and multimodal attention are
+unchanged.
 
-| Workload | Repeats | TTFT p50 | Prior TTFT p50 | Change | TPOT p50 |
+| Workload | Repeats | TTFT p50/median | Selector-off TTFT | Change | TPOT median |
 |---|---:|---:|---:|---:|---:|
-| 1,024 + 32 | 5 | 66.02 ms | 67.18 ms | 1.7% lower | 9.368 ms |
-| 8,192 + 8 | 3 | 0.816 s | 0.822 s | 0.7% lower | 10.582 ms |
-| 12,288 + 8 | 10 paired | 1.374 s | 1.386 s | 0.9% lower | 13.063 ms |
-| 32,760 + 8 | 3 | 5.719 s | 5.759 s | 0.7% lower | 24.370 ms |
+| 1,024 + 32 control | 5 | 65.86 ms | same inactive path | control | 9.387 ms |
+| 4,096 + 8 control | 3 | 0.3959 s | same inactive path | control | 10.029 ms |
+| 4,352 + 8 | 5 per mode | 0.4137 s | 0.4179 s | 1.010× faster | 9.955 ms |
+| 8,192 + 8 | 5 paired | 0.7076 s | 0.8154 s | 1.153× median | 10.565 ms |
+| 12,288 + 8 | 5 paired | 1.0871 s | 1.3730 s | 1.263× median | 12.903 ms |
+| 32,760 + 8 | 5 paired | 2.6084 s | 5.6934 s | 2.181× median | 24.408 ms |
 
 The resident processor improves service wall time independently of model
 execution:
@@ -61,11 +66,13 @@ execution:
 | WAV, 52 + 16 control | 5 | 20.12 ms | 8.090 ms | 0.151 s | 0.159 s | not a target |
 
 All repeated text cases preserve their accepted complete trajectory hashes.
-The exact 32,768-token contract passes with 9,591 MiB minimum sampled memory
-headroom. The 52-test CUDA operator regression, typed invalid-request recovery,
-malformed-media worker recovery, and repeated real PNG/WAV exact-token gates
-pass. See `PROFILE.md`, `promotion-grouped-varlen-fa2.json` and the raw
-`formal-grouped-varlen-fa2-*` records for the latest promotion evidence.
+One fifth-pair 8K candidate request was a retained timing outlier; four other
+pairs and three follow-up requests reproduce the gain. The exact 32,768-token
+contract, malformed-media recovery and real PNG/WAV exact-token gates pass.
+All 85 non-FP8 CUDA tests pass. The accepted and candidate binaries share two
+RTX-4090 FP8 cuBLAS status-15 failures, which are recorded as known control
+failures rather than hidden. See `PROFILE.md` and
+`promotion-causal-fa2-long-prefill.json` for the latest promotion evidence.
 
 ## Original frozen deployment
 
