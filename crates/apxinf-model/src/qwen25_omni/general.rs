@@ -46,7 +46,7 @@ const CHUNKED_PREFILL_THRESHOLD: usize = 1_024;
 #[cfg(any(feature = "cuda", test))]
 const LONG_DECODE_SPLIT_CTA_MIN_KV: usize = 32_761;
 #[cfg(any(feature = "cuda", test))]
-const LONG_DECODE_SPLIT_CTA_COUNT: usize = 32;
+const LONG_DECODE_SPLIT_CTA_COUNT: usize = 40;
 
 #[cfg(any(feature = "cuda", test))]
 fn text_prefill_chunk_size(prompt_tokens: usize, fa2_chunk1024: bool) -> usize {

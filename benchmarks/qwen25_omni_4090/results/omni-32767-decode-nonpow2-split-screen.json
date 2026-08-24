@@ -1,0 +1,72 @@
+{
+  "job": "gpuq-e044c1a523fe",
+  "implementation_commit": "a9a12f78fff4a0977ed1543f2fce5c334ee06624",
+  "binary_sha256": "ad44b7354e90bbf5fee8bc3b10eea5611861575823f4c2a1c0e4582516f6a225",
+  "decision": "select split count 40 for the complete-trajectory gate; reject 48, 56, and 64",
+  "baseline_ms": 0.48937785999999994,
+  "contract": {
+    "dtype": "bf16",
+    "head_dim": 128,
+    "iterations": 100,
+    "kv_heads": 2,
+    "kv_len": 32767,
+    "max_seq_len": 32768,
+    "query_heads": 16,
+    "warmups": 10
+  },
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "records": [
+    {
+      "correctness": {
+        "cosine": 0.9999980359902577,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.000568389892578125
+      },
+      "milliseconds": 0.06097672999999999,
+      "speedup_over_baseline": 8.02564945676818,
+      "split_count": 32
+    },
+    {
+      "correctness": {
+        "cosine": 0.9999980359902577,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.000568389892578125
+      },
+      "milliseconds": 0.05583302,
+      "speedup_over_baseline": 8.76502578581635,
+      "split_count": 40
+    },
+    {
+      "correctness": {
+        "cosine": 0.9999980359902577,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.000568389892578125
+      },
+      "milliseconds": 0.06069402,
+      "speedup_over_baseline": 8.063032568941717,
+      "split_count": 48
+    },
+    {
+      "correctness": {
+        "cosine": 0.9999980359902577,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.000568389892578125
+      },
+      "milliseconds": 0.07039754999999999,
+      "speedup_over_baseline": 6.951631981510721,
+      "split_count": 56
+    },
+    {
+      "correctness": {
+        "cosine": 0.9999980359902577,
+        "max_abs": 0.00390625,
+        "mean_abs": 0.000568389892578125
+      },
+      "milliseconds": 0.06272704,
+      "speedup_over_baseline": 7.801704974441644,
+      "split_count": 64
+    }
+  ],
+  "schema": "apxinf.qwen25_omni.decode_split_cta_probe.v1",
+  "sm": 89
+}
