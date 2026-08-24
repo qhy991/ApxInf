@@ -2,13 +2,14 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use apxinf_core::{Backend, Device, Error, Graph, KvCache, Result, Tensor};
+use apxinf_core::{Backend, DType, Device, Error, Graph, KvCache, Result, Shape, Tensor};
 
 use crate::buffer::CudaBuffer;
 use crate::context::CudaContext;
 use crate::cublas::CublasHandle;
 use crate::kernels;
 use crate::transfers;
+use crate::workspace::output_buffer;
 use crate::CudaKVCache;
 
 struct CudaGraph {
@@ -217,6 +218,59 @@ impl CudaBackend {
     /// Get the device ID.
     pub fn device_id(&self) -> usize {
         self.ctx.device_id()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn qwen25_omni_split_cta_decode(
+        &self,
+        query: &Tensor,
+        kv: &mut dyn KvCache,
+        layer_idx: usize,
+        workspace: &kernels::qwen25_omni_attention::SplitCtaWorkspace,
+        split_count: usize,
+        kv_len: usize,
+        max_seq_len: usize,
+    ) -> Result<Tensor> {
+        let cache = kv
+            .as_any()
+            .downcast_ref::<CudaKVCache>()
+            .ok_or_else(|| Error::Other("Qwen2.5-Omni split-CTA expects CudaKVCache".into()))?;
+        let positions = self
+            .tmrope_positions
+            .lock()
+            .map_err(|_| Error::Other("TMRoPE position cache lock poisoned".into()))?;
+        let positions = positions.as_ref().ok_or_else(|| {
+            Error::Other("Qwen2.5-Omni split-CTA requires cached TMRoPE position".into())
+        })?;
+        if positions.values.first().copied().map(|value| value as usize + 1) != Some(kv_len) {
+            return Err(Error::Other(format!(
+                "Qwen2.5-Omni split-CTA position does not own KV length {kv_len}"
+            )));
+        }
+        let output = output_buffer(
+            &self.ctx,
+            kernels::qwen25_omni_attention::WIDTH * DType::BF16.size_in_bytes(),
+        )?
+        .into_tensor(
+            Shape::new(vec![1, kernels::qwen25_omni_attention::WIDTH]),
+            DType::BF16,
+        );
+        kernels::qwen25_omni_attention::split_cta_write(
+            &self.ctx,
+            query,
+            cache.k_buffer(layer_idx),
+            cache.v_buffer(layer_idx),
+            &output,
+            workspace,
+            split_count,
+            kv_len,
+            max_seq_len,
+            (kernels::qwen25_omni_attention::HEAD_DIM as f32)
+                .sqrt()
+                .recip(),
+            positions.buffer.address(),
+        )?;
+        Ok(output)
     }
 
     /// Execute suffix prefill through causal FA2 without the default long-KV

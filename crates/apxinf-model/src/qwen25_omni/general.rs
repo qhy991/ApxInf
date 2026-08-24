@@ -43,6 +43,10 @@ const CHUNKED_PREFILL_FA2_LARGE_MIN_PROMPT: usize = 8_192;
 const CHUNKED_PREFILL_FA2_LARGE_MAX_PROMPT: usize = 12_288;
 #[cfg(feature = "cuda")]
 const CHUNKED_PREFILL_THRESHOLD: usize = 1_024;
+#[cfg(any(feature = "cuda", test))]
+const LONG_DECODE_SPLIT_CTA_MIN_KV: usize = 32_761;
+#[cfg(any(feature = "cuda", test))]
+const LONG_DECODE_SPLIT_CTA_COUNT: usize = 16;
 
 #[cfg(any(feature = "cuda", test))]
 fn text_prefill_chunk_size(prompt_tokens: usize, fa2_chunk1024: bool) -> usize {
@@ -69,6 +73,11 @@ fn use_all_chunk_fa2(prompt_tokens: usize, enabled: bool) -> bool {
             .contains(&prompt_tokens)
 }
 
+#[cfg(any(feature = "cuda", test))]
+fn use_long_decode_split_cta(kv_len: usize, enabled: bool) -> bool {
+    enabled && kv_len >= LONG_DECODE_SPLIT_CTA_MIN_KV
+}
+
 pub struct GeneralQwen25Omni {
     config: Qwen25OmniConfig,
     text: Qwen25OmniTextWeights,
@@ -79,6 +88,8 @@ pub struct GeneralQwen25Omni {
     rope_delta: i64,
     #[cfg(feature = "cuda")]
     decode_graph: Option<Qwen25OmniDecodeGraph>,
+    #[cfg(feature = "cuda")]
+    long_decode_split_cta: Option<cuda_kernels::qwen25_omni_attention::SplitCtaWorkspace>,
 }
 
 #[cfg(feature = "cuda")]
@@ -200,6 +211,15 @@ fn fused_silu_mul_enabled() -> Result<bool> {
         .map_err(Error::Other)
 }
 
+#[cfg(feature = "cuda")]
+fn long_decode_split_cta_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| parse_binary_env("APXINF_QWEN25_LONG_DECODE_SPLIT_CTA"))
+        .clone()
+        .map_err(Error::Other)
+}
+
 impl GeneralQwen25Omni {
     pub(crate) fn from_selected_weights(
         config: Qwen25OmniConfig,
@@ -227,6 +247,34 @@ impl GeneralQwen25Omni {
             config.text.head_dim,
             config.text.max_position_embeddings,
         );
+        #[cfg(feature = "cuda")]
+        let long_decode_split_cta = if long_decode_split_cta_enabled()? {
+            if !parse_binary_env("APXINF_TMROPE_POSITION_CACHE")? {
+                return Err(Error::Other(
+                    "APXINF_QWEN25_LONG_DECODE_SPLIT_CTA=1 requires APXINF_TMROPE_POSITION_CACHE=1"
+                        .into(),
+                ));
+            }
+            let cuda = cuda_backend(&*backend).ok_or_else(|| {
+                Error::Other("Qwen2.5-Omni split-CTA decode requires CudaBackend".into())
+            })?;
+            if cuda.context().caps().sm != 89
+                || config.text.n_heads != 16
+                || config.text.n_kv_heads != 2
+                || config.text.head_dim != 128
+                || config.text.max_position_embeddings != 32_768
+            {
+                return Err(Error::Other(
+                    "Qwen2.5-Omni split-CTA decode requires SM89 QH/KVH/D=16/2/128 and max context 32768"
+                        .into(),
+                ));
+            }
+            Some(cuda_kernels::qwen25_omni_attention::SplitCtaWorkspace::new(
+                cuda.context(),
+            )?)
+        } else {
+            None
+        };
         #[cfg(feature = "cuda")]
         let decode_graph = {
             let fa2_chunk1024 = fa2_chunk1024_enabled()?;
@@ -297,6 +345,8 @@ impl GeneralQwen25Omni {
             rope_delta: 0,
             #[cfg(feature = "cuda")]
             decode_graph,
+            #[cfg(feature = "cuda")]
+            long_decode_split_cta,
         };
         #[cfg(feature = "cuda")]
         {
@@ -714,16 +764,66 @@ impl GeneralQwen25Omni {
             .kv_append(&mut *self.kv, index, &k, &v, sequence)?;
         let kv_len = self.kv.seq_len() + sequence;
         let attention = if sequence == 1 {
-            self.backend.sdpa_decode(
-                &q,
-                &mut *self.kv,
-                index,
-                text.n_heads,
-                text.n_kv_heads,
-                text.head_dim,
-                kv_len,
-                text.max_position_embeddings,
-            )?
+            #[cfg(feature = "cuda")]
+            {
+                if let Some(workspace) = self.long_decode_split_cta.as_ref() {
+                    if use_long_decode_split_cta(kv_len, true) {
+                        static PATH_LOGGED: OnceLock<()> = OnceLock::new();
+                        if PATH_LOGGED.set(()).is_ok() {
+                            eprintln!(
+                                "ApxInf Qwen2.5-Omni long-decode split-CTA: kv={kv_len}, splits={LONG_DECODE_SPLIT_CTA_COUNT}"
+                            );
+                        }
+                        let cuda = cuda_backend(&*self.backend).ok_or_else(|| {
+                            Error::Other("split-CTA decode requires CudaBackend".into())
+                        })?;
+                        cuda.qwen25_omni_split_cta_decode(
+                            &q,
+                            &mut *self.kv,
+                            index,
+                            workspace,
+                            LONG_DECODE_SPLIT_CTA_COUNT,
+                            kv_len,
+                            text.max_position_embeddings,
+                        )?
+                    } else {
+                        self.backend.sdpa_decode(
+                            &q,
+                            &mut *self.kv,
+                            index,
+                            text.n_heads,
+                            text.n_kv_heads,
+                            text.head_dim,
+                            kv_len,
+                            text.max_position_embeddings,
+                        )?
+                    }
+                } else {
+                    self.backend.sdpa_decode(
+                        &q,
+                        &mut *self.kv,
+                        index,
+                        text.n_heads,
+                        text.n_kv_heads,
+                        text.head_dim,
+                        kv_len,
+                        text.max_position_embeddings,
+                    )?
+                }
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                self.backend.sdpa_decode(
+                    &q,
+                    &mut *self.kv,
+                    index,
+                    text.n_heads,
+                    text.n_kv_heads,
+                    text.head_dim,
+                    kv_len,
+                    text.max_position_embeddings,
+                )?
+            }
         } else {
             #[cfg(feature = "cuda")]
             {
@@ -1261,6 +1361,14 @@ mod tests {
         assert!(use_all_chunk_fa2(12_288, true));
         assert!(!use_all_chunk_fa2(12_289, true));
         assert!(!use_all_chunk_fa2(8_192, false));
+    }
+
+    #[test]
+    fn split_cta_decode_changes_only_the_post_32760_cell() {
+        assert!(!use_long_decode_split_cta(32_760, true));
+        assert!(use_long_decode_split_cta(32_761, true));
+        assert!(use_long_decode_split_cta(32_767, true));
+        assert!(!use_long_decode_split_cta(32_767, false));
     }
 
     #[test]

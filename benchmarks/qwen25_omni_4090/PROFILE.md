@@ -3330,7 +3330,7 @@ non-SM89, training or speech/video generation performance.
 
 ## Prepared 32K split-CTA decode attention
 
-Status: **operator probe source prepared; no GPU result and no model change**.
+Status: **operator probe passed; model candidate source prepared but untested**.
 The target is one BF16 request at cached KV 32,761–32,767, one token per eager
 decode step, QH/KVH/D=16/2/128, TP1 on RTX 4090. The frozen no-profiler
 baseline is 24.40 ms TPOT with exact trajectory
@@ -3361,7 +3361,7 @@ The bounded hypothesis adapts the repository's existing Qwen3.5 split-CTA
 online-softmax pattern to the exact Qwen2.5 shape. Each query head partitions
 KV across 4/8/16 CTAs, writes FP32 `(max,sum,accumulator)` partials, and a
 second kernel merges them. Split 8 supplies 128 CTAs—one nominal RTX 4090
-wave—while adding only about 66 KiB of persistent partial workspace. The
+wave—while the max-split persistent workspace is about 130 KiB. The
 accepted global-cache path remains selector-off and no cache ownership or KV
 layout changes.
 
@@ -3370,6 +3370,20 @@ Qwen3.5 24/4/256 instance and the new Qwen2.5 16/2/128 instance, preserving
 the former launch geometry. A fixed-shape Rust facade owns validation and
 workspace; `qwen25_omni_decode_split_cta_probe` compares the real ordinary
 decode boundary against split 4/8/16 with cold, repeated GPU execution.
+
+At KV=32,767, the ordinary exact boundary measures 0.4482 ms/layer. Split
+4/8/16 measure 0.3436/0.1752/0.0956 ms, or 1.30×/2.56×/4.69× faster. All
+three produce the same continuous error relative to the incumbent: max abs
+0.00390625, mean abs 0.0005684 and cosine 0.9999980. Split 16 is therefore the
+only model candidate. Raw evidence is
+`omni-32767-decode-split-cta-probe.json`; this operator result does not relax
+the exact complete-trajectory gate.
+
+`APXINF_QWEN25_LONG_DECODE_SPLIT_CTA=1` allocates one workspace at model load
+and selects split 16 only for one-token decode at KV>=32,761 under SM89,
+QH/KVH/D=16/2/128, max context 32,768 and cached TMRoPE position ownership.
+All other decode, prefill, multimodal and selector-off calls retain the
+ordinary path; invalid configuration fails model load.
 
 The operator budget is the three split counts with fixed warmup/iterations.
 Each must meet the existing BF16 reduction tolerance at KV=11,265 and 32,767;
