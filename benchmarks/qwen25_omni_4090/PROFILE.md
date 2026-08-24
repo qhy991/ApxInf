@@ -3585,3 +3585,42 @@ GPU becomes idle.
 accepted SM89 QH/KVH/D=16/2/128, KV 32,761--32,767 selector.** Structured
 authority is `promotion-decode-gqa-share.json`. No new model, request,
 hardware or concurrency claim is introduced.
+
+### Promoted four-query-head GQA ownership
+
+The next ownership screen lets one CTA advance four query heads within the
+same eight-query-head KV group. Grouped2 split 48 measures 0.04435 ms/layer;
+grouped4 split 64/80/96/112/128 measure 0.03875/0.04577/0.04063/0.04532/
+0.04664 ms. Split 64 is 1.145x faster than grouped2 and retains the same
+continuous-error metrics. The final workspace is 532,480 bytes.
+
+The real 32,760+8 smoke preserves the frozen trajectory and logs
+`query_heads_per_cta=4, splits=64`. Five alternating pairs pass all ten exact
+requests and win 5/5. Paired median TPOT speedup is 1.0282x and the slowest
+pair is 1.0268x; raw medians move from 10.841 to 10.544 ms. Candidate TPOT CV
+is 0.0305%, and TTFT remains unchanged.
+
+Matched Systems profiles show mean decode envelope falling from 11.020 to
+10.767 ms and GPU busy time from 10.287 to 10.034 ms. The attention stage
+falls from 2.157 to 1.850 ms/step while reduction rises from 0.124 to 0.156
+ms/step. The grouped4 stage uses 71 registers/thread, 18,688 bytes shared
+memory and grid 4x64; the net 0.253 ms GPU-busy saving explains the paired
+TPOT result.
+
+Regression passes model CPU 65/65, benchmark scripts 15/15, quick 5/5, decode
+5/5, 4K/8K/12K/32K, real PNG/WAV and malformed-media recovery. CUDA remains
+94/96 with only the two accepted-control RTX 4090 FP8 cuBLAS status-15
+failures. Relative to frozen vLLM-Omni 0.26.0, ApxInf wins 32K TPOT by 1.667x
+and reaches a 69.43% minimum-BWU lower bound.
+
+The deployed binary SHA-256 is
+`2db3d8ea5d3186a24849a651e3676da3acec3eb212889ee06f87313e311dce21`;
+the immediate rollback is
+`2dda4de0a7ba18fff70162f96ff48ba3b49aeb833b9f11df9187854569249a34`.
+A runit-owned smoke reproduces the exact trajectory at 10.542 ms TPOT and
+confirms the grouped4 split-64 path before the service returns down and the
+GPU becomes idle.
+
+**Decision: promote grouped four-query-head split 64 only inside the already
+accepted SM89 QH/KVH/D=16/2/128, KV 32,761--32,767 selector.** Structured
+authority is `promotion-decode-gqa4.json`; no broader claim is introduced.

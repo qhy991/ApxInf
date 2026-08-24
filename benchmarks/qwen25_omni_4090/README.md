@@ -115,8 +115,8 @@ The accepted deployment keeps all optimized paths explicit through
 graph and exact two-stage GPU token selection are deliberately restricted to
 SM89 one-token decode with `start_pos < 3072`; prefill and longer-KV decode
 keep the accepted ordinary path except for the explicit long-decode selector.
-That selector allocates one persistent 390 KiB workspace and uses grouped
-two-query-head split-48 online-softmax attention only for SM89 one-token decode
+That selector allocates one persistent 520 KiB workspace and uses grouped
+four-query-head split-64 online-softmax attention only for SM89 one-token decode
 at KV 32,761--32,767, QH/KVH/D=16/2/128 and max context 32,768. It requires the cached TMRoPE
 position owner; unsupported shapes or an invalid selector composition fail
 model load, while every shorter, prefill and multimodal call retains the
