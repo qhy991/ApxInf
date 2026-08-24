@@ -1,0 +1,114 @@
+schema_version: '1.1'
+name: apxinf-metal-w8-head-optimization
+entrypoint: apxinf-metal-w8-head-optimization.js
+backend:
+  portability: vendor_locked
+  matrix_eligible: false
+  intrinsic_to: Apple Silicon Metal and the ApxInf Qwen3.5 W8 group-64 tied lm_head
+  method_supported_backends:
+  - metal
+  supported:
+  - metal
+  default: metal
+  notes: >-
+    This workflow is deliberately ApxInf-specific. It may propose only a complete
+    replacement for crates/apxinf-metal/src/metal_w8.metal. The Host evaluator
+    freezes every other source file and rejects bridge, model, trait, CLI, build,
+    oracle, or harness mutations.
+source:
+  paper_title: ApxInf Metal W8 top-4 plus native F32 rerank optimization protocol
+  paper_url: ''
+  notes: Repository-local engineering workflow; no external-method fidelity claim.
+workflow:
+  name: apxinf-metal-w8-head-optimization
+  description: Host-verified Apple M4 optimization of ApxInf's decode/prefill Metal W8 group-64 tied head while preserving deterministic top-4 and native F32 rerank parity.
+  when_to_use: Use only for ApxInf Qwen3.5 native F32 inference when metal_w8.metal is the sole candidate mutation and the repository-local Host evaluator is available.
+  output_filename: apxinf-metal-w8-head-optimization.js
+  directory: ApxMetal/
+routing:
+  accepts:
+    problem_type:
+    - metal-kernel-optimization
+    - gpu-kernel-optimization
+    constraints:
+    - existing_kernel
+    - apple_silicon_macos
+    - qwen35_w8_group64_tied_head
+  topology: single_pass
+  seed_contract: reference_only
+  method_category: host_verified_backend_native
+  role: optimizer
+  fidelity_boundary: strict_apxinf_host_evaluator
+  languages:
+  - metal
+  backends:
+  - metal
+  backend_portability: explicit
+  optimization_phases:
+  - backend_native
+  selection_tags:
+  - apple-silicon
+  - m4
+  - qwen35
+  - w8-group64
+  - top4-f32-rerank
+  runtime_requirements:
+    min_turn_timeout: 30
+    needs_network: false
+  speedup_field: best_speedup
+  best_kernel_field: best_kernel_code
+  required_args:
+  - kernel_path
+  - model_path
+  all_args:
+  - kernel_path
+  - model_path
+  - op_description
+  - exp_dir
+  - run_index
+  - turn_timeout_min
+  - retry_candidate_source
+  - retry_candidate_sha256
+  - retry_strategy_id
+  required_one_of:
+  - kernel_path
+  integration_patterns:
+  - apxinf_qwen35_metal_w8_head
+  requires_ncu: false
+  requires_harness: internal
+  requires_git: false
+  requires_embedded_registration: true
+  supports_partial_patch: false
+  max_kernel_lines: 4096
+inputs:
+  supports_existing_kernel: true
+  supports_problem_definition: false
+  required_one_of:
+  - kernel_path
+  generation:
+    enabled: false
+method:
+  category: host_verified_backend_native
+  core_insight: >-
+    Keep candidate authority to one Metal source file, let an advisory agent
+    propose source bytes, and give all compilation, correctness, execution-path,
+    quiet-host, memory, trajectory, and paired timing authority to one fixed
+    command-v1 Host evaluator.
+  feedback_signal:
+    type: paired_generation_throughput
+    description: Median candidate/base generation_tps across three ABBA and three BAAB blocks after correctness gates.
+    tool: repository-local command-v1 Host evaluator
+    higher_is_better: true
+  candidate_iteration: >-
+    Single proposal only. A replacement_required result may re-run the exact
+    same candidate bytes by source plus SHA-256 without another Agent call; it
+    must not use measurement feedback to synthesize a new candidate.
+evidence:
+  correctness:
+    owner: kersor/workflows/ApxMetal/host_evaluator.py
+    required: true
+    contract: Cargo Metal adversarial tests, Qwen tests, and a real 128-step native-F32 teacher gate must pass in that order.
+  performance:
+    owner: kersor/workflows/ApxMetal/host_evaluator.py
+    required: true
+    contract: Three ABBA plus three BAAB blocks, all six same-direction, at least 10 percent median throughput gain, exact trajectories, and no memory guardrail violation.

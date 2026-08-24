@@ -1,0 +1,43 @@
+{
+  "contract_version": "akw-js-runtime-v1",
+  "max_concurrency": 4,
+  "budget": {
+    "total_tokens": 4000000
+  },
+  "broker": {
+    "type": "codex-exec",
+    "command": "codex",
+    "sandbox": "read-only",
+    "ephemeral": true,
+    "approval_policy": "never",
+    "skip_git_repo_check": true,
+    "disable_nested_agents": true,
+    "default_model": "gpt-5.6-luna",
+    "default_reasoning_effort": "high",
+    "worker_preamble": "You are an inner worker for one read-only ApxInf Hugging Face intake node. Use only the frozen source-lock evidence and the ApxInf workspace paths granted by the Mission. Do not access .git, .kersor Host internals, credentials, model caches, or ambient network resources. Do not start KerSor, download weights, execute repository code, or spawn subagents.",
+    "timeout_seconds": 900,
+    "extra_args": [],
+    "model_roles": {
+      "mechanical": {
+        "model": "gpt-5.6-luna",
+        "profile": null,
+        "reasoning_effort": "high"
+      },
+      "profile": {
+        "model": "gpt-5.6-luna",
+        "profile": null,
+        "reasoning_effort": "high"
+      },
+      "judgment": {
+        "model": "gpt-5.6-luna",
+        "profile": null,
+        "reasoning_effort": "high"
+      }
+    },
+    "model_aliases": {
+      "haiku": "mechanical",
+      "sonnet": "profile",
+      "opus": "judgment"
+    }
+  }
+}

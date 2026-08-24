@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "name": "apxinf-metal-w8-head-host-contract",
+  "backend": "metal",
+  "language": "metal",
+  "integration_pattern": "apxinf_qwen35_metal_w8_head",
+  "target": {
+    "os": "macos",
+    "arch": "arm64",
+    "soc_family": "Apple M4",
+    "workload": "Qwen3.5-0.8B native F32 prefill plus decode",
+    "kernel": "W8 symmetric group-64 tied lm_head top-4",
+    "production_selection": "native F32 rerank over four Metal candidates"
+  },
+  "candidate_scope": {
+    "allowed_files": [
+      "crates/apxinf-metal/src/metal_w8.metal"
+    ],
+    "bridge_policy": "deny",
+    "bridge_allowlist": [],
+    "protected_files": [
+      "crates/apxinf-metal/src/metal_w8_bridge.mm",
+      "crates/apxinf-metal/build.rs",
+      "crates/apxinf-metal/src/lib.rs",
+      "crates/apxinf-model/src/qwen35/general.rs",
+      "crates/apxinf-model/src/llm_trait.rs",
+      "src/main.rs",
+      "kersor/workflows/ApxMetal/host_evaluator.py"
+    ],
+    "materialization": "candidate bytes are passed directly to command-v1 and written only inside its private scratch workspace",
+    "default": "deny"
+  },
+  "execution": {
+    "protocol": "command-v1",
+    "filesystem_policy": "read-only",
+    "network_policy": "denied",
+    "host_writable_area": "command-v1 private TMPDIR only",
+    "candidate_evaluator": "kersor/workflows/ApxMetal/host_evaluator.py",
+    "candidate_evaluator_argv_prefix": [
+      "/usr/bin/python3",
+      "-I",
+      "-B",
+      "{canonical_repo_root}/kersor/workflows/ApxMetal/host_evaluator.py",
+      "--request-json"
+    ],
+    "candidate_evaluator_cwd": "{canonical_repo_root}",
+    "overall_deadline_seconds": 1650,
+    "candidate_installation": "outer KerSor only after Host acceptance",
+    "agent_may_execute": false,
+    "agent_may_write": false,
+    "runtime": "codex_workflow_host",
+    "current_host_snapshot_includes": "prefill_token_for_generation hook and every other current non-candidate source byte",
+    "cancellation": "SIGINT, SIGTERM, command timeout, and output overflow terminate the complete private child process group",
+    "stream_limits": "stdout and stderr are each bounded in real time to 2097152 bytes"
+  },
+  "correctness": {
+    "ordered_gates": [
+      "metal_adversarial_tests",
+      "qwen35_tests",
+      "teacher_forced_native_f32_128",
+      "trajectory_exact_100",
+      "execution_path_hit_and_negative_control"
+    ],
+    "metal_adversarial_command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "apxinf-metal"
+    ],
+    "qwen35_command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "apxinf-model",
+      "--features",
+      "accelerate,metal-w8",
+      "qwen35",
+      "--lib"
+    ],
+    "teacher_steps": 128,
+    "trajectory_tokens": 100,
+    "trajectory_eos_stop": false,
+    "top_k": 4,
+    "tie_break": "lowest token id",
+    "model_path": "required absolute external Host input; exact Qwen3.5-0.8B config and every direct file are hashed at start and end"
+  },
+  "performance": {
+    "primary_metric": "generation_tps",
+    "block_orders": [
+      "ABBA",
+      "BAAB",
+      "ABBA",
+      "BAAB",
+      "ABBA",
+      "BAAB"
+    ],
+    "minimum_speedup": 1.1,
+    "same_direction_blocks": 6,
+    "baseline_candidate_relation": "two isolated builds from one frozen Host snapshot; the only source difference is the shader hash",
+    "quiet_host_gate": {
+      "when": "before every block",
+      "maximum_load_1m_per_logical_cpu": 0.5,
+      "maximum_external_process_cpu_percent": 25.0,
+      "failure": "retain the block and request a complete replacement schedule"
+    },
+    "contamination_policy": "retain all collected samples and return replacement_required; never delete or relabel them",
+    "trajectory_gate": "every formal sample must match the accepted 100-token native-F32 trajectory",
+    "secondary_guardrails": {
+      "ttft_max_ratio": 1.05,
+      "rss_max_delta_bytes": 67108864,
+      "process_swaps": 0,
+      "system_swap_growth_bytes": 0,
+      "formal_schedule_swap_growth_bytes": 0
+    }
+  },
+  "custody": {
+    "workflow_artifacts": "host_evaluator.py and host_contract.json SHA-256 pinned by the workflow",
+    "model": "exact direct-file manifest and Qwen3.5-0.8B identity must match at start and end",
+    "sources": "baseline/candidate source manifests must match at start, after correctness gates, and at evaluation end",
+    "toolchain": "cargo and rustc executable SHA-256 identities must match at start and end",
+    "schedule_retry": "replacement_required may expose candidate bytes plus SHA-256 for one same-bytes remeasurement; retry skips Agent and cannot mutate the candidate"
+  },
+  "receipt": {
+    "format": "apxinf-kersor-metal-w8-host-evaluation-v1",
+    "schema_version": 1,
+    "workflow_admission": "exact keys and cross-field identities are checked for command-v1 confinement, platform, snapshot, five ordered gates, two builds, execution path, custody, and preserved performance blocks",
+    "accepted_shape": "exactly 24 samples in six complete ABBA/BAAB blocks, six block wins, at least 1.10x median generation throughput, all guardrails and custody checks passing",
+    "replacement_shape": "correctness and custody passed, candidate is not best, contamination is retained, and only source plus Host candidate SHA-256 may be returned for same-bytes remeasurement"
+  },
+  "execution_path_evidence": {
+    "positive": [
+      "candidate binary contains the exact candidate shader bytes",
+      "generation receipt reports build.metal_w8_lm_head=true"
+    ],
+    "negative_control": "the same candidate binary without --metal-w8-lm-head reports false while producing the same native-F32 token"
+  },
+  "quality_claim": "native_f32_only",
+  "claims_hf_bf16_parity": false,
+  "formal_benchmark_samples": 24
+}

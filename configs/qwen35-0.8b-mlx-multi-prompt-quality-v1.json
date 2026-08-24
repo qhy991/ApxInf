@@ -1,0 +1,77 @@
+{
+  "format": "apxinf-mlx-multi-prompt-quality-contract-v1",
+  "schema_version": 1,
+  "model": {
+    "repo_id": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "tokenizer_sha256": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
+    "vocab_size": 248320
+  },
+  "generation": {
+    "api": "mlx_lm.generate.generate_step",
+    "semantics": "mlx-generate-step-argmax-v1",
+    "sampler": "mx.argmax(logprobs,axis=-1)",
+    "evaluation": "asynchronous",
+    "prompt_prefill": "native-prompt-chunking",
+    "stop_policy": "fixed-steps-no-eos-stop",
+    "reference_precision": "bf16",
+    "repeat_count": 2
+  },
+  "suite": {
+    "scope_id": "qwen35-0.8b-fixed-raw-multiprompt-v1",
+    "minimum_prompts": 4,
+    "minimum_steps_per_prompt": 32,
+    "minimum_long_prompts": 2,
+    "long_prompt_steps": 64,
+    "prompts": [
+      {
+        "id": "english-explanation",
+        "domain": "english",
+        "prompt_token_ids": [248045, 846, 198, 814, 20139, 3069, 279, 12515, 369, 6105, 303, 2250, 61446, 22157, 13, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271],
+        "prompt_token_ids_sha256": "4d7bdaa5aface0377775ae53769765d715138de2c6dd7f5c3b118f2994495abc",
+        "teacher_steps": 64
+      },
+      {
+        "id": "chinese-explanation",
+        "domain": "chinese",
+        "prompt_token_ids": [248045, 846, 198, 139054, 99986, 98682, 98832, 101850, 95761, 116981, 3709, 96172, 110334, 115103, 99222, 1710, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271],
+        "prompt_token_ids_sha256": "2831f3f47ee9fa92a0f819505fee7f0d86301e7a25aacce2e4a40f94bcd7dcb5",
+        "teacher_steps": 64
+      },
+      {
+        "id": "python-code",
+        "domain": "code",
+        "prompt_token_ids": [248045, 846, 198, 7734, 264, 12654, 709, 421, 4523, 279, 1118, 307, 76938, 4947, 13, 3301, 1970, 1132, 13, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271],
+        "prompt_token_ids_sha256": "f3bc042a561982e7e9f06355b2d9eb9857df617a2e0b8250b1ca830a009c3810",
+        "teacher_steps": 32
+      },
+      {
+        "id": "math-structured-json",
+        "domain": "math_structured",
+        "prompt_token_ids": [248045, 846, 198, 50, 3815, 220, 17, 87, 61, 17, 471, 220, 20, 87, 471, 220, 18, 283, 220, 15, 13, 3301, 4566, 440, 6679, 19101, 321, 22188, 13, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271],
+        "prompt_token_ids_sha256": "6bb5aebf1cd0faa5a0b05153f2e653e02c0b73294cc7bf46b18e72df45ecc1dd",
+        "teacher_steps": 32
+      }
+    ]
+  },
+  "admission": {
+    "exact": {
+      "claim": "fixed-suite-exact-parity",
+      "required_prompt_pass_rate": 1.0
+    },
+    "threshold": {
+      "claim": "fixed-suite-threshold-match",
+      "minimum_exact_prefix_tokens": 8,
+      "minimum_position_match_ratio": 0.75,
+      "required_prompt_pass_rate": 1.0
+    },
+    "forbidden_claims": [
+      "general-parity",
+      "universal-parity",
+      "model-parity",
+      "all-prompts-parity"
+    ],
+    "claims_general_parity": false
+  },
+  "content_sha256": "d52a79e62827913a34e8f3961233aea6b49d91cc317ab6e4a69405b80d9a311f"
+}
