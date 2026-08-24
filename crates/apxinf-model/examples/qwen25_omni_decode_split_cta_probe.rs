@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(Error::Cuda)?;
     let workspace = SplitCtaWorkspace::new(context)?;
     let mut records = Vec::new();
-    for split_count in [16usize, 32, 64] {
+    for split_count in [16usize, 32] {
         for _ in 0..warmups {
             split_cta_write(
                 context,
