@@ -7,6 +7,8 @@ use crate::tuning::{
     DeviceFingerprint, Epilogue, GemmLayout, GemmOp, GemmTuningKey, GemmTuningRecord, ScaleMode,
     TacticBackend, TacticId, TacticStore, TuningDType,
 };
+#[cfg(apxinf_cutlass_bf16_sm89)]
+use crate::workspace::output_buffer;
 use crate::workspace::uninitialized_buffer;
 
 #[derive(Clone, Copy, Debug)]
