@@ -6,7 +6,7 @@ pub const QUERY_HEADS: usize = 16;
 pub const KV_HEADS: usize = 2;
 pub const HEAD_DIM: usize = 128;
 pub const WIDTH: usize = QUERY_HEADS * HEAD_DIM;
-pub const MAX_SPLITS: usize = 80;
+pub const MAX_SPLITS: usize = 48;
 
 pub struct SplitCtaWorkspace {
     partial_max: CudaBuffer,
@@ -133,7 +133,7 @@ pub fn grouped2_split_cta_write(
         ));
     }
     if ctx.caps().sm != 89
-        || !matches!(split_count, 40 | 48 | 64 | 80)
+        || split_count != 48
         || bucket_kv_len <= 11_264
         || bucket_kv_len > max_seq_len
         || max_seq_len > i32::MAX as usize

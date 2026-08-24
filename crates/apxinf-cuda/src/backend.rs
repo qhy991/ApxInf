@@ -221,7 +221,7 @@ impl CudaBackend {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn qwen25_omni_split_cta_decode(
+    pub fn qwen25_omni_grouped_split_cta_decode(
         &self,
         query: &Tensor,
         kv: &mut dyn KvCache,
@@ -255,7 +255,7 @@ impl CudaBackend {
             Shape::new(vec![1, kernels::qwen25_omni_attention::WIDTH]),
             DType::BF16,
         );
-        kernels::qwen25_omni_attention::split_cta_write(
+        kernels::qwen25_omni_attention::grouped2_split_cta_write(
             &self.ctx,
             query,
             cache.k_buffer(layer_idx),
