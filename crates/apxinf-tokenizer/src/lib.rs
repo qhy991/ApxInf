@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use minijinja::Environment;
 use apxinf_core::{Error, Result};
+use minijinja::Environment;
 use serde::{Deserialize, Serialize};
 use tokenizers::Tokenizer as HfTokenizer;
 
@@ -44,10 +44,25 @@ impl ChatMessage {
 #[derive(Debug, Deserialize, Default)]
 struct TokenizerConfig {
     chat_template: Option<String>,
-    bos_token: Option<String>,
-    eos_token: Option<String>,
+    bos_token: Option<SpecialToken>,
+    eos_token: Option<SpecialToken>,
     bos_token_id: Option<u32>,
     eos_token_id: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum SpecialToken {
+    Text(String),
+    Object { content: String },
+}
+
+impl SpecialToken {
+    fn content(&self) -> &str {
+        match self {
+            Self::Text(content) | Self::Object { content } => content,
+        }
+    }
 }
 
 /// Wrapper around HuggingFace tokenizer with chat template support.
@@ -59,35 +74,48 @@ pub struct Tokenizer {
 
 impl Tokenizer {
     /// Load tokenizer from tokenizer.json, optionally loading tokenizer_config.json
-    /// from the same directory for chat template and special tokens.
+    /// and the standard standalone chat_template.jinja from the same directory.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
         let inner = HfTokenizer::from_file(path_ref)
             .map_err(|e| Error::Other(format!("tokenizer load: {e}")))?;
 
-        // Try to load tokenizer_config.json from same directory
-        let config_path = path_ref.parent()
+        let model_dir = path_ref.parent().unwrap_or_else(|| Path::new("."));
+        let config_path = path_ref
+            .parent()
             .map(|p| p.join("tokenizer_config.json"))
             .unwrap_or_else(|| path_ref.with_extension("config.json"));
 
         let config = if config_path.exists() {
-            std::fs::read_to_string(&config_path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
+            let payload = std::fs::read_to_string(&config_path).map_err(|error| {
+                Error::Other(format!(
+                    "tokenizer config read {}: {error}",
+                    config_path.display()
+                ))
+            })?;
+            serde_json::from_str(&payload).map_err(|error| {
+                Error::Other(format!(
+                    "tokenizer config parse {}: {error}",
+                    config_path.display()
+                ))
+            })?
         } else {
             TokenizerConfig::default()
         };
 
-        // Store chat template separately (we'll create env on demand)
-        let chat_template = config.chat_template.clone();
+        let chat_template = load_chat_template(model_dir, &config)?;
 
-        Ok(Self { inner, config, chat_template })
+        Ok(Self {
+            inner,
+            config,
+            chat_template,
+        })
     }
 
     /// Encode text to token IDs.
     pub fn encode(&self, text: &str) -> Result<Vec<u32>> {
-        let encoding = self.inner
+        let encoding = self
+            .inner
             .encode(text, false)
             .map_err(|e| Error::Other(format!("tokenizer encode: {e}")))?;
         Ok(encoding.get_ids().to_vec())
@@ -115,15 +143,18 @@ impl Tokenizer {
 
         // Try to find by token name from config
         if let Some(token) = &self.config.eos_token {
-            if let Some(&id) = self.inner.get_vocab(true).get(token) {
+            if let Some(&id) = self.inner.get_vocab(true).get(token.content()) {
                 return Some(id);
             }
         }
 
         // Fallback: search vocabulary for common EOS tokens
-        self.inner.get_vocab(true)
+        self.inner
+            .get_vocab(true)
             .iter()
-            .find(|(token, _)| *token == "</s>" || *token == "<|eot_id|>" || *token == "<|end_of_text|>")
+            .find(|(token, _)| {
+                *token == "</s>" || *token == "<|eot_id|>" || *token == "<|end_of_text|>"
+            })
             .map(|(_, &id)| id)
     }
 
@@ -137,13 +168,14 @@ impl Tokenizer {
 
         // Try to find by token name from config
         if let Some(token) = &self.config.bos_token {
-            if let Some(&id) = self.inner.get_vocab(true).get(token) {
+            if let Some(&id) = self.inner.get_vocab(true).get(token.content()) {
                 return Some(id);
             }
         }
 
         // Fallback: search vocabulary for common BOS tokens
-        self.inner.get_vocab(true)
+        self.inner
+            .get_vocab(true)
             .iter()
             .find(|(token, _)| *token == "<s>" || *token == "<|begin_of_text|>")
             .map(|(_, &id)| id)
@@ -156,33 +188,58 @@ impl Tokenizer {
 
     /// Apply chat template to messages, returning formatted prompt string.
     ///
-    /// Requires tokenizer_config.json with `chat_template` field.
+    /// Requires either tokenizer_config.json with a `chat_template` field or
+    /// the standard sibling chat_template.jinja file.
     /// Uses minijinja to render the Jinja2 template.
     pub fn apply_chat_template(&self, messages: &[ChatMessage]) -> Result<String> {
-        let template_str = self.chat_template.as_ref()
-            .ok_or_else(|| Error::Other("no chat template available (missing tokenizer_config.json with chat_template field)".to_string()))?;
+        let template_str = self.chat_template.as_ref().ok_or_else(|| {
+            Error::Other(
+                "no chat template available (missing tokenizer_config.json chat_template and chat_template.jinja)"
+                    .to_string(),
+            )
+        })?;
 
         // Create environment and template on demand
         let mut env = Environment::new();
+        // Hugging Face chat templates are Python-flavoured Jinja and commonly
+        // call methods such as `startswith`, `endswith`, `split`, and `rstrip`.
+        // MiniJinja deliberately does not expose those methods by default.
+        env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
+        env.set_keep_trailing_newline(true);
         env.add_template("chat", template_str)
             .map_err(|e| Error::Other(format!("template error: {e}")))?;
 
-        let tmpl = env.get_template("chat")
+        let tmpl = env
+            .get_template("chat")
             .map_err(|e| Error::Other(format!("template error: {e}")))?;
 
         // Build template context
-        let bos = self.config.bos_token.clone()
-            .or_else(|| self.inner.get_vocab(true)
-                .iter()
-                .find(|(t, _)| *t == "<s>" || *t == "<|begin_of_text|>")
-                .map(|(t, _)| t.clone()))
+        let bos = self
+            .config
+            .bos_token
+            .as_ref()
+            .map(|token| token.content().to_owned())
+            .or_else(|| {
+                self.inner
+                    .get_vocab(true)
+                    .iter()
+                    .find(|(t, _)| *t == "<s>" || *t == "<|begin_of_text|>")
+                    .map(|(t, _)| t.clone())
+            })
             .unwrap_or_default();
 
-        let eos = self.config.eos_token.clone()
-            .or_else(|| self.inner.get_vocab(true)
-                .iter()
-                .find(|(t, _)| *t == "</s>" || *t == "<|eot_id|>" || *t == "<|end_of_text|>")
-                .map(|(t, _)| t.clone()))
+        let eos = self
+            .config
+            .eos_token
+            .as_ref()
+            .map(|token| token.content().to_owned())
+            .or_else(|| {
+                self.inner
+                    .get_vocab(true)
+                    .iter()
+                    .find(|(t, _)| *t == "</s>" || *t == "<|eot_id|>" || *t == "<|end_of_text|>")
+                    .map(|(t, _)| t.clone())
+            })
             .unwrap_or_default();
 
         // Create context as serde Value (map)
@@ -191,33 +248,16 @@ impl Tokenizer {
             "bos_token": bos,
             "eos_token": eos,
             "add_generation_prompt": true,
+            // Qwen3.5-0.8B is a non-thinking model. Keeping this explicit also
+            // makes the rendered suffix deterministic across Jinja engines.
+            "enable_thinking": false,
         });
 
-        let result = tmpl.render(context)
-            .map_err(|e| Error::Other(format!("template render error: {e}")))?;
-
-        // Jinja2 in Python strips whitespace around control blocks, but minijinja doesn't.
-        // Normalize by collapsing all consecutive newlines to single newlines.
-        let mut normalized = String::new();
-        let mut prev_was_newline = false;
-        for c in result.trim().chars() {
-            if c == '\n' {
-                if !prev_was_newline {
-                    normalized.push('\n');
-                    prev_was_newline = true;
-                }
-            } else {
-                normalized.push(c);
-                prev_was_newline = false;
-            }
-        }
-
-        // Ensure trailing newline (matching PyTorch behavior)
-        if !normalized.ends_with('\n') {
-            normalized.push('\n');
-        }
-
-        Ok(normalized)
+        // Preserve the template's output byte-for-byte. Consecutive newlines
+        // are semantically significant in Qwen3.5's non-thinking generation
+        // suffix and therefore must not be collapsed after rendering.
+        tmpl.render(context)
+            .map_err(|e| Error::Other(format!("template render error: {e}")))
     }
 
     /// Encode messages using chat template.
@@ -229,9 +269,49 @@ impl Tokenizer {
     }
 }
 
+fn load_chat_template(model_dir: &Path, config: &TokenizerConfig) -> Result<Option<String>> {
+    if let Some(template) = config.chat_template.as_ref() {
+        if template.is_empty() {
+            return Err(Error::Other(
+                "tokenizer_config.json chat_template must not be empty".to_string(),
+            ));
+        }
+        return Ok(Some(template.clone()));
+    }
+
+    let standalone = model_dir.join("chat_template.jinja");
+    if !standalone.exists() {
+        return Ok(None);
+    }
+    let template = std::fs::read_to_string(&standalone).map_err(|error| {
+        Error::Other(format!(
+            "chat template read {}: {error}",
+            standalone.display()
+        ))
+    })?;
+    if template.is_empty() {
+        return Err(Error::Other(format!(
+            "chat template {} must not be empty",
+            standalone.display()
+        )));
+    }
+    Ok(Some(template))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    fn tokenizer_with_template(template: &str) -> Tokenizer {
+        Tokenizer {
+            inner: HfTokenizer::new(tokenizers::models::wordlevel::WordLevel::default()),
+            config: TokenizerConfig::default(),
+            chat_template: Some(template.to_owned()),
+        }
+    }
 
     #[test]
     fn test_chat_message_constructors() {
@@ -244,5 +324,73 @@ mod tests {
 
         let system = ChatMessage::system("You are helpful");
         assert_eq!(system.role, "system");
+    }
+
+    #[test]
+    fn python_string_methods_and_newlines_match_hf_templates() {
+        let tokenizer = tokenizer_with_template(
+            "{%- set content = messages[0].content -%}\
+             {%- if content.startswith('tool:') and content.endswith(':end') -%}\
+             {{- '<think>\\n\\n</think>\\n\\n' -}}\
+             {%- endif -%}",
+        );
+
+        let rendered = tokenizer
+            .apply_chat_template(&[ChatMessage::user("tool:value:end")])
+            .unwrap();
+        assert_eq!(rendered, "<think>\n\n</think>\n\n");
+    }
+
+    #[test]
+    fn standalone_chat_template_is_used_when_config_has_no_embedded_template() {
+        let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "apxinf-tokenizer-chat-template-{}-{serial}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("chat_template.jinja"),
+            "{{ messages[0].content }}\n",
+        )
+        .unwrap();
+
+        let loaded = load_chat_template(&root, &TokenizerConfig::default()).unwrap();
+        assert_eq!(loaded.as_deref(), Some("{{ messages[0].content }}\n"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn embedded_chat_template_takes_precedence_over_standalone_file() {
+        let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "apxinf-tokenizer-embedded-template-{}-{serial}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("chat_template.jinja"), "standalone").unwrap();
+        let config = TokenizerConfig {
+            chat_template: Some("embedded".to_string()),
+            ..TokenizerConfig::default()
+        };
+
+        let loaded = load_chat_template(&root, &config).unwrap();
+        assert_eq!(loaded.as_deref(), Some("embedded"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn special_tokens_accept_hugging_face_string_and_object_forms() {
+        let config: TokenizerConfig = serde_json::from_str(
+            r#"{
+                "bos_token": "<s>",
+                "eos_token": {"content": "</s>", "lstrip": false}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(config.bos_token.unwrap().content(), "<s>");
+        assert_eq!(config.eos_token.unwrap().content(), "</s>");
     }
 }

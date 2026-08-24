@@ -8,15 +8,15 @@
 //! JSON header maps tensor name → { "dtype", "shape", "data_offsets": [start, end] }
 //! Offsets are relative to the start of the data section (after the header).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::path::{Component, Path};
 
 use memmap2::Mmap;
 use serde::Deserialize;
 
-use bytemuck;
 use apxinf_core::{DType, Device, Shape, Tensor};
+use bytemuck;
 
 use crate::config::ModelConfig;
 
@@ -104,6 +104,72 @@ pub fn load_native_path(
     }
 }
 
+/// Load selected tensors from one SafeTensors file, a Hugging Face
+/// SafeTensors index, or a checkpoint directory.
+///
+/// The predicate is evaluated against tensor names. Unselected tensor payloads
+/// are never copied out of the memory map. For a sharded checkpoint, only
+/// shards containing at least one selected tensor are opened, while every
+/// shard path in the index is still checked for path traversal.
+///
+/// This is intended for partial model loaders, for example a text-only loader
+/// that selects `model.language_model.*` and `lm_head.weight` while skipping a
+/// vision tower and auxiliary prediction heads.
+pub fn load_native_path_filtered<F>(
+    path: &Path,
+    include: F,
+) -> Result<(HashMap<String, Tensor>, HashMap<String, String>), String>
+where
+    F: Fn(&str) -> bool,
+{
+    load_native_path_filtered_ref(path, &include)
+}
+
+fn load_native_path_filtered_ref(
+    path: &Path,
+    include: &dyn Fn(&str) -> bool,
+) -> Result<(HashMap<String, Tensor>, HashMap<String, String>), String> {
+    if path.is_dir() {
+        let index = path.join("model.safetensors.index.json");
+        if index.is_file() {
+            return load_native_sharded_filtered_ref(&index, include);
+        }
+        let model = path.join("model.safetensors");
+        if model.is_file() {
+            return load_native_filtered_ref(&model, include);
+        }
+        let mut candidates = std::fs::read_dir(path)
+            .map_err(|e| {
+                format!(
+                    "failed to read checkpoint directory {}: {e}",
+                    path.display()
+                )
+            })?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|candidate| {
+                candidate.extension().and_then(|value| value.to_str()) == Some("safetensors")
+            })
+            .collect::<Vec<_>>();
+        candidates.sort();
+        return match candidates.as_slice() {
+            [only] => load_native_filtered_ref(only, include),
+            [] => Err(format!(
+                "no SafeTensors model or index in {}",
+                path.display()
+            )),
+            _ => Err(format!(
+                "multiple SafeTensors files but no model.safetensors.index.json in {}",
+                path.display()
+            )),
+        };
+    }
+    if path.extension().and_then(|value| value.to_str()) == Some("json") {
+        load_native_sharded_filtered_ref(path, include)
+    } else {
+        load_native_filtered_ref(path, include)
+    }
+}
+
 /// Load all shards named by a Hugging Face `*.safetensors.index.json` file.
 /// Each indexed tensor is checked against the shard in which it was found.
 pub fn load_native_sharded(
@@ -168,9 +234,103 @@ pub fn load_native_sharded(
     Ok((tensors, metadata))
 }
 
+fn load_native_sharded_filtered_ref(
+    index_path: &Path,
+    include: &dyn Fn(&str) -> bool,
+) -> Result<(HashMap<String, Tensor>, HashMap<String, String>), String> {
+    let raw = std::fs::read_to_string(index_path)
+        .map_err(|e| format!("failed to read {}: {e}", index_path.display()))?;
+    let index: SafetensorsIndex = serde_json::from_str(&raw)
+        .map_err(|e| format!("invalid SafeTensors index {}: {e}", index_path.display()))?;
+    if index.weight_map.is_empty() {
+        return Err(format!(
+            "SafeTensors index {} has an empty weight_map",
+            index_path.display()
+        ));
+    }
+    let parent = index_path.parent().unwrap_or_else(|| Path::new("."));
+    let shards = index.weight_map.values().cloned().collect::<BTreeSet<_>>();
+    for shard in &shards {
+        let shard_path = Path::new(&shard);
+        if shard_path.is_absolute()
+            || shard_path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(format!(
+                "unsafe shard path `{shard}` in {}",
+                index_path.display()
+            ));
+        }
+    }
+
+    let mut selected_by_shard = BTreeMap::<&str, BTreeSet<&str>>::new();
+    let mut selected = BTreeSet::<&str>::new();
+    for (name, shard) in &index.weight_map {
+        if include(name) {
+            selected.insert(name.as_str());
+            selected_by_shard
+                .entry(shard.as_str())
+                .or_default()
+                .insert(name.as_str());
+        }
+    }
+
+    let mut tensors = HashMap::with_capacity(selected.len());
+    let mut metadata = HashMap::new();
+
+    for (shard, selected_names) in selected_by_shard {
+        let select_from_shard = |name: &str| selected_names.contains(name);
+        let (shard_tensors, shard_metadata) =
+            load_native_filtered_ref(&parent.join(shard), &select_from_shard)?;
+        metadata.extend(shard_metadata);
+        for (name, tensor) in shard_tensors {
+            let Some(expected_shard) = index.weight_map.get(&name) else {
+                continue;
+            };
+            if expected_shard != shard {
+                return Err(format!(
+                    "tensor `{name}` was found in `{shard}`, index assigns it to `{expected_shard}`"
+                ));
+            }
+            if tensors.insert(name.clone(), tensor).is_some() {
+                return Err(format!("duplicate indexed tensor `{name}`"));
+            }
+        }
+    }
+    let missing = selected
+        .iter()
+        .filter(|name| !tensors.contains_key(**name))
+        .take(8)
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!(
+            "SafeTensors shards are missing indexed tensors: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok((tensors, metadata))
+}
+
 fn load_impl(
     path: &Path,
     upcast_bf16: bool,
+) -> Result<(HashMap<String, Tensor>, HashMap<String, String>), String> {
+    load_impl_filtered(path, upcast_bf16, &|_| true)
+}
+
+fn load_native_filtered_ref(
+    path: &Path,
+    include: &dyn Fn(&str) -> bool,
+) -> Result<(HashMap<String, Tensor>, HashMap<String, String>), String> {
+    load_impl_filtered(path, /* upcast_bf16 */ false, include)
+}
+
+fn load_impl_filtered(
+    path: &Path,
+    upcast_bf16: bool,
+    include: &dyn Fn(&str) -> bool,
 ) -> Result<(HashMap<String, Tensor>, HashMap<String, String>), String> {
     let file = File::open(path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("mmap failed: {e}"))? };
@@ -213,7 +373,7 @@ fn load_impl(
     let mut tensors = HashMap::new();
 
     for (name, value) in &raw {
-        if name == "__metadata__" {
+        if name == "__metadata__" || !include(name) {
             continue;
         }
 
@@ -435,6 +595,37 @@ mod tests {
     }
 
     #[test]
+    fn test_load_native_path_filtered_single_file() {
+        let header_json = concat!(
+            r#"{"model.language_model.embed_tokens.weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"#,
+            r#""model.visual.blocks.0.weight":{"dtype":"I8","shape":[4],"data_offsets":[4,8]},"#,
+            r#""lm_head.weight":{"dtype":"F32","shape":[1],"data_offsets":[8,12]}}"#,
+        );
+        let mut file_bytes = (header_json.len() as u64).to_le_bytes().to_vec();
+        file_bytes.extend_from_slice(header_json.as_bytes());
+        file_bytes.extend_from_slice(&1.25f32.to_le_bytes());
+        file_bytes.extend_from_slice(&[0u8; 4]);
+        file_bytes.extend_from_slice(&(-3.5f32).to_le_bytes());
+
+        let mut tmp = NamedTempFile::new().unwrap();
+        tmp.write_all(&file_bytes).unwrap();
+
+        let (tensors, _) = load_native_path_filtered(tmp.path(), |name| {
+            name.starts_with("model.language_model.") || name == "lm_head.weight"
+        })
+        .unwrap();
+        assert_eq!(tensors.len(), 2);
+        assert_eq!(
+            tensors["model.language_model.embed_tokens.weight"]
+                .as_f32()
+                .unwrap(),
+            &[1.25]
+        );
+        assert_eq!(tensors["lm_head.weight"].as_f32().unwrap(), &[-3.5]);
+        assert!(!tensors.contains_key("model.visual.blocks.0.weight"));
+    }
+
+    #[test]
     fn test_unsupported_dtype_skipped() {
         // Build a header with an INT8 tensor — should fail gracefully
         let header_json = r#"{"x": {"dtype": "I8", "shape": [4], "data_offsets": [0, 4]}}"#;
@@ -482,5 +673,104 @@ mod tests {
         assert_eq!(tensors.len(), 2);
         assert_eq!(tensors["a"].dtype(), DType::F16);
         assert_eq!(tensors["b"].as_f16().unwrap()[0].to_f32(), -2.0);
+    }
+
+    #[test]
+    fn test_load_native_path_filtered_sharded_skips_unselected_shards() {
+        let directory = tempfile::tempdir().unwrap();
+        let language_data = 2.5f32.to_le_bytes();
+        let vision_data = 9.0f32.to_le_bytes();
+        let head_data = (-1.0f32).to_le_bytes();
+        std::fs::write(
+            directory.path().join("model-00001-of-00003.safetensors"),
+            make_safetensors(&[
+                (
+                    "model.language_model.embed_tokens.weight",
+                    DType::F32,
+                    &[1],
+                    &language_data,
+                ),
+                (
+                    "model.visual.blocks.0.weight",
+                    DType::F32,
+                    &[1],
+                    &vision_data,
+                ),
+            ]),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("model-00003-of-00003.safetensors"),
+            make_safetensors(&[("lm_head.weight", DType::F32, &[1], &head_data)]),
+        )
+        .unwrap();
+        // The second shard intentionally does not exist. It contains only an
+        // unselected vision tensor and therefore must not be opened.
+        std::fs::write(
+            directory.path().join("model.safetensors.index.json"),
+            concat!(
+                r#"{"weight_map":{"model.language_model.embed_tokens.weight":"model-00001-of-00003.safetensors","#,
+                r#""model.visual.blocks.0.weight":"model-00001-of-00003.safetensors","#,
+                r#""model.visual.blocks.1.weight":"model-00002-of-00003.safetensors","#,
+                r#""lm_head.weight":"model-00003-of-00003.safetensors"}}"#,
+            ),
+        )
+        .unwrap();
+
+        let (tensors, _) = load_native_path_filtered(directory.path(), |name| {
+            name.starts_with("model.language_model.") || name == "lm_head.weight"
+        })
+        .unwrap();
+        assert_eq!(tensors.len(), 2);
+        assert_eq!(
+            tensors["model.language_model.embed_tokens.weight"]
+                .as_f32()
+                .unwrap(),
+            &[2.5]
+        );
+        assert_eq!(tensors["lm_head.weight"].as_f32().unwrap(), &[-1.0]);
+    }
+
+    #[test]
+    fn test_load_native_path_filtered_reports_selected_missing_tensor() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = 7.0f32.to_le_bytes();
+        std::fs::write(
+            directory.path().join("model.safetensors"),
+            make_safetensors(&[("some.other.weight", DType::F32, &[1], &data)]),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("model.safetensors.index.json"),
+            r#"{"weight_map":{"model.language_model.missing.weight":"model.safetensors"}}"#,
+        )
+        .unwrap();
+
+        let error = load_native_path_filtered(directory.path(), |name| {
+            name.starts_with("model.language_model.")
+        })
+        .unwrap_err();
+        assert!(error.contains("missing indexed tensors"));
+        assert!(error.contains("model.language_model.missing.weight"));
+    }
+
+    #[test]
+    fn test_load_native_path_filtered_rejects_unsafe_unselected_shard() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("model.safetensors.index.json"),
+            concat!(
+                r#"{"weight_map":{"model.language_model.weight":"safe.safetensors","#,
+                r#""model.visual.weight":"../outside.safetensors"}}"#,
+            ),
+        )
+        .unwrap();
+
+        let error = load_native_path_filtered(directory.path(), |name| {
+            name.starts_with("model.language_model.")
+        })
+        .unwrap_err();
+        assert!(error.contains("unsafe shard path"));
+        assert!(error.contains("../outside.safetensors"));
     }
 }

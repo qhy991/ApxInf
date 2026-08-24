@@ -96,6 +96,37 @@ pub trait LlmTrait {
         self.forward(input.token_ids, 0)
     }
 
+    /// Process a complete prompt for autoregressive generation.
+    ///
+    /// The returned tensor may contain either every prompt row or only the
+    /// final row; the shared generation loop derives the row count from the
+    /// tensor itself. Models can override this hook when producing
+    /// `[prompt_len, vocab_size]` logits would be needlessly expensive. The
+    /// ordinary [`Self::prefill`] and [`Self::forward`] contracts remain
+    /// unchanged.
+    fn prefill_for_generation(&mut self, input: LlmInput<'_>) -> Result<Tensor> {
+        self.prefill(input)
+    }
+
+    /// Greedy-decode the first generated token directly from prompt prefill.
+    ///
+    /// Models with an output-head argmax fast path can override this hook to
+    /// avoid materializing a full vocabulary row at the end of prefill. A
+    /// returned error is terminal: the prompt may already have advanced model
+    /// state, so the shared loop must never fall through and prefill twice.
+    fn prefill_token_for_generation(&mut self, _input: LlmInput<'_>) -> Option<Result<u32>> {
+        None
+    }
+
+    /// Validate request-wide generation limits before any prewarm or prefill.
+    ///
+    /// This object-safe hook lets models reject a request without partially
+    /// mutating caches. Models without a fixed request budget inherit the
+    /// no-op implementation.
+    fn validate_generation_budget(&self, _prompt_len: usize, _max_new_tokens: usize) -> Result<()> {
+        Ok(())
+    }
+
     /// Reset state for a new generation.
     fn reset(&mut self);
 
@@ -109,6 +140,13 @@ pub trait LlmTrait {
     /// D2H + CPU argmax. Returns `None` if the model has no GPU-argmax fast
     /// path (caller falls back to `forward` + `argmax_last_row`).
     fn decode_token(&mut self, _token: u32, _pos: u32) -> Option<Result<u32>> {
+        None
+    }
+
+    /// Optional machine-readable receipt for explicitly selected generation
+    /// paths and their observed hit counts. Implementations should return
+    /// `None` when they have no diagnostic runtime path to report.
+    fn generation_path_receipt(&self) -> Option<serde_json::Value> {
         None
     }
 
@@ -172,19 +210,32 @@ where
     }
 
     let mut profile = GenerationProfile::new();
+    if max_new_tokens == 0 {
+        profile.finalize(prompt_tokens.len(), 0);
+        return Ok((Vec::new(), profile));
+    }
+
     let mut generated = Vec::with_capacity(max_new_tokens);
     let vocab_size = model.vocab_size();
+
+    model.validate_generation_budget(prompt_tokens.len(), max_new_tokens)?;
 
     // Pre-capture any decode graphs (CUDA) BEFORE prefill so the per-token
     // TPOT below is pure graph replay — keeps capture/instantiate cost in
     // setup (TTFT bucket), not in the steady-state TPOT measurement.
     model.prewarm_decode(prompt_tokens.len(), max_new_tokens);
 
-    // Prefill: process the entire prompt
-    let logits = model.prefill(input)?;
+    // Prefill: process the entire prompt. A direct-token fast path is
+    // authoritative once selected because it may already have advanced the
+    // model's prompt state.
+    let next_token = match model.prefill_token_for_generation(input) {
+        Some(result) => result?,
+        None => {
+            let logits = model.prefill_for_generation(input)?;
+            argmax_last_row(&logits, vocab_size)?
+        }
+    };
     profile.record_first_token();
-
-    let next_token = argmax_last_row(&logits, prompt_tokens.len(), vocab_size)?;
     generated.push(next_token);
     on_token(next_token);
 
@@ -205,20 +256,24 @@ where
     for i in 0..max_new_tokens.saturating_sub(1) {
         let pos = (prompt_len + i) as u32;
         // GPU-argmax fast path: skip full-logits D2H + CPU scan.
-        if let Some(Ok(tok)) = model.decode_token(current_token, pos) {
-            current_token = tok;
-            generated.push(current_token);
-            on_token(current_token);
-            if eos_token_id == Some(current_token) {
-                break;
+        match model.decode_token(current_token, pos) {
+            Some(Ok(tok)) => {
+                current_token = tok;
+                generated.push(current_token);
+                on_token(current_token);
+                if eos_token_id == Some(current_token) {
+                    break;
+                }
+                continue;
             }
-            continue;
+            Some(Err(error)) => return Err(error),
+            None => {}
         }
         let t0 = std::time::Instant::now();
         let logits = model.forward(&[current_token], pos)?;
         t_fwd += t0.elapsed();
         let t1 = std::time::Instant::now();
-        current_token = argmax_last_row(&logits, 1, vocab_size)?;
+        current_token = argmax_last_row(&logits, vocab_size)?;
         t_am += t1.elapsed();
         generated.push(current_token);
         let t2 = std::time::Instant::now();
@@ -245,7 +300,15 @@ where
 /// Extract logits for the last row and return its argmax token.
 /// `logits` shape: `[seq_len, vocab_size]`. Logits may live on any device — this
 /// helper moves to CPU if needed (callers' responsibility for now).
-fn argmax_last_row(logits: &Tensor, seq_len: usize, vocab_size: usize) -> Result<u32> {
+fn argmax_last_row(logits: &Tensor, vocab_size: usize) -> Result<u32> {
+    let dims = logits.shape().dims();
+    if dims.len() != 2 || dims[0] == 0 || dims[1] != vocab_size {
+        return Err(Error::ShapeMismatch {
+            expected: format!("[non-zero rows, {vocab_size}]"),
+            got: logits.shape().to_string(),
+        });
+    }
+    let seq_len = dims[0];
     let last_row_offset = (seq_len - 1) * vocab_size;
     // Fast path: scan bf16 directly (the decode graph returns a bf16 row).
     // Manual loop with `>` beats the iterator + partial_cmp (no NaN handling
@@ -274,4 +337,161 @@ fn argmax_last_row(logits: &Tensor, seq_len: usize, vocab_size: usize) -> Result
         }
     }
     Ok(best_i)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FailingDecodeModel {
+        position: usize,
+        fallback_forwards: usize,
+        decode_calls: usize,
+    }
+
+    struct DirectPrefillModel {
+        position: usize,
+        direct_prefill_calls: usize,
+        logits_prefill_calls: usize,
+        fail_direct_prefill: bool,
+    }
+
+    impl LlmTrait for DirectPrefillModel {
+        fn load(
+            _config: ModelConfig,
+            _weights: HashMap<String, Tensor>,
+            _device: Device,
+        ) -> Result<Self> {
+            unreachable!("test model is constructed directly")
+        }
+
+        fn forward(&mut self, _token_ids: &[u32], _start_pos: u32) -> Result<Tensor> {
+            unreachable!("one-token test must not decode")
+        }
+
+        fn prefill_for_generation(&mut self, _input: LlmInput<'_>) -> Result<Tensor> {
+            self.logits_prefill_calls += 1;
+            Err(Error::Other("logits prefill must not run".into()))
+        }
+
+        fn prefill_token_for_generation(&mut self, input: LlmInput<'_>) -> Option<Result<u32>> {
+            self.direct_prefill_calls += 1;
+            self.position += input.token_ids.len();
+            Some(if self.fail_direct_prefill {
+                Err(Error::Other("injected direct prefill failure".into()))
+            } else {
+                Ok(3)
+            })
+        }
+
+        fn reset(&mut self) {
+            self.position = 0;
+        }
+
+        fn vocab_size(&self) -> usize {
+            4
+        }
+    }
+
+    impl LlmTrait for FailingDecodeModel {
+        fn load(
+            _config: ModelConfig,
+            _weights: HashMap<String, Tensor>,
+            _device: Device,
+        ) -> Result<Self> {
+            unreachable!("test model is constructed directly")
+        }
+
+        fn forward(&mut self, _token_ids: &[u32], _start_pos: u32) -> Result<Tensor> {
+            self.fallback_forwards += 1;
+            self.position += 1;
+            Tensor::from_f32(vec![1, 4], &[0.0, 0.0, 1.0, 0.0])
+        }
+
+        fn prefill_for_generation(&mut self, input: LlmInput<'_>) -> Result<Tensor> {
+            self.position += input.token_ids.len();
+            Tensor::from_f32(vec![1, 4], &[0.0, 1.0, 0.0, 0.0])
+        }
+
+        fn decode_token(&mut self, _token: u32, _pos: u32) -> Option<Result<u32>> {
+            self.decode_calls += 1;
+            self.position += 1;
+            Some(Err(Error::Other("injected decode failure".into())))
+        }
+
+        fn reset(&mut self) {
+            self.position = 0;
+        }
+
+        fn vocab_size(&self) -> usize {
+            4
+        }
+    }
+
+    #[test]
+    fn decode_fast_path_error_does_not_fall_through_or_advance_twice() {
+        let mut model = FailingDecodeModel {
+            position: 0,
+            fallback_forwards: 0,
+            decode_calls: 0,
+        };
+        let result = generate_streaming(&mut model, LlmInput::text(&[3, 2, 1]), 2, |_| {}, None);
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("decode failure must terminate generation"),
+        };
+        assert!(error.to_string().contains("injected decode failure"));
+        assert_eq!(model.decode_calls, 1);
+        assert_eq!(model.fallback_forwards, 0);
+        assert_eq!(model.position, 4);
+    }
+
+    #[test]
+    fn direct_prefill_token_skips_logits_projection_and_advances_once() {
+        let mut model = DirectPrefillModel {
+            position: 0,
+            direct_prefill_calls: 0,
+            logits_prefill_calls: 0,
+            fail_direct_prefill: false,
+        };
+        let mut observed = Vec::new();
+        let (generated, profile) = generate_streaming(
+            &mut model,
+            LlmInput::text(&[2, 1, 0]),
+            1,
+            |token| observed.push(token),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(generated, vec![3]);
+        assert_eq!(observed, generated);
+        assert_eq!(model.position, 3);
+        assert_eq!(model.direct_prefill_calls, 1);
+        assert_eq!(model.logits_prefill_calls, 0);
+        assert_eq!(profile.input_tokens(), 3);
+        assert_eq!(profile.output_tokens(), 1);
+    }
+
+    #[test]
+    fn direct_prefill_error_is_terminal_after_state_advancement() {
+        let mut model = DirectPrefillModel {
+            position: 0,
+            direct_prefill_calls: 0,
+            logits_prefill_calls: 0,
+            fail_direct_prefill: true,
+        };
+        let result = generate_streaming(&mut model, LlmInput::text(&[2, 1, 0]), 1, |_| {}, None);
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("direct prefill failure must terminate generation"),
+        };
+
+        assert!(error
+            .to_string()
+            .contains("injected direct prefill failure"));
+        assert_eq!(model.position, 3);
+        assert_eq!(model.direct_prefill_calls, 1);
+        assert_eq!(model.logits_prefill_calls, 0);
+    }
 }

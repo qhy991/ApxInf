@@ -45,17 +45,26 @@ impl Tensor {
     /// Create a zero-filled tensor on CPU.
     pub fn zeros(shape: impl Into<Shape>, dtype: DType) -> Self {
         let shape = shape.into();
-        let num_bytes = shape.numel() * dtype.size_in_bytes();
+        let storage = if dtype == DType::F32 {
+            Storage::cpu_from_f32(vec![0.0; shape.numel()])
+        } else {
+            Storage::cpu_zeros(shape.numel() * dtype.size_in_bytes())
+        };
         Self {
             shape,
             dtype,
             device: Device::Cpu,
-            storage: Storage::cpu_zeros(num_bytes),
+            storage,
         }
     }
 
     /// Create a tensor from an f32 slice.
     pub fn from_f32(shape: impl Into<Shape>, data: &[f32]) -> Result<Self> {
+        Self::from_f32_vec(shape, data.to_vec())
+    }
+
+    /// Create a tensor by taking ownership of an existing F32 allocation.
+    pub fn from_f32_vec(shape: impl Into<Shape>, data: Vec<f32>) -> Result<Self> {
         let shape = shape.into();
         if data.len() != shape.numel() {
             return Err(Error::DataLengthMismatch {
@@ -63,12 +72,11 @@ impl Tensor {
                 got: data.len() * 4,
             });
         }
-        let bytes: Vec<u8> = bytemuck::cast_slice(data).to_vec();
         Ok(Self {
             shape,
             dtype: DType::F32,
             device: Device::Cpu,
-            storage: Storage::cpu_from_bytes(bytes),
+            storage: Storage::cpu_from_f32(data),
         })
     }
 
@@ -94,10 +102,18 @@ impl Tensor {
     pub fn from_f16(shape: impl Into<Shape>, data: &[f16]) -> Result<Self> {
         let shape = shape.into();
         if data.len() != shape.numel() {
-            return Err(Error::DataLengthMismatch { expected: shape.numel() * 2, got: data.len() * 2 });
+            return Err(Error::DataLengthMismatch {
+                expected: shape.numel() * 2,
+                got: data.len() * 2,
+            });
         }
         let bytes: Vec<u8> = bytemuck::cast_slice(data).to_vec();
-        Ok(Self { shape, dtype: DType::F16, device: Device::Cpu, storage: Storage::cpu_from_bytes(bytes) })
+        Ok(Self {
+            shape,
+            dtype: DType::F16,
+            device: Device::Cpu,
+            storage: Storage::cpu_from_bytes(bytes),
+        })
     }
 
     /// Create a tensor containing raw CUDA-compatible E4M3 bytes.
@@ -185,7 +201,9 @@ impl Tensor {
             DType::F32 => Ok(self.as_f32()?.to_vec()),
             DType::F16 => Ok(self.as_f16()?.iter().map(|x| x.to_f32()).collect()),
             DType::BF16 => Ok(self.as_bf16()?.iter().map(|x| x.to_f32()).collect()),
-            DType::F8E4M3 => Err(Error::Other("raw E4M3 conversion requires an explicit quantization scale".into())),
+            DType::F8E4M3 => Err(Error::Other(
+                "raw E4M3 conversion requires an explicit quantization scale".into(),
+            )),
         }
     }
 
@@ -200,7 +218,7 @@ impl Tensor {
                 dst_numel: new_shape.numel(),
             });
         }
-        // For CPU tensors, share the data (clone the bytes).
+        // For CPU tensors, share the copy-on-write allocation.
         // For GPU tensors, share the handle (zero-copy metadata reshape).
         match &self.storage {
             Storage::Cpu(data) => Ok(Self {
@@ -208,6 +226,12 @@ impl Tensor {
                 dtype: self.dtype,
                 device: self.device,
                 storage: Storage::Cpu(data.clone()),
+            }),
+            Storage::CpuF32(data) => Ok(Self {
+                shape: new_shape,
+                dtype: self.dtype,
+                device: self.device,
+                storage: Storage::CpuF32(data.clone()),
             }),
             Storage::Gpu { device, handle } => Ok(Self {
                 shape: new_shape,
@@ -255,7 +279,7 @@ impl Tensor {
                 }
             }
         }
-        Tensor::from_f32(new_shape, &dst)
+        Tensor::from_f32_vec(new_shape, dst)
     }
 
     // ── CPU math operations ─────────────────────────────────────────
@@ -272,8 +296,11 @@ impl Tensor {
 
         let out_shape = self.shape.matmul_shape(other.shape())?;
 
-        let a = self.to_f32_vec()?;
-        let b = other.to_f32_vec()?;
+        // F32 is the native CPU execution dtype. Borrow it directly instead of
+        // cloning both operands for every GEMM: cloning the right-hand operand
+        // would otherwise copy the full model weights again on every token.
+        let a = self.as_f32()?;
+        let b = other.as_f32()?;
 
         let m = self.shape.dims()[self.ndim() - 2];
         let k = self.shape.dims()[self.ndim() - 1];
@@ -288,15 +315,10 @@ impl Tensor {
             let a_off = batch_idx * m * k;
             let b_off = batch_idx * k * n;
             let o_off = batch_idx * m * n;
-            crate::ops::sgemm(
-                m, k, n,
-                &a[a_off..],
-                &b[b_off..],
-                &mut out[o_off..],
-            );
+            crate::ops::sgemm(m, k, n, &a[a_off..], &b[b_off..], &mut out[o_off..]);
         }
 
-        Tensor::from_f32(out_shape, &out)
+        Tensor::from_f32_vec(out_shape, out)
     }
 
     // ── Internal helpers ────────────────────────────────────────────
@@ -357,6 +379,20 @@ mod tests {
     }
 
     #[test]
+    fn from_f32_vec_takes_the_original_allocation() {
+        let data = vec![1.0, 2.0, 3.0, 4.0];
+        let original = data.as_ptr();
+        let tensor = Tensor::from_f32_vec(vec![2, 2], data).unwrap();
+
+        assert_eq!(tensor.as_f32().unwrap().as_ptr(), original);
+        assert_eq!(
+            tensor.storage().as_cpu().unwrap().len(),
+            4 * std::mem::size_of::<f32>()
+        );
+        assert_eq!(tensor.as_f32().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
     fn test_from_bf16() {
         let data: Vec<bf16> = vec![1.0, 2.0, 3.0, 4.0]
             .into_iter()
@@ -382,9 +418,15 @@ mod tests {
     fn test_reshape() {
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let t = Tensor::from_f32(vec![2, 3], &data).unwrap();
-        let t2 = t.reshape(vec![3, 2]).unwrap();
+        let mut t2 = t.reshape(vec![3, 2]).unwrap();
         assert_eq!(t2.shape(), &Shape::new(vec![3, 2]));
         assert_eq!(t2.as_f32().unwrap(), &data);
+        assert_eq!(t.as_f32().unwrap().as_ptr(), t2.as_f32().unwrap().as_ptr());
+
+        t2.as_f32_mut().unwrap()[0] = 99.0;
+        assert_eq!(t.as_f32().unwrap()[0], 1.0);
+        assert_eq!(t2.as_f32().unwrap()[0], 99.0);
+        assert_ne!(t.as_f32().unwrap().as_ptr(), t2.as_f32().unwrap().as_ptr());
     }
 
     #[test]
@@ -418,6 +460,9 @@ mod tests {
     #[test]
     fn test_display() {
         let t = Tensor::zeros(vec![2, 3], DType::F32);
-        assert_eq!(format!("{t}"), "Tensor(shape=[2, 3], dtype=f32, device=cpu)");
+        assert_eq!(
+            format!("{t}"),
+            "Tensor(shape=[2, 3], dtype=f32, device=cpu)"
+        );
     }
 }

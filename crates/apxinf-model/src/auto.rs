@@ -39,6 +39,11 @@ pub struct LoadOptions {
     /// Optional text-model weight dtype. `None` preserves checkpoint dtype
     /// (except CPU backends, which currently require f32).
     pub text_weight_dtype: Option<DType>,
+    /// Maximum context allocated by text-model caches. This is deliberately
+    /// independent of the checkpoint's advertised maximum: modern models can
+    /// declare hundreds of thousands of tokens, which is not a safe default
+    /// on a memory-constrained local machine.
+    pub max_context: Option<usize>,
     pub calibration_path: Option<PathBuf>,
     pub tuning_path: Option<PathBuf>,
     /// Explicit architecture config, overriding any on-disk `config.json`.
@@ -47,6 +52,14 @@ pub struct LoadOptions {
     pub synthetic: Option<SyntheticWeights>,
     /// Uniform FP8 activation scale, replacing a calibration file (synthetic use).
     pub uniform_fp8_scale: Option<f32>,
+    /// Explicitly replace only Qwen3.5's decode-time tied output projection
+    /// and argmax with the feature-gated Metal W8 path. Prompt prefill and the
+    /// model body remain on CPU/Accelerate. There is no implicit fallback.
+    pub metal_w8_lm_head: bool,
+    /// Explicitly replace every Qwen3.5 decode-time MLP with the complete
+    /// feature-gated Metal W8 block. Prefill, attention, residuals, and state
+    /// remain CPU/F32. This can be combined with `metal_w8_lm_head`.
+    pub metal_w8_mlp_block: bool,
 }
 
 /// A loaded autoregressive language model (text-only or VLM), or a VLA model.
@@ -79,6 +92,13 @@ impl LoadedModel {
     pub fn text_capabilities(&self) -> Result<LlmCapabilities> {
         match self {
             Self::Text(model) => Ok(model.capabilities()),
+            Self::Vla(_) => Err(Error::Other("loaded model is VLA, not text".into())),
+        }
+    }
+
+    pub fn generation_path_receipt(&self) -> Result<Option<serde_json::Value>> {
+        match self {
+            Self::Text(model) => Ok(model.generation_path_receipt()),
             Self::Vla(_) => Err(Error::Other("loaded model is VLA, not text".into())),
         }
     }
@@ -155,6 +175,9 @@ impl AutoModel {
         path: impl AsRef<Path>,
         options: &LoadOptions,
     ) -> Result<LoadedModel> {
+        if options.max_context == Some(0) {
+            return Err(Error::Other("max_context must be greater than zero".into()));
+        }
         let path = path.as_ref();
         let detected_model_name;
         let model_name = match options.model_name.as_deref() {
@@ -164,6 +187,42 @@ impl AutoModel {
                 &detected_model_name
             }
         };
+
+        if options.metal_w8_lm_head || options.metal_w8_mlp_block {
+            let requested_path = match (options.metal_w8_mlp_block, options.metal_w8_lm_head) {
+                (true, true) => "Metal W8 MLP block + lm_head",
+                (true, false) => "Metal W8 MLP block",
+                (false, true) => "Metal W8 lm_head",
+                (false, false) => unreachable!(),
+            };
+            if !cfg!(feature = "metal-w8") {
+                return Err(Error::Other(format!(
+                    "{requested_path} was requested, but this binary was not built with the `metal-w8` feature"
+                )));
+            }
+            if !matches!(model_name, "qwen3_5" | "qwen35") {
+                return Err(Error::Other(format!(
+                    "{requested_path} supports Qwen3.5 only, not `{model_name}`"
+                )));
+            }
+            if device != Device::Cpu {
+                return Err(Error::Other(format!(
+                    "{requested_path} requires the Qwen3.5 CPU/Accelerate body (`--device cpu`)"
+                )));
+            }
+            if matches!(options.text_weight_dtype, Some(dtype) if dtype != DType::F32)
+                || options.precision != ModelPrecision::Auto
+            {
+                return Err(Error::Other(format!(
+                    "{requested_path} requires F32 native text weights (`--dtype fp32`)"
+                )));
+            }
+            if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+                return Err(Error::Other(format!(
+                    "{requested_path} requires Apple Silicon macOS"
+                )));
+            }
+        }
 
         register_builtin_models();
         let backend = create_backend(device)?;
@@ -183,5 +242,102 @@ impl AutoModel {
                 ))
             })?;
         factory(path, device, backend, options)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(not(feature = "metal-w8"))]
+    #[test]
+    fn explicit_metal_request_fails_when_feature_is_absent() {
+        let options = LoadOptions {
+            model_name: Some("qwen3_5".into()),
+            metal_w8_lm_head: true,
+            ..LoadOptions::default()
+        };
+        let error = AutoModel::load_model(Device::Cpu, Path::new("/does/not/matter"), &options)
+            .err()
+            .expect("an unavailable Metal W8 feature must fail closed");
+        assert!(error
+            .to_string()
+            .contains("not built with the `metal-w8` feature"));
+    }
+
+    #[cfg(not(feature = "metal-w8"))]
+    #[test]
+    fn explicit_metal_mlp_request_fails_when_feature_is_absent() {
+        let options = LoadOptions {
+            model_name: Some("qwen3_5".into()),
+            text_weight_dtype: Some(DType::F32),
+            metal_w8_mlp_block: true,
+            ..LoadOptions::default()
+        };
+        let error = AutoModel::load_model(Device::Cpu, Path::new("/does/not/matter"), &options)
+            .err()
+            .expect("an unavailable Metal W8 MLP feature must fail closed");
+        assert!(error
+            .to_string()
+            .contains("not built with the `metal-w8` feature"));
+    }
+
+    #[cfg(feature = "metal-w8")]
+    #[test]
+    fn explicit_metal_request_rejects_another_model_family() {
+        let options = LoadOptions {
+            model_name: Some("llama".into()),
+            metal_w8_lm_head: true,
+            ..LoadOptions::default()
+        };
+        let error = AutoModel::load_model(Device::Cpu, Path::new("/does/not/matter"), &options)
+            .err()
+            .expect("Metal W8 must not fall back on another model family");
+        assert!(error.to_string().contains("supports Qwen3.5 only"));
+    }
+
+    #[cfg(feature = "metal-w8")]
+    #[test]
+    fn explicit_metal_mlp_request_rejects_another_model_family() {
+        let options = LoadOptions {
+            model_name: Some("llama".into()),
+            text_weight_dtype: Some(DType::F32),
+            metal_w8_mlp_block: true,
+            ..LoadOptions::default()
+        };
+        let error = AutoModel::load_model(Device::Cpu, Path::new("/does/not/matter"), &options)
+            .err()
+            .expect("Metal W8 MLP must not be ignored by another model family");
+        assert!(error.to_string().contains("supports Qwen3.5 only"));
+    }
+
+    #[cfg(feature = "metal-w8")]
+    #[test]
+    fn explicit_metal_mlp_request_rejects_cuda_before_loading() {
+        let options = LoadOptions {
+            model_name: Some("qwen3_5".into()),
+            text_weight_dtype: Some(DType::F32),
+            metal_w8_mlp_block: true,
+            ..LoadOptions::default()
+        };
+        let error = AutoModel::load_model(Device::Cuda(0), Path::new("/does/not/matter"), &options)
+            .err()
+            .expect("Metal W8 MLP must reject CUDA before filesystem access");
+        assert!(error.to_string().contains("--device cpu"));
+    }
+
+    #[cfg(feature = "metal-w8")]
+    #[test]
+    fn explicit_metal_mlp_request_rejects_bf16_before_loading() {
+        let options = LoadOptions {
+            model_name: Some("qwen3_5".into()),
+            text_weight_dtype: Some(DType::BF16),
+            metal_w8_mlp_block: true,
+            ..LoadOptions::default()
+        };
+        let error = AutoModel::load_model(Device::Cpu, Path::new("/does/not/matter"), &options)
+            .err()
+            .expect("Metal W8 MLP must reject BF16 before filesystem access");
+        assert!(error.to_string().contains("requires F32"));
     }
 }

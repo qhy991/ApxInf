@@ -3,6 +3,7 @@ members = [
     "crates/apxinf-core",
     "crates/apxinf-cuda",
     "crates/apxinf-loader",
+    "crates/apxinf-metal",
     "crates/apxinf-model",
     "crates/apxinf-tokenizer",
     "crates/apxinf-py",
@@ -27,6 +28,12 @@ cuda-no-nvtx = ["dep:apxinf-cuda", "apxinf-model/cuda"]
 # if you want the CPU path to use OpenBLAS. Drive OS aarch64 doesn't ship
 # libopenblas — leave this off on Thor.
 openblas = ["apxinf-core/openblas"]
+# Apple Silicon CPU matmul through the Accelerate framework.
+accelerate = ["apxinf-core/accelerate", "apxinf-model/accelerate"]
+# Decode-only Apple Metal W8 Qwen3.5 lanes. The explicit runtime flags select
+# the tied language-model head, every complete MLP block, or both. Neither is
+# enabled implicitly; attention, state, residuals, and body prefill stay CPU.
+metal-w8 = ["apxinf-model/metal-w8"]
 
 [dependencies]
 apxinf-core = { path = "crates/apxinf-core" }
@@ -36,4 +43,5 @@ apxinf-model = { path = "crates/apxinf-model" }
 apxinf-tokenizer = { path = "crates/apxinf-tokenizer" }
 clap = { version = "=4.5.23", features = ["derive"] }
 serde_json = "1"
+sha2 = "=0.10.9"
 half = "2"

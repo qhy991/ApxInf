@@ -1,7 +1,7 @@
 //! Backend abstraction trait and Graph trait for execution capture/replay.
 
-use crate::{Device, Result, Tensor};
 use crate::kv_cache::KvCache;
+use crate::{Device, Result, Tensor};
 
 /// Backend-agnostic interface for tensor compute and device management.
 ///
@@ -20,6 +20,110 @@ pub trait Backend {
     /// SiLU activation: output = input / (1 + exp(-input))
     fn silu(&self, input: &Tensor) -> Result<Tensor>;
 
+    /// Logistic sigmoid, evaluated element-wise.
+    ///
+    /// Default: `Err(Unsupported)`. The correctness-first CPU implementation
+    /// is used by Qwen3.5's attention and Gated DeltaNet gates.
+    fn sigmoid(&self, input: &Tensor) -> Result<Tensor> {
+        let _ = input;
+        Err(crate::Error::Other(
+            "sigmoid: not supported on this backend".into(),
+        ))
+    }
+
+    /// Numerically-stable softplus, evaluated element-wise.
+    ///
+    /// Default: `Err(Unsupported)`. Qwen3.5 uses this when converting its
+    /// learned time-step projection into a recurrent-state decay.
+    fn softplus(&self, input: &Tensor) -> Result<Tensor> {
+        let _ = input;
+        Err(crate::Error::Other(
+            "softplus: not supported on this backend".into(),
+        ))
+    }
+
+    /// L2-normalize along `dim` using the FLA/Qwen3.5 convention:
+    /// `output = input * rsqrt(sum(input^2, dim) + eps)`.
+    ///
+    /// `dim` supports negative indexing. This deliberately differs from
+    /// `torch.nn.functional.normalize`, whose epsilon is applied to the norm
+    /// rather than to the squared sum.
+    fn l2_normalize(&self, input: &Tensor, _dim: isize, _eps: f32) -> Result<Tensor> {
+        let _ = input;
+        Err(crate::Error::Other(
+            "l2_normalize: not supported on this backend".into(),
+        ))
+    }
+
+    /// RMS normalization whose learned scale is shifted by a constant:
+    /// `output = rms(input) * (weight + weight_offset)`.
+    ///
+    /// Qwen3.5 stores zero-centered RMSNorm weights and uses an offset of 1.
+    fn rms_norm_offset(
+        &self,
+        input: &Tensor,
+        _weight: &Tensor,
+        _eps: f32,
+        _weight_offset: f32,
+    ) -> Result<Tensor> {
+        let _ = input;
+        Err(crate::Error::Other(
+            "rms_norm_offset: not supported on this backend".into(),
+        ))
+    }
+
+    /// Causal depthwise 1-D cross-correlation over sequence-major tensors.
+    ///
+    /// - `input`: `[..., seq_len, channels]`
+    /// - `weight`: `[channels, kernel_size]` or `[channels, 1, kernel_size]`
+    /// - `bias`: optional `[channels]`
+    /// - `state`: optional `[..., kernel_size, channels]`
+    ///
+    /// State is the last `kernel_size` raw inputs in chronological order
+    /// (oldest to newest), matching the official Qwen3.5 cache contract.
+    /// Missing history is zero-filled. For each new token the oldest cached
+    /// slot is dropped, so the K-wide convolution window still contains only
+    /// K-1 prior values plus the current input. The returned state makes
+    /// chunked/incremental calls equivalent to a one-shot prefill. Weight order
+    /// matches PyTorch `conv1d`: the current sample is multiplied by
+    /// `weight[channel, kernel_size - 1]`.
+    fn causal_depthwise_conv1d(
+        &self,
+        input: &Tensor,
+        _weight: &Tensor,
+        _bias: Option<&Tensor>,
+        _state: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor)> {
+        let _ = input;
+        Err(crate::Error::Other(
+            "causal_depthwise_conv1d: not supported on this backend".into(),
+        ))
+    }
+
+    /// Correctness-first recurrent Gated Delta update for Qwen3.5.
+    ///
+    /// Single-request layouts are `q/k=[seq,Hk,Dk]`, `v=[seq,Hv,Dv]`,
+    /// `a/b=[seq,Hv]`, `A_log/dt_bias=[Hv]`, and optional
+    /// `state=[Hv,Dk,Dv]`. Q/K heads are repeat-interleaved to `Hv`. Callers
+    /// apply Q/K L2 normalization and query scaling before this operation.
+    /// Returns `(output=[seq,Hv,Dv], final_state=[Hv,Dk,Dv])`.
+    fn gated_delta_recurrent(
+        &self,
+        q: &Tensor,
+        _k: &Tensor,
+        _v: &Tensor,
+        _a: &Tensor,
+        _b: &Tensor,
+        _a_log: &Tensor,
+        _dt_bias: &Tensor,
+        _state: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor)> {
+        let _ = q;
+        Err(crate::Error::Other(
+            "gated_delta_recurrent: not supported on this backend".into(),
+        ))
+    }
+
     /// Element-wise add.
     fn add(&self, a: &Tensor, b: &Tensor) -> Result<Tensor>;
 
@@ -33,10 +137,73 @@ pub trait Backend {
     /// a: [m, k], b: [k, n] -> output: [m, n]
     fn matmul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor>;
 
+    /// Matrix multiplication with an implicitly transposed right-hand side:
+    /// `output = a @ b^T` for `a=[m, k]` and `b=[n, k]`, producing `[m, n]`.
+    ///
+    /// This lets tied embedding/output weights stay in their checkpoint-native
+    /// `[vocab, hidden]` layout instead of materializing a second
+    /// `[hidden, vocab]` tensor. Backends that can express a transposed GEMM
+    /// should override this operation.
+    fn matmul_rhs_transposed(&self, a: &Tensor, b: &Tensor) -> Result<Tensor> {
+        let _ = (a, b);
+        Err(crate::Error::Other(
+            "matmul_rhs_transposed: not supported on this backend".into(),
+        ))
+    }
+
     /// Rotary Position Embedding (half-split / Llama-style).
     /// input shape: [seq_len, n_heads, head_dim]
-    fn rope(&self, input: &Tensor, n_heads: usize, head_dim: usize,
-            theta: f32, pos_offset: u32) -> Result<Tensor>;
+    fn rope(
+        &self,
+        input: &Tensor,
+        n_heads: usize,
+        head_dim: usize,
+        theta: f32,
+        pos_offset: u32,
+    ) -> Result<Tensor>;
+
+    /// Partial rotary embedding over only the first `rotary_dim` values of
+    /// each head. `interleaved=false` uses rotate-half layout; `true` rotates
+    /// adjacent pairs. The non-rotary tail is copied unchanged.
+    ///
+    /// Qwen3.5 text attention uses rotate-half (`interleaved=false`) with a
+    /// partial rotary dimension. Its similarly named *interleaved mRoPE axis
+    /// assignment* is represented separately by `rope_mrope_partial` below.
+    fn rope_partial(
+        &self,
+        input: &Tensor,
+        _n_heads: usize,
+        _head_dim: usize,
+        _rotary_dim: usize,
+        _theta: f32,
+        _pos_offset: u32,
+        _interleaved: bool,
+    ) -> Result<Tensor> {
+        let _ = input;
+        Err(crate::Error::Other(
+            "rope_partial: not supported on this backend".into(),
+        ))
+    }
+
+    /// Partial Qwen3.5 multimodal RoPE with interleaved T/H/W frequency-axis
+    /// assignment. `pos_ids` contains `(t,h,w)` for each sequence item and
+    /// `sections` sums to `rotary_dim / 2`. Rotation itself is rotate-half;
+    /// values after `rotary_dim` are copied unchanged.
+    fn rope_mrope_partial(
+        &self,
+        input: &Tensor,
+        _n_heads: usize,
+        _head_dim: usize,
+        _rotary_dim: usize,
+        _theta: f32,
+        _sections: [usize; 3],
+        _pos_ids: &[u32],
+    ) -> Result<Tensor> {
+        let _ = input;
+        Err(crate::Error::Other(
+            "rope_mrope_partial: not supported on this backend".into(),
+        ))
+    }
 
     /// Multimodal (3-D) RoPE for Qwen3-VL. `pos_ids` is a flat u32 slice of
     /// length `seq_len * 3` holding `(t, h, w)` per token; `sections` is
@@ -47,26 +214,44 @@ pub trait Backend {
     /// dtype and we don't want to smuggle bytes through a F32 tensor).
     ///
     /// Default: `Err(Unsupported)`. CUDA overrides.
-    fn rope_mrope(&self, input: &Tensor, _n_heads: usize, _head_dim: usize,
-                  _theta: f32, _sections: [usize; 3], _pos_ids: &[u32]) -> Result<Tensor> {
+    fn rope_mrope(
+        &self,
+        input: &Tensor,
+        _n_heads: usize,
+        _head_dim: usize,
+        _theta: f32,
+        _sections: [usize; 3],
+        _pos_ids: &[u32],
+    ) -> Result<Tensor> {
         let _ = input;
-        Err(crate::Error::Other("rope_mrope: not supported on this backend".into()))
+        Err(crate::Error::Other(
+            "rope_mrope: not supported on this backend".into(),
+        ))
     }
 
     /// LayerNorm with weight + bias (Qwen3-VL vision tower).
     /// `input` shape `[..., cols]`; `weight` and `bias` shape `[cols]`.
     /// Default: `Err(Unsupported)`. CUDA overrides.
-    fn layer_norm(&self, input: &Tensor, _weight: &Tensor, _bias: &Tensor,
-                  _eps: f32) -> Result<Tensor> {
+    fn layer_norm(
+        &self,
+        input: &Tensor,
+        _weight: &Tensor,
+        _bias: &Tensor,
+        _eps: f32,
+    ) -> Result<Tensor> {
         let _ = input;
-        Err(crate::Error::Other("layer_norm: not supported on this backend".into()))
+        Err(crate::Error::Other(
+            "layer_norm: not supported on this backend".into(),
+        ))
     }
 
     /// GELU with tanh approximation (Qwen3-VL vision MLP).
     /// Default: `Err(Unsupported)`. CUDA overrides.
     fn gelu_tanh(&self, input: &Tensor) -> Result<Tensor> {
         let _ = input;
-        Err(crate::Error::Other("gelu_tanh: not supported on this backend".into()))
+        Err(crate::Error::Other(
+            "gelu_tanh: not supported on this backend".into(),
+        ))
     }
 
     /// Broadcast-add a `[cols]` bias vector over rows of a `[rows, cols]`
@@ -74,17 +259,27 @@ pub trait Backend {
     /// Default: `Err(Unsupported)`. CUDA overrides.
     fn add_bias(&self, input: &Tensor, _bias: &Tensor) -> Result<Tensor> {
         let _ = input;
-        Err(crate::Error::Other("add_bias: not supported on this backend".into()))
+        Err(crate::Error::Other(
+            "add_bias: not supported on this backend".into(),
+        ))
     }
 
     /// Vision 2D-RoPE for Qwen3-VL's ViT. `pos_ids` is a flat u32 slice of
     /// length `seq_len * 2` holding `(h, w)` per token; head_dim is 64 and
     /// the first half of freq pairs uses h, the second half uses w.
     /// Default: `Err(Unsupported)`. CUDA overrides.
-    fn rope_vision_2d(&self, input: &Tensor, _n_heads: usize, _head_dim: usize,
-                      _theta: f32, _pos_ids: &[u32]) -> Result<Tensor> {
+    fn rope_vision_2d(
+        &self,
+        input: &Tensor,
+        _n_heads: usize,
+        _head_dim: usize,
+        _theta: f32,
+        _pos_ids: &[u32],
+    ) -> Result<Tensor> {
         let _ = input;
-        Err(crate::Error::Other("rope_vision_2d: not supported on this backend".into()))
+        Err(crate::Error::Other(
+            "rope_vision_2d: not supported on this backend".into(),
+        ))
     }
 
     /// Concatenate 2D tensors along the column axis (dim 1).
@@ -93,15 +288,26 @@ pub trait Backend {
     /// QKV and Gate/Up weight matrices for the fused GEMM path.
     /// Default: `Err(Unsupported)`. CUDA overrides (D2D memcpy).
     fn concat_2d(&self, _tensors: &[&Tensor]) -> Result<Tensor> {
-        Err(crate::Error::Other("concat_2d: not supported on this backend".into()))
+        Err(crate::Error::Other(
+            "concat_2d: not supported on this backend".into(),
+        ))
     }
 
     /// Non-causal full attention for the vision tower. Q/K/V each
     /// `[seq, n_heads, head_dim]`; returns `[seq, n_heads * head_dim]`.
     /// Default: `Err(Unsupported)`. CUDA overrides.
-    fn vision_sdpa(&self, _q: &Tensor, _k: &Tensor, _v: &Tensor,
-                   _seq_len: usize, _n_heads: usize, _head_dim: usize) -> Result<Tensor> {
-        Err(crate::Error::Other("vision_sdpa: not supported on this backend".into()))
+    fn vision_sdpa(
+        &self,
+        _q: &Tensor,
+        _k: &Tensor,
+        _v: &Tensor,
+        _seq_len: usize,
+        _n_heads: usize,
+        _head_dim: usize,
+    ) -> Result<Tensor> {
+        Err(crate::Error::Other(
+            "vision_sdpa: not supported on this backend".into(),
+        ))
     }
 
     /// Embedding lookup: table[ids] -> output [seq_len, embed_dim]
@@ -113,29 +319,56 @@ pub trait Backend {
     /// Scaled dot-product attention (decode: seq_len=1).
     /// q: [1, n_heads, head_dim]
     /// Returns: [1, n_heads * head_dim]
-    fn sdpa_decode(&self, q: &Tensor, kv: &mut dyn KvCache,
-                   layer_idx: usize, n_heads: usize, n_kv_heads: usize,
-                   head_dim: usize, kv_len: usize, max_seq_len: usize) -> Result<Tensor>;
+    fn sdpa_decode(
+        &self,
+        q: &Tensor,
+        kv: &mut dyn KvCache,
+        layer_idx: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        kv_len: usize,
+        max_seq_len: usize,
+    ) -> Result<Tensor>;
 
     /// Scaled dot-product attention (prefill: seq_len>1).
     /// q: [seq_len, n_heads, head_dim]
-    fn sdpa_prefill(&self, q: &Tensor, kv: &mut dyn KvCache,
-                    layer_idx: usize, n_heads: usize, n_kv_heads: usize,
-                    head_dim: usize, kv_len: usize, max_seq_len: usize) -> Result<Tensor>;
+    fn sdpa_prefill(
+        &self,
+        q: &Tensor,
+        kv: &mut dyn KvCache,
+        layer_idx: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        kv_len: usize,
+        max_seq_len: usize,
+    ) -> Result<Tensor>;
 
     // ── KV Cache ─────────────────────────────────────────────────────
 
     /// Create a new KV cache for n_layers layers.
-    fn create_kv_cache(&self, n_layers: usize, n_kv_heads: usize,
-                       head_dim: usize, max_seq_len: usize) -> Box<dyn KvCache>;
+    fn create_kv_cache(
+        &self,
+        n_layers: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        max_seq_len: usize,
+    ) -> Box<dyn KvCache>;
 
     /// Append K/V data for a layer into the cache.
     ///
     /// This is on the Backend (not just KvCache) because GPU backends need
     /// access to their stream/context to encode the append kernel.
     /// k, v: [append_len, n_kv_heads, head_dim]
-    fn kv_append(&self, kv: &mut dyn KvCache, layer_idx: usize,
-                 k: &Tensor, v: &Tensor, append_len: usize) -> Result<()>;
+    fn kv_append(
+        &self,
+        kv: &mut dyn KvCache,
+        layer_idx: usize,
+        k: &Tensor,
+        v: &Tensor,
+        append_len: usize,
+    ) -> Result<()>;
 
     // ── Execution control ────────────────────────────────────────────
 
@@ -182,7 +415,9 @@ pub enum RopeKind {
 
 impl RopeKind {
     /// Backward-compatible default for models that don't know about mRoPE.
-    pub fn one_d(theta: f32) -> Self { RopeKind::OneD { theta } }
+    pub fn one_d(theta: f32) -> Self {
+        RopeKind::OneD { theta }
+    }
 }
 
 /// A captured execution graph that can be replayed.

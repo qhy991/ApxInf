@@ -8,6 +8,7 @@ use apxinf_core::{Backend, DType, Device, Error, Result, Tensor};
 
 use crate::auto::{LoadOptions, LoadedModel};
 use crate::llama::{GeneralLlama, LlamaWeights};
+use crate::qwen35::{GeneralQwen35, Qwen35Config};
 use crate::qwen3vl::{GeneralQwen3VL, Qwen3VLConfig};
 use crate::registry;
 
@@ -17,16 +18,54 @@ pub fn register_builtin_models() {
     registry::register("llama", load_llama);
     registry::register("qwen3_vl", load_qwen3vl);
     registry::register("qwen3vl", load_qwen3vl);
+    registry::register("qwen3_5", load_qwen35);
+    registry::register("qwen35", load_qwen35);
 
     #[cfg(feature = "cuda")]
     crate::pi05::register_builtin();
 }
+
+fn load_qwen35(
+    path: &Path,
+    device: Device,
+    backend: Arc<dyn Backend>,
+    options: &LoadOptions,
+) -> Result<LoadedModel> {
+    if device != Device::Cpu {
+        return Err(Error::Other(
+            "Qwen3.5 native inference currently supports CPU/Accelerate only; Metal is the next backend milestone"
+                .into(),
+        ));
+    }
+    let model_dir = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or_else(|| Path::new("."))
+    };
+    let config = Qwen35Config::from_json_file(&model_dir.join("config.json"))?;
+    let (tensors, _) = apxinf_loader::safetensors::load_native_path_filtered(path, |name| {
+        name.starts_with("model.language_model.") || name == "lm_head.weight"
+    })
+    .map_err(|error| Error::Other(format!("load {}: {error}", path.display())))?;
+    let max_context = options.max_context.unwrap_or(4096);
+    let model = GeneralQwen35::from_weights_with_backend_metal_options(
+        config,
+        tensors,
+        backend,
+        max_context,
+        options.metal_w8_lm_head,
+        options.metal_w8_mlp_block,
+    )?;
+    Ok(LoadedModel::Text(Box::new(model)))
+}
+
 fn load_llama(
     path: &Path,
     device: Device,
     backend: Arc<dyn Backend>,
     options: &LoadOptions,
 ) -> Result<LoadedModel> {
+    reject_qwen35_metal_options(options, "Llama")?;
     let (mut tensors, metadata) = apxinf_loader::safetensors::load_native_path(path)
         .map_err(|error| Error::Other(format!("load {}: {error}", path.display())))?;
     if let Some(dtype) = options.text_weight_dtype {
@@ -50,8 +89,9 @@ fn load_qwen3vl(
     path: &Path,
     _device: Device,
     backend: Arc<dyn Backend>,
-    _options: &LoadOptions,
+    options: &LoadOptions,
 ) -> Result<LoadedModel> {
+    reject_qwen35_metal_options(options, "Qwen3-VL")?;
     let model_dir = if path.is_dir() {
         path
     } else {
@@ -62,6 +102,15 @@ fn load_qwen3vl(
         .map_err(|error| Error::Other(format!("load {}: {error}", path.display())))?;
     let model = GeneralQwen3VL::from_weights_with_backend(config, tensors, backend)?;
     Ok(LoadedModel::Text(Box::new(model)))
+}
+
+fn reject_qwen35_metal_options(options: &LoadOptions, model_family: &str) -> Result<()> {
+    if options.metal_w8_lm_head || options.metal_w8_mlp_block {
+        return Err(Error::Other(format!(
+            "Qwen3.5 Metal W8 options cannot be used with {model_family}"
+        )));
+    }
+    Ok(())
 }
 
 fn upcast_bf16_weights(tensors: &mut HashMap<String, Tensor>) -> Result<()> {
