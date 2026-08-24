@@ -162,5 +162,8 @@ The Broker-owned runit reference is checked in at
 `service/apxinf-qwen25-omni-broker.run`; it is the environment and launch
 authority for reproducing the promoted service. It requires
 `agent-gpu-broker>=0.5.0` so a resident service can declare its advisory ETA as
-`unknown` without fabricating a year-long completion time. Unset or `0` preserves the
-corresponding native path, while invalid values fail closed.
+`unknown` without fabricating a year-long completion time. The checked-in empty
+`service/down` file is the desired-state authority: the service remains stopped
+after supervisor or host restart and is started explicitly for a named workload.
+Unset or `0` preserves the corresponding native path, while invalid values fail
+closed.
