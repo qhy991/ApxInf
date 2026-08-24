@@ -3437,3 +3437,48 @@ calibration. Jobs and raw data are pinned in
 1.84x slower than the accepted arm, so neither enters a complete model
 trajectory or no-profiler timing. The screen commit remains isolated on
 `codex/omni-long-decode-warp-screen` and does not enter the serving branch.
+
+### Promoted follow-up: split count 32
+
+The next bounded screen held eight warps and every request/model parameter
+fixed while testing split counts 16, 32 and 64 at KV=32,767. The accepted
+split-16 arm measures 0.09570 ms/layer, split 32 measures 0.06105 ms/layer
+(1.568x faster), and split 64 regresses to 0.06289 ms/layer. Every arm retains
+the same max-absolute, mean-absolute and cosine error relative to the ordinary
+decode boundary. Split 64 therefore stops at the operator screen; the shipping
+workspace and reducer are bounded at 32 splits, or 266,240 bytes. Raw authority
+is `omni-32767-decode-split-cta-split-count-screen.json`.
+
+The real 32,760+8 smoke preserves the frozen trajectory and logs
+`kv=32761, splits=32`. Five alternating immutable-binary A/B pairs then pass
+all ten exact requests. Split 32 wins 5/5: paired median TPOT speedup is 1.204x
+and the slowest pair is 1.193x. Raw medians move from 14.109 to 11.705 ms,
+candidate TPOT CV is 0.575%, paired TTFT changes by +0.048%, and paired wall
+time improves by 1.006x. The two binary hashes and serving source diff are
+pinned because this refinement changes the compiled split/workspace maximum,
+rather than adding a runtime tuning knob.
+
+Matched Systems profiles show mean decode envelope falling from 14.264 to
+11.910 ms and GPU busy time from 13.527 to 11.131 ms. The stage kernel falls
+from 5.454 to 3.030 ms/step, while the larger reduction rises only from 0.070
+to 0.096 ms/step. The net 2.396 ms GPU-busy reduction matches the 2.404 ms
+no-profiler median TPOT reduction; other dominant kernels remain unchanged.
+
+Regression passes model CPU 65/65, benchmark scripts 15/15, quick 5/5, decode
+5/5, 4K/8K/12K/32K, real PNG/WAV and malformed-media recovery. CUDA remains
+93/95 with only the same two accepted-control RTX 4090 FP8 cuBLAS status-15
+failures. Relative to frozen vLLM-Omni 0.26.0, ApxInf now wins 32K TPOT by
+1.502x (11.705 versus 17.577 ms) and reaches a 62.55% minimum-BWU lower bound.
+
+The deployed binary SHA-256 is
+`cf77816bd7add10c0061523ce0f52f69aefdfed2065a42734da93b8c44b2fb01`;
+the immediate rollback is
+`f20118547b5fe872ad817211290d4cb180601783f868d3731785a99d2c16dbad`.
+A runit-owned smoke reproduces the exact trajectory at 11.713 ms TPOT and
+confirms the split-32 path before the service returns down and the GPU becomes
+idle.
+
+**Decision: promote split 32 over split 16 only inside the already accepted
+SM89 QH/KVH/D=16/2/128, KV 32,761--32,767 selector.** Structured authority is
+`promotion-decode-split32.json`. No new model, request, hardware or concurrency
+claim is introduced.
