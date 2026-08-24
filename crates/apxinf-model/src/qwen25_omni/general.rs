@@ -25,20 +25,42 @@ use super::weights::{Qwen25OmniQkvWeights, Qwen25OmniTextWeights};
 
 #[cfg(feature = "cuda")]
 const MAX_DECODE_GRAPH_POSITION: u32 = 3_072;
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", test))]
 const CHUNKED_PREFILL_MID_SIZE: usize = 256;
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", test))]
 const CHUNKED_PREFILL_SMALL_SIZE: usize = 512;
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", test))]
 const CHUNKED_PREFILL_SMALL_MAX_PROMPT: usize = 12_288;
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", test))]
 const CHUNKED_PREFILL_MID_MIN_PROMPT: usize = 4_096;
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", test))]
 const CHUNKED_PREFILL_MID_MAX_PROMPT: usize = 12_288;
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", test))]
 const CHUNKED_PREFILL_LARGE_SIZE: usize = 1_024;
+#[cfg(any(feature = "cuda", test))]
+const CHUNKED_PREFILL_FA2_LARGE_MIN_PROMPT: usize = 8_192;
+#[cfg(any(feature = "cuda", test))]
+const CHUNKED_PREFILL_FA2_LARGE_MAX_PROMPT: usize = 12_288;
 #[cfg(feature = "cuda")]
 const CHUNKED_PREFILL_THRESHOLD: usize = 1_024;
+
+#[cfg(any(feature = "cuda", test))]
+fn text_prefill_chunk_size(prompt_tokens: usize, fa2_chunk1024: bool) -> usize {
+    if fa2_chunk1024
+        && (CHUNKED_PREFILL_FA2_LARGE_MIN_PROMPT..=CHUNKED_PREFILL_FA2_LARGE_MAX_PROMPT)
+            .contains(&prompt_tokens)
+    {
+        CHUNKED_PREFILL_LARGE_SIZE
+    } else if (CHUNKED_PREFILL_MID_MIN_PROMPT..=CHUNKED_PREFILL_MID_MAX_PROMPT)
+        .contains(&prompt_tokens)
+    {
+        CHUNKED_PREFILL_MID_SIZE
+    } else if prompt_tokens <= CHUNKED_PREFILL_SMALL_MAX_PROMPT {
+        CHUNKED_PREFILL_SMALL_SIZE
+    } else {
+        CHUNKED_PREFILL_LARGE_SIZE
+    }
+}
 
 pub struct GeneralQwen25Omni {
     config: Qwen25OmniConfig,
@@ -109,6 +131,24 @@ fn chunked_prefill_enabled() -> Result<bool> {
 }
 
 #[cfg(feature = "cuda")]
+fn fa2_chunk1024_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| {
+            let enabled = parse_binary_env("APXINF_QWEN25_FA2_CHUNK1024")?;
+            if enabled && !parse_binary_env("APXINF_FA2_GQA_PREFILL")? {
+                return Err(
+                    "APXINF_QWEN25_FA2_CHUNK1024=1 requires APXINF_FA2_GQA_PREFILL=1"
+                        .into(),
+                );
+            }
+            Ok(enabled)
+        })
+        .clone()
+        .map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
 fn gpu_last_row_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
     ENABLED
@@ -164,6 +204,13 @@ impl GeneralQwen25Omni {
         );
         #[cfg(feature = "cuda")]
         let decode_graph = {
+            let fa2_chunk1024 = fa2_chunk1024_enabled()?;
+            if fa2_chunk1024 && !chunked_prefill_enabled()? {
+                return Err(Error::Other(
+                    "APXINF_QWEN25_FA2_CHUNK1024=1 requires APXINF_QWEN25_CHUNKED_PREFILL=1"
+                        .into(),
+                ));
+            }
             let graph_enabled = decode_graph_enabled()?;
             let select_token = gpu_argmax_enabled()?;
             let eager_select_token = eager_gpu_argmax_enabled()?;
@@ -500,16 +547,21 @@ impl GeneralQwen25Omni {
                 "Qwen2.5-Omni chunked prefill requires reset text-only state".into(),
             ));
         }
-        let chunk_size = if (CHUNKED_PREFILL_MID_MIN_PROMPT
-            ..=CHUNKED_PREFILL_MID_MAX_PROMPT)
-            .contains(&token_ids.len())
+        let fa2_chunk1024 = fa2_chunk1024_enabled()?;
+        let chunk_size = text_prefill_chunk_size(token_ids.len(), fa2_chunk1024);
+        if fa2_chunk1024
+            && (CHUNKED_PREFILL_FA2_LARGE_MIN_PROMPT
+                ..=CHUNKED_PREFILL_FA2_LARGE_MAX_PROMPT)
+                .contains(&token_ids.len())
         {
-            CHUNKED_PREFILL_MID_SIZE
-        } else if token_ids.len() <= CHUNKED_PREFILL_SMALL_MAX_PROMPT {
-            CHUNKED_PREFILL_SMALL_SIZE
-        } else {
-            CHUNKED_PREFILL_LARGE_SIZE
-        };
+            static PATH_LOGGED: OnceLock<()> = OnceLock::new();
+            if PATH_LOGGED.set(()).is_ok() {
+                eprintln!(
+                    "ApxInf Qwen2.5-Omni FA2 chunk1024 prefill: prompt={}, chunk={chunk_size}",
+                    token_ids.len()
+                );
+            }
+        }
         let chunks = token_ids.len().div_ceil(chunk_size);
         for (index, chunk) in token_ids.chunks(chunk_size).enumerate() {
             let start = u32::try_from(self.kv.seq_len())
@@ -1085,6 +1137,20 @@ mod tests {
             feature_size: 128,
         };
         config
+    }
+
+    #[test]
+    fn fa2_chunk1024_changes_only_the_frozen_8k_to_12k_cell() {
+        assert_eq!(text_prefill_chunk_size(2_048, false), 512);
+        assert_eq!(text_prefill_chunk_size(4_096, false), 256);
+        assert_eq!(text_prefill_chunk_size(8_192, false), 256);
+        assert_eq!(text_prefill_chunk_size(12_288, false), 256);
+        assert_eq!(text_prefill_chunk_size(12_289, false), 1_024);
+
+        assert_eq!(text_prefill_chunk_size(7_168, true), 256);
+        assert_eq!(text_prefill_chunk_size(8_192, true), 1_024);
+        assert_eq!(text_prefill_chunk_size(12_288, true), 1_024);
+        assert_eq!(text_prefill_chunk_size(12_289, true), 1_024);
     }
 
     #[test]
