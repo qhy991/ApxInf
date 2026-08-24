@@ -102,6 +102,7 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_OMNI_PERSISTENT_PROCESSOR=1`, `APXINF_BATCHED_GQA_PREFILL=1`,
 `APXINF_FA2_GQA_PREFILL=1`,
 `APXINF_QWEN25_FA2_CHUNK1024=1`,
+`APXINF_QWEN25_FA2_ALL_CHUNKS=1`,
 `APXINF_STREAM_ORDERED_ALLOC=1` and
 `APXINF_TMROPE_POSITION_CACHE=1`,
 `APXINF_TMROPE_POSITION_CACHE_PREFILL=1`, `APXINF_SOFTMAX_EXP_CACHE=1`,
@@ -150,7 +151,11 @@ retain their accepted paths. The
 FA2-aware chunk selector raises only reset text prompts from 8,192 through
 12,288 tokens from 256- to 1,024-token chunks. It requires both chunked
 prefill and causal FA2 at model initialization; selector-off, shorter, longer,
-decode and multimodal paths keep their accepted policy. The
+decode and multimodal paths keep their accepted policy. The request-scoped
+all-chunk selector additionally routes the first four chunks in exactly that
+8K–12K cell through the validated causal FA2 capability below its default
+long-KV policy threshold. The model passes this decision explicitly through
+the layer boundary; no request state is stored globally. The
 `APXINF_QWEN25_BF16_CHUNK_TACTICS=1` selector installs five exact RTX 4090
 SM89 cuBLASLt records for the promoted 256- and 1,024-row packed-QKV and MLP
 shapes before execution; unmatched shapes remain on vendor cuBLAS. The

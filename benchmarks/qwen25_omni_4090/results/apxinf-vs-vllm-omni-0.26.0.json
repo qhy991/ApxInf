@@ -20,8 +20,8 @@
   "sources": {
     "apxinf_quick": "deployed-vision-full-fa2-final-quick.json",
     "apxinf_decode": "deployed-vision-full-fa2-decode.json",
-    "apxinf_context": "promotion-fa2-chunk1024.json",
-    "apxinf_context_32k": "promotion-fa2-chunk1024.json",
+    "apxinf_context": "promotion-request-scoped-fa2.json",
+    "apxinf_context_32k": "promotion-request-scoped-fa2.json",
     "apxinf_multimodal": "promotion-grouped-varlen-fa2.json",
     "vllm_quick": "vllm-omni-0.26.0-kv2g-quick.json",
     "vllm_decode": "vllm-omni-0.26.0-kv2g-decode.json",
@@ -91,9 +91,9 @@
     {
       "workload": "8192+8",
       "apxinf": {
-        "ttft_ms": 614.514357,
-        "tpot_ms": 10.655597,
-        "wall_ms": 691.7376667261124
+        "ttft_ms": 406.548397,
+        "tpot_ms": 10.694040714285714,
+        "wall_ms": 484.52433198690414
       },
       "vllm_omni": {
         "ttft_ms": 512.0159462094307,
@@ -101,17 +101,17 @@
         "wall_ms": 647.6844996213913
       },
       "speedup": {
-        "vllm_ttft": 1.2002,
-        "apxinf_tpot": 1.7935,
-        "vllm_wall": 1.068
+        "apxinf_ttft": 1.2594,
+        "apxinf_tpot": 1.787,
+        "apxinf_wall": 1.3367
       }
     },
     {
       "workload": "12288+8",
       "apxinf": {
-        "ttft_ms": 865.988918,
-        "tpot_ms": 12.989601857142857,
-        "wall_ms": 960.8365595340729
+        "ttft_ms": 655.240223,
+        "tpot_ms": 13.074505714285716,
+        "wall_ms": 750.1281648874283
       },
       "vllm_omni": {
         "ttft_ms": 830.2697762846947,
@@ -119,17 +119,17 @@
         "wall_ms": 963.1513729691505
       },
       "speedup": {
-        "vllm_ttft": 1.043,
-        "apxinf_tpot": 1.4699,
-        "apxinf_wall": 1.0024
+        "apxinf_ttft": 1.2671,
+        "apxinf_tpot": 1.4604,
+        "apxinf_wall": 1.284
       }
     },
     {
       "workload": "32760+8",
       "apxinf": {
-        "ttft_ms": 2612.520175,
-        "tpot_ms": 24.29635457142857,
-        "wall_ms": 2790.479190647602
+        "ttft_ms": 2614.062215,
+        "tpot_ms": 24.401668714285712,
+        "wall_ms": 2792.956843972206
       },
       "vllm_omni": {
         "ttft_ms": 2912.2343733906746,
@@ -137,9 +137,9 @@
         "wall_ms": 3035.371094942093
       },
       "speedup": {
-        "apxinf_ttft": 1.1147,
-        "vllm_tpot": 1.3833,
-        "apxinf_wall": 1.0878
+        "apxinf_ttft": 1.1141,
+        "vllm_tpot": 1.3883,
+        "apxinf_wall": 1.0868
       }
     }
   ],
@@ -222,9 +222,9 @@
   },
   "decision": {
     "apxinf_strength": "short single-request text decode, 32K prefill, real-audio service latency, and near-parity real-image wall time",
-    "vllm_omni_strength": "8K prefill, slightly lower 12K TTFT, and slightly lower real-image TTFT",
+    "vllm_omni_strength": "32K decode TPOT and slightly lower real-image TTFT",
     "next_apxinf_priorities": [
-      "re-profile the remaining 8K-to-12K gap after causal FA2 and FA2-aware chunk promotion",
+      "re-profile the post-request-scoped-FA2 8K path before selecting another prefill rewrite",
       "replace the resident Python processor only if CPU/RSS or multi-request evidence makes it material",
       "re-profile the post-FA2 image path before selecting another vision change"
     ]

@@ -1,0 +1,2 @@
+CUDA 0: NVIDIA GeForce RTX 4090 (compute 8.9, sm80-family, 128 SMs)
+Server failed: load native qwen2.5-omni: APXINF_QWEN25_FA2_ALL_CHUNKS=1 requires APXINF_QWEN25_FA2_CHUNK1024=1

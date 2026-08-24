@@ -12,8 +12,8 @@ nearby but structurally different model.
 
 The result is not a single winner:
 
-- ApxInf is the stronger short single-request text decoder and now wins 32K
-  prefill; vLLM-Omni retains the 8K prefill lead and a small 12K TTFT lead.
+- ApxInf is the stronger short single-request text decoder and now wins every
+  frozen 8K/12K/32K prefill TTFT and wall-time cell.
 - The real-image path is within 3% on client wall after ApxInf's
   grouped-varlen FA2 promotion.
 - Both reach the complete 32,760 prompt + 8 output contract after vLLM's KV
@@ -81,14 +81,13 @@ one warmup.
 
 | Prompt | ApxInf TTFT | vLLM TTFT | TTFT winner | ApxInf TPOT | vLLM TPOT | Wall winner |
 |---:|---:|---:|---:|---:|---:|---|
-| 8,192 | 0.615 s | 0.512 s | vLLM 1.20× | 10.66 ms | 19.11 ms | vLLM 1.07× |
-| 12,288 | 0.866 s | 0.830 s | vLLM 1.04× | 12.99 ms | 19.09 ms | near parity; ApxInf 1.002× |
-| 32,760 | 2.613 s | 2.912 s | ApxInf 1.115× | 24.30 ms | 17.58 ms | ApxInf 1.088× |
+| 8,192 | 0.407 s | 0.512 s | ApxInf 1.259× | 10.69 ms | 19.11 ms | ApxInf 1.337× |
+| 12,288 | 0.655 s | 0.830 s | ApxInf 1.267× | 13.07 ms | 19.09 ms | ApxInf 1.284× |
+| 32,760 | 2.614 s | 2.912 s | ApxInf 1.114× | 24.40 ms | 17.58 ms | ApxInf 1.087× |
 
-ApxInf's causal FA2 path plus FA2-aware 1,024-token chunks removes the former
-monotonically growing prefill deficit. vLLM still wins 8K and slightly wins
-12K TTFT; ApxInf reaches wall-time parity at 12K and wins 32K prefill. ApxInf
-keeps the faster decoder through 12K, while vLLM still wins 32K TPOT. The
+ApxInf's causal FA2 path, FA2-aware 1,024-token chunks and request-scoped early
+FA2 remove the former prefill deficit across all frozen lengths. ApxInf keeps
+the faster decoder through 12K, while vLLM still wins 32K TPOT. The
 minimum-BWU lower bound at 32K is 30.13% for ApxInf and 41.65% for vLLM.
 
 Both engines pass 32,760 + 8. vLLM's throughput-oriented automatic policy
@@ -221,9 +220,8 @@ python3 benchmarks/qwen25_omni_4090/benchmark_vllm_omni_multimodal.py \
 
 The next high-leverage work is not another sub-percent pointwise kernel:
 
-1. Re-profile the remaining 8K-to-12K prefill gap after causal FA2 and
-   FA2-aware chunk promotion, then choose between the surviving larger-M GEMM
-   families and FA2 rather than revisiting closed materialization paths.
+1. Re-profile the post-request-scoped-FA2 8K path before selecting another
+   prefill rewrite; the prior scalar-attention materialization path is closed.
 2. Replace the resident Python processor with native Rust only if CPU/RSS or
    future multi-request evidence makes that boundary material.
 3. Re-profile the post-FA2 image path before selecting another vision change;

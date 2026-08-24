@@ -3250,10 +3250,10 @@ profiler spending.** Raw evidence is `omni-fa2-chunk2048-smoke-8k.json`; the
 profile/tuning inputs use the `omni-8192-fa2-chunk1024-current` and
 `omni-8192-m1024-bf16-tuning` names. Production remains on 1,024-token chunks.
 
-## Prepared request-scoped all-chunk causal FA2
+## Promoted request-scoped all-chunk causal FA2
 
-Status: **source prepared; no formal candidate result and no deployment
-change**. The compile-time upper-bound probe on
+Primary classification: **request-scoped model/CUDA execution-graph rewrite**.
+The compile-time upper-bound probe on
 `codex/omni-fa2-allchunks-probe` proved that an 8K request can route its first
 `query=1024, kv=1024` chunk through FA2, preserve the complete accepted
 trajectory, and lower TTFT from 0.6145 to 0.4120 s. That probe is not
@@ -3277,3 +3277,53 @@ path. Only those passes admit five alternating same-binary pairs. Promotion
 requires at least four of five wins, at least 10% lower TTFT median at 8K,
 at least 5% at 12K, exact short/decode/multimodal controls and unchanged 32K.
 No profile is spent before the repeated end-to-end win.
+
+All gates passed. The same binary SHA-256
+`5723aa15c388d91a9dd6a0cf0e51c9c306d7f18121889e2f1075f6f02a30baa2`
+alternated `AB / BA / AB / BA / AB`; all 40 measured trajectories were exact
+and stable.
+
+| Workload | Selector-off TTFT median | Request-scoped FA2 TTFT median | Paired speedup | Wins |
+|---|---:|---:|---:|---:|
+| 4,096 + 8 control | 0.3953 s | 0.3954 s | 0.999× | unchanged path |
+| 8,192 + 8 | 0.6140 s | 0.4065 s | 1.511× | 5/5 |
+| 12,288 + 8 | 0.8661 s | 0.6552 s | 1.322× | 5/5 |
+| 32,760 + 8 control | 2.6124 s | 2.6141 s | 1.000× | unchanged path |
+
+Candidate TTFT CV is 0.124% at 8K and 0.087% at 12K. The short eight-token
+TPOT deltas are outside the prefill admission claim. Relative to frozen
+vLLM-Omni 0.26.0, ApxInf now wins TTFT by 1.259× at 8K, 1.267× at 12K and
+1.114× at 32K.
+
+Matched 8K profiles attribute the win. Summed GPU kernel time falls from
+668.6 to 467.8 ms (30.04%) and kernel count from 11,421 to 10,701. The
+candidate adds 144 early FA2 launches, increasing total FA2 time from 53.0 to
+73.6 ms, but removes score/value GEMM families totaling 140.4 ms and reduces
+scalar softmax from 49.3 to 7.1 ms and scaling from 24.8 ms to 0.3 ms. The
+200.8 ms GPU reduction explains the 207.4 ms no-profiler TTFT reduction.
+
+The reports remain on the GPU host:
+
+- baseline: `omni-8192-request-fa2-baseline-interactive.nsys-rep`, 1,444,218
+  bytes, SHA-256
+  `16eed1a08c0fb6c66773b8a67a21e6caa345880628c5560d7af330a4d9ad092d`;
+- candidate: `omni-8192-request-fa2-candidate-interactive.nsys-rep`, 1,392,851
+  bytes, SHA-256
+  `1f764ddddfb25d0b6e81a8cb368283c55ecf4a841ce566833488024e2e65b7da`.
+
+The candidate passes 64 model CPU tests, the KV=1,024/4,097 CUDA operator
+contract, quick/decode, 4K/7168/8192/12K/32K, real PNG/WAV, malformed-media
+recovery and the explicit invalid-composition gate. CUDA remains 93/95 with
+only the two accepted-control RTX 4090 FP8 status-15 failures.
+
+The promoted binary SHA-256 is
+`5723aa15c388d91a9dd6a0cf0e51c9c306d7f18121889e2f1075f6f02a30baa2`;
+the immediate rollback is
+`71db60c7a545647c5a2f6e9cd1967e402d1188f5098dc5b27853605cc4f1fba1`.
+A runit-owned 8K/12K smoke reproduced both exact trajectories at 0.415 and
+0.653 s TTFT before the service returned down and the GPU became idle.
+
+**Decision: promote request-scoped all-chunk causal FA2 for the tested 8K–12K
+single-request BF16 RTX 4090 cells.** Structured evidence is
+`promotion-request-scoped-fa2.json`. This does not claim multi-request,
+non-SM89, training or speech/video generation performance.
