@@ -1,0 +1,146 @@
+{
+  "schema": "apxinf.qwen25_omni.service_benchmark.v1",
+  "started_at": "2026-08-24T06:57:48.787174+00:00",
+  "completed_at": "2026-08-24T06:57:49.670525+00:00",
+  "base_url": "http://127.0.0.1:8002",
+  "suite": "context",
+  "contract": {
+    "api": "/v1/evaluations/generate",
+    "single_request": true,
+    "sampling": "greedy",
+    "temperature": 0,
+    "ignore_eos": true,
+    "stream": false,
+    "token_pattern": "1000 + index % 17",
+    "warmups": 0,
+    "repeats": 1,
+    "timeout_seconds": 300.0,
+    "sample_interval_ms": 100
+  },
+  "health": {
+    "context_contract": "prompt_tokens + requested_completion_tokens <= max_model_len",
+    "fallback_active": false,
+    "input_modalities": [
+      "text",
+      "image",
+      "audio"
+    ],
+    "max_model_len": 32768,
+    "max_output_tokens": 128,
+    "max_prompt_tokens": 32767,
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "output_modalities": [
+      "text"
+    ],
+    "parallel_requests": 1,
+    "precision": "bf16",
+    "processor_mode": "persistent",
+    "speech_output": false,
+    "status": "ok",
+    "talker_disabled": true,
+    "video": false
+  },
+  "raw_cases": [
+    {
+      "case": {
+        "case_id": "context_8192",
+        "prompt_tokens": 8192,
+        "output_tokens": 8,
+        "family": "context"
+      },
+      "warmup_failure": null,
+      "trials": [
+        {
+          "passed": true,
+          "error": null,
+          "wall_seconds": 0.768697701394558,
+          "ttft_seconds": 0.689972909,
+          "tpot_seconds": 0.010761437857142857,
+          "prefill_tokens_per_second_proxy": 11872.929926876304,
+          "decode_tokens_per_second": 92.92438550265422,
+          "e2e_output_tokens_per_second": 10.407212075028376,
+          "output_token_count": 8,
+          "trajectory_sha256": "490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf",
+          "output_head": [
+            1015,
+            1016,
+            1000,
+            1001,
+            1002,
+            1003,
+            1004,
+            1005
+          ],
+          "fallback_active": false,
+          "hardware": {
+            "sample_count": 8,
+            "gpu_util_mean_pct": 50.0,
+            "gpu_util_max_pct": 100.0,
+            "memory_util_mean_pct": 18.0,
+            "memory_util_max_pct": 36.0,
+            "memory_used_peak_mib": 13405.0,
+            "memory_total_mib": 24564.0,
+            "memory_headroom_min_mib": 11159.0,
+            "power_mean_w": 116.655,
+            "power_max_w": 161.63,
+            "sm_clock_mean_mhz": 2580.0,
+            "memory_clock_mean_mhz": 10251.0
+          }
+        }
+      ]
+    }
+  ],
+  "summaries": [
+    {
+      "case_id": "context_8192",
+      "prompt_tokens": 8192,
+      "output_tokens": 8,
+      "family": "context",
+      "trial_count": 1,
+      "passed_trials": 1,
+      "failed_trials": 0,
+      "wall_seconds": {
+        "mean": 0.768697701394558,
+        "p50": 0.768697701394558,
+        "p90": 0.768697701394558,
+        "cv": 0.0
+      },
+      "ttft_seconds": {
+        "mean": 0.689972909,
+        "p50": 0.689972909,
+        "p90": 0.689972909,
+        "cv": 0.0
+      },
+      "tpot_seconds": {
+        "mean": 0.010761437857142857,
+        "p50": 0.010761437857142857,
+        "p90": 0.010761437857142857,
+        "cv": 0.0
+      },
+      "prefill_tokens_per_second_proxy": {
+        "mean": 11872.929926876304,
+        "p50": 11872.929926876304,
+        "p90": 11872.929926876304,
+        "cv": 0.0
+      },
+      "decode_tokens_per_second": {
+        "mean": 92.92438550265422,
+        "p50": 92.92438550265422,
+        "p90": 92.92438550265422,
+        "cv": 0.0
+      },
+      "e2e_output_tokens_per_second": {
+        "mean": 10.407212075028376,
+        "p50": 10.407212075028376,
+        "p90": 10.407212075028376,
+        "cv": 0.0
+      },
+      "trajectory_sha256s": [
+        "490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf"
+      ],
+      "trajectory_stable": true
+    }
+  ],
+  "passed": true
+}
