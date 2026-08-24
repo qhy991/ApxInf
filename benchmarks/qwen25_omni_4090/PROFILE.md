@@ -3330,7 +3330,7 @@ non-SM89, training or speech/video generation performance.
 
 ## Prepared 32K split-CTA decode attention
 
-Status: **baseline reconstructed; CUDA candidate not yet implemented**.
+Status: **operator probe source prepared; no GPU result and no model change**.
 The target is one BF16 request at cached KV 32,761–32,767, one token per eager
 decode step, QH/KVH/D=16/2/128, TP1 on RTX 4090. The frozen no-profiler
 baseline is 24.40 ms TPOT with exact trajectory
@@ -3364,6 +3364,12 @@ second kernel merges them. Split 8 supplies 128 CTAs—one nominal RTX 4090
 wave—while adding only about 66 KiB of persistent partial workspace. The
 accepted global-cache path remains selector-off and no cache ownership or KV
 layout changes.
+
+The source reuses one parameterized CUDA implementation for the existing
+Qwen3.5 24/4/256 instance and the new Qwen2.5 16/2/128 instance, preserving
+the former launch geometry. A fixed-shape Rust facade owns validation and
+workspace; `qwen25_omni_decode_split_cta_probe` compares the real ordinary
+decode boundary against split 4/8/16 with cold, repeated GPU execution.
 
 The operator budget is the three split counts with fixed warmup/iterations.
 Each must meet the existing BF16 reduction tolerance at KV=11,265 and 32,767;

@@ -137,16 +137,13 @@ __global__ void qwen35_attention_gate_bf16_kernel(
 // partials.  A second kernel merges those partials in FP32.  The extra GMEM
 // traffic is bounded by heads * splits * (head_dim + 2) floats and is small
 // compared with the long-context KV reads it enables the full GPU to service.
-template <int kWarps = 8>
-__global__ void qwen35_attention_flash_split_cta_bf16_kernel(
+template <int kQueryHeads, int kKvHeads, int kHeadDim, int kWarps = 8>
+__global__ void attention_flash_split_cta_bf16_kernel(
     const __nv_bfloat16* query, const __nv_bfloat16* key_cache,
     const __nv_bfloat16* value_cache, float* partial_max,
     float* partial_sum, float* partial_accumulator, int split_count,
     int bucket_kv_len, int max_seq_len, float scale,
     const uint32_t* position) {
-  constexpr int kQueryHeads = 24;
-  constexpr int kKvHeads = 4;
-  constexpr int kHeadDim = 256;
   constexpr int kElementsPerThread = kHeadDim / 32;
   const int query_head = blockIdx.x;
   const int split = blockIdx.y;
@@ -263,12 +260,11 @@ __global__ void qwen35_attention_flash_split_cta_bf16_kernel(
   }
 }
 
-__global__ void qwen35_attention_flash_split_cta_reduce_bf16_kernel(
+template <int kHeadDim, int kMaxSplits = 16>
+__global__ void attention_flash_split_cta_reduce_bf16_kernel(
     const float* partial_max, const float* partial_sum,
     const float* partial_accumulator, __nv_bfloat16* output,
     int split_count) {
-  constexpr int kHeadDim = 256;
-  constexpr int kMaxSplits = 16;
   const int query_head = blockIdx.x;
   const int dimension = threadIdx.x;
   __shared__ float factor[kMaxSplits];
@@ -287,6 +283,7 @@ __global__ void qwen35_attention_flash_split_cta_reduce_bf16_kernel(
     denominator = sum;
   }
   __syncthreads();
+  if (dimension >= kHeadDim) return;
   float accumulator = 0.0f;
   for (int split = 0; split < split_count; ++split) {
     const int partial = query_head * split_count + split;
