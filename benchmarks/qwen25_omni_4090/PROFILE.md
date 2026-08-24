@@ -3028,3 +3028,33 @@ VRAM and never opened the service endpoint. It was cancelled after 229.9 seconds
 to release an already queued Qwen3.8 qualification job. This is an invalid
 infrastructure attempt, not correctness or performance evidence; the 8K token
 gate remains unexecuted.
+
+## Prepared long-only causal FA2 requalification
+
+Status: **source prepared; no GPU result and no deployment change**. The former
+FA2 experiment selected fused causal attention for every multi-token prefill and
+changed the frozen first token at both 1K and 4K. The new bounded candidate does
+not revisit those rejected cells. `APXINF_FA2_GQA_PREFILL=1` composes with the
+accepted batched-GQA selector only for BF16 suffix-prefill calls whose accumulated
+KV length is at least 4,097, with the exact Qwen2.5-Omni shape QH/KVH/D =
+16/2/128 on an SM80-family build. Decode, 1K, 4K, multimodal attention and the
+selector-off path remain native; an unavailable kernel, non-suffix request or
+shape mismatch fails explicitly.
+
+The minimal `core-fa2` carrier adds one SM89 64x64, no-dropout, causal head-128
+specialization beside the accepted non-causal vision head-96 specialization.
+It consumes the existing head-major KV cache through explicit row/head strides
+and returns the ordinary flattened model-owned output layout. A direct operator
+test compares the complete suffix-attention output against the existing scalar
+contract at the 4,097 boundary.
+
+The first GPU budget is correctness only: `8192+8`, zero warmups, one request,
+greedy sampling, exact complete trajectory SHA-256
+`490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf`.
+Any mismatch closes the candidate without 12K/32K timing. Only an exact 8K pass
+admits the 12K and 32K hashes
+(`57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832`
+and `f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9`),
+followed by at least five alternating accepted/candidate no-profiler pairs.
+Nsight Systems is spent only after a repeated end-to-end win. Until those gates
+pass, this branch makes no performance or promotion claim.
