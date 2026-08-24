@@ -261,6 +261,40 @@ extern "C" cudaError_t apxinf_static_qwen25_omni_attention_flash_split_cta_bf16(
   return cudaGetLastError();
 }
 
+extern "C" cudaError_t
+apxinf_static_qwen25_omni_attention_flash_grouped2_split_cta_bf16(
+    const void* query, const void* key_cache, const void* value_cache,
+    void* partial_max, void* partial_sum, void* partial_accumulator,
+    void* output, int split_count, int bucket_kv_len, int max_seq_len,
+    float scale, const void* position, cudaStream_t stream) {
+  if (query == nullptr || key_cache == nullptr || value_cache == nullptr ||
+      partial_max == nullptr || partial_sum == nullptr ||
+      partial_accumulator == nullptr || output == nullptr ||
+      position == nullptr || split_count < 40 || split_count > 80 ||
+      split_count % 8 != 0 || bucket_kv_len <= 0 ||
+      bucket_kv_len > max_seq_len || !(scale > 0.0f)) {
+    return cudaErrorInvalidValue;
+  }
+  dim3 stage_grid(8, split_count, 1);
+  attention_flash_grouped_split_cta_bf16_kernel<16, 2, 128, 2, 8><<<
+      stage_grid, 256, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(query),
+      static_cast<const __nv_bfloat16*>(key_cache),
+      static_cast<const __nv_bfloat16*>(value_cache),
+      static_cast<float*>(partial_max), static_cast<float*>(partial_sum),
+      static_cast<float*>(partial_accumulator), split_count, bucket_kv_len,
+      max_seq_len, scale, static_cast<const uint32_t*>(position));
+  cudaError_t status = cudaGetLastError();
+  if (status != cudaSuccess) return status;
+  attention_flash_split_cta_reduce_bf16_kernel<128, 80><<<
+      16, 128, 0, stream>>>(
+      static_cast<const float*>(partial_max),
+      static_cast<const float*>(partial_sum),
+      static_cast<const float*>(partial_accumulator),
+      static_cast<__nv_bfloat16*>(output), split_count);
+  return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_static_w8a16_gemv_bf16(
     const void* activation, const void* weight, const void* scales,
     void* output, int input_dim, int output_dim, cudaStream_t stream) {

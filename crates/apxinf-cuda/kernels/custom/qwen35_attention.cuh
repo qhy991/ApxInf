@@ -260,6 +260,178 @@ __global__ void attention_flash_split_cta_bf16_kernel(
   }
 }
 
+// GQA ownership probe.  One CTA owns adjacent query heads that share a KV
+// head, so each K/V element is loaded once and used by both online-softmax
+// states.  Every query head retains its own token order, maxima, sums and
+// accumulator; only the read ownership changes.
+template <int kQueryHeads, int kKvHeads, int kHeadDim,
+          int kGroupedQueryHeads = 2, int kWarps = 8>
+__global__ void attention_flash_grouped_split_cta_bf16_kernel(
+    const __nv_bfloat16* query, const __nv_bfloat16* key_cache,
+    const __nv_bfloat16* value_cache, float* partial_max,
+    float* partial_sum, float* partial_accumulator, int split_count,
+    int bucket_kv_len, int max_seq_len, float scale,
+    const uint32_t* position) {
+  static_assert(kQueryHeads % kKvHeads == 0,
+                "query heads must divide across KV heads");
+  constexpr int kQueryHeadsPerKv = kQueryHeads / kKvHeads;
+  static_assert(kQueryHeadsPerKv % kGroupedQueryHeads == 0,
+                "grouped query heads must remain inside one KV owner");
+  constexpr int kElementsPerThread = kHeadDim / 32;
+  const int query_group = blockIdx.x;
+  const int query_head_base = query_group * kGroupedQueryHeads;
+  const int split = blockIdx.y;
+  const int thread = threadIdx.x;
+  const int warp = thread / 32;
+  const int lane = thread & 31;
+  const int kv_head = query_head_base / kQueryHeadsPerKv;
+  const int valid_len = min(static_cast<int>(*position) + 1, bucket_kv_len);
+  const int span = (valid_len + split_count - 1) / split_count;
+  const int begin = min(split * span, valid_len);
+  const int end = min(begin + span, valid_len);
+
+  if (begin >= end) {
+#pragma unroll
+    for (int local_head = 0; local_head < kGroupedQueryHeads; ++local_head) {
+      const int query_head = query_head_base + local_head;
+      const int partial = query_head * split_count + split;
+      if (thread == 0) {
+        partial_max[partial] = -INFINITY;
+        partial_sum[partial] = 0.0f;
+      }
+      if (thread < kHeadDim)
+        partial_accumulator[static_cast<int64_t>(partial) * kHeadDim +
+                            thread] = 0.0f;
+    }
+    return;
+  }
+
+  __shared__ float query_shared[kGroupedQueryHeads][kHeadDim];
+  for (int index = thread; index < kGroupedQueryHeads * kHeadDim;
+       index += blockDim.x) {
+    const int local_head = index / kHeadDim;
+    const int dimension = index - local_head * kHeadDim;
+    query_shared[local_head][dimension] = __bfloat162float(
+        query[static_cast<int64_t>(query_head_base + local_head) * kHeadDim +
+              dimension]);
+  }
+  __syncthreads();
+
+  float query_register[kGroupedQueryHeads][kElementsPerThread];
+  float accumulator[kGroupedQueryHeads][kElementsPerThread];
+  float maximum[kGroupedQueryHeads];
+  float sum[kGroupedQueryHeads];
+#pragma unroll
+  for (int local_head = 0; local_head < kGroupedQueryHeads; ++local_head) {
+    maximum[local_head] = -INFINITY;
+    sum[local_head] = 0.0f;
+#pragma unroll
+    for (int item = 0; item < kElementsPerThread; ++item) {
+      query_register[local_head][item] =
+          query_shared[local_head][item * 32 + lane];
+      accumulator[local_head][item] = 0.0f;
+    }
+  }
+  const __nv_bfloat16* key_base =
+      key_cache + static_cast<int64_t>(kv_head) * max_seq_len * kHeadDim;
+  const __nv_bfloat16* value_base =
+      value_cache + static_cast<int64_t>(kv_head) * max_seq_len * kHeadDim;
+  for (int token = begin + warp; token < end; token += kWarps) {
+    float dot[kGroupedQueryHeads] = {};
+#pragma unroll
+    for (int item = 0; item < kElementsPerThread; ++item) {
+      const int dimension = item * 32 + lane;
+      const float key_value = __bfloat162float(
+          key_base[static_cast<int64_t>(token) * kHeadDim + dimension]);
+#pragma unroll
+      for (int local_head = 0; local_head < kGroupedQueryHeads; ++local_head)
+        dot[local_head] += query_register[local_head][item] * key_value;
+    }
+#pragma unroll
+    for (int local_head = 0; local_head < kGroupedQueryHeads; ++local_head) {
+#pragma unroll
+      for (int offset = 16; offset > 0; offset >>= 1)
+        dot[local_head] +=
+            __shfl_xor_sync(0xffffffff, dot[local_head], offset);
+      dot[local_head] *= scale;
+    }
+    float probability[kGroupedQueryHeads];
+    float previous_scale[kGroupedQueryHeads];
+#pragma unroll
+    for (int local_head = 0; local_head < kGroupedQueryHeads; ++local_head) {
+      const float next_maximum = fmaxf(maximum[local_head], dot[local_head]);
+      probability[local_head] = expf(dot[local_head] - next_maximum);
+      previous_scale[local_head] =
+          expf(maximum[local_head] - next_maximum);
+      sum[local_head] = sum[local_head] * previous_scale[local_head] +
+          probability[local_head];
+      maximum[local_head] = next_maximum;
+    }
+#pragma unroll
+    for (int item = 0; item < kElementsPerThread; ++item) {
+      const int dimension = item * 32 + lane;
+      const float value = __bfloat162float(
+          value_base[static_cast<int64_t>(token) * kHeadDim + dimension]);
+#pragma unroll
+      for (int local_head = 0; local_head < kGroupedQueryHeads; ++local_head)
+        accumulator[local_head][item] =
+            accumulator[local_head][item] * previous_scale[local_head] +
+            probability[local_head] * value;
+    }
+  }
+
+  __shared__ float warp_maximum[kGroupedQueryHeads][kWarps];
+  __shared__ float warp_sum[kGroupedQueryHeads][kWarps];
+  __shared__ float
+      warp_accumulator[kGroupedQueryHeads][kWarps][kHeadDim];
+#pragma unroll
+  for (int local_head = 0; local_head < kGroupedQueryHeads; ++local_head) {
+    if (lane == 0) {
+      warp_maximum[local_head][warp] = maximum[local_head];
+      warp_sum[local_head][warp] = sum[local_head];
+    }
+#pragma unroll
+    for (int item = 0; item < kElementsPerThread; ++item)
+      warp_accumulator[local_head][warp][item * 32 + lane] =
+          accumulator[local_head][item];
+  }
+  __syncthreads();
+
+  if (warp < kGroupedQueryHeads) {
+    const int local_head = warp;
+    const int query_head = query_head_base + local_head;
+    const int partial = query_head * split_count + split;
+    float merged_maximum = -INFINITY;
+#pragma unroll
+    for (int source = 0; source < kWarps; ++source)
+      merged_maximum =
+          fmaxf(merged_maximum, warp_maximum[local_head][source]);
+    float merged_sum = 0.0f;
+    float merged_accumulator[kElementsPerThread];
+#pragma unroll
+    for (int item = 0; item < kElementsPerThread; ++item)
+      merged_accumulator[item] = 0.0f;
+#pragma unroll
+    for (int source = 0; source < kWarps; ++source) {
+      const float factor =
+          expf(warp_maximum[local_head][source] - merged_maximum);
+      merged_sum += warp_sum[local_head][source] * factor;
+#pragma unroll
+      for (int item = 0; item < kElementsPerThread; ++item)
+        merged_accumulator[item] +=
+            warp_accumulator[local_head][source][item * 32 + lane] * factor;
+    }
+    if (lane == 0) {
+      partial_max[partial] = merged_maximum;
+      partial_sum[partial] = merged_sum;
+    }
+#pragma unroll
+    for (int item = 0; item < kElementsPerThread; ++item)
+      partial_accumulator[static_cast<int64_t>(partial) * kHeadDim +
+                          item * 32 + lane] = merged_accumulator[item];
+  }
+}
+
 template <int kHeadDim, int kMaxSplits = 16>
 __global__ void attention_flash_split_cta_reduce_bf16_kernel(
     const float* partial_max, const float* partial_sum,
