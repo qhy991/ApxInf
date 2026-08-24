@@ -3482,3 +3482,46 @@ idle.
 SM89 QH/KVH/D=16/2/128, KV 32,761--32,767 selector.** Structured authority is
 `promotion-decode-split32.json`. No new model, request, hardware or concurrency
 claim is introduced.
+
+### Promoted follow-up: non-power-of-two split 40
+
+The late-stage occupancy screen kept eight warps and every request/model
+parameter fixed while measuring split counts 32, 40, 48, 56 and 64. Split 40
+measures 0.05583 ms/layer versus 0.06098 ms for split 32 (1.092x); 48, 56 and
+64 all regress. Every arm retains the same continuous-error metrics relative
+to the ordinary decode boundary. The final internal contract therefore accepts
+screened multiples of eight but bounds the shipping workspace and reducer at
+40 splits, or 332,800 bytes. Raw authority is
+`omni-32767-decode-nonpow2-split-screen.json`.
+
+The real 32,760+8 smoke preserves the frozen trajectory and logs
+`kv=32761, splits=40`. Five alternating immutable-binary A/B pairs pass all
+ten exact requests. Split 40 wins 5/5: paired median TPOT speedup is 1.0416x
+and the slowest pair is 1.0388x. Raw medians move from 11.682 to 11.221 ms,
+candidate TPOT CV is 0.082%, paired TTFT is unchanged, and paired wall time
+improves by 1.0014x.
+
+Matched Systems profiles show mean decode envelope falling from 11.857 to
+11.438 ms and GPU busy time from 11.130 to 10.668 ms. The stage kernel falls
+from 3.030 to 2.550 ms/step, while reduction rises only from 0.096 to 0.113
+ms/step. The net 0.462 ms GPU-busy reduction matches the 0.461 ms no-profiler
+median TPOT reduction; other dominant kernels remain unchanged.
+
+Regression passes model CPU 65/65, benchmark scripts 15/15, quick 5/5, decode
+5/5, 4K/8K/12K/32K, real PNG/WAV and malformed-media recovery. CUDA remains
+93/95 with only the same two accepted-control RTX 4090 FP8 cuBLAS status-15
+failures. Relative to frozen vLLM-Omni 0.26.0, ApxInf now wins 32K TPOT by
+1.566x (11.221 versus 17.577 ms) and reaches a 65.24% minimum-BWU lower bound.
+
+The deployed binary SHA-256 is
+`e6185a50fc90d20177af330b6da3ea225d958715ebd417c8854979d4263f21c7`;
+the immediate rollback is
+`cf77816bd7add10c0061523ce0f52f69aefdfed2065a42734da93b8c44b2fb01`.
+A runit-owned smoke reproduces the exact trajectory at 11.230 ms TPOT and
+confirms the split-40 path before the service returns down and the GPU becomes
+idle.
+
+**Decision: promote split 40 over split 32 only inside the already accepted
+SM89 QH/KVH/D=16/2/128, KV 32,761--32,767 selector.** Structured authority is
+`promotion-decode-split40.json`. No new model, request, hardware or concurrency
+claim is introduced.

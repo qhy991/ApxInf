@@ -83,13 +83,13 @@ one warmup.
 |---:|---:|---:|---:|---:|---:|---|
 | 8,192 | 0.407 s | 0.512 s | ApxInf 1.259× | 10.69 ms | 19.11 ms | ApxInf 1.337× |
 | 12,288 | 0.655 s | 0.830 s | ApxInf 1.267× | 13.07 ms | 19.09 ms | ApxInf 1.284× |
-| 32,760 | 2.603 s | 2.912 s | ApxInf 1.119× | 11.70 ms | 17.58 ms | ApxInf 1.127× |
+| 32,760 | 2.602 s | 2.912 s | ApxInf 1.119× | 11.22 ms | 17.58 ms | ApxInf 1.129× |
 
 ApxInf's causal FA2 path, FA2-aware 1,024-token chunks and request-scoped early
 FA2 remove the former prefill deficit across all frozen lengths. At the 32K
-decode boundary, split-32 CTA attention lowers ApxInf TPOT from 24.35 to 11.70
-ms and reverses the last vLLM text advantage: ApxInf is 1.502× faster. The
-minimum-BWU lower bound at 32K is 62.55% for ApxInf and 41.65% for vLLM.
+decode boundary, split-40 CTA attention lowers ApxInf TPOT from 24.35 to 11.22
+ms and reverses the last vLLM text advantage: ApxInf is 1.566× faster. The
+minimum-BWU lower bound at 32K is 65.24% for ApxInf and 41.65% for vLLM.
 
 Both engines pass 32,760 + 8. vLLM's throughput-oriented automatic policy
 reserved 11.45 GiB for 333,552 KV tokens—10.18 simultaneous 32K requests—and

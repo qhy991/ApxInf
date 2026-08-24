@@ -1,0 +1,209 @@
+{
+  "schema": "apxinf.qwen25_omni.decode_window_analysis.v1",
+  "source": "/var/lib/agent-gpu-broker/profiles/omni-32760-decode-split40-B-interactive.sqlite",
+  "boundary": "six complete intervals between the last seven GPU argmax token commits",
+  "windows": [
+    {
+      "step": 2,
+      "start_ns": 2716981359,
+      "end_ns": 2728522689,
+      "envelope_ns": 11541330,
+      "gpu_busy_ns": 10678554,
+      "gpu_gap_ns": 862776,
+      "kernel_instances": 653,
+      "runtime_calls": 2141
+    },
+    {
+      "step": 3,
+      "start_ns": 2728522689,
+      "end_ns": 2739866229,
+      "envelope_ns": 11343540,
+      "gpu_busy_ns": 10655842,
+      "gpu_gap_ns": 687698,
+      "kernel_instances": 653,
+      "runtime_calls": 2141
+    },
+    {
+      "step": 4,
+      "start_ns": 2739866229,
+      "end_ns": 2751545510,
+      "envelope_ns": 11679281,
+      "gpu_busy_ns": 10695127,
+      "gpu_gap_ns": 984154,
+      "kernel_instances": 653,
+      "runtime_calls": 2141
+    },
+    {
+      "step": 5,
+      "start_ns": 2751545510,
+      "end_ns": 2762902234,
+      "envelope_ns": 11356724,
+      "gpu_busy_ns": 10661338,
+      "gpu_gap_ns": 695386,
+      "kernel_instances": 653,
+      "runtime_calls": 2141
+    },
+    {
+      "step": 6,
+      "start_ns": 2762902234,
+      "end_ns": 2774247438,
+      "envelope_ns": 11345204,
+      "gpu_busy_ns": 10651802,
+      "gpu_gap_ns": 693402,
+      "kernel_instances": 653,
+      "runtime_calls": 2141
+    },
+    {
+      "step": 7,
+      "start_ns": 2774247438,
+      "end_ns": 2785610817,
+      "envelope_ns": 11363379,
+      "gpu_busy_ns": 10666064,
+      "gpu_gap_ns": 697315,
+      "kernel_instances": 653,
+      "runtime_calls": 2141
+    }
+  ],
+  "summary": {
+    "steps": 6,
+    "mean_envelope_ns": 11438243.0,
+    "mean_gpu_busy_ns": 10668121.166666666,
+    "mean_gpu_gap_ns": 770121.8333333334,
+    "kernel_instances": 3918,
+    "runtime_calls": 12846
+  },
+  "top_kernels": [
+    {
+      "name": "kernel",
+      "total_ns": 27847773,
+      "count": 864
+    },
+    {
+      "name": "attention_flash_split_cta_bf16_kernel",
+      "total_ns": 15298005,
+      "count": 216
+    },
+    {
+      "name": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_32x6_nn",
+      "total_ns": 11462636,
+      "count": 216
+    },
+    {
+      "name": "Kernel",
+      "total_ns": 3983396,
+      "count": 6
+    },
+    {
+      "name": "rms_norm_bf16_kernel",
+      "total_ns": 1859831,
+      "count": 438
+    },
+    {
+      "name": "gqa_qkv_split_bias_bf16_kernel",
+      "total_ns": 797016,
+      "count": 216
+    },
+    {
+      "name": "attention_flash_split_cta_reduce_bf16_kernel",
+      "total_ns": 676616,
+      "count": 216
+    },
+    {
+      "name": "rope_tmrope_bf16_kernel",
+      "total_ns": 615102,
+      "count": 432
+    },
+    {
+      "name": "kv_cache_append_bf16_kernel",
+      "total_ns": 421118,
+      "count": 432
+    },
+    {
+      "name": "add_bf16_kernel",
+      "total_ns": 417628,
+      "count": 432
+    },
+    {
+      "name": "splitKreduce_kernel",
+      "total_ns": 372320,
+      "count": 216
+    },
+    {
+      "name": "silu_mul_separate_bf16_kernel",
+      "total_ns": 218630,
+      "count": 216
+    },
+    {
+      "name": "argmax_bf16_partials_kernel",
+      "total_ns": 16799,
+      "count": 6
+    },
+    {
+      "name": "argmax_pair_final_kernel",
+      "total_ns": 14048,
+      "count": 6
+    },
+    {
+      "name": "embedding_bf16_kernel",
+      "total_ns": 7809,
+      "count": 6
+    }
+  ],
+  "top_runtime_calls": [
+    {
+      "name": "cudaLaunchKernel_v7000",
+      "total_ns": 19340910,
+      "count": 3918
+    },
+    {
+      "name": "cudaMallocAsync_v11020",
+      "total_ns": 4507569,
+      "count": 3480
+    },
+    {
+      "name": "cudaFreeAsync_v11020",
+      "total_ns": 4217647,
+      "count": 3480
+    },
+    {
+      "name": "cudaMemsetAsync_v3020",
+      "total_ns": 1067465,
+      "count": 216
+    },
+    {
+      "name": "cudaStreamGetCaptureInfo_v2_v11030",
+      "total_ns": 696689,
+      "count": 1296
+    },
+    {
+      "name": "cudaEventRecord_v3020",
+      "total_ns": 309288,
+      "count": 216
+    },
+    {
+      "name": "cudaOccupancyMaxActiveBlocksPerMultiprocessor_v6050",
+      "total_ns": 231907,
+      "count": 216
+    },
+    {
+      "name": "cudaMemcpy_v3020",
+      "total_ns": 60000,
+      "count": 6
+    },
+    {
+      "name": "cudaMalloc_v3020",
+      "total_ns": 51980,
+      "count": 6
+    },
+    {
+      "name": "cudaMemcpyAsync_v3020",
+      "total_ns": 41360,
+      "count": 6
+    },
+    {
+      "name": "cudaFree_v3020",
+      "total_ns": 31430,
+      "count": 6
+    }
+  ]
+}

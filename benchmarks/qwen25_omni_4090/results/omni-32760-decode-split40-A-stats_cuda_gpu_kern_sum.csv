@@ -1,0 +1,27 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+37.2,986648097,972,1015070.1,1028151.0,278046,1740561,437836.5,"void apxinf_fa2::flash_fwd_kernel<Flash_fwd_kernel_traits<(int)128, (int)64, (int)64, (int)4, (bool)0, (bool)0, cutlass::bfloat16_t, Flash_kernel_traits<(int)128, (int)64, (int)64, (int)4, cutlass::bfloat16_t>>, (bool)0, (bool)1, (bool)0, (bool)0, (bool)1, (bool)1, (bool)0, (bool)0>(apxinf_fa2::Flash_fwd_params)"
+27.9,740423501,3348,221154.0,292478.0,72608,303293,103282.8,ampere_bf16_s1688gemm_bf16_64x128_sliced1x2_ldg8_f2f_nn
+12.5,332376246,1152,288521.0,287838.0,281982,296350,2507.9,ampere_bf16_s1688gemm_bf16_128x64_sliced1x2_ldg8_f2f_nn
+3.5,91699824,324,283024.1,309117.0,74751,408636,98526.6,void cutlass::Kernel<cutlass_80_tensorop_bf16_s16816gemm_bf16_64x64_32x6_nn_align8>(T1::Params)
+2.8,73783393,216,341589.8,341980.5,224542,461724,93577.1,void cutlass::Kernel<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_32x32_64x2_tn_align8>(T1::Params)
+2.4,64176445,1152,55708.7,55679.0,53343,57952,794.0,ampere_bf16_s1688gemm_bf16_128x128_ldg8_f2f_stages_32x1_nn
+2.4,63518216,36,1764394.9,1764241.0,1762033,1768561,1319.0,"void apxinf_fa2::flash_fwd_kernel<Flash_fwd_kernel_traits<(int)128, (int)64, (int)64, (int)4, (bool)0, (bool)0, cutlass::bfloat16_t, Flash_kernel_traits<(int)128, (int)64, (int)64, (int)4, cutlass::bfloat16_t>>, (bool)0, (bool)1, (bool)0, (bool)0, (bool)0, (bool)1, (bool)0, (bool)0>(apxinf_fa2::Flash_fwd_params)"
+2.3,61734732,1404,43970.6,53375.0,991,54751,20103.0,"silu_mul_separate_bf16_kernel(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int)"
+1.6,42090196,144,292293.0,277629.5,70111,549276,174602.3,"attention_softmax_bf16_exp_cache_kernel(const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int, unsigned int, unsigned int, unsigned int)"
+1.2,32513104,1008,32255.1,32783.5,10944,57728,20039.4,"std::enable_if<!T7, void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, float, (bool)0, (bool)1, (bool)0, (bool)0, (int)9, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<const __nv_bfloat16>, cublasGemvTensorStridedBatched<__nv_bfloat16>, float>>(T13)"
+1.0,26292294,2808,9363.4,3680.0,1344,19232,7700.7,"rope_tmrope_bf16_kernel(const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int, unsigned int, unsigned int, float, const unsigned int *, unsigned int, unsigned int)"
+0.9,24523053,144,170299.0,174910.0,33599,298206,98235.0,"scale_bf16_kernel(const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int, float)"
+0.8,21222092,252,84214.7,84095.0,82847,88927,729.0,"void <unnamed>::attention_flash_split_cta_bf16_kernel<(int)16, (int)2, (int)128, (int)8>(const __nv_bfloat16 *, const __nv_bfloat16 *, const __nv_bfloat16 *, float *, float *, float *, int, int, int, float, const unsigned int *)"
+0.8,20403545,2816,7245.6,7776.0,4064,11072,1455.9,"rms_norm_bf16_kernel(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int, unsigned int, float)"
+0.7,18746365,2808,6676.1,8352.0,928,13440,2970.3,"add_bf16_kernel(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, unsigned int)"
+0.5,13379861,252,53094.7,53056.0,52255,57439,404.8,ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_32x6_nn
+0.4,9763516,1404,6954.1,7584.0,3520,12544,1552.3,"<unnamed>::gqa_qkv_split_bias_bf16_kernel(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, __nv_bfloat16 *, __nv_bfloat16 *, int, int, int)"
+0.3,8763474,72,121714.9,121726.5,120319,123007,597.4,void cutlass::Kernel<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_64x1_nn_align8>(T1::Params)
+0.2,5769579,2808,2054.7,2272.0,959,2464,492.5,"kv_cache_append_bf16_kernel(__nv_bfloat16 *, const __nv_bfloat16 *, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int)"
+0.2,5578993,72,77486.0,77280.0,75904,80415,992.7,void cutlass::Kernel<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_64x1_tn_align8>(T1::Params)
+0.2,5337426,8,667178.3,663946.0,662298,689402,9067.9,void cutlass::Kernel<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_32x32_32x1_nn_align8>(T1::Params)
+0.0,673719,252,2673.5,2656.0,2623,2880,52.5,"void <unnamed>::attention_flash_split_cta_reduce_bf16_kernel<(int)128, (int)32>(const float *, const float *, const float *, __nv_bfloat16 *, int)"
+0.0,435936,252,1729.9,1728.0,1567,2081,83.3,"void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, __nv_bfloat16, __nv_bfloat16, float, __nv_bfloat16, (bool)1, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T5 *, T5 *, const T6 *, const T6 *, const T7 *, const T4 *, T7 *, void *, long, T6 *, int *)"
+0.0,225820,39,5790.3,6720.0,1248,6880,2082.6,"embedding_bf16_kernel(const __nv_bfloat16 *, const unsigned int *, __nv_bfloat16 *, unsigned int, unsigned int)"
+0.0,19552,7,2793.1,2816.0,2688,2880,65.9,"argmax_bf16_partials_kernel(const __nv_bfloat16 *, unsigned int, ArgmaxPair *)"
+0.0,16672,7,2381.7,2304.0,2272,2912,234.3,"argmax_pair_final_kernel(const ArgmaxPair *, unsigned int, unsigned int *)"

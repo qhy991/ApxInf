@@ -21,7 +21,7 @@
     "apxinf_quick": "deployed-vision-full-fa2-final-quick.json",
     "apxinf_decode": "deployed-vision-full-fa2-decode.json",
     "apxinf_context": "promotion-request-scoped-fa2.json",
-    "apxinf_context_32k": "promotion-decode-split32.json",
+    "apxinf_context_32k": "promotion-decode-split40.json",
     "apxinf_multimodal": "promotion-grouped-varlen-fa2.json",
     "vllm_quick": "vllm-omni-0.26.0-kv2g-quick.json",
     "vllm_decode": "vllm-omni-0.26.0-kv2g-decode.json",
@@ -127,9 +127,9 @@
     {
       "workload": "32760+8",
       "apxinf": {
-        "ttft_ms": 2603.480561,
-        "tpot_ms": 11.704985857142856,
-        "wall_ms": 2693.791277706623
+        "ttft_ms": 2602.408513,
+        "tpot_ms": 11.220929142857144,
+        "wall_ms": 2689.1364380717278
       },
       "vllm_omni": {
         "ttft_ms": 2912.2343733906746,
@@ -137,9 +137,9 @@
         "wall_ms": 3035.371094942093
       },
       "speedup": {
-        "apxinf_ttft": 1.1186,
-        "apxinf_tpot": 1.5016,
-        "apxinf_wall": 1.1268
+        "apxinf_ttft": 1.1191,
+        "apxinf_tpot": 1.5664,
+        "apxinf_wall": 1.1288
       }
     }
   ],
@@ -211,7 +211,7 @@
       }
     },
     "decode_32760+8": {
-      "apxinf_minimum_bwu_percent": 62.5458,
+      "apxinf_minimum_bwu_percent": 65.244,
       "vllm_omni_minimum_bwu_percent": 41.6521
     },
     "limitations": [

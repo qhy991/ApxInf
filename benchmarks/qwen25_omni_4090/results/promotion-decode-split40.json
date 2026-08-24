@@ -1,0 +1,214 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "completed_at": "2026-08-24T19:54:28+08:00",
+  "decision": {
+    "status": "promote",
+    "scope": "refine the accepted single-request BF16 SM89 long-decode path from split 32 to split 40 at cached KV 32761 through 32767",
+    "reason": "All ten complete requests retain the exact trajectory, all five alternating pairs win by at least 1.039x, and matched Systems profiles attribute the stable late-stage gain only to the intended attention stage and reduction boundary.",
+    "deployment_selector": "APXINF_QWEN25_LONG_DECODE_SPLIT_CTA=1"
+  },
+  "contract": {
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "hardware": "NVIDIA GeForce RTX 4090",
+    "sm": 89,
+    "precision": "bf16",
+    "concurrency": 1,
+    "sampling": "greedy",
+    "prompt_tokens": 32760,
+    "output_tokens": 8,
+    "decode_kv_range": [32761, 32767],
+    "shape": {
+      "query_heads": 16,
+      "kv_heads": 2,
+      "head_dim": 128,
+      "max_context_tokens": 32768
+    },
+    "timing_authority": "no-profiler service-emitted TPOT and TTFT plus client wall time",
+    "profile_role": "causal attribution only"
+  },
+  "implementation": {
+    "commit": "5af11826e5215ae458987976feed0a7ad9d0398d",
+    "binary": "/opt/apxinf/qwen25-omni-decode-nonpow2-screen-target-a9a12f7/release/apxinf",
+    "binary_sha256": "e6185a50fc90d20177af330b6da3ea225d958715ebd417c8854979d4263f21c7",
+    "build": "clean sm_89 core-fa2 release build",
+    "parent_binary_sha256": "cf77816bd7add10c0061523ce0f52f69aefdfed2065a42734da93b8c44b2fb01",
+    "change": "allow the Qwen2.5-Omni internal split-CTA launch contract to use screened multiples of eight, select split 40, and bound its persistent workspace and reduction template at 40; Qwen3.5 and all unmatched Omni paths remain unchanged",
+    "workspace_bytes": 332800,
+    "unmatched_paths": "selector-off, KV below 32761, prefill, multimodal, non-SM89, other shapes and other context capacities retain the accepted path or fail model load"
+  },
+  "operator_screen": {
+    "job": "gpuq-e044c1a523fe",
+    "screen_commit": "a9a12f78fff4a0977ed1543f2fce5c334ee06624",
+    "screen_binary_sha256": "ad44b7354e90bbf5fee8bc3b10eea5611861575823f4c2a1c0e4582516f6a225",
+    "raw": "omni-32767-decode-nonpow2-split-screen.json",
+    "kv_len": 32767,
+    "warmups": 10,
+    "iterations": 100,
+    "incumbent_milliseconds_per_layer": 0.48937786,
+    "candidates": [
+      {
+        "splits": 32,
+        "milliseconds_per_layer": 0.06097673
+      },
+      {
+        "splits": 40,
+        "milliseconds_per_layer": 0.05583302,
+        "speedup_over_split32": 1.092126666263
+      },
+      {
+        "splits": 48,
+        "milliseconds_per_layer": 0.06069402,
+        "regression_vs_split40": 1.087063175
+      },
+      {
+        "splits": 56,
+        "milliseconds_per_layer": 0.07039755,
+        "regression_vs_split40": 1.260858718
+      },
+      {
+        "splits": 64,
+        "milliseconds_per_layer": 0.06272704,
+        "regression_vs_split40": 1.123475678
+      }
+    ],
+    "continuous_error_for_all_split_arms": {
+      "max_abs": 0.00390625,
+      "mean_abs": 0.000568389892578125,
+      "cosine": 0.9999980359902577
+    },
+    "selected_splits": 40,
+    "rejected_splits": [48, 56, 64]
+  },
+  "correctness": {
+    "smoke_job": "gpuq-d476aec9916d",
+    "smoke_raw": "omni-decode-split40-smoke-32k.json",
+    "formal_job": "gpuq-3feac9cbecdf",
+    "formal_requests": 10,
+    "all_exact": true,
+    "all_stable": true,
+    "trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9",
+    "inherited_fail_closed_gate": "the unchanged selector still requires cached TMRoPE position ownership and the frozen SM89 QH/KVH/D/context contract"
+  },
+  "no_profiler": {
+    "binary_control": "alternating immutable split32 and split40 SM89 binaries; the serving source diff is limited to the screened split contract, selected count, workspace maximum and reduction maximum",
+    "baseline_binary_sha256": "cf77816bd7add10c0061523ce0f52f69aefdfed2065a42734da93b8c44b2fb01",
+    "candidate_binary_sha256": "e6185a50fc90d20177af330b6da3ea225d958715ebd417c8854979d4263f21c7",
+    "order": ["A", "B", "B", "A", "A", "B", "B", "A", "A", "B"],
+    "pairs": 5,
+    "paired_wins": 5,
+    "baseline_tpot_median_seconds": 0.011681657,
+    "candidate_tpot_median_seconds": 0.011220929142857144,
+    "paired_tpot_speedup_median": 1.041580754175,
+    "paired_tpot_speedup_min": 1.038805600585,
+    "paired_tpot_reduction_median_pct": 3.992081652,
+    "baseline_tpot_cv_pct": 0.266234523,
+    "candidate_tpot_cv_pct": 0.08175627,
+    "baseline_ttft_median_seconds": 2.602569656,
+    "candidate_ttft_median_seconds": 2.602408513,
+    "paired_candidate_ttft_change_median_pct": -0.019236911,
+    "baseline_wall_median_seconds": 2.692367009818554,
+    "candidate_wall_median_seconds": 2.6891364380717278,
+    "paired_wall_speedup_median": 1.001421847196,
+    "raw_pattern": "omni-decode-split40-abba-s??-p?-?.json"
+  },
+  "systems_profile": {
+    "job": "gpuq-8e5b053a9fed",
+    "workload": "32760 prompt + 8 output after one unprofiled warmup",
+    "baseline": {
+      "splits": 32,
+      "report": "/var/lib/agent-gpu-broker/profiles/omni-32760-decode-split40-A-interactive.nsys-rep",
+      "report_size_bytes": 2780941,
+      "report_sha256": "0c613dd6c512b5af95caeef35a56849133f0bc2437d85eae7afd0849272721a7",
+      "mean_decode_envelope_ms": 11.857350333333334,
+      "mean_decode_gpu_busy_ms": 11.130045333333334,
+      "mean_decode_gap_ms": 0.727305,
+      "attention_stage_ms_per_step": 3.029916,
+      "attention_reduce_ms_per_step": 0.09613233333333334
+    },
+    "candidate": {
+      "splits": 40,
+      "report": "/var/lib/agent-gpu-broker/profiles/omni-32760-decode-split40-B-interactive.nsys-rep",
+      "report_size_bytes": 2782587,
+      "report_sha256": "1d31290abcebc79a33086f9c160c7a9339736319806be5503f760ddb6bae39c2",
+      "mean_decode_envelope_ms": 11.438243,
+      "mean_decode_gpu_busy_ms": 10.668121166666666,
+      "mean_decode_gap_ms": 0.7701218333333334,
+      "attention_stage_ms_per_step": 2.5496675,
+      "attention_reduce_ms_per_step": 0.11276933333333333
+    },
+    "attribution": {
+      "mean_decode_envelope_saved_ms": 0.419107333333334,
+      "mean_decode_gpu_busy_saved_ms": 0.461924166666668,
+      "attention_boundary_speedup": 1.174130516148,
+      "attention_boundary_reduction_pct": 14.83059283,
+      "interpretation": "The additional stage grid removes 0.480 ms/step from the split stage while adding only 0.017 ms/step to reduction; the 0.462 ms GPU-busy reduction matches the 0.461 ms no-profiler median TPOT reduction. Other dominant kernels are unchanged."
+    },
+    "raw_windows": [
+      "omni-32760-decode-split40-A-windows.json",
+      "omni-32760-decode-split40-B-windows.json"
+    ],
+    "raw_kernel_stats": [
+      "omni-32760-decode-split40-A-stats_cuda_gpu_kern_sum.csv",
+      "omni-32760-decode-split40-B-stats_cuda_gpu_kern_sum.csv"
+    ]
+  },
+  "regression": {
+    "service_job": "gpuq-f08a333e5350",
+    "model_cpu_tests": "65 passed, 0 failed, 755.17 seconds",
+    "benchmark_python_tests": "15 passed, 0 failed",
+    "quick": "5 of 5 exact and stable",
+    "decode": "5 of 5 exact and stable",
+    "context": "4096, 8192, 12288 and 32760 exact",
+    "real_png": "exact accepted tokens, no fallback",
+    "real_wav": "exact accepted tokens, no fallback",
+    "malformed_media_recovery": "typed HTTP 422 followed by healthy exact PNG request",
+    "cuda_suite": {
+      "job": "gpuq-1f41ec9d40cb",
+      "result": "93 passed, 2 failed",
+      "known_failures": [
+        "tests::fp8::fp8_identity_gemm_runs_on_device",
+        "tests::fp8::fp8_large_k_gemm_matches_quantized_cpu_reference"
+      ],
+      "assessment": "all non-FP8 tests pass; the same accepted-control RTX 4090 cuBLAS status-15 failures remain"
+    },
+    "raw_pattern": "omni-decode-split40-acceptance-*.json"
+  },
+  "frozen_vllm_omni_0_26_comparison": {
+    "vllm_tpot_seconds": 0.017576508224010468,
+    "apxinf_tpot_seconds": 0.011220929142857144,
+    "apxinf_tpot_speedup": 1.566403993844,
+    "apxinf_minimum_bwu_lower_bound_pct": 65.24395789785882,
+    "vllm_minimum_bwu_lower_bound_pct": 41.6521,
+    "result": "ApxInf retains every frozen 8K, 12K and 32K TTFT, TPOT and wall-time win"
+  },
+  "deployment": {
+    "installed_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf",
+    "installed_binary_sha256": "e6185a50fc90d20177af330b6da3ea225d958715ebd417c8854979d4263f21c7",
+    "rollback_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf.rollback-cf77816bd7add10c",
+    "rollback_binary_sha256": "cf77816bd7add10c0061523ce0f52f69aefdfed2065a42734da93b8c44b2fb01",
+    "runit_definition_sha256": "c491aab0db3e7c1997bcb47e234b1c36678e2a178ff0259b118c860165198987",
+    "runit_job": "gpuq-682af17f1838",
+    "smoke": {
+      "passed": true,
+      "ttft_seconds": 2.5969355089999997,
+      "tpot_seconds": 0.011230401428571428,
+      "wall_seconds": 2.683726891875267,
+      "trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9",
+      "path_log": "ApxInf Qwen2.5-Omni long-decode split-CTA: kv=32761, splits=40",
+      "raw": "deployed-omni-decode-split40-smoke-32k.json"
+    },
+    "final_service_state": "down",
+    "final_gpu_state": "idle"
+  },
+  "non_claims": [
+    "multi-request performance",
+    "KV below 32761",
+    "non-SM89 performance",
+    "other Qwen2.5-Omni sizes",
+    "cross-engine token identity",
+    "training",
+    "speech or video generation",
+    "profiler timing as admission"
+  ]
+}
