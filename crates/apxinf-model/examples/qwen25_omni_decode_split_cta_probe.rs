@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use apxinf_core::{Backend, DType, Error, Tensor};
 use apxinf_cuda::kernels::qwen25_omni_attention::{
-    grouped2_split_cta_write, split_cta_write, SplitCtaWorkspace, HEAD_DIM, KV_HEADS, QUERY_HEADS,
-    WIDTH,
+    grouped2_split_cta_write, grouped4_split_cta_write, split_cta_write,
+    SplitCtaWorkspace, HEAD_DIM, KV_HEADS, QUERY_HEADS, WIDTH,
 };
 use apxinf_cuda::{CudaBackend, CudaBuffer, CudaKVCache};
 use half::bf16;
@@ -211,6 +211,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         records.push(serde_json::json!({
             "implementation": "grouped2_split_cta",
             "query_heads_per_cta": 2,
+            "split_count": split_count,
+            "milliseconds": milliseconds,
+            "speedup_over_baseline": baseline_ms / milliseconds,
+            "correctness": error_metrics(&candidate, &baseline_values),
+        }));
+    }
+    for split_count in [64usize, 80, 96, 112, 128] {
+        for _ in 0..warmups {
+            grouped4_split_cta_write(
+                context,
+                &query,
+                cache.k_buffer(0),
+                cache.v_buffer(0),
+                &output,
+                &workspace,
+                split_count,
+                kv_len,
+                max_seq_len,
+                (HEAD_DIM as f32).sqrt().recip(),
+                position.address(),
+            )?;
+        }
+        context.synchronize().map_err(Error::Cuda)?;
+        let started = Instant::now();
+        for _ in 0..iterations {
+            grouped4_split_cta_write(
+                context,
+                &query,
+                cache.k_buffer(0),
+                cache.v_buffer(0),
+                &output,
+                &workspace,
+                split_count,
+                kv_len,
+                max_seq_len,
+                (HEAD_DIM as f32).sqrt().recip(),
+                position.address(),
+            )?;
+        }
+        context.synchronize().map_err(Error::Cuda)?;
+        let milliseconds = started.elapsed().as_secs_f64() * 1_000.0 / iterations as f64;
+        let candidate = backend.to_cpu(&output)?.to_f32_vec()?;
+        records.push(serde_json::json!({
+            "implementation": "grouped4_split_cta",
+            "query_heads_per_cta": 4,
             "split_count": split_count,
             "milliseconds": milliseconds,
             "speedup_over_baseline": baseline_ms / milliseconds,
