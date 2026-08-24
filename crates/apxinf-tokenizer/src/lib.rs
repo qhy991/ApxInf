@@ -77,34 +77,64 @@ impl Tokenizer {
     /// and the standard standalone chat_template.jinja from the same directory.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
-        let inner = HfTokenizer::from_file(path_ref)
-            .map_err(|e| Error::Other(format!("tokenizer load: {e}")))?;
-
         let model_dir = path_ref.parent().unwrap_or_else(|| Path::new("."));
         let config_path = path_ref
             .parent()
             .map(|p| p.join("tokenizer_config.json"))
             .unwrap_or_else(|| path_ref.with_extension("config.json"));
-
-        let config = if config_path.exists() {
-            let payload = std::fs::read_to_string(&config_path).map_err(|error| {
+        let tokenizer_json = std::fs::read(path_ref).map_err(|error| {
+            Error::Other(format!("tokenizer read {}: {error}", path_ref.display()))
+        })?;
+        let tokenizer_config_json = if config_path.exists() {
+            Some(std::fs::read(&config_path).map_err(|error| {
                 Error::Other(format!(
                     "tokenizer config read {}: {error}",
                     config_path.display()
                 ))
-            })?;
-            serde_json::from_str(&payload).map_err(|error| {
-                Error::Other(format!(
-                    "tokenizer config parse {}: {error}",
-                    config_path.display()
-                ))
-            })?
+            })?)
         } else {
-            TokenizerConfig::default()
+            None
         };
+        let standalone_path = model_dir.join("chat_template.jinja");
+        let needs_standalone = match tokenizer_config_json.as_deref() {
+            Some(payload) => serde_json::from_slice::<TokenizerConfig>(payload)
+                .map_err(|error| Error::Other(format!("tokenizer config parse: {error}")))?
+                .chat_template
+                .is_none(),
+            None => true,
+        };
+        let standalone_chat_template = if needs_standalone && standalone_path.exists() {
+            Some(std::fs::read(&standalone_path).map_err(|error| {
+                Error::Other(format!(
+                    "chat template read {}: {error}",
+                    standalone_path.display()
+                ))
+            })?)
+        } else {
+            None
+        };
+        Self::from_bytes(
+            &tokenizer_json,
+            tokenizer_config_json.as_deref(),
+            standalone_chat_template.as_deref(),
+        )
+    }
 
-        let chat_template = load_chat_template(model_dir, &config)?;
-
+    /// Load a tokenizer and its optional companion files from already-attested
+    /// bytes, without reopening any model path.
+    pub fn from_bytes(
+        tokenizer_json: &[u8],
+        tokenizer_config_json: Option<&[u8]>,
+        standalone_chat_template: Option<&[u8]>,
+    ) -> Result<Self> {
+        let inner = HfTokenizer::from_bytes(tokenizer_json)
+            .map_err(|error| Error::Other(format!("tokenizer load: {error}")))?;
+        let config = match tokenizer_config_json {
+            Some(payload) => serde_json::from_slice(payload)
+                .map_err(|error| Error::Other(format!("tokenizer config parse: {error}")))?,
+            None => TokenizerConfig::default(),
+        };
+        let chat_template = load_chat_template_from_bytes(&config, standalone_chat_template)?;
         Ok(Self {
             inner,
             config,
@@ -269,6 +299,7 @@ impl Tokenizer {
     }
 }
 
+#[cfg(test)]
 fn load_chat_template(model_dir: &Path, config: &TokenizerConfig) -> Result<Option<String>> {
     if let Some(template) = config.chat_template.as_ref() {
         if template.is_empty() {
@@ -296,6 +327,31 @@ fn load_chat_template(model_dir: &Path, config: &TokenizerConfig) -> Result<Opti
         )));
     }
     Ok(Some(template))
+}
+
+fn load_chat_template_from_bytes(
+    config: &TokenizerConfig,
+    standalone: Option<&[u8]>,
+) -> Result<Option<String>> {
+    if let Some(template) = config.chat_template.as_ref() {
+        if template.is_empty() {
+            return Err(Error::Other(
+                "tokenizer_config.json chat_template must not be empty".to_string(),
+            ));
+        }
+        return Ok(Some(template.clone()));
+    }
+    let Some(bytes) = standalone else {
+        return Ok(None);
+    };
+    let template = std::str::from_utf8(bytes)
+        .map_err(|error| Error::Other(format!("chat template is not UTF-8: {error}")))?;
+    if template.is_empty() {
+        return Err(Error::Other(
+            "chat_template.jinja must not be empty".to_string(),
+        ));
+    }
+    Ok(Some(template.to_owned()))
 }
 
 #[cfg(test)]
@@ -377,6 +433,43 @@ mod tests {
 
         let loaded = load_chat_template(&root, &config).unwrap();
         assert_eq!(loaded.as_deref(), Some("embedded"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn from_bytes_is_independent_of_later_path_rebinding() {
+        let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "apxinf-tokenizer-owned-bytes-{}-{serial}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let config_path = root.join("tokenizer_config.json");
+        std::fs::write(
+            &config_path,
+            br#"{"chat_template":"original:{{ messages[0].content }}"}"#,
+        )
+        .unwrap();
+        let captured_config = std::fs::read(&config_path).unwrap();
+        std::fs::rename(&config_path, root.join("original.json")).unwrap();
+        std::fs::write(
+            &config_path,
+            br#"{"chat_template":"replacement:{{ messages[0].content }}"}"#,
+        )
+        .unwrap();
+        let tokenizer_json = HfTokenizer::new(tokenizers::models::wordlevel::WordLevel::default())
+            .to_string(false)
+            .unwrap();
+
+        let tokenizer =
+            Tokenizer::from_bytes(tokenizer_json.as_bytes(), Some(&captured_config), None).unwrap();
+        assert_eq!(
+            tokenizer
+                .apply_chat_template(&[ChatMessage::user("hello")])
+                .unwrap(),
+            "original:hello"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

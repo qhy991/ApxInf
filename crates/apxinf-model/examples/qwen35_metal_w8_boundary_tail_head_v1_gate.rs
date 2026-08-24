@@ -5,9 +5,12 @@
 #[path = "support/qwen35_boundary_tail_head_v1_gate_evidence.rs"]
 mod gate_evidence;
 
-use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
+use std::ffi::{CString, OsString};
+use std::fs::{self, File};
 use std::io::Write;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::{error::Error, time::Instant};
 
@@ -25,11 +28,11 @@ use apxinf_model::qwen35::general::{
 use apxinf_model::{GeneralQwen35, LlmInput, LlmTrait, Qwen35Config, Qwen35LayerType};
 use apxinf_tokenizer::{ChatMessage, Tokenizer};
 
-const CPU_TEACHER_FORMAT: &str = "apxinf-qwen35-metal-w8-boundary-tail-head-v1-cpu-teacher-v1";
+const CPU_TEACHER_FORMAT: &str = "apxinf-qwen35-metal-w8-boundary-tail-head-v1-cpu-teacher-v2";
 const CANDIDATE_TEACHER_FORMAT: &str =
-    "apxinf-qwen35-metal-w8-boundary-tail-head-v1-teacher-gate-v1";
-const CPU_FREE_FORMAT: &str = "apxinf-qwen35-metal-w8-boundary-tail-head-v1-cpu-free-run-v1";
-const CANDIDATE_FREE_FORMAT: &str = "apxinf-qwen35-metal-w8-boundary-tail-head-v1-free-run-gate-v1";
+    "apxinf-qwen35-metal-w8-boundary-tail-head-v1-teacher-gate-v2";
+const CPU_FREE_FORMAT: &str = "apxinf-qwen35-metal-w8-boundary-tail-head-v1-cpu-free-run-v2";
+const CANDIDATE_FREE_FORMAT: &str = "apxinf-qwen35-metal-w8-boundary-tail-head-v1-free-run-gate-v2";
 const SOURCE_LOCK_FORMAT: &str = "apxinf-hf-source-lock-v1";
 const REPO_ID: &str = "Qwen/Qwen3.5-0.8B";
 const LOCKED_REVISION: &str = "2fc06364715b967f1860aea9cf38778875588b17";
@@ -44,6 +47,24 @@ const GATE_SOURCE_BYTES: &[u8] = include_bytes!("qwen35_metal_w8_boundary_tail_h
 struct RunResult {
     receipt: Value,
     passed: bool,
+    input_receipt_guard: Option<InputReceiptGuard>,
+}
+
+struct InputReceiptGuard {
+    path: PathBuf,
+    attestation: gate_evidence::FileAttestation,
+    label: &'static str,
+    canonical_model_dir: PathBuf,
+}
+
+struct PinnedOutputTarget {
+    requested_path: PathBuf,
+    requested_parent: PathBuf,
+    canonical_parent: PathBuf,
+    parent_device: u64,
+    parent_inode: u64,
+    parent_dir: File,
+    file_name: CString,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -853,9 +874,18 @@ fn boundary_tail_path_checks(
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TeacherOracle {
     teacher_inputs: Vec<u32>,
     expected_outputs: Vec<u32>,
+}
+
+enum SameProcessCpuOracle {
+    Teacher {
+        prefill_token: u32,
+        oracle: TeacherOracle,
+    },
+    Free(Vec<u32>),
 }
 
 struct TeacherGateEvaluation {
@@ -880,12 +910,67 @@ fn json_u32_array(value: &Value, field: &str) -> Result<Vec<u32>, String> {
         .collect()
 }
 
+fn validate_finalized_cpu_receipt_custody(
+    receipt: &Value,
+    expected_identity: &Value,
+) -> Result<(), String> {
+    if receipt
+        .get("input_receipt_verified_at_publication")
+        .and_then(Value::as_bool)
+        != Some(false)
+        || receipt.get("generation_path_contract") != Some(&Value::Null)
+        || receipt
+            .get("official_layer_schedule_valid")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || receipt.get("prompt").and_then(Value::as_str) != Some(PROMPT)
+    {
+        return Err("CPU receipt is not a finalized standalone oracle receipt".into());
+    }
+    let start = expected_identity
+        .get("custody")
+        .ok_or_else(|| "current identity omitted start custody".to_string())?;
+    let end = receipt
+        .get("custody_end_verification")
+        .ok_or_else(|| "CPU receipt omitted end custody".to_string())?;
+    if end.get("verified_at_end").and_then(Value::as_bool) != Some(true)
+        || end.get("source_set_id") != start.pointer("/sources/set_id")
+        || end.get("source_set_coverage") != start.pointer("/sources/coverage")
+        || start
+            .pointer("/sources/binary_attestation_authoritative_for_full_executable")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || end.get("binary") != start.get("binary")
+        || end.get("gate") != start.pointer("/sources/gate")
+        || end.get("rust_and_bridge_sources") != start.pointer("/sources/rust_and_bridge_sources")
+        || end.get("compiled_metal_shader_sources")
+            != start.pointer("/sources/compiled_metal_shader_sources")
+        || end.pointer("/model_dir/path") != start.pointer("/model_dir/path")
+        || end.pointer("/model_dir/cache_present") != start.pointer("/model_dir/cache_present")
+        || end.pointer("/model_dir/artifacts") != start.pointer("/model_dir/artifacts")
+        || end
+            .pointer("/model_dir/loaded_from_start_pinned_artifacts")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || end.pointer("/deployment_profile/path") != start.pointer("/profile/path")
+        || end.pointer("/deployment_profile/size") != start.pointer("/profile/file_size")
+        || end.pointer("/deployment_profile/sha256") != start.pointer("/profile/file_sha256")
+        || end.pointer("/source_lock/path") != start.pointer("/source_lock/path")
+        || end.pointer("/source_lock/size") != start.pointer("/source_lock/file_size")
+        || end.pointer("/source_lock/sha256") != start.pointer("/source_lock/file_sha256")
+    {
+        return Err("CPU receipt end custody does not match its frozen start custody".into());
+    }
+    Ok(())
+}
+
 fn validate_cpu_teacher_receipt(
     receipt: &Value,
     expected_identity: &Value,
     prompt_tokens: &[u32],
     prefill_token: u32,
 ) -> Result<TeacherOracle, String> {
+    validate_finalized_cpu_receipt_custody(receipt, expected_identity)?;
     if receipt.get("format").and_then(Value::as_str) != Some(CPU_TEACHER_FORMAT)
         || receipt.get("mode").and_then(Value::as_str) != Some(Mode::CpuTeacher.label())
         || receipt.get("passed").and_then(Value::as_bool) != Some(true)
@@ -909,6 +994,51 @@ fn validate_cpu_teacher_receipt(
         teacher_inputs,
         expected_outputs,
     })
+}
+
+fn compute_same_process_teacher_oracle(
+    model: &mut GeneralQwen35,
+    prompt_tokens: &[u32],
+    vocab_size: usize,
+) -> Result<(u32, TeacherOracle), Box<dyn Error>> {
+    let prefill_logits = model.prefill_for_generation(LlmInput::text(prompt_tokens))?;
+    let prefill_token = argmax(&prefill_logits, vocab_size)?;
+    let mut teacher = prefill_token;
+    let mut teacher_inputs = Vec::with_capacity(STEPS);
+    let mut expected_outputs = Vec::with_capacity(STEPS);
+    for step in 0..STEPS {
+        teacher_inputs.push(teacher);
+        let position = prompt_tokens
+            .len()
+            .checked_add(step)
+            .ok_or("same-process teacher position overflow")?;
+        let logits = model.forward(&[teacher], u32::try_from(position)?)?;
+        teacher = argmax(&logits, vocab_size)?;
+        expected_outputs.push(teacher);
+    }
+    Ok((
+        prefill_token,
+        TeacherOracle {
+            teacher_inputs,
+            expected_outputs,
+        },
+    ))
+}
+
+fn compute_same_process_free_oracle(
+    model: &mut GeneralQwen35,
+    prompt_tokens: &[u32],
+) -> Result<Vec<u32>, Box<dyn Error>> {
+    let (generated, _) =
+        model.generate_streaming(LlmInput::text(prompt_tokens), STEPS, |_| {}, None)?;
+    if generated.len() != STEPS {
+        return Err(format!(
+            "same-process CPU free oracle returned {} tokens, expected {STEPS}",
+            generated.len()
+        )
+        .into());
+    }
+    Ok(generated)
 }
 
 fn evaluate_teacher_candidate(
@@ -1017,6 +1147,7 @@ fn validate_cpu_free_receipt(
     expected_identity: &Value,
     prompt_tokens: &[u32],
 ) -> Result<Vec<u32>, String> {
+    validate_finalized_cpu_receipt_custody(receipt, expected_identity)?;
     if receipt.get("format").and_then(Value::as_str) != Some(CPU_FREE_FORMAT)
         || receipt.get("mode").and_then(Value::as_str) != Some(Mode::CpuFree.label())
         || receipt.get("passed").and_then(Value::as_bool) != Some(true)
@@ -1151,23 +1282,176 @@ where
     Ok(args)
 }
 
+impl PinnedOutputTarget {
+    fn capture(path: &Path) -> Result<Self, String> {
+        let requested_parent = path
+            .parent()
+            .ok_or_else(|| "--output must have a parent directory".to_string())?
+            .to_path_buf();
+        let canonical_parent = std::fs::canonicalize(&requested_parent)
+            .map_err(|error| format!("cannot canonicalize output parent directory: {error}"))?;
+        let parent_dir = File::open(&canonical_parent)
+            .map_err(|error| format!("cannot pin output parent directory: {error}"))?;
+        let metadata = parent_dir
+            .metadata()
+            .map_err(|error| format!("cannot inspect pinned output parent directory: {error}"))?;
+        if !metadata.is_dir() {
+            return Err("--output parent must be a directory".into());
+        }
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| "--output must name a file".to_string())?;
+        if file_name == "." || file_name == ".." {
+            return Err("--output must name a regular directory entry".into());
+        }
+        let file_name = CString::new(file_name.as_bytes())
+            .map_err(|_| "--output file name must not contain NUL".to_string())?;
+        Ok(Self {
+            requested_path: path.to_path_buf(),
+            requested_parent,
+            canonical_parent,
+            parent_device: metadata.dev(),
+            parent_inode: metadata.ino(),
+            parent_dir,
+            file_name,
+        })
+    }
+
+    fn verify_path_binding(&self) -> Result<(), String> {
+        let current_canonical = std::fs::canonicalize(&self.requested_parent).map_err(|error| {
+            format!("cannot re-canonicalize output parent before publication: {error}")
+        })?;
+        if current_canonical != self.canonical_parent {
+            return Err("--output parent path changed during gate execution".into());
+        }
+        let current = std::fs::metadata(&current_canonical)
+            .map_err(|error| format!("cannot re-inspect output parent: {error}"))?;
+        let pinned = self
+            .parent_dir
+            .metadata()
+            .map_err(|error| format!("cannot re-inspect pinned output parent: {error}"))?;
+        if current.dev() != self.parent_device
+            || current.ino() != self.parent_inode
+            || pinned.dev() != self.parent_device
+            || pinned.ino() != self.parent_inode
+        {
+            return Err("--output parent directory identity changed during gate execution".into());
+        }
+        if self.requested_path.exists() {
+            return Err("--output must not already exist".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn publish_receipt_create_new(
-    path: &Path,
+    target: &PinnedOutputTarget,
     receipt: &Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::raw::{c_char, c_int, c_uint};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    unsafe extern "C" {
+        fn openat(dirfd: c_int, path: *const c_char, oflag: c_int, ...) -> c_int;
+        fn renameatx_np(
+            fromfd: c_int,
+            from: *const c_char,
+            tofd: c_int,
+            to: *const c_char,
+            flags: c_uint,
+        ) -> c_int;
+        fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int;
+    }
+
+    // Darwin fcntl.h values. The gate is macOS-only and the release entrypoint
+    // rejects every other target before model loading.
+    const O_WRONLY: c_int = 0x0001;
+    const O_NOFOLLOW: c_int = 0x0100;
+    const O_CREAT: c_int = 0x0200;
+    const O_EXCL: c_int = 0x0800;
+    const O_CLOEXEC: c_int = 0x0100_0000;
+    const RENAME_EXCL: c_uint = 0x0000_0004;
+    static NEXT_TEMP_RECEIPT: AtomicU64 = AtomicU64::new(0);
+
+    target.verify_path_binding()?;
     let mut bytes = serde_json::to_vec(receipt)?;
     bytes.push(b'\n');
-    let mut output = OpenOptions::new().write(true).create_new(true).open(path)?;
-    output.write_all(&bytes)?;
-    output.sync_all()?;
+    let (raw_fd, temp_name) = (0..64)
+        .find_map(|_| {
+            let serial = NEXT_TEMP_RECEIPT.fetch_add(1, Ordering::Relaxed);
+            let name = CString::new(format!(
+                ".apxinf-receipt-{}-{serial}.tmp",
+                std::process::id()
+            ))
+            .expect("generated receipt temp name cannot contain NUL");
+            let fd = unsafe {
+                openat(
+                    target.parent_dir.as_raw_fd(),
+                    name.as_ptr(),
+                    O_WRONLY | O_NOFOLLOW | O_CREAT | O_EXCL | O_CLOEXEC,
+                    0o600 as c_uint,
+                )
+            };
+            if fd >= 0 {
+                return Some(Ok((fd, name)));
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                None
+            } else {
+                Some(Err(error))
+            }
+        })
+        .ok_or("could not allocate a unique receipt staging entry")??;
+    let mut output = unsafe { File::from_raw_fd(raw_fd) };
+    let staged = output.write_all(&bytes).and_then(|_| output.sync_all());
+    drop(output);
+    if let Err(error) = staged {
+        unsafe {
+            unlinkat(target.parent_dir.as_raw_fd(), temp_name.as_ptr(), 0);
+        }
+        return Err(error.into());
+    }
+    if let Err(error) = target.verify_path_binding() {
+        unsafe {
+            unlinkat(target.parent_dir.as_raw_fd(), temp_name.as_ptr(), 0);
+        }
+        return Err(error.into());
+    }
+    let renamed = unsafe {
+        renameatx_np(
+            target.parent_dir.as_raw_fd(),
+            temp_name.as_ptr(),
+            target.parent_dir.as_raw_fd(),
+            target.file_name.as_ptr(),
+            RENAME_EXCL,
+        )
+    };
+    if renamed != 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe {
+            unlinkat(target.parent_dir.as_raw_fd(), temp_name.as_ptr(), 0);
+        }
+        return Err(error.into());
+    }
+    target.parent_dir.sync_all()?;
     Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn publish_receipt_create_new(
+    _target: &PinnedOutputTarget,
+    _receipt: &Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    Err("boundary-tail v1 receipt publication requires macOS".into())
 }
 
 fn validate_receipt_paths_outside_model_dir(
     model_dir: &Path,
     input_receipt: Option<&PathBuf>,
     output: &Path,
-) -> Result<(), String> {
+) -> Result<PinnedOutputTarget, String> {
     let canonical_model = std::fs::canonicalize(model_dir)
         .map_err(|error| format!("cannot canonicalize model directory: {error}"))?;
     if let Some(input) = input_receipt {
@@ -1177,33 +1461,52 @@ fn validate_receipt_paths_outside_model_dir(
             return Err("--input-receipt must be outside the frozen model directory".into());
         }
     }
-    let output_parent = output
-        .parent()
-        .ok_or_else(|| "--output must have a parent directory".to_string())?;
-    let canonical_output_parent = std::fs::canonicalize(output_parent)
-        .map_err(|error| format!("cannot canonicalize output parent directory: {error}"))?;
-    if canonical_output_parent.starts_with(&canonical_model) {
+    let target = PinnedOutputTarget::capture(output)?;
+    if target.canonical_parent.starts_with(&canonical_model) {
         return Err("--output must be outside the frozen model directory".into());
     }
-    Ok(())
+    Ok(target)
 }
 
 fn finalize_run_with_end_custody<F>(
     mut result: RunResult,
-    output: &Path,
+    output: &PinnedOutputTarget,
     verify_end_custody: F,
 ) -> Result<RunResult, Box<dyn Error>>
 where
     F: FnOnce() -> Result<Value, Box<dyn Error>>,
 {
     let custody_end_verification = verify_end_custody()?;
+    if let Some(guard) = result.input_receipt_guard.as_ref() {
+        gate_evidence::verify_file_unchanged(&guard.path, &guard.attestation, guard.label)?;
+        require_input_attestation_outside_model(&guard.attestation, &guard.canonical_model_dir)?;
+    }
+    output.verify_path_binding()?;
     result
         .receipt
         .as_object_mut()
         .ok_or("gate receipt root must be an object")?
         .insert("custody_end_verification".into(), custody_end_verification);
+    result
+        .receipt
+        .as_object_mut()
+        .expect("checked above")
+        .insert(
+            "input_receipt_verified_at_publication".into(),
+            Value::Bool(result.input_receipt_guard.is_some()),
+        );
     publish_receipt_create_new(output, &result.receipt)?;
     Ok(result)
+}
+
+fn require_input_attestation_outside_model(
+    attestation: &gate_evidence::FileAttestation,
+    canonical_model_dir: &Path,
+) -> Result<(), String> {
+    if attestation.path.starts_with(canonical_model_dir) {
+        return Err("--input-receipt resolved inside the frozen model directory".into());
+    }
+    Ok(())
 }
 
 fn generation_profile_json(
@@ -1275,7 +1578,7 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
         GATE_SOURCE_BYTES,
     )?;
     validate_source_lock(custody.source_lock_value())?;
-    validate_receipt_paths_outside_model_dir(
+    let output_target = validate_receipt_paths_outside_model_dir(
         custody.model_dir(),
         args.input_receipt.as_ref(),
         &args.output,
@@ -1284,23 +1587,56 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
     let canonical_source_lock = fs::canonicalize(&args.source_lock)?;
     let binary_path = fs::canonicalize(std::env::current_exe()?)?;
 
-    let tokenizer = Tokenizer::from_file(canonical_model_dir.join("tokenizer.json"))?;
+    let tokenizer = Tokenizer::from_bytes(
+        custody.pinned_model_artifact_bytes("tokenizer.json")?,
+        Some(custody.pinned_model_artifact_bytes("tokenizer_config.json")?),
+        Some(custody.pinned_model_artifact_bytes("chat_template.jinja")?),
+    )?;
     let formatted = tokenizer.apply_chat_template(&[ChatMessage::user(PROMPT)])?;
     let prompt_tokens = tokenizer.encode(&formatted)?;
-    let config = Qwen35Config::from_json_file(&canonical_model_dir.join("config.json"))?;
+    let config_json = std::str::from_utf8(custody.pinned_model_artifact_bytes("config.json")?)?;
+    let config = Qwen35Config::from_json_str(config_json)?;
     validate_official_schedule(&config.text.layer_types)?;
     let vocab_size = config.text.vocab_size;
 
     let checkpoint_started = Instant::now();
-    let (tensors, _) =
-        apxinf_loader::safetensors::load_native_path_filtered(&canonical_model_dir, |name| {
-            name.starts_with("model.language_model.") || name == "lm_head.weight"
-        })?;
+    let (tensors, _) = apxinf_loader::safetensors::load_native_file_filtered(
+        custody.pinned_model_artifact_file(LOCKED_CHECKPOINT)?,
+        |name| name.starts_with("model.language_model.") || name == "lm_head.weight",
+    )?;
+    custody.verify_pinned_model_handles_unchanged()?;
     let checkpoint_load_ms = checkpoint_started.elapsed().as_secs_f64() * 1_000.0;
     let max_context = prompt_tokens
         .len()
         .checked_add(STEPS + 1)
         .ok_or("context length overflow")?;
+    let same_process_oracle_started = Instant::now();
+    let same_process_cpu_oracle = if args.mode.is_candidate() {
+        let mut cpu_model =
+            GeneralQwen35::from_weights(config.clone(), tensors.clone(), Device::Cpu, max_context)?;
+        let oracle = match args.mode {
+            Mode::BoundaryTailV1Teacher => {
+                let (prefill_token, oracle) = compute_same_process_teacher_oracle(
+                    &mut cpu_model,
+                    &prompt_tokens,
+                    vocab_size,
+                )?;
+                SameProcessCpuOracle::Teacher {
+                    prefill_token,
+                    oracle,
+                }
+            }
+            Mode::BoundaryTailV1Free => SameProcessCpuOracle::Free(
+                compute_same_process_free_oracle(&mut cpu_model, &prompt_tokens)?,
+            ),
+            Mode::CpuTeacher | Mode::CpuFree => unreachable!("candidate mode checked above"),
+        };
+        drop(cpu_model);
+        Some(oracle)
+    } else {
+        None
+    };
+    let same_process_cpu_oracle_ms = same_process_oracle_started.elapsed().as_secs_f64() * 1_000.0;
     let construct_started = Instant::now();
     let mut model = if args.mode.is_candidate() {
         GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
@@ -1325,6 +1661,12 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
         "build_profile": "release",
         "matmul_feature": "accelerate",
         "metal_feature": "metal-w8",
+        "model_load_binding": {
+            "small_artifacts": "owned-bytes-retained-from-start-attested-file-descriptors",
+            "checkpoint": "mmap-from-start-attested-pinned-file-descriptor",
+            "checkpoint_index_role": "source-lock evidence only; the single frozen shard is loaded directly",
+            "identity_fields": ["device", "inode", "size", "nlink", "ctime", "sha256"],
+        },
         "cpu_reference_constructor": "GeneralQwen35::from_weights",
         "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1",
         "custody": custody.receipt_json(),
@@ -1332,6 +1674,8 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
     let setup = json!({
         "checkpoint_load_ms": checkpoint_load_ms,
         "model_construct_ms": model_construct_ms,
+        "same_process_cpu_oracle_ms": same_process_cpu_oracle_ms,
+        "same_process_cpu_oracle": args.mode.is_candidate(),
         "timing_classification": "single-pass diagnostic timing only; never formal promotion evidence",
     });
     let result = match args.mode {
@@ -1340,15 +1684,24 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
             &mut model,
             &prompt_tokens,
             vocab_size,
+            &canonical_model_dir,
+            same_process_cpu_oracle.as_ref(),
             identity,
             setup,
         )?,
-        Mode::CpuFree | Mode::BoundaryTailV1Free => {
-            run_free(&args, &mut model, &prompt_tokens, identity, setup)?
-        }
+        Mode::CpuFree | Mode::BoundaryTailV1Free => run_free(
+            &args,
+            &mut model,
+            &prompt_tokens,
+            &canonical_model_dir,
+            same_process_cpu_oracle.as_ref(),
+            identity,
+            setup,
+        )?,
     };
-    let result =
-        finalize_run_with_end_custody(result, &args.output, || custody.verify_unchanged_receipt())?;
+    let result = finalize_run_with_end_custody(result, &output_target, || {
+        custody.verify_unchanged_receipt()
+    })?;
     println!("{}", serde_json::to_string(&result.receipt)?);
     Ok(result.passed)
 }
@@ -1358,6 +1711,8 @@ fn run_teacher(
     model: &mut GeneralQwen35,
     prompt_tokens: &[u32],
     vocab_size: usize,
+    canonical_model_dir: &Path,
+    same_process_cpu_oracle: Option<&SameProcessCpuOracle>,
     identity: Value,
     setup: Value,
 ) -> Result<RunResult, Box<dyn Error>> {
@@ -1405,6 +1760,7 @@ fn run_teacher(
                 "passed": true,
             }),
             passed: true,
+            input_receipt_guard: None,
         });
     }
 
@@ -1430,8 +1786,23 @@ fn run_teacher(
         .ok_or("candidate teacher mode requires --input-receipt")?;
     let (cpu_receipt, input_attestation) =
         gate_evidence::read_attested_json(input_path, "boundary-tail v1 CPU teacher receipt")?;
-    let oracle =
+    require_input_attestation_outside_model(&input_attestation, canonical_model_dir)?;
+    let receipt_oracle =
         validate_cpu_teacher_receipt(&cpu_receipt, &identity, prompt_tokens, prefill_token)?;
+    let (same_process_prefill, oracle) = match same_process_cpu_oracle {
+        Some(SameProcessCpuOracle::Teacher {
+            prefill_token,
+            oracle,
+        }) => (*prefill_token, oracle),
+        _ => {
+            return Err("candidate teacher mode requires an in-process CPU teacher oracle".into());
+        }
+    };
+    if same_process_prefill != prefill_token || &receipt_oracle != oracle {
+        return Err(
+            "CPU teacher receipt does not match the same-process pinned-artifact oracle".into(),
+        );
+    }
 
     let decode_started = Instant::now();
     let mut normalized_f32_tokens = Vec::with_capacity(STEPS);
@@ -1488,6 +1859,7 @@ fn run_teacher(
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
             "identity": identity,
+            "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
             "prompt": PROMPT,
             "prompt_token_ids": prompt_tokens,
@@ -1542,6 +1914,12 @@ fn run_teacher(
             "passed": passed,
         }),
         passed,
+        input_receipt_guard: Some(InputReceiptGuard {
+            path: input_path.clone(),
+            attestation: input_attestation,
+            label: "boundary-tail v1 CPU teacher receipt",
+            canonical_model_dir: canonical_model_dir.to_path_buf(),
+        }),
     })
 }
 
@@ -1549,6 +1927,8 @@ fn run_free(
     args: &Args,
     model: &mut GeneralQwen35,
     prompt_tokens: &[u32],
+    canonical_model_dir: &Path,
+    same_process_cpu_oracle: Option<&SameProcessCpuOracle>,
     identity: Value,
     setup: Value,
 ) -> Result<RunResult, Box<dyn Error>> {
@@ -1559,7 +1939,19 @@ fn run_free(
             .ok_or("candidate free mode requires --input-receipt")?;
         let (receipt, attestation) =
             gate_evidence::read_attested_json(input_path, "boundary-tail v1 CPU free receipt")?;
-        let expected = validate_cpu_free_receipt(&receipt, &identity, prompt_tokens)?;
+        require_input_attestation_outside_model(&attestation, canonical_model_dir)?;
+        let receipt_expected = validate_cpu_free_receipt(&receipt, &identity, prompt_tokens)?;
+        let expected = match same_process_cpu_oracle {
+            Some(SameProcessCpuOracle::Free(expected)) => expected.clone(),
+            _ => {
+                return Err("candidate free mode requires an in-process CPU free oracle".into());
+            }
+        };
+        if receipt_expected != expected {
+            return Err(
+                "CPU free receipt does not match the same-process pinned-artifact oracle".into(),
+            );
+        }
         Some((input_path, attestation, expected))
     } else {
         None
@@ -1597,6 +1989,7 @@ fn run_free(
                 "passed": true,
             }),
             passed: true,
+            input_receipt_guard: None,
         });
     }
 
@@ -1630,6 +2023,7 @@ fn run_free(
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
             "identity": identity,
+            "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
             "prompt": PROMPT,
             "prompt_token_ids": prompt_tokens,
@@ -1663,6 +2057,12 @@ fn run_free(
             "passed": passed,
         }),
         passed,
+        input_receipt_guard: Some(InputReceiptGuard {
+            path: input_path.clone(),
+            attestation: input_attestation,
+            label: "boundary-tail v1 CPU free receipt",
+            canonical_model_dir: canonical_model_dir.to_path_buf(),
+        }),
     })
 }
 
@@ -1679,6 +2079,58 @@ mod tests {
             std::process::id(),
             NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    fn test_finalized_cpu_identity() -> Value {
+        json!({
+            "custody": {
+                "profile": {"path": "/profile", "file_size": 11, "file_sha256": "profile"},
+                "source_lock": {"path": "/source-lock", "file_size": 12, "file_sha256": "lock"},
+                "model_dir": {"path": "/model", "cache_present": false, "artifacts": {}},
+                "binary": {"sha256": "binary"},
+                "sources": {
+                    "set_id": "test-explicit-source-set",
+                    "coverage": "explicit-non-transitive-source-set-v1",
+                    "binary_attestation_authoritative_for_full_executable": true,
+                    "gate": {"sha256": "gate"},
+                    "rust_and_bridge_sources": {},
+                    "compiled_metal_shader_sources": {},
+                },
+            }
+        })
+    }
+
+    fn finalize_cpu_receipt_fixture(receipt: &mut Value, identity: &Value) {
+        let custody = &identity["custody"];
+        receipt["prompt"] = json!(PROMPT);
+        receipt["official_layer_schedule_valid"] = json!(true);
+        receipt["generation_path_contract"] = Value::Null;
+        receipt["input_receipt_verified_at_publication"] = json!(false);
+        receipt["custody_end_verification"] = json!({
+            "verified_at_end": true,
+            "source_set_id": custody["sources"]["set_id"],
+            "source_set_coverage": custody["sources"]["coverage"],
+            "deployment_profile": {
+                "path": custody["profile"]["path"],
+                "size": custody["profile"]["file_size"],
+                "sha256": custody["profile"]["file_sha256"],
+            },
+            "source_lock": {
+                "path": custody["source_lock"]["path"],
+                "size": custody["source_lock"]["file_size"],
+                "sha256": custody["source_lock"]["file_sha256"],
+            },
+            "model_dir": {
+                "path": custody["model_dir"]["path"],
+                "cache_present": custody["model_dir"]["cache_present"],
+                "artifacts": custody["model_dir"]["artifacts"],
+                "loaded_from_start_pinned_artifacts": true,
+            },
+            "binary": custody["binary"],
+            "gate": custody["sources"]["gate"],
+            "rust_and_bridge_sources": custody["sources"]["rust_and_bridge_sources"],
+            "compiled_metal_shader_sources": custody["sources"]["compiled_metal_shader_sources"],
+        });
     }
 
     fn official_aggregate_fixture() -> Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
@@ -1961,7 +2413,7 @@ mod tests {
         let expected = (100..228).collect::<Vec<u32>>();
         let mut inputs = vec![7];
         inputs.extend_from_slice(&expected[..127]);
-        let identity = json!({"binary": "same-release"});
+        let identity = test_finalized_cpu_identity();
         let mut receipt = json!({
             "format": CPU_TEACHER_FORMAT,
             "mode": Mode::CpuTeacher.label(),
@@ -1973,6 +2425,7 @@ mod tests {
             "teacher_input_ids": inputs,
             "cpu_expected_output_ids": expected,
         });
+        finalize_cpu_receipt_fixture(&mut receipt, &identity);
 
         let oracle = validate_cpu_teacher_receipt(&receipt, &identity, &[1, 2], 7).unwrap();
         assert_eq!(oracle.teacher_inputs.len(), 128);
@@ -2038,7 +2491,7 @@ mod tests {
 
     #[test]
     fn cpu_free_receipt_is_a_passed_identity_bound_128_token_oracle() {
-        let identity = json!({"binary": "same-release"});
+        let identity = test_finalized_cpu_identity();
         let tokens = (100..228).collect::<Vec<u32>>();
         let mut receipt = json!({
             "format": CPU_FREE_FORMAT,
@@ -2050,6 +2503,7 @@ mod tests {
             "eos_stopping": false,
             "generated_token_ids": tokens,
         });
+        finalize_cpu_receipt_fixture(&mut receipt, &identity);
         assert_eq!(
             validate_cpu_free_receipt(&receipt, &identity, &[1, 2]).unwrap(),
             tokens
@@ -2080,9 +2534,10 @@ mod tests {
         let output = temp_output("no-replace.json");
         let first = json!({"formal": "first"});
         let second = json!({"formal": "second"});
-        publish_receipt_create_new(&output, &first).unwrap();
+        let target = PinnedOutputTarget::capture(&output).unwrap();
+        publish_receipt_create_new(&target, &first).unwrap();
         let first_bytes = std::fs::read(&output).unwrap();
-        assert!(publish_receipt_create_new(&output, &second).is_err());
+        assert!(publish_receipt_create_new(&target, &second).is_err());
         assert_eq!(std::fs::read(&output).unwrap(), first_bytes);
         std::fs::remove_file(output).unwrap();
     }
@@ -2195,9 +2650,11 @@ mod tests {
         let result = RunResult {
             receipt: json!({"passed": false, "mismatches": [{"step": 3}]}),
             passed: false,
+            input_receipt_guard: None,
         };
+        let target = PinnedOutputTarget::capture(&output).unwrap();
         let finalized =
-            finalize_run_with_end_custody(result, &output, || Ok(json!({"verified_at_end": true})))
+            finalize_run_with_end_custody(result, &target, || Ok(json!({"verified_at_end": true})))
                 .unwrap();
         assert!(!finalized.passed);
         let published: Value = serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
@@ -2214,12 +2671,8 @@ mod tests {
         let input = temp_output("final-input-drift.json");
         let output = temp_output("final-input-drift-output.json");
         std::fs::write(&input, b"{\"passed\":true}\n").unwrap();
-        let input_attestation = gate_evidence::attest_file(
-            &input,
-            "boundary-tail v1 CPU test receipt",
-            None,
-        )
-        .unwrap();
+        let input_attestation =
+            gate_evidence::attest_file(&input, "boundary-tail v1 CPU test receipt", None).unwrap();
         let result = RunResult {
             receipt: json!({"passed": true}),
             passed: true,
@@ -2227,10 +2680,13 @@ mod tests {
                 path: input.clone(),
                 attestation: input_attestation,
                 label: "boundary-tail v1 CPU test receipt",
+                canonical_model_dir: temp_output("model-root"),
             }),
         };
 
-        let finalized = finalize_run_with_end_custody(result, &output, || {
+        let target = PinnedOutputTarget::capture(&output).unwrap();
+
+        let finalized = finalize_run_with_end_custody(result, &target, || {
             std::fs::write(&input, b"{\"passed\":null}\n").unwrap();
             Ok(json!({"verified_at_end": true}))
         });
@@ -2238,5 +2694,60 @@ mod tests {
         assert!(!output.exists());
 
         std::fs::remove_file(input).unwrap();
+    }
+
+    #[test]
+    fn finalize_rechecks_an_unchanged_input_receipt_immediately_before_publication() {
+        let input = temp_output("final-input-stable.json");
+        let output = temp_output("final-input-stable-output.json");
+        std::fs::write(&input, b"{\"passed\":true}\n").unwrap();
+        let input_attestation =
+            gate_evidence::attest_file(&input, "stable CPU test receipt", None).unwrap();
+        let result = RunResult {
+            receipt: json!({"passed": true}),
+            passed: true,
+            input_receipt_guard: Some(InputReceiptGuard {
+                path: input.clone(),
+                attestation: input_attestation,
+                label: "stable CPU test receipt",
+                canonical_model_dir: temp_output("model-root"),
+            }),
+        };
+        let target = PinnedOutputTarget::capture(&output).unwrap();
+        finalize_run_with_end_custody(result, &target, || Ok(json!({"verified_at_end": true})))
+            .unwrap();
+        let published: Value = serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+        assert_eq!(published["input_receipt_verified_at_publication"], true);
+        std::fs::remove_file(input).unwrap();
+        std::fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn pinned_output_parent_rejects_a_symlink_rebind_before_publication() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_output("output-parent-rebind");
+        let model = root.join("model");
+        let evidence = root.join("evidence");
+        let alias = root.join("output-link");
+        std::fs::create_dir_all(&model).unwrap();
+        std::fs::create_dir_all(&evidence).unwrap();
+        symlink(&evidence, &alias).unwrap();
+        let output = alias.join("candidate.json");
+        let target = validate_receipt_paths_outside_model_dir(&model, None, &output).unwrap();
+        let result = RunResult {
+            receipt: json!({"passed": false}),
+            passed: false,
+            input_receipt_guard: None,
+        };
+        let finalized = finalize_run_with_end_custody(result, &target, || {
+            std::fs::remove_file(&alias).unwrap();
+            symlink(&model, &alias).unwrap();
+            Ok(json!({"verified_at_end": true}))
+        });
+        assert!(finalized.is_err());
+        assert!(!model.join("candidate.json").exists());
+        assert!(!evidence.join("candidate.json").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

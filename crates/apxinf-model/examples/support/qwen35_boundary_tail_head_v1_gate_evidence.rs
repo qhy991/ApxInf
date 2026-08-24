@@ -20,6 +20,36 @@ const GENERAL_SOURCE_BYTES: &[u8] = include_bytes!("../../src/qwen35/general.rs"
 const FROZEN_GENERAL_SOURCE_SHA256: &str =
     "2c58b87df49cc483915f87ad7607c5b537f34516cfc264552b989fe976bb6f7a";
 const LLM_TRAIT_SOURCE_BYTES: &[u8] = include_bytes!("../../src/llm_trait.rs");
+const APXINF_MODEL_LIB_SOURCE_BYTES: &[u8] = include_bytes!("../../src/lib.rs");
+const APXINF_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!("../../Cargo.toml");
+const ACCELERATOR_SOURCE_BYTES: &[u8] = include_bytes!("../../src/accelerator.rs");
+const PROFILING_SOURCE_BYTES: &[u8] = include_bytes!("../../src/profiling/mod.rs");
+const QWEN35_MOD_SOURCE_BYTES: &[u8] = include_bytes!("../../src/qwen35/mod.rs");
+const QWEN35_CONFIG_SOURCE_BYTES: &[u8] = include_bytes!("../../src/qwen35/config.rs");
+const QWEN35_WEIGHTS_SOURCE_BYTES: &[u8] = include_bytes!("../../src/qwen35/weights.rs");
+const QWEN35_STATE_SOURCE_BYTES: &[u8] = include_bytes!("../../src/qwen35/state.rs");
+const APXINF_LOADER_LIB_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-loader/src/lib.rs");
+const SAFETENSORS_LOADER_SOURCE_BYTES: &[u8] =
+    include_bytes!("../../../apxinf-loader/src/safetensors.rs");
+const TOKENIZER_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-tokenizer/src/lib.rs");
+const APXINF_CORE_LIB_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-core/src/lib.rs");
+const APXINF_CORE_MANIFEST_BYTES: &[u8] = include_bytes!("../../../apxinf-core/Cargo.toml");
+const APXINF_CORE_BUILD_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-core/build.rs");
+const APXINF_CORE_BACKEND_SOURCE_BYTES: &[u8] =
+    include_bytes!("../../../apxinf-core/src/backend.rs");
+const APXINF_CORE_DTYPE_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-core/src/dtype.rs");
+const APXINF_CORE_ERROR_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-core/src/error.rs");
+const APXINF_CORE_KV_CACHE_SOURCE_BYTES: &[u8] =
+    include_bytes!("../../../apxinf-core/src/kv_cache.rs");
+const APXINF_CORE_CPU_OPS_SOURCE_BYTES: &[u8] =
+    include_bytes!("../../../apxinf-core/src/op_impls/cpu.rs");
+const APXINF_CORE_OP_IMPLS_SOURCE_BYTES: &[u8] =
+    include_bytes!("../../../apxinf-core/src/op_impls/mod.rs");
+const APXINF_CORE_OPS_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-core/src/ops.rs");
+const APXINF_CORE_SHAPE_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-core/src/shape.rs");
+const APXINF_CORE_STORAGE_SOURCE_BYTES: &[u8] =
+    include_bytes!("../../../apxinf-core/src/storage.rs");
+const APXINF_CORE_TENSOR_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-core/src/tensor.rs");
 const GATE_EVIDENCE_SOURCE_BYTES: &[u8] =
     include_bytes!("qwen35_boundary_tail_head_v1_gate_evidence.rs");
 const APXINF_METAL_LIB_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-metal/src/lib.rs");
@@ -60,7 +90,8 @@ const METAL_W8_LINEAR_LAYER_SOURCE_BYTES: &[u8] =
 const METAL_W8_GDN_OUT_G32_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_gdn_out_g32.metal");
 const MAX_CACHE_ENTRIES: usize = 4096;
-const SOURCE_CLOSURE: &str = "boundary-tail-head-v1-direct-compile-inputs-v1";
+const SOURCE_SET_ID: &str = "boundary-tail-head-v1-explicit-audited-source-set-v3";
+const SOURCE_SET_COVERAGE: &str = "explicit-non-transitive-source-set-v1";
 
 #[derive(Clone, Copy)]
 struct BuildSourceSpec {
@@ -71,7 +102,7 @@ struct BuildSourceSpec {
     metal_shader: bool,
 }
 
-fn boundary_tail_head_v1_source_specs() -> [BuildSourceSpec; 23] {
+fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 47] {
     [
         BuildSourceSpec {
             receipt_name: "gate_evidence",
@@ -79,6 +110,34 @@ fn boundary_tail_head_v1_source_specs() -> [BuildSourceSpec; 23] {
             manifest_relative_path:
                 "examples/support/qwen35_boundary_tail_head_v1_gate_evidence.rs",
             embedded_bytes: GATE_EVIDENCE_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_model_lib",
+            label: "apxinf-model crate source",
+            manifest_relative_path: "src/lib.rs",
+            embedded_bytes: APXINF_MODEL_LIB_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_model_manifest",
+            label: "apxinf-model build manifest",
+            manifest_relative_path: "Cargo.toml",
+            embedded_bytes: APXINF_MODEL_MANIFEST_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "accelerator",
+            label: "model accelerator selection source",
+            manifest_relative_path: "src/accelerator.rs",
+            embedded_bytes: ACCELERATOR_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "profiling",
+            label: "generation profiling source",
+            manifest_relative_path: "src/profiling/mod.rs",
+            embedded_bytes: PROFILING_SOURCE_BYTES,
             metal_shader: false,
         },
         BuildSourceSpec {
@@ -93,6 +152,146 @@ fn boundary_tail_head_v1_source_specs() -> [BuildSourceSpec; 23] {
             label: "shared generation source",
             manifest_relative_path: "src/llm_trait.rs",
             embedded_bytes: LLM_TRAIT_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "qwen35_mod",
+            label: "Qwen3.5 module source",
+            manifest_relative_path: "src/qwen35/mod.rs",
+            embedded_bytes: QWEN35_MOD_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "qwen35_config",
+            label: "Qwen3.5 config source",
+            manifest_relative_path: "src/qwen35/config.rs",
+            embedded_bytes: QWEN35_CONFIG_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "qwen35_weights",
+            label: "Qwen3.5 weight assembly source",
+            manifest_relative_path: "src/qwen35/weights.rs",
+            embedded_bytes: QWEN35_WEIGHTS_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "qwen35_state",
+            label: "Qwen3.5 hybrid state source",
+            manifest_relative_path: "src/qwen35/state.rs",
+            embedded_bytes: QWEN35_STATE_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_loader_lib",
+            label: "apxinf-loader crate source",
+            manifest_relative_path: "../apxinf-loader/src/lib.rs",
+            embedded_bytes: APXINF_LOADER_LIB_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "safetensors_loader",
+            label: "pinned-file SafeTensors loader source",
+            manifest_relative_path: "../apxinf-loader/src/safetensors.rs",
+            embedded_bytes: SAFETENSORS_LOADER_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "tokenizer",
+            label: "owned-bytes tokenizer source",
+            manifest_relative_path: "../apxinf-tokenizer/src/lib.rs",
+            embedded_bytes: TOKENIZER_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_lib",
+            label: "apxinf-core crate source",
+            manifest_relative_path: "../apxinf-core/src/lib.rs",
+            embedded_bytes: APXINF_CORE_LIB_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_manifest",
+            label: "apxinf-core build manifest",
+            manifest_relative_path: "../apxinf-core/Cargo.toml",
+            embedded_bytes: APXINF_CORE_MANIFEST_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_build",
+            label: "apxinf-core build source",
+            manifest_relative_path: "../apxinf-core/build.rs",
+            embedded_bytes: APXINF_CORE_BUILD_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_backend",
+            label: "apxinf-core backend trait source",
+            manifest_relative_path: "../apxinf-core/src/backend.rs",
+            embedded_bytes: APXINF_CORE_BACKEND_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_dtype",
+            label: "apxinf-core dtype source",
+            manifest_relative_path: "../apxinf-core/src/dtype.rs",
+            embedded_bytes: APXINF_CORE_DTYPE_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_error",
+            label: "apxinf-core error source",
+            manifest_relative_path: "../apxinf-core/src/error.rs",
+            embedded_bytes: APXINF_CORE_ERROR_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_kv_cache",
+            label: "apxinf-core KV cache source",
+            manifest_relative_path: "../apxinf-core/src/kv_cache.rs",
+            embedded_bytes: APXINF_CORE_KV_CACHE_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_cpu_ops",
+            label: "apxinf-core CPU backend implementation source",
+            manifest_relative_path: "../apxinf-core/src/op_impls/cpu.rs",
+            embedded_bytes: APXINF_CORE_CPU_OPS_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_op_impls",
+            label: "apxinf-core op implementation module source",
+            manifest_relative_path: "../apxinf-core/src/op_impls/mod.rs",
+            embedded_bytes: APXINF_CORE_OP_IMPLS_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_ops",
+            label: "apxinf-core ops source",
+            manifest_relative_path: "../apxinf-core/src/ops.rs",
+            embedded_bytes: APXINF_CORE_OPS_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_shape",
+            label: "apxinf-core shape source",
+            manifest_relative_path: "../apxinf-core/src/shape.rs",
+            embedded_bytes: APXINF_CORE_SHAPE_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_storage",
+            label: "apxinf-core storage source",
+            manifest_relative_path: "../apxinf-core/src/storage.rs",
+            embedded_bytes: APXINF_CORE_STORAGE_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "apxinf_core_tensor",
+            label: "apxinf-core tensor source",
+            manifest_relative_path: "../apxinf-core/src/tensor.rs",
+            embedded_bytes: APXINF_CORE_TENSOR_SOURCE_BYTES,
             metal_shader: false,
         },
         BuildSourceSpec {
@@ -238,22 +437,46 @@ fn boundary_tail_head_v1_source_specs() -> [BuildSourceSpec; 23] {
     ]
 }
 
-fn source_specs_for_closure(source_closure: &str) -> Result<Vec<BuildSourceSpec>, Box<dyn Error>> {
-    if source_closure != SOURCE_CLOSURE {
+fn source_specs_for_set(source_set_id: &str) -> Result<Vec<BuildSourceSpec>, Box<dyn Error>> {
+    if source_set_id != SOURCE_SET_ID {
         return Err(invalid(format!(
-            "unsupported gate source closure {source_closure:?}"
+            "unsupported gate source set {source_set_id:?}"
         )));
     }
-    let specs = boundary_tail_head_v1_source_specs().to_vec();
+    let specs = boundary_tail_head_v1_source_set_specs().to_vec();
     validate_source_specs(&specs)?;
     Ok(specs)
 }
 
 fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>> {
-    const EXPECTED_NAMES: [&str; 23] = [
+    const EXPECTED_NAMES: [&str; 47] = [
         "gate_evidence",
+        "apxinf_model_lib",
+        "apxinf_model_manifest",
+        "accelerator",
+        "profiling",
         "general",
         "llm_trait",
+        "qwen35_mod",
+        "qwen35_config",
+        "qwen35_weights",
+        "qwen35_state",
+        "apxinf_loader_lib",
+        "safetensors_loader",
+        "tokenizer",
+        "apxinf_core_lib",
+        "apxinf_core_manifest",
+        "apxinf_core_build",
+        "apxinf_core_backend",
+        "apxinf_core_dtype",
+        "apxinf_core_error",
+        "apxinf_core_kv_cache",
+        "apxinf_core_cpu_ops",
+        "apxinf_core_op_impls",
+        "apxinf_core_ops",
+        "apxinf_core_shape",
+        "apxinf_core_storage",
+        "apxinf_core_tensor",
         "apxinf_metal_lib",
         "apxinf_metal_build",
         "gdn_rust",
@@ -284,7 +507,7 @@ fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>
         || observed_names != EXPECTED_NAMES.into_iter().collect()
     {
         return Err(invalid(
-            "boundary-tail v1 source closure is missing or duplicates a frozen source",
+            "boundary-tail v1 explicit source set is missing or duplicates a frozen source",
         ));
     }
     let build_source = std::str::from_utf8(APXINF_METAL_BUILD_SOURCE_BYTES)
@@ -308,7 +531,7 @@ fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>
         .collect::<BTreeSet<_>>();
     if declared_build_inputs.len() != 13 || attested_build_inputs != declared_build_inputs {
         return Err(invalid(
-            "boundary-tail v1 source closure does not exactly cover apxinf-metal build inputs",
+            "boundary-tail v1 explicit source set does not exactly cover apxinf-metal build inputs",
         ));
     }
     Ok(())
@@ -320,6 +543,10 @@ pub struct FileAttestation {
     pub size: u64,
     pub sha256: String,
     pub nlink: u64,
+    pub device: u64,
+    pub inode: u64,
+    pub change_time_seconds: i64,
+    pub change_time_nanoseconds: i64,
 }
 
 pub struct AttestedBytes {
@@ -337,10 +564,12 @@ pub struct GateCustody {
     source_lock: FileAttestation,
     binary: FileAttestation,
     gate_source: FileAttestation,
-    source_closure: &'static str,
+    source_set_id: &'static str,
     rust_sources: BTreeMap<String, FileAttestation>,
     metal_shader_sources: BTreeMap<String, FileAttestation>,
     model_artifacts: BTreeMap<String, FileAttestation>,
+    pinned_model_artifact_files: BTreeMap<String, File>,
+    pinned_model_artifact_bytes: BTreeMap<String, Vec<u8>>,
 }
 
 impl GateCustody {
@@ -355,7 +584,7 @@ impl GateCustody {
             source_lock_path,
             gate_source_name,
             gate_source_build_bytes,
-            SOURCE_CLOSURE,
+            SOURCE_SET_ID,
         )
     }
 
@@ -364,7 +593,7 @@ impl GateCustody {
         source_lock_path: &Path,
         gate_source_name: &str,
         gate_source_build_bytes: &[u8],
-        source_closure: &'static str,
+        source_set_id: &'static str,
     ) -> Result<Self, Box<dyn Error>> {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let profile_path = manifest_dir.join(PROFILE_RELATIVE_PATH);
@@ -382,8 +611,13 @@ impl GateCustody {
             &expected_artifacts,
         )?;
 
-        let (canonical_model_dir, cache_present, model_artifacts) =
-            attest_model_dir(model_dir, &expected_artifacts)?;
+        let (
+            canonical_model_dir,
+            cache_present,
+            model_artifacts,
+            pinned_model_artifact_files,
+            pinned_model_artifact_bytes,
+        ) = attest_model_dir(model_dir, &expected_artifacts)?;
 
         let gate_source_path = manifest_dir.join("examples").join(gate_source_name);
         let gate_source_bytes = read_attested_bytes(&gate_source_path, "gate source")?;
@@ -394,7 +628,7 @@ impl GateCustody {
         )?;
         let mut rust_sources = BTreeMap::new();
         let mut metal_shader_sources = BTreeMap::new();
-        for spec in source_specs_for_closure(source_closure)? {
+        for spec in source_specs_for_set(source_set_id)? {
             let source =
                 read_attested_bytes(&manifest_dir.join(spec.manifest_relative_path), spec.label)?;
             require_build_source_match(&source.bytes, spec.embedded_bytes, spec.label)?;
@@ -425,10 +659,12 @@ impl GateCustody {
             source_lock: source_lock_bytes.attestation,
             binary,
             gate_source: gate_source_bytes.attestation,
-            source_closure,
+            source_set_id,
             rust_sources,
             metal_shader_sources,
             model_artifacts,
+            pinned_model_artifact_files,
+            pinned_model_artifact_bytes,
         })
     }
 
@@ -438,6 +674,23 @@ impl GateCustody {
 
     pub fn source_lock_value(&self) -> &Value {
         &self.source_lock_value
+    }
+
+    pub fn pinned_model_artifact_bytes(&self, name: &str) -> Result<&[u8], Box<dyn Error>> {
+        self.pinned_model_artifact_bytes
+            .get(name)
+            .map(Vec::as_slice)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "pinned model artifact {name} bytes are unavailable"
+                ))
+            })
+    }
+
+    pub fn pinned_model_artifact_file(&self, name: &str) -> Result<&File, Box<dyn Error>> {
+        self.pinned_model_artifact_files
+            .get(name)
+            .ok_or_else(|| invalid(format!("pinned model artifact {name} file is unavailable")))
     }
 
     pub fn receipt_json(&self) -> Value {
@@ -457,7 +710,9 @@ impl GateCustody {
             .map(|(name, attestation)| (name.clone(), attestation_json(attestation)))
             .collect::<Map<_, _>>();
         let sources = json!({
-            "closure": self.source_closure,
+            "set_id": self.source_set_id,
+            "coverage": SOURCE_SET_COVERAGE,
+            "binary_attestation_authoritative_for_full_executable": true,
             "captured_at_start": true,
             "gate": attestation_json(&self.gate_source),
             "rust_and_bridge_sources": rust_sources,
@@ -491,6 +746,30 @@ impl GateCustody {
         })
     }
 
+    pub fn verify_pinned_model_handles_unchanged(&self) -> Result<(), Box<dyn Error>> {
+        for (name, file) in &self.pinned_model_artifact_files {
+            let expected = self
+                .model_artifacts
+                .get(name)
+                .ok_or_else(|| invalid(format!("missing pinned artifact attestation {name}")))?;
+            let metadata = file.metadata().map_err(|error| {
+                invalid(format!("cannot inspect pinned artifact {name}: {error}"))
+            })?;
+            if metadata.dev() != expected.device
+                || metadata.ino() != expected.inode
+                || metadata.len() != expected.size
+                || metadata.nlink() != expected.nlink
+                || metadata.ctime() != expected.change_time_seconds
+                || metadata.ctime_nsec() != expected.change_time_nanoseconds
+            {
+                return Err(invalid(format!(
+                    "pinned model artifact {name} changed during gate execution"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn verify_unchanged(&self) -> Result<(), Box<dyn Error>> {
         verify_file_unchanged(&self.profile.path, &self.profile, "deployment profile")?;
         verify_file_unchanged(&self.source_lock.path, &self.source_lock, "source lock")?;
@@ -513,18 +792,25 @@ impl GateCustody {
                 (name.clone(), (attestation.size, attestation.sha256.clone()))
             })
             .collect::<BTreeMap<_, _>>();
-        let (model_dir, cache_present, artifacts) = attest_model_dir(&self.model_dir, &expected)?;
+        let (model_dir, cache_present, artifacts, _, _) =
+            attest_model_dir(&self.model_dir, &expected)?;
         if model_dir != self.model_dir
             || cache_present != self.cache_present
             || artifacts != self.model_artifacts
         {
             return Err(invalid("model directory changed during gate execution"));
         }
+        self.verify_pinned_model_handles_unchanged()?;
         Ok(())
     }
 
     pub fn verify_unchanged_receipt(&self) -> Result<Value, Box<dyn Error>> {
         self.verify_unchanged()?;
+        let model_artifacts = self
+            .model_artifacts
+            .iter()
+            .map(|(name, attestation)| (name.clone(), attestation_json(attestation)))
+            .collect::<Map<_, _>>();
         let rust_sources = self
             .rust_sources
             .iter()
@@ -537,7 +823,16 @@ impl GateCustody {
             .collect::<Map<_, _>>();
         Ok(json!({
             "verified_at_end": true,
-            "source_closure": self.source_closure,
+            "source_set_id": self.source_set_id,
+            "source_set_coverage": SOURCE_SET_COVERAGE,
+            "deployment_profile": attestation_json(&self.profile),
+            "source_lock": attestation_json(&self.source_lock),
+            "model_dir": {
+                "path": self.model_dir,
+                "cache_present": self.cache_present,
+                "artifacts": model_artifacts,
+                "loaded_from_start_pinned_artifacts": true,
+            },
             "binary": attestation_json(&self.binary),
             "gate": attestation_json(&self.gate_source),
             "rust_and_bridge_sources": rust_sources,
@@ -591,6 +886,10 @@ pub fn attestation_json(attestation: &FileAttestation) -> Value {
         "path": attestation.path,
         "size": attestation.size,
         "sha256": attestation.sha256,
+        "device": attestation.device,
+        "inode": attestation.inode,
+        "change_time_seconds": attestation.change_time_seconds,
+        "change_time_nanoseconds": attestation.change_time_nanoseconds,
         "direct_regular_file": true,
         "single_link": attestation.nlink == 1,
     })
@@ -602,6 +901,16 @@ fn read_and_attest(
     expected_size: Option<u64>,
     collect: bool,
 ) -> Result<(Option<Vec<u8>>, FileAttestation), Box<dyn Error>> {
+    let (bytes, attestation, _) = open_and_attest(path, label, expected_size, collect)?;
+    Ok((bytes, attestation))
+}
+
+fn open_and_attest(
+    path: &Path,
+    label: &str,
+    expected_size: Option<u64>,
+    collect: bool,
+) -> Result<(Option<Vec<u8>>, FileAttestation, File), Box<dyn Error>> {
     let before = fs::symlink_metadata(path)
         .map_err(|error| invalid(format!("cannot inspect {label}: {error}")))?;
     require_direct_single_link_file(&before, label)?;
@@ -645,7 +954,12 @@ fn read_and_attest(
             size: opened.len(),
             sha256: format!("{:x}", hasher.finalize()),
             nlink: opened.nlink(),
+            device: opened.dev(),
+            inode: opened.ino(),
+            change_time_seconds: opened.ctime(),
+            change_time_nanoseconds: opened.ctime_nsec(),
         },
+        file,
     ))
 }
 
@@ -676,6 +990,8 @@ fn require_same_file(
     if expected.dev() != actual.dev()
         || expected.ino() != actual.ino()
         || expected.len() != actual.len()
+        || expected.ctime() != actual.ctime()
+        || expected.ctime_nsec() != actual.ctime_nsec()
     {
         return Err(invalid(format!("{label} changed while it was being read")));
     }
@@ -845,7 +1161,16 @@ fn require_record_matches(
 fn attest_model_dir(
     model_dir: &Path,
     expected: &BTreeMap<String, (u64, String)>,
-) -> Result<(PathBuf, bool, BTreeMap<String, FileAttestation>), Box<dyn Error>> {
+) -> Result<
+    (
+        PathBuf,
+        bool,
+        BTreeMap<String, FileAttestation>,
+        BTreeMap<String, File>,
+        BTreeMap<String, Vec<u8>>,
+    ),
+    Box<dyn Error>,
+> {
     let root = fs::symlink_metadata(model_dir)
         .map_err(|error| invalid(format!("cannot inspect model directory: {error}")))?;
     if root.file_type().is_symlink() || !root.is_dir() {
@@ -878,18 +1203,32 @@ fn attest_model_dir(
         validate_cache_tree(&canonical.join(".cache"))?;
     }
     let mut artifacts = BTreeMap::new();
+    let mut pinned_files = BTreeMap::new();
+    let mut pinned_bytes = BTreeMap::new();
     for (name, (size, sha256)) in expected {
-        let attestation = attest_file(
+        let collect = !name.ends_with(".safetensors");
+        let (bytes, attestation, file) = open_and_attest(
             &canonical.join(name),
             &format!("model artifact {name}"),
             Some(*size),
+            collect,
         )?;
         if &attestation.sha256 != sha256 {
             return Err(invalid(format!("model artifact {name} SHA-256 mismatch")));
         }
+        if let Some(bytes) = bytes {
+            pinned_bytes.insert(name.clone(), bytes);
+        }
+        pinned_files.insert(name.clone(), file);
         artifacts.insert(name.clone(), attestation);
     }
-    Ok((canonical, cache_present, artifacts))
+    Ok((
+        canonical,
+        cache_present,
+        artifacts,
+        pinned_files,
+        pinned_bytes,
+    ))
 }
 
 fn validate_cache_tree(cache: &Path) -> Result<(), Box<dyn Error>> {
@@ -1025,6 +1364,7 @@ fn invalid(message: impl Into<String>) -> Box<dyn Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Seek as _;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -1080,6 +1420,44 @@ mod tests {
     }
 
     #[test]
+    fn pinned_artifact_survives_an_ancestor_symlink_rebind_and_restore() {
+        let unique = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "apxinf-qwen35-pinned-rebind-{}-{unique}",
+            std::process::id()
+        ));
+        let original_dir = root.join("original");
+        let replacement_dir = root.join("replacement");
+        let alias = root.join("model");
+        fs::create_dir_all(&original_dir).unwrap();
+        fs::create_dir_all(&replacement_dir).unwrap();
+        fs::write(original_dir.join("artifact"), b"trusted-a").unwrap();
+        fs::write(replacement_dir.join("artifact"), b"hostile-b").unwrap();
+        std::os::unix::fs::symlink(&original_dir, &alias).unwrap();
+
+        let (bytes, attestation, mut pinned) =
+            open_and_attest(&alias.join("artifact"), "pinned test artifact", None, true).unwrap();
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&replacement_dir, &alias).unwrap();
+        pinned.rewind().unwrap();
+        let mut pinned_bytes = Vec::new();
+        pinned.read_to_end(&mut pinned_bytes).unwrap();
+        assert_eq!(bytes.unwrap(), b"trusted-a");
+        assert_eq!(pinned_bytes, b"trusted-a");
+        assert_eq!(fs::read(alias.join("artifact")).unwrap(), b"hostile-b");
+
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&original_dir, &alias).unwrap();
+        verify_file_unchanged(
+            &alias.join("artifact"),
+            &attestation,
+            "pinned test artifact",
+        )
+        .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn canonical_source_lock_hash_uses_python_exponent_spelling() {
         let value = json!({
             "content_sha256": "ignored",
@@ -1104,21 +1482,45 @@ mod tests {
     }
 
     #[test]
-    fn boundary_tail_v1_source_closure_binds_every_declared_build_input_once() {
-        let specs = source_specs_for_closure(SOURCE_CLOSURE).unwrap();
+    fn boundary_tail_v1_explicit_source_set_binds_every_declared_build_input_once() {
+        let specs = source_specs_for_set(SOURCE_SET_ID).unwrap();
         let names = specs
             .iter()
             .map(|spec| spec.receipt_name)
             .collect::<Vec<_>>();
-        assert_eq!(names.len(), 23);
+        assert_eq!(names.len(), 47);
         assert_eq!(
             names.iter().copied().collect::<BTreeSet<_>>().len(),
             names.len()
         );
         for required in [
             "gate_evidence",
+            "apxinf_model_lib",
+            "apxinf_model_manifest",
+            "accelerator",
+            "profiling",
             "general",
             "llm_trait",
+            "qwen35_mod",
+            "qwen35_config",
+            "qwen35_weights",
+            "qwen35_state",
+            "apxinf_loader_lib",
+            "safetensors_loader",
+            "tokenizer",
+            "apxinf_core_lib",
+            "apxinf_core_manifest",
+            "apxinf_core_build",
+            "apxinf_core_backend",
+            "apxinf_core_dtype",
+            "apxinf_core_error",
+            "apxinf_core_kv_cache",
+            "apxinf_core_cpu_ops",
+            "apxinf_core_op_impls",
+            "apxinf_core_ops",
+            "apxinf_core_shape",
+            "apxinf_core_storage",
+            "apxinf_core_tensor",
             "apxinf_metal_lib",
             "apxinf_metal_build",
             "gdn_rust",
@@ -1156,12 +1558,12 @@ mod tests {
     }
 
     #[test]
-    fn boundary_tail_v1_rejects_legacy_unknown_and_incomplete_source_closures() {
-        assert!(source_specs_for_closure("stack3-direct-compile-inputs-v1").is_err());
-        assert!(source_specs_for_closure("stack3-lm-head-v2-direct-compile-inputs-v1").is_err());
-        assert!(source_specs_for_closure("unknown").is_err());
+    fn boundary_tail_v1_rejects_legacy_unknown_and_incomplete_source_sets() {
+        assert!(source_specs_for_set("stack3-direct-compile-inputs-v1").is_err());
+        assert!(source_specs_for_set("stack3-lm-head-v2-direct-compile-inputs-v1").is_err());
+        assert!(source_specs_for_set("unknown").is_err());
 
-        let specs = boundary_tail_head_v1_source_specs();
+        let specs = boundary_tail_head_v1_source_set_specs();
         let mut missing = specs.to_vec();
         missing.pop();
         assert!(validate_source_specs(&missing).is_err());

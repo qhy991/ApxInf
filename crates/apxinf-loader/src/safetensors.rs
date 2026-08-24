@@ -125,6 +125,22 @@ where
     load_native_path_filtered_ref(path, &include)
 }
 
+/// Load selected tensors from an already-open SafeTensors file.
+///
+/// This is the custody-preserving counterpart to [`load_native_path_filtered`]:
+/// callers that have already attested and pinned a file descriptor can ensure
+/// the bytes loaded here come from that same inode even if its pathname is
+/// concurrently renamed or rebound.
+pub fn load_native_file_filtered<F>(
+    file: &File,
+    include: F,
+) -> Result<(HashMap<String, Tensor>, HashMap<String, String>), String>
+where
+    F: Fn(&str) -> bool,
+{
+    load_impl_filtered_file(file, /* upcast_bf16 */ false, &include)
+}
+
 fn load_native_path_filtered_ref(
     path: &Path,
     include: &dyn Fn(&str) -> bool,
@@ -333,7 +349,15 @@ fn load_impl_filtered(
     include: &dyn Fn(&str) -> bool,
 ) -> Result<(HashMap<String, Tensor>, HashMap<String, String>), String> {
     let file = File::open(path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
-    let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("mmap failed: {e}"))? };
+    load_impl_filtered_file(&file, upcast_bf16, include)
+}
+
+fn load_impl_filtered_file(
+    file: &File,
+    upcast_bf16: bool,
+    include: &dyn Fn(&str) -> bool,
+) -> Result<(HashMap<String, Tensor>, HashMap<String, String>), String> {
+    let mmap = unsafe { Mmap::map(file).map_err(|e| format!("mmap failed: {e}"))? };
 
     if mmap.len() < 8 {
         return Err("file too small to be a SafeTensors file".into());
@@ -623,6 +647,34 @@ mod tests {
         );
         assert_eq!(tensors["lm_head.weight"].as_f32().unwrap(), &[-3.5]);
         assert!(!tensors.contains_key("model.visual.blocks.0.weight"));
+    }
+
+    #[test]
+    fn test_load_native_file_filtered_uses_the_pinned_inode_after_path_rebind() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("model.safetensors");
+        let original = make_safetensors(&[(
+            "model.language_model.weight",
+            DType::F32,
+            &[1],
+            &1.25f32.to_le_bytes(),
+        )]);
+        let replacement = make_safetensors(&[(
+            "model.language_model.weight",
+            DType::F32,
+            &[1],
+            &9.5f32.to_le_bytes(),
+        )]);
+        std::fs::write(&path, original).unwrap();
+        let pinned = File::open(&path).unwrap();
+        std::fs::rename(&path, directory.path().join("original.safetensors")).unwrap();
+        std::fs::write(&path, replacement).unwrap();
+
+        let (tensors, _) = load_native_file_filtered(&pinned, |_| true).unwrap();
+        assert_eq!(
+            tensors["model.language_model.weight"].as_f32().unwrap(),
+            &[1.25]
+        );
     }
 
     #[test]
