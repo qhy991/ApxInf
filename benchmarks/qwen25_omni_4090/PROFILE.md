@@ -3249,3 +3249,31 @@ opportunity before FA2 owns the later half.
 profiler spending.** Raw evidence is `omni-fa2-chunk2048-smoke-8k.json`; the
 profile/tuning inputs use the `omni-8192-fa2-chunk1024-current` and
 `omni-8192-m1024-bf16-tuning` names. Production remains on 1,024-token chunks.
+
+## Prepared request-scoped all-chunk causal FA2
+
+Status: **source prepared; no formal candidate result and no deployment
+change**. The compile-time upper-bound probe on
+`codex/omni-fa2-allchunks-probe` proved that an 8K request can route its first
+`query=1024, kv=1024` chunk through FA2, preserve the complete accepted
+trajectory, and lower TTFT from 0.6145 to 0.4120 s. That probe is not
+deployable because it would also alter known-different 1K and 4K cells.
+
+The formal candidate separates capability from policy. CUDA exposes one
+extension that executes validated suffix prefill through causal FA2 without
+the default long-KV scheduling threshold. The Qwen2.5-Omni model alone owns
+the request gate: `APXINF_QWEN25_FA2_ALL_CHUNKS=1` composes with the accepted
+1,024-token chunk and causal-FA2 selectors only for reset, text-only prompts
+from 8,192 through 12,288 tokens. The boolean is passed explicitly through
+chunk, layer and attention calls; it is not mutable global request state.
+Selector-off, 1K, 4K, 7K, prompts above 12K, decode and multimodal paths retain
+the existing backend call. Invalid selector composition fails at model load.
+
+The CUDA operator contract now covers both KV=1,024 capability and the default
+KV=4,097 policy boundary against the scalar reduction tolerance. The first GPU
+budget remains correctness only: one 8K and then one 12K request must reproduce
+their frozen complete trajectories and logs must prove the request-scoped
+path. Only those passes admit five alternating same-binary pairs. Promotion
+requires at least four of five wins, at least 10% lower TTFT median at 8K,
+at least 5% at 12K, exact short/decode/multimodal controls and unchanged 32K.
+No profile is spent before the repeated end-to-end win.

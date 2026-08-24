@@ -62,6 +62,13 @@ fn text_prefill_chunk_size(prompt_tokens: usize, fa2_chunk1024: bool) -> usize {
     }
 }
 
+#[cfg(any(feature = "cuda", test))]
+fn use_all_chunk_fa2(prompt_tokens: usize, enabled: bool) -> bool {
+    enabled
+        && (CHUNKED_PREFILL_FA2_LARGE_MIN_PROMPT..=CHUNKED_PREFILL_FA2_LARGE_MAX_PROMPT)
+            .contains(&prompt_tokens)
+}
+
 pub struct GeneralQwen25Omni {
     config: Qwen25OmniConfig,
     text: Qwen25OmniTextWeights,
@@ -149,6 +156,24 @@ fn fa2_chunk1024_enabled() -> Result<bool> {
 }
 
 #[cfg(feature = "cuda")]
+fn all_chunk_fa2_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| {
+            let enabled = parse_binary_env("APXINF_QWEN25_FA2_ALL_CHUNKS")?;
+            if enabled && !fa2_chunk1024_enabled().map_err(|error| error.to_string())? {
+                return Err(
+                    "APXINF_QWEN25_FA2_ALL_CHUNKS=1 requires APXINF_QWEN25_FA2_CHUNK1024=1"
+                        .into(),
+                );
+            }
+            Ok(enabled)
+        })
+        .clone()
+        .map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
 fn gpu_last_row_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
     ENABLED
@@ -205,6 +230,7 @@ impl GeneralQwen25Omni {
         #[cfg(feature = "cuda")]
         let decode_graph = {
             let fa2_chunk1024 = fa2_chunk1024_enabled()?;
+            let _all_chunk_fa2 = all_chunk_fa2_enabled()?;
             if fa2_chunk1024 && !chunked_prefill_enabled()? {
                 return Err(Error::Other(
                     "APXINF_QWEN25_FA2_CHUNK1024=1 requires APXINF_QWEN25_CHUNKED_PREFILL=1"
@@ -359,7 +385,21 @@ impl GeneralQwen25Omni {
     }
 
     fn forward_inner(&mut self, token_ids: &[u32], start_pos: u32) -> Result<Tensor> {
+        self.forward_inner_with_fa2_policy(token_ids, start_pos, false)
+    }
+
+    fn forward_inner_with_fa2_policy(
+        &mut self,
+        token_ids: &[u32],
+        start_pos: u32,
+        use_all_chunk_fa2: bool,
+    ) -> Result<Tensor> {
         self.validate_forward_input(token_ids, start_pos)?;
+        if use_all_chunk_fa2 && token_ids.len() <= 1 {
+            return Err(Error::Other(
+                "all-chunk causal FA2 requires multi-token prefill".into(),
+            ));
+        }
         #[cfg(feature = "cuda")]
         if token_ids.len() == 1
             && start_pos < MAX_DECODE_GRAPH_POSITION
@@ -381,7 +421,11 @@ impl GeneralQwen25Omni {
             self.kv.advance(1);
             return Ok(logits);
         }
-        let hidden = self.forward_text_hidden_validated(token_ids, start_pos)?;
+        let hidden = self.forward_text_hidden_validated_with_fa2_policy(
+            token_ids,
+            start_pos,
+            use_all_chunk_fa2,
+        )?;
         self.logits_last_row(&hidden)
     }
 
@@ -411,12 +455,21 @@ impl GeneralQwen25Omni {
         token_ids: &[u32],
         start_pos: u32,
     ) -> Result<Tensor> {
+        self.forward_text_hidden_validated_with_fa2_policy(token_ids, start_pos, false)
+    }
+
+    fn forward_text_hidden_validated_with_fa2_policy(
+        &mut self,
+        token_ids: &[u32],
+        start_pos: u32,
+        use_all_chunk_fa2: bool,
+    ) -> Result<Tensor> {
         let mut hidden = self
             .backend
             .embedding(&self.text.token_embedding, token_ids)?;
         let positions = linear_positions(token_ids.len(), start_pos, self.rope_delta)?;
         for index in 0..self.config.text.n_layers {
-            hidden = self.forward_layer(&hidden, index, &positions)?;
+            hidden = self.forward_layer(&hidden, index, &positions, use_all_chunk_fa2)?;
         }
         self.kv.advance(token_ids.len());
         Ok(hidden)
@@ -534,7 +587,7 @@ impl GeneralQwen25Omni {
             .unwrap_or(0) as i64;
         self.rope_delta = max_position + 1 - input.token_ids.len() as i64;
         for index in 0..self.config.text.n_layers {
-            hidden = self.forward_layer(&hidden, index, &positions)?;
+            hidden = self.forward_layer(&hidden, index, &positions, false)?;
         }
         self.kv.advance(input.token_ids.len());
         self.logits_last_row(&hidden)
@@ -548,6 +601,7 @@ impl GeneralQwen25Omni {
             ));
         }
         let fa2_chunk1024 = fa2_chunk1024_enabled()?;
+        let all_chunk_fa2 = use_all_chunk_fa2(token_ids.len(), all_chunk_fa2_enabled()?);
         let chunk_size = text_prefill_chunk_size(token_ids.len(), fa2_chunk1024);
         if fa2_chunk1024
             && (CHUNKED_PREFILL_FA2_LARGE_MIN_PROMPT
@@ -562,14 +616,27 @@ impl GeneralQwen25Omni {
                 );
             }
         }
+        if all_chunk_fa2 {
+            static ALL_CHUNKS_PATH_LOGGED: OnceLock<()> = OnceLock::new();
+            if ALL_CHUNKS_PATH_LOGGED.set(()).is_ok() {
+                eprintln!(
+                    "ApxInf Qwen2.5-Omni request-scoped all-chunk FA2: prompt={}, chunk={chunk_size}",
+                    token_ids.len()
+                );
+            }
+        }
         let chunks = token_ids.len().div_ceil(chunk_size);
         for (index, chunk) in token_ids.chunks(chunk_size).enumerate() {
             let start = u32::try_from(self.kv.seq_len())
                 .map_err(|_| Error::Other("chunked prefill position exceeds u32".into()))?;
             if index + 1 == chunks {
-                return self.forward_inner(chunk, start);
+                return self.forward_inner_with_fa2_policy(chunk, start, all_chunk_fa2);
             }
-            self.forward_text_hidden_validated(chunk, start)?;
+            self.forward_text_hidden_validated_with_fa2_policy(
+                chunk,
+                start,
+                all_chunk_fa2,
+            )?;
         }
         Err(Error::Other("chunked prefill received no tokens".into()))
     }
@@ -579,6 +646,7 @@ impl GeneralQwen25Omni {
         hidden: &Tensor,
         index: usize,
         positions: &[u32],
+        use_all_chunk_fa2: bool,
     ) -> Result<Tensor> {
         let text = &self.config.text;
         let sequence = hidden.shape().dims()[0];
@@ -657,16 +725,49 @@ impl GeneralQwen25Omni {
                 text.max_position_embeddings,
             )?
         } else {
-            self.backend.sdpa_prefill(
-                &q,
-                &mut *self.kv,
-                index,
-                text.n_heads,
-                text.n_kv_heads,
-                text.head_dim,
-                kv_len,
-                text.max_position_embeddings,
-            )?
+            #[cfg(feature = "cuda")]
+            {
+                if use_all_chunk_fa2 {
+                    let cuda = cuda_backend(&*self.backend).ok_or_else(|| {
+                        Error::Other("all-chunk causal FA2 requires CudaBackend".into())
+                    })?;
+                    cuda.sdpa_prefill_causal_fa2(
+                        &q,
+                        &mut *self.kv,
+                        index,
+                        text.n_heads,
+                        text.n_kv_heads,
+                        text.head_dim,
+                        kv_len,
+                        text.max_position_embeddings,
+                    )?
+                } else {
+                    self.backend.sdpa_prefill(
+                        &q,
+                        &mut *self.kv,
+                        index,
+                        text.n_heads,
+                        text.n_kv_heads,
+                        text.head_dim,
+                        kv_len,
+                        text.max_position_embeddings,
+                    )?
+                }
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                let _ = use_all_chunk_fa2;
+                self.backend.sdpa_prefill(
+                    &q,
+                    &mut *self.kv,
+                    index,
+                    text.n_heads,
+                    text.n_kv_heads,
+                    text.head_dim,
+                    kv_len,
+                    text.max_position_embeddings,
+                )?
+            }
         };
         let attention = self.backend.matmul(&attention, &layer.wo)?;
         let residual = self.backend.add(hidden, &attention)?;
@@ -1151,6 +1252,15 @@ mod tests {
         assert_eq!(text_prefill_chunk_size(8_192, true), 1_024);
         assert_eq!(text_prefill_chunk_size(12_288, true), 1_024);
         assert_eq!(text_prefill_chunk_size(12_289, true), 1_024);
+    }
+
+    #[test]
+    fn all_chunk_fa2_changes_only_the_frozen_8k_to_12k_cell() {
+        assert!(!use_all_chunk_fa2(7_168, true));
+        assert!(use_all_chunk_fa2(8_192, true));
+        assert!(use_all_chunk_fa2(12_288, true));
+        assert!(!use_all_chunk_fa2(12_289, true));
+        assert!(!use_all_chunk_fa2(8_192, false));
     }
 
     #[test]

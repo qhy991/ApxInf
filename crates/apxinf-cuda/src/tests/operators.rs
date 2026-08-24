@@ -890,8 +890,15 @@ fn gqa_flattened_long_prefill_matches_scalar_bf16() {
 #[test]
 fn causal_fa2_long_gqa_prefill_matches_scalar_contract() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
-    let (query_tokens, key_tokens, query_heads, kv_heads, head_dim, max_seq_len) =
-        (4usize, 4_097usize, 16usize, 2usize, 128usize, 4_100usize);
+    for key_tokens in [1_024usize, 4_097usize] {
+        assert_causal_fa2_matches_scalar(&ctx, key_tokens);
+    }
+}
+
+#[cfg(apxinf_fa2_causal_sm80)]
+fn assert_causal_fa2_matches_scalar(ctx: &CudaContext, key_tokens: usize) {
+    let (query_tokens, query_heads, kv_heads, head_dim, max_seq_len) =
+        (4usize, 16usize, 2usize, 128usize, key_tokens + 3);
     let q_values = (0..query_tokens * query_heads * head_dim)
         .map(|index| ((index as f32 * 0.031) - 2.0).sin())
         .collect::<Vec<_>>();

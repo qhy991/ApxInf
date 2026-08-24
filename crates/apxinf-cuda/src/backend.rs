@@ -219,6 +219,43 @@ impl CudaBackend {
         self.ctx.device_id()
     }
 
+    /// Execute suffix prefill through causal FA2 without the default long-KV
+    /// scheduling threshold. The model owns the request-level eligibility
+    /// gate; the CUDA attention contract still validates dtype, shape, cache,
+    /// suffix position and the explicit process selector.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sdpa_prefill_causal_fa2(
+        &self,
+        q: &Tensor,
+        kv: &mut dyn KvCache,
+        layer_idx: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        kv_len: usize,
+        max_seq_len: usize,
+    ) -> Result<Tensor> {
+        let seq_len = q.shape().dims()[0];
+        let kv_offset = kv_len
+            .checked_sub(seq_len)
+            .ok_or_else(|| Error::Other("causal FA2 query exceeds KV length".into()))?;
+        kernels::attention::sdpa_with_batched_prefill_fa2_min_kv(
+            &self.ctx,
+            q,
+            kv,
+            layer_idx,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            kv_len,
+            max_seq_len,
+            u32::try_from(kv_offset)
+                .map_err(|_| Error::Other("causal FA2 KV offset exceeds u32".into()))?,
+            true,
+            1,
+        )
+    }
+
     /// Begin a relaxed stream capture for decode graphs which call vendor
     /// libraries with internal thread-local state.
     pub fn begin_capture_relaxed(&self) -> Result<()> {

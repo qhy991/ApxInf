@@ -665,14 +665,14 @@ pub(crate) fn causal_fa2_gqa_prefill(
         || query_dims != [query_tokens, query_heads, head_dim]
         || query_tokens <= 1
         || query_tokens > key_tokens
-        || key_tokens < MIN_CAUSAL_FA2_GQA_KV_LEN
+        || key_tokens == 0
         || key_tokens > max_seq_len
         || query_heads != 16
         || kv_heads != 2
         || head_dim != 128
     {
         return Err(Error::Other(format!(
-            "causal GQA FA2 supports only CUDA BF16 suffix prefill [q,16,128], kv_heads=2 and kv_len {MIN_CAUSAL_FA2_GQA_KV_LEN}..=max; got {:?}, q={query_tokens}, kv={key_tokens}/{max_seq_len}, heads={query_heads}/{kv_heads}, dim={head_dim}",
+            "causal GQA FA2 supports only CUDA BF16 suffix prefill [q,16,128], kv_heads=2 and kv_len 1..=max; got {:?}, q={query_tokens}, kv={key_tokens}/{max_seq_len}, heads={query_heads}/{kv_heads}, dim={head_dim}",
             query_dims
         )));
     }
@@ -779,6 +779,42 @@ pub(crate) fn sdpa_with_batched_prefill(
     kv_offset: u32,
     use_batched_prefill: bool,
 ) -> Result<Tensor> {
+    sdpa_with_batched_prefill_fa2_min_kv(
+        ctx,
+        query,
+        kv,
+        layer_idx,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        kv_len,
+        max_seq_len,
+        kv_offset,
+        use_batched_prefill,
+        MIN_CAUSAL_FA2_GQA_KV_LEN,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sdpa_with_batched_prefill_fa2_min_kv(
+    ctx: &CudaContext,
+    query: &Tensor,
+    kv: &dyn KvCache,
+    layer_idx: usize,
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    kv_len: usize,
+    max_seq_len: usize,
+    kv_offset: u32,
+    use_batched_prefill: bool,
+    causal_fa2_min_kv_len: usize,
+) -> Result<Tensor> {
+    if causal_fa2_min_kv_len == 0 {
+        return Err(Error::Other(
+            "causal GQA FA2 minimum KV length must be positive".into(),
+        ));
+    }
     if n_kv_heads == 0 || n_heads == 0 || n_heads % n_kv_heads != 0 {
         return Err(Error::Other(format!(
             "attention requires non-zero divisible head counts, got {n_heads}/{n_kv_heads}"
@@ -813,7 +849,7 @@ pub(crate) fn sdpa_with_batched_prefill(
     let element_bytes = dtype.size_in_bytes();
     if causal_fa2_gqa_prefill_enabled()?
         && seq_len > 1
-        && kv_len >= MIN_CAUSAL_FA2_GQA_KV_LEN
+        && kv_len >= causal_fa2_min_kv_len
     {
         if !use_batched_prefill {
             return Err(Error::Other(
