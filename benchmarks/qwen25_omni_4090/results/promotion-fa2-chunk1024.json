@@ -1,0 +1,233 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "completed_at": "2026-08-24T14:24:01+08:00",
+  "decision": {
+    "status": "promote",
+    "scope": "single-request BF16 text reset-prefill from 8192 through 12288 prompt tokens on RTX 4090 with causal FA2 enabled",
+    "reason": "All complete trajectories are exact, 8K and 12K win all five alternating pairs with more than 13% and 20% TTFT reduction, 32K is an unchanged-path control, and matched Systems profiles show that reducing chunk count removes the measured small-M GEMM, attention, launch and allocation work.",
+    "deployment_selector": "APXINF_QWEN25_FA2_CHUNK1024=1"
+  },
+  "contract": {
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "hardware": "NVIDIA GeForce RTX 4090",
+    "precision": "bf16",
+    "concurrency": 1,
+    "sampling": "greedy",
+    "max_model_len": 32768,
+    "target_prompt_tokens": [8192, 12288],
+    "control_prompt_tokens": [4096, 7168, 32760],
+    "output_tokens": 8,
+    "timing_authority": "no-profiler service TTFT/TPOT plus client wall time",
+    "profile_role": "causal attribution only"
+  },
+  "implementation": {
+    "tested_commit": "8e53d2f9eba9335bf9d07d8aa2ef6d6b7ece117a",
+    "pr_replay_commit": "72a4ad1",
+    "source_tree": "63e0233eb6969a27ecf01e87828e4ead9d18c7fa",
+    "candidate_binary": "/opt/apxinf/qwen25-omni-fa2-chunk1024-target-8e53d2f/release/apxinf",
+    "candidate_binary_sha256": "71db60c7a545647c5a2f6e9cd1967e402d1188f5098dc5b27853605cc4f1fba1",
+    "build": "clean sm_89 core-fa2 release build",
+    "build_integration_fix": "254466b imports the cfg-gated SM89 output buffer required by infinigence/main",
+    "change": "use 1024-token instead of 256-token chunks only for reset text prefill with prompt length in [8192, 12288]",
+    "prerequisites": [
+      "APXINF_QWEN25_CHUNKED_PREFILL=1",
+      "APXINF_FA2_GQA_PREFILL=1"
+    ],
+    "unmatched_paths": "selector-off, prompts below 8192 or above 12288, decode and multimodal inputs keep the accepted policy"
+  },
+  "correctness": {
+    "initial_smoke": {
+      "broker_job": "gpuq-b06a690a4f25",
+      "prompt_tokens": 12288,
+      "ttft_seconds": 0.869225412,
+      "trajectory_sha256": "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832",
+      "selected_path_log": "ApxInf Qwen2.5-Omni FA2 chunk1024 prefill: prompt=12288, chunk=1024",
+      "raw": "omni-fa2-chunk1024-smoke-12k.json"
+    },
+    "formal_abba": {
+      "broker_job": "gpuq-04f31feed7e9",
+      "measured_requests": 30,
+      "all_passed": true,
+      "all_exact": true,
+      "all_stable": true,
+      "trajectory_sha256": {
+        "8192+8": "490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf",
+        "12288+8": "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832",
+        "32760+8": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9"
+      }
+    },
+    "invalid_composition": {
+      "broker_job": "gpuq-b3abaef61ea9",
+      "passed": true,
+      "condition": "candidate selector enabled while causal FA2 is disabled",
+      "result": "model initialization failed explicitly with the prerequisite error",
+      "raw": "omni-fa2-chunk1024-invalid-gate.log"
+    }
+  },
+  "no_profiler": {
+    "binary_control": "same SHA-256 for A and B; only APXINF_QWEN25_FA2_CHUNK1024 changes",
+    "order": ["A", "B", "B", "A", "A", "B", "B", "A", "A", "B"],
+    "pairs": 5,
+    "warmups_per_service": 1,
+    "results": [
+      {
+        "prompt_tokens": 8192,
+        "baseline_ttft_median_seconds": 0.708071963,
+        "candidate_ttft_median_seconds": 0.614514357,
+        "paired_ttft_speedup_median": 1.1525192130857447,
+        "paired_ttft_speedup_min": 1.151200101439686,
+        "paired_ttft_wins": 5,
+        "ttft_reduction_median_pct": 13.23355058675258,
+        "baseline_ttft_cv_pct": 0.1277886615266767,
+        "candidate_ttft_cv_pct": 0.09728750016307016,
+        "baseline_wall_median_seconds": 0.7849946022033691,
+        "candidate_wall_median_seconds": 0.6917376667261124,
+        "paired_wall_speedup_median": 1.1348145120194475,
+        "candidate_tpot_median_seconds": 0.010655597000000001
+      },
+      {
+        "prompt_tokens": 12288,
+        "baseline_ttft_median_seconds": 1.087668497,
+        "candidate_ttft_median_seconds": 0.865988918,
+        "paired_ttft_speedup_median": 1.2560066728231136,
+        "paired_ttft_speedup_min": 1.2520729405130513,
+        "paired_ttft_wins": 5,
+        "ttft_reduction_median_pct": 20.382588593075702,
+        "baseline_ttft_cv_pct": 0.08072170281181505,
+        "candidate_ttft_cv_pct": 0.08449932487346467,
+        "baseline_wall_median_seconds": 1.1817432641983032,
+        "candidate_wall_median_seconds": 0.9608365595340729,
+        "paired_wall_speedup_median": 1.230161024795207,
+        "candidate_tpot_median_seconds": 0.012989601857142857
+      },
+      {
+        "prompt_tokens": 32760,
+        "role": "unchanged-path control",
+        "baseline_ttft_median_seconds": 2.6100029869999997,
+        "candidate_ttft_median_seconds": 2.6125201750000002,
+        "paired_ttft_speedup_median": 0.9999069277383857,
+        "ttft_change_pct": 0.009308092486644791,
+        "baseline_wall_median_seconds": 2.788101740181446,
+        "candidate_wall_median_seconds": 2.790479190647602,
+        "candidate_tpot_median_seconds": 0.02429635457142857
+      }
+    ],
+    "raw_pattern": "omni-fa2-chunk1024-abba-s??-p?-?.json"
+  },
+  "systems_profile": {
+    "broker_job": "gpuq-748538673b14",
+    "workload": "12288 prompt + 8 output after one unprofiled warmup",
+    "baseline": {
+      "report": "/var/lib/agent-gpu-broker/profiles/omni-12288-fa2-chunk1024-baseline-interactive.nsys-rep",
+      "report_size_bytes": 3669493,
+      "report_sha256": "32c17ebd05e48c0cff9a127b1b322d182fed3f9cd8b259439c3533e6a91c0fe7",
+      "kernel_total_seconds": 1.141114507,
+      "kernel_instances": 36661
+    },
+    "candidate": {
+      "report": "/var/lib/agent-gpu-broker/profiles/omni-12288-fa2-chunk1024-candidate-interactive.nsys-rep",
+      "report_size_bytes": 1708695,
+      "report_sha256": "38afda2147712f5bb6964915fe6eea4c3cc7fdeefaa15918b6f946ab97c4865f",
+      "kernel_total_seconds": 0.929524997,
+      "kernel_instances": 13729
+    },
+    "attribution": {
+      "kernel_time_speedup": 1.2276318664725483,
+      "kernel_time_reduction_pct": 18.542355627067664,
+      "kernel_time_saved_seconds": 0.21158950999999993,
+      "launches_removed": 22932,
+      "launch_reduction_pct": 62.55148522953547,
+      "async_allocations_removed": 22968,
+      "async_frees_removed": 22968,
+      "fa2_instances_before": 1152,
+      "fa2_instances_after": 288,
+      "fa2_seconds_before": 0.273169506,
+      "fa2_seconds_after": 0.137631166,
+      "leading_m256_gemm_instances_before": 6912,
+      "same_kernel_instances_after": 216,
+      "leading_m256_gemm_seconds_before": 0.503643084,
+      "same_kernel_seconds_after": 0.066420579,
+      "interpretation": "The larger chunks remove repeated low-M GEMMs and per-chunk work while processing the same complete request. CUDA API sums are not treated as wall time."
+    },
+    "raw_stats_pattern": "omni-12288-fa2-chunk1024-*-stats_*.csv"
+  },
+  "regression": {
+    "broker_job": "gpuq-f1a3bb674df0",
+    "model_cpu_tests": "63 passed",
+    "benchmark_python_tests": "13 passed",
+    "quick": "5 of 5 exact and stable",
+    "decode": "5 of 5 exact and stable",
+    "4096_boundary": "exact accepted trajectory",
+    "7168_control": "exact accepted trajectory and unchanged policy",
+    "8192_boundary": "exact accepted trajectory and selected candidate path",
+    "real_png": "exact accepted tokens, no fallback",
+    "real_wav": "exact accepted tokens, no fallback",
+    "malformed_media_recovery": "typed HTTP 422 followed by healthy exact PNG request",
+    "cuda_suite": {
+      "broker_job": "gpuq-4753ea0aaeda",
+      "result": "93 passed, 2 failed",
+      "candidate_relevant_result": "all non-FP8 tests passed, including all Omni, causal FA2 and newly imported SM89 GeGLU routing tests",
+      "known_failures": [
+        "tests::fp8::fp8_identity_gemm_runs_on_device",
+        "tests::fp8::fp8_large_k_gemm_matches_quantized_cpu_reference"
+      ],
+      "assessment": "the same RTX 4090 cuBLAS status-15 failures were reproduced by the accepted-control binary before this candidate"
+    },
+    "raw_pattern": "omni-fa2-chunk1024-acceptance-*.json"
+  },
+  "frozen_vllm_omni_0_26_comparison": [
+    {
+      "prompt_tokens": 8192,
+      "apxinf_ttft_seconds": 0.614514357,
+      "vllm_ttft_seconds": 0.5120159462094307,
+      "ttft_result": "vLLM 1.200x lower",
+      "apxinf_wall_seconds": 0.6917376667261124,
+      "vllm_wall_seconds": 0.6476844996213913,
+      "wall_result": "vLLM 1.068x lower"
+    },
+    {
+      "prompt_tokens": 12288,
+      "apxinf_ttft_seconds": 0.865988918,
+      "vllm_ttft_seconds": 0.8302697762846947,
+      "ttft_result": "vLLM 1.043x lower",
+      "apxinf_wall_seconds": 0.9608365595340729,
+      "vllm_wall_seconds": 0.9631513729691505,
+      "wall_result": "near parity; ApxInf 1.002x lower"
+    },
+    {
+      "prompt_tokens": 32760,
+      "apxinf_ttft_seconds": 2.6125201750000002,
+      "vllm_ttft_seconds": 2.9122343733906746,
+      "ttft_result": "ApxInf 1.115x lower",
+      "apxinf_wall_seconds": 2.790479190647602,
+      "vllm_wall_seconds": 3.035371094942093,
+      "wall_result": "ApxInf 1.088x lower"
+    }
+  ],
+  "deployment": {
+    "installed_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf",
+    "installed_binary_sha256": "71db60c7a545647c5a2f6e9cd1967e402d1188f5098dc5b27853605cc4f1fba1",
+    "rollback_binary": "/opt/apxinf/qwen25-omni-target/release/apxinf.rollback-d28373c62dd6e0ad",
+    "rollback_binary_sha256": "d28373c62dd6e0adae899ef856ea3461d40a279982a2757394babefcaea4848a",
+    "runit_definition_sha256": "5a780f2ffc270e857f1b4cefa6a11dd07f3e219a5955adf1e568275c850eccb2",
+    "runit_broker_job": "gpuq-002910ab46af",
+    "smoke": {
+      "passed": true,
+      "8192_ttft_seconds": 0.622209846,
+      "12288_ttft_seconds": 0.861068211,
+      "all_exact": true,
+      "raw": "deployed-fa2-chunk1024-smoke-8k12k.json"
+    },
+    "final_service_state": "down",
+    "final_gpu_state": "idle",
+    "broker_exit": "the runit-owned Broker job was intentionally cancelled by sv down after the successful smoke"
+  },
+  "non_claims": [
+    "multi-request or continuous-batching performance",
+    "non-SM89 performance",
+    "training",
+    "speech or video generation",
+    "profiler timing as an admission metric"
+  ]
+}

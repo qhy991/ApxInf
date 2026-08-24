@@ -3136,40 +3136,92 @@ index are `promotion-causal-fa2-long-prefill.json`. This does not claim
 multi-request performance, non-SM89 portability, training, or speech/video
 generation.
 
-## Prepared FA2-aware 8K–12K chunk-count retune
+## Promoted FA2-aware 8K–12K chunk-count retune
 
-Status: **source prepared; no candidate GPU result and no deployment change**.
-After causal FA2 promotion, a warmed 12,288+8 Systems capture moved the leading
-cost to the four projection/MLP GEMMs repeated for every 256-token chunk:
-6,912 launches total 505.7 ms, or 44.2% of summed GPU kernel time. FA2 itself
-totals 274.1 ms over 1,152 launches. The current 48 chunks therefore expose a
-larger removable launch and low-M GEMM cost than an FA2 tile change.
-The report remains at
-`/var/lib/agent-gpu-broker/profiles/omni-12288-long-fa2-current-interactive.nsys-rep`,
-size 3,673,046 bytes, SHA-256
-`1e20fa669f49436294d8601d9ae401e3d42047ba471b55be56a3736d1d865306`;
-the measured request and three summary exports use the
-`omni-current-12k-profile` and `omni-12288-long-fa2-current-stats` names.
+Primary classification: **execution-graph scheduling rewrite**. After causal
+FA2 promotion, a warmed 12,288+8 Systems capture moved the leading cost to the
+four projection/MLP GEMMs repeated for every 256-token chunk: 6,912 launches
+totaled 505.7 ms, or 44.2% of summed GPU kernel time. FA2 itself totaled
+274.1 ms over 1,152 launches. The 48-chunk schedule therefore exposed more
+removable low-M GEMM, launch and allocation work than an FA2 tile change. The
+source report is
+`omni-12288-long-fa2-current-interactive.nsys-rep`, size 3,673,046 bytes,
+SHA-256
+`1e20fa669f49436294d8601d9ae401e3d42047ba471b55be56a3736d1d865306`.
 
 The earlier 1,024-token experiment is not reused as evidence: it ran before
-FA2 and regressed because larger chunks increased the materialized masked
-attention path. The migrated runtime no longer materializes that path above
-4,096 accumulated KV tokens, so the causal mechanism has changed and the
-chunk axis is reopened only for the new FA2 execution graph.
+FA2 and regressed because larger chunks increased materialized masked
+attention. The migrated runtime no longer materializes that path above 4,096
+accumulated KV tokens, so its causal mechanism changed.
 
-`APXINF_QWEN25_FA2_CHUNK1024=1` is a bounded candidate selector. It requires
-both `APXINF_QWEN25_CHUNKED_PREFILL=1` and
-`APXINF_FA2_GQA_PREFILL=1`, otherwise model initialization fails. It changes
-only reset, text-only prompts from 8,192 through 12,288 tokens from 256- to
-1,024-token chunks. Shorter prompts, prompts above 12,288, decode, multimodal
-inputs and selector-off execution retain their accepted chunk policy. A pure
-policy test freezes these boundaries, and the service log identifies the
-selected candidate path.
+`APXINF_QWEN25_FA2_CHUNK1024=1` changes only reset, text-only prompts from
+8,192 through 12,288 tokens from 256- to 1,024-token chunks. It requires both
+`APXINF_QWEN25_CHUNKED_PREFILL=1` and `APXINF_FA2_GQA_PREFILL=1`; a negative
+service gate proves model initialization fails explicitly when causal FA2 is
+disabled. Shorter prompts, prompts above 12,288, decode, multimodal inputs and
+selector-off execution retain the accepted policy. A pure policy test freezes
+the boundaries, and a service log marker proves the selected path.
 
-The first GPU budget is one 12K exact-trajectory request. A mismatch closes the
-candidate before timing. An exact smoke admits five alternating selector-off/on
-12K pairs plus 8K and 32K controls. Promotion requires at least four of five
-12K paired wins, at least 3% lower TTFT median, exact complete trajectories and
-no material 8K or unchanged-path regression. A 512-token second variant is
-allowed only if the 1,024-token path is exact but fails the performance gate;
-no profiler is spent before a repeated end-to-end win.
+The first 12K candidate request reproduced the accepted complete trajectory at
+0.8692 s TTFT. Formal screening then alternated `AB / BA / AB / BA / AB` with
+the same binary SHA-256
+`71db60c7a545647c5a2f6e9cd1967e402d1188f5098dc5b27853605cc4f1fba1`;
+only the selector changed. Every one of the 30 measured trajectories was exact
+and stable.
+
+| Workload | Selector-off TTFT median | 1,024-chunk TTFT median | Paired TTFT speedup | Paired wins | Candidate wall median |
+|---|---:|---:|---:|---:|---:|
+| 8,192 + 8 | 0.7081 s | 0.6145 s | 1.153× | 5/5 | 0.6917 s |
+| 12,288 + 8 | 1.0877 s | 0.8660 s | 1.256× | 5/5 | 0.9608 s |
+| 32,760 + 8 control | 2.6100 s | 2.6125 s | 1.000× | unchanged path | 2.7905 s |
+
+The worst paired TTFT speedups are 1.151× at 8K and 1.252× at 12K. Candidate
+TTFT CV is 0.097% and 0.084%; the 32K control changes by only 0.009%. The
+eight-output TPOT deltas are below the prefill admission claim.
+
+### Matched Systems attribution
+
+Only after the repeated win, one warmed 12K request per mode was profiled.
+Summed GPU kernel time falls from 1.1411 to 0.9295 seconds, an 18.54%
+reduction, while kernel launches fall from 36,661 to 13,729. Async allocation
+and free calls each fall from 35,694 to 12,726. FA2 calls fall from 1,152 to
+288 and their total time from 273.2 to 137.6 ms; the leading 6,912-launch
+M=256 GEMM family becomes a set of larger-M algorithms, with only 216 calls
+remaining in that exact family. This 211.6 ms GPU-work reduction explains the
+approximately 221.7 ms no-profiler TTFT reduction. CUDA API sums are not used
+as wall time.
+
+The matched reports remain on the GPU host:
+
+- selector off: `omni-12288-fa2-chunk1024-baseline-interactive.nsys-rep`,
+  3,669,493 bytes, SHA-256
+  `32c17ebd05e48c0cff9a127b1b322d182fed3f9cd8b259439c3533e6a91c0fe7`;
+- 1,024 chunks: `omni-12288-fa2-chunk1024-candidate-interactive.nsys-rep`,
+  1,708,695 bytes, SHA-256
+  `38afda2147712f5bb6964915fe6eea4c3cc7fdeefaa15918b6f946ab97c4865f`.
+
+### Regression and decision
+
+The candidate passes 63 model CPU tests, 13 benchmark tests, repeated quick
+and decode trajectories, 4K/7168/8192 boundaries, real PNG/WAV and malformed
+media recovery. The current CUDA suite passes 93 non-FP8 tests, including all
+Omni/FA2 and newly imported SM89 GeGLU routing tests. The same two RTX 4090
+FP8 cuBLAS status-15 tests fail as in the accepted-control binary and remain
+explicit known failures.
+
+Relative to the frozen vLLM-Omni 0.26.0 result, ApxInf is now within 4.3% TTFT
+and effectively tied on wall time at 12K; ApxInf wins 32K TTFT by 1.115× and
+wall by 1.088×, while vLLM still wins 8K TTFT by 1.200×.
+
+The promoted binary SHA-256 is
+`71db60c7a545647c5a2f6e9cd1967e402d1188f5098dc5b27853605cc4f1fba1`;
+the immediate rollback is
+`d28373c62dd6e0adae899ef856ea3461d40a279982a2757394babefcaea4848a`.
+A runit-owned 8K/12K deployment smoke reproduced both exact trajectories at
+0.622 and 0.861 s TTFT. The service was then returned down and the Broker
+reported the GPU idle.
+
+**Decision: promote FA2-aware 1,024-token chunks for the tested 8K–12K
+single-request BF16 RTX 4090 cells.** Structured evidence and the raw-file
+index are `promotion-fa2-chunk1024.json`. This does not claim multi-request
+performance, non-SM89 performance, training, or speech/video generation.

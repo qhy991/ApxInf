@@ -6,9 +6,9 @@
   `Qwen/Qwen2.5-Omni-3B@f75b40e3da2003cdd6e1829b1f420ca70797c34e`
 - GPU: NVIDIA GeForce RTX 4090, 24,564 MiB, single request, BF16
 - Deployed binary SHA-256:
-  `d28373c62dd6e0adae899ef856ea3461d40a279982a2757394babefcaea4848a`
+  `71db60c7a545647c5a2f6e9cd1967e402d1188f5098dc5b27853605cc4f1fba1`
 - Immediate rollback SHA-256:
-  `942eea1b67eb173b0494dd6ec83d8b7559fc081612b0694de168de224bcda269`
+  `d28373c62dd6e0adae899ef856ea3461d40a279982a2757394babefcaea4848a`
 - Deployment owner: runit launches the checked-in Broker service definition;
   the service is stopped when unused so other queued work can own the GPU.
 
@@ -47,15 +47,20 @@ strides and returns the model-owned flattened output without materializing the
 prior score/value path. The selector-off flattened-GQA implementation remains
 the matched rollback path; decode, at-most-4K and multimodal attention are
 unchanged.
+For reset text prompts from 8,192 through 12,288 tokens, the FA2-aware chunk
+selector raises chunk size from 256 to 1,024. This reduces repeated
+projection/MLP GEMMs, FA2 launches, allocation and pointwise work while
+preserving the same complete request and KV-cache semantics. Other prompt
+lengths retain the previous 512/256/1,024 policy.
 
-| Workload | Repeats | TTFT p50/median | Selector-off TTFT | Change | TPOT median |
+| Workload | Repeats | Current TTFT p50/median | Prior causal-FA2 TTFT | Change | TPOT median |
 |---|---:|---:|---:|---:|---:|
-| 1,024 + 32 control | 5 | 65.86 ms | same inactive path | control | 9.387 ms |
-| 4,096 + 8 control | 3 | 0.3959 s | same inactive path | control | 10.029 ms |
-| 4,352 + 8 | 5 per mode | 0.4137 s | 0.4179 s | 1.010× faster | 9.955 ms |
-| 8,192 + 8 | 5 paired | 0.7076 s | 0.8154 s | 1.153× median | 10.565 ms |
-| 12,288 + 8 | 5 paired | 1.0871 s | 1.3730 s | 1.263× median | 12.903 ms |
-| 32,760 + 8 | 5 paired | 2.6084 s | 5.6934 s | 2.181× median | 24.408 ms |
+| 1,024 + 32 control | 5 | 65.76 ms | same inactive path | control | 9.363 ms |
+| 4,096 + 8 control | 1 | 0.3960 s | same inactive path | control | 10.038 ms |
+| 7,168 + 8 control | 1 | 0.6252 s | same inactive path | control | 10.392 ms |
+| 8,192 + 8 | 5 paired | 0.6145 s | 0.7081 s | 1.153× median | 10.656 ms |
+| 12,288 + 8 | 5 paired | 0.8660 s | 1.0877 s | 1.256× median | 12.990 ms |
+| 32,760 + 8 control | 5 paired | 2.6125 s | 2.6100 s | unchanged | 24.296 ms |
 
 The resident processor improves service wall time independently of model
 execution:
@@ -66,13 +71,11 @@ execution:
 | WAV, 52 + 16 control | 5 | 20.12 ms | 8.090 ms | 0.151 s | 0.159 s | not a target |
 
 All repeated text cases preserve their accepted complete trajectory hashes.
-One fifth-pair 8K candidate request was a retained timing outlier; four other
-pairs and three follow-up requests reproduce the gain. The exact 32,768-token
-contract, malformed-media recovery and real PNG/WAV exact-token gates pass.
-All 85 non-FP8 CUDA tests pass. The accepted and candidate binaries share two
-RTX-4090 FP8 cuBLAS status-15 failures, which are recorded as known control
-failures rather than hidden. See `PROFILE.md` and
-`promotion-causal-fa2-long-prefill.json` for the latest promotion evidence.
+The exact 32,768-token contract, malformed-media recovery and real PNG/WAV
+exact-token gates pass. All 93 non-FP8 CUDA tests pass. The same two RTX 4090
+FP8 cuBLAS status-15 failures remain explicit known control failures. See
+`PROFILE.md` and `promotion-fa2-chunk1024.json` for the latest promotion
+evidence.
 
 ## Original frozen deployment
 

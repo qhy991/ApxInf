@@ -12,10 +12,10 @@ nearby but structurally different model.
 
 The result is not a single winner:
 
-- ApxInf is the stronger short-to-mid-context, single-request text decoder.
-- vLLM-Omni is substantially stronger in long-context prefill; the real-image
-  path is now within 3% on client wall after ApxInf's grouped-varlen FA2
-  promotion.
+- ApxInf is the stronger short single-request text decoder and now wins 32K
+  prefill; vLLM-Omni retains the 8K prefill lead and a small 12K TTFT lead.
+- The real-image path is within 3% on client wall after ApxInf's
+  grouped-varlen FA2 promotion.
 - Both reach the complete 32,760 prompt + 8 output contract after vLLM's KV
   reservation is aligned to the declared single-request workload.
 - Both understand the frozen real PNG and WAV. ApxInf now wins real-audio
@@ -75,19 +75,21 @@ bounds, not Nsight memory-transaction counters.
 
 ## Context gradient
 
-Each row requests eight outputs. Numbers are p50 over three measured requests
-after one warmup.
+Each row requests eight outputs. Current ApxInf numbers are medians from five
+paired selector-on measurements; vLLM numbers retain their frozen p50 after
+one warmup.
 
 | Prompt | ApxInf TTFT | vLLM TTFT | TTFT winner | ApxInf TPOT | vLLM TPOT | Wall winner |
 |---:|---:|---:|---:|---:|---:|---|
-| 8,192 | 0.816 s | 0.512 s | vLLM 1.59× | 10.58 ms | 19.11 ms | vLLM 1.38× |
-| 12,288 | 1.372 s | 0.830 s | vLLM 1.65× | 13.03 ms | 19.09 ms | vLLM 1.52× |
-| 32,760 | 5.685 s | 2.912 s | vLLM 1.95× | 24.31 ms | 17.58 ms | vLLM 1.93× |
+| 8,192 | 0.615 s | 0.512 s | vLLM 1.20× | 10.66 ms | 19.11 ms | vLLM 1.07× |
+| 12,288 | 0.866 s | 0.830 s | vLLM 1.04× | 12.99 ms | 19.09 ms | near parity; ApxInf 1.002× |
+| 32,760 | 2.613 s | 2.912 s | ApxInf 1.115× | 24.30 ms | 17.58 ms | ApxInf 1.088× |
 
-vLLM's tiled FlashAttention path wins prefill increasingly with context. ApxInf
-keeps the faster decoder through 12K, but its long-KV decode crosses over by
-32K. The minimum-BWU lower bound at 32K is 30.11% for ApxInf and 41.65% for
-vLLM.
+ApxInf's causal FA2 path plus FA2-aware 1,024-token chunks removes the former
+monotonically growing prefill deficit. vLLM still wins 8K and slightly wins
+12K TTFT; ApxInf reaches wall-time parity at 12K and wins 32K prefill. ApxInf
+keeps the faster decoder through 12K, while vLLM still wins 32K TPOT. The
+minimum-BWU lower bound at 32K is 30.13% for ApxInf and 41.65% for vLLM.
 
 Both engines pass 32,760 + 8. vLLM's throughput-oriented automatic policy
 reserved 11.45 GiB for 333,552 KV tokens—10.18 simultaneous 32K requests—and
@@ -219,8 +221,9 @@ python3 benchmarks/qwen25_omni_4090/benchmark_vllm_omni_multimodal.py \
 
 The next high-leverage work is not another sub-percent pointwise kernel:
 
-1. Replace the remaining long-prefill text attention algorithm with a tiled,
-   FlashAttention-class path while preserving the complete trajectory gate.
+1. Re-profile the remaining 8K-to-12K prefill gap after causal FA2 and
+   FA2-aware chunk promotion, then choose between the surviving larger-M GEMM
+   families and FA2 rather than revisiting closed materialization paths.
 2. Replace the resident Python processor with native Rust only if CPU/RSS or
    future multi-request evidence makes that boundary material.
 3. Re-profile the post-FA2 image path before selecting another vision change;

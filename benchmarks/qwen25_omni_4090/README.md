@@ -81,8 +81,9 @@ first failed case; service recovery is an operator action and must be recorded
 separately rather than hidden by the benchmark.
 
 The promoted text-only path uses 512-token causal chunks below 4,096 prompt
-tokens, 256-token chunks from 4,096 through 12,288, and 1,024-token chunks
-above that measured crossover. It reaches the complete
+tokens, 256-token chunks from 4,096 through 8,191, and 1,024-token chunks from
+8,192 upward. The 8K crossover is admitted only with causal FA2 enabled; it
+reaches the complete
 service contract at 32,760 prompt + 8 output tokens on the 24 GiB RTX 4090.
 Image and audio
 requests deliberately retain their processor-owned, unchunked path. Only the
@@ -100,6 +101,7 @@ then requires a valid PNG to reproduce the frozen complete token sequence.
 The accepted deployment keeps all optimized paths explicit through
 `APXINF_OMNI_PERSISTENT_PROCESSOR=1`, `APXINF_BATCHED_GQA_PREFILL=1`,
 `APXINF_FA2_GQA_PREFILL=1`,
+`APXINF_QWEN25_FA2_CHUNK1024=1`,
 `APXINF_STREAM_ORDERED_ALLOC=1` and
 `APXINF_TMROPE_POSITION_CACHE=1`,
 `APXINF_TMROPE_POSITION_CACHE_PREFILL=1`, `APXINF_SOFTMAX_EXP_CACHE=1`,
@@ -145,6 +147,10 @@ outputs that are fully overwritten use uninitialized stream-ordered storage,
 avoiding a redundant device memset; cache, prefix, partial-write and
 accumulator contracts retain zero initialization. Short prefill and decode
 retain their accepted paths. The
+FA2-aware chunk selector raises only reset text prompts from 8,192 through
+12,288 tokens from 256- to 1,024-token chunks. It requires both chunked
+prefill and causal FA2 at model initialization; selector-off, shorter, longer,
+decode and multimodal paths keep their accepted policy. The
 `APXINF_QWEN25_BF16_CHUNK_TACTICS=1` selector installs five exact RTX 4090
 SM89 cuBLASLt records for the promoted 256- and 1,024-row packed-QKV and MLP
 shapes before execution; unmatched shapes remain on vendor cuBLAS. The
