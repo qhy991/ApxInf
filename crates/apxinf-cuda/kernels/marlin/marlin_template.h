@@ -22,7 +22,6 @@
 #ifndef MARLIN_NAMESPACE_NAME
   #define MARLIN_NAMESPACE_NAME marlin
 #endif
-
 #include "marlin.cuh"
 #include "marlin_dtypes.cuh"
 #include "dequant.h"
@@ -2079,4 +2078,3 @@ __global__ void Marlin(
 }  // namespace MARLIN_NAMESPACE_NAME
 
 #endif
-

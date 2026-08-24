@@ -10,7 +10,6 @@
 #ifndef MARLIN_NAMESPACE_NAME
   #define MARLIN_NAMESPACE_NAME marlin
 #endif
-
 namespace MARLIN_NAMESPACE_NAME {
 
 template <long scalar_type_id>
@@ -147,4 +146,3 @@ class MarlinScalarType2<int8_t> : public MarlinScalarType<vllm::kS8.id()> {};
 }  // namespace MARLIN_NAMESPACE_NAME
 
 #endif
-
