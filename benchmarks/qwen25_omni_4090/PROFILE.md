@@ -3135,3 +3135,41 @@ single-request BF16 RTX 4090 service.** The structured decision and raw-file
 index are `promotion-causal-fa2-long-prefill.json`. This does not claim
 multi-request performance, non-SM89 portability, training, or speech/video
 generation.
+
+## Prepared FA2-aware 8K–12K chunk-count retune
+
+Status: **source prepared; no candidate GPU result and no deployment change**.
+After causal FA2 promotion, a warmed 12,288+8 Systems capture moved the leading
+cost to the four projection/MLP GEMMs repeated for every 256-token chunk:
+6,912 launches total 505.7 ms, or 44.2% of summed GPU kernel time. FA2 itself
+totals 274.1 ms over 1,152 launches. The current 48 chunks therefore expose a
+larger removable launch and low-M GEMM cost than an FA2 tile change.
+The report remains at
+`/var/lib/agent-gpu-broker/profiles/omni-12288-long-fa2-current-interactive.nsys-rep`,
+size 3,673,046 bytes, SHA-256
+`1e20fa669f49436294d8601d9ae401e3d42047ba471b55be56a3736d1d865306`;
+the measured request and three summary exports use the
+`omni-current-12k-profile` and `omni-12288-long-fa2-current-stats` names.
+
+The earlier 1,024-token experiment is not reused as evidence: it ran before
+FA2 and regressed because larger chunks increased the materialized masked
+attention path. The migrated runtime no longer materializes that path above
+4,096 accumulated KV tokens, so the causal mechanism has changed and the
+chunk axis is reopened only for the new FA2 execution graph.
+
+`APXINF_QWEN25_FA2_CHUNK1024=1` is a bounded candidate selector. It requires
+both `APXINF_QWEN25_CHUNKED_PREFILL=1` and
+`APXINF_FA2_GQA_PREFILL=1`, otherwise model initialization fails. It changes
+only reset, text-only prompts from 8,192 through 12,288 tokens from 256- to
+1,024-token chunks. Shorter prompts, prompts above 12,288, decode, multimodal
+inputs and selector-off execution retain their accepted chunk policy. A pure
+policy test freezes these boundaries, and the service log identifies the
+selected candidate path.
+
+The first GPU budget is one 12K exact-trajectory request. A mismatch closes the
+candidate before timing. An exact smoke admits five alternating selector-off/on
+12K pairs plus 8K and 32K controls. Promotion requires at least four of five
+12K paired wins, at least 3% lower TTFT median, exact complete trajectories and
+no material 8K or unchanged-path regression. A 512-token second variant is
+allowed only if the 1,024-token path is exact but fails the performance gate;
+no profiler is spent before a repeated end-to-end win.
