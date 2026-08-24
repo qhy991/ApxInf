@@ -3005,3 +3005,26 @@ through the Broker.
 
 This result does not claim multi-request or continuous-batching performance,
 video or speech generation, vLLM parity, a larger OOM boundary, or MFU/BWU.
+
+## Deferred long-prefill CUDA Graph hypothesis
+
+The 12,288-token accepted Systems export contains 45,553 kernel instances over
+a 1.6195-second first-to-last device span. Merging the device intervals leaves
+79.67 ms of all positive inter-kernel gaps, so even impossible removal of every
+gap has a 1.052× speedup ceiling. Only 14.42 ms lies in gaps above 100 us. The
+220.24 ms summed `cudaLaunchKernel` API time is not a wall-clock quantity because
+host submission overlaps device execution.
+
+The matched no-profiler ApxInf/vLLM-Omni TTFT gap at 12K is 541.42 ms. Perfect
+removal of the profiled device gaps could explain at most 14.7% of that deficit
+and would still leave ApxInf about 1.56× slower. A full prefill graph executor is
+therefore deferred: launch/control overhead is real but not the primary migrated
+bottleneck. The timeline hashes, gap calculation and comparison are frozen in
+`candidate-prefill-cuda-graph-upper-bound.json`.
+
+An archived causal-FA2 long-only gate was also attempted under Broker 0.5.1,
+but the old binary remained in model-loading/NFS I/O with only 398 MiB resident
+VRAM and never opened the service endpoint. It was cancelled after 229.9 seconds
+to release an already queued Qwen3.8 qualification job. This is an invalid
+infrastructure attempt, not correctness or performance evidence; the 8K token
+gate remains unexecuted.
