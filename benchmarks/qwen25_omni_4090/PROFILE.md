@@ -3422,3 +3422,18 @@ GPU became idle.
 QH/KVH/D=16/2/128, KV 32,761--32,767 cell.** Structured authority is
 `promotion-decode-split-cta.json`. No Direct PTX, multi-request, non-SM89 or
 other-model performance claim is made.
+
+### Closed follow-up: split-CTA warp count
+
+The first post-promotion screen held KV=32,767, split count 16, warmup 10 and
+100 timed iterations fixed, changing only the stage-kernel warp count. Two,
+four and eight warps measure 0.34085, 0.17663 and 0.09574 ms/layer. Every arm
+has the same max-absolute, mean-absolute and cosine error relative to the
+incumbent, while the accepted eight-warp arm reproduces its prior 0.09562 ms
+calibration. Jobs and raw data are pinned in
+`omni-32767-decode-split-cta-warp-screen.json`.
+
+**Decision: reject two and four warps and retain eight.** They are 3.56x and
+1.84x slower than the accepted arm, so neither enters a complete model
+trajectory or no-profiler timing. The screen commit remains isolated on
+`codex/omni-long-decode-warp-screen` and does not enter the serving branch.
