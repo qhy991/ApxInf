@@ -1,0 +1,122 @@
+{
+  "format": "apxinf-metal-w8-gdn-tracer-primitive-v1",
+  "date": "2026-08-24",
+  "status": "SYNTHETIC_CORRECTNESS_PASS_UNWIRED",
+  "scope": {
+    "decode_only": true,
+    "state_resident": true,
+    "model_or_cli_wiring": false,
+    "enabled_by_default": false,
+    "real_model_loaded": false,
+    "formal_performance_run": false
+  },
+  "public_contract": {
+    "packed_type": "PackedW8GdnBlock",
+    "runtime_type": "MetalW8GdnBlock",
+    "state_type": "GdnDecodeState",
+    "state_seed_required": true,
+    "input": "one already input-normalized F32 hidden row",
+    "output": "one F32 GDN attention output row",
+    "packed_input_row_order": [
+      "q",
+      "k",
+      "v",
+      "z",
+      "a",
+      "b"
+    ],
+    "conv_row_order": [
+      "q",
+      "k",
+      "v"
+    ],
+    "conv_history_samples": "K, matching the native Qwen3.5 CPU backend",
+    "recurrent_layout": "F32 [value_heads, key_dim, value_dim]"
+  },
+  "submission_contract": {
+    "command_buffers_per_successful_decode": 1,
+    "compute_encoders_per_successful_decode": 1,
+    "dispatches_per_successful_decode": 6,
+    "commits_per_successful_decode": 1,
+    "host_waits_per_successful_decode": 1,
+    "dispatch_order": [
+      "stacked W8 input projection",
+      "depthwise convolution and SiLU",
+      "Q/K L2 normalization and query scale",
+      "F32 gated recurrent update",
+      "output RMSNorm and z gate",
+      "W8 output projection"
+    ]
+  },
+  "transaction_contract": {
+    "query_conv": "active/scratch double buffer",
+    "key_conv": "active/scratch double buffer",
+    "value_conv": "active/scratch double buffer",
+    "recurrent": "active/scratch double buffer",
+    "commit": "swap all four active/scratch pairs only after MTLCommandBufferStatusCompleted",
+    "error": "validation, Metal, and injected post-execution failures return without swap or CPU fallback",
+    "fault_injection_verified": true,
+    "successful_decode_after_injected_failure_matches_original_oracle_state": true
+  },
+  "qwen35_0_8b_storage": {
+    "packed_projection_weights_and_scales_bytes_per_layer": 11175936,
+    "small_f32_parameters_bytes_per_layer": 98944,
+    "double_buffered_recurrent_state_bytes_per_layer": 2097152,
+    "double_buffered_conv_state_bytes_per_layer": 196608,
+    "input_output_and_scratch_bytes_per_layer": 82048,
+    "total_bytes_per_layer": 13650688,
+    "total_mib_per_layer": 13.018310546875,
+    "storage_qualification": "deterministic buffer payload; excludes Metal pipeline, queue, object, and allocator overhead",
+    "decode_h2d_bytes_per_layer": 4096,
+    "decode_d2h_bytes_per_layer": 4096,
+    "one_time_prefill_state_seed_bytes_per_layer": 1146880
+  },
+  "tdd": {
+    "cycles": [
+      {
+        "red": "packed GDN oracle public API did not exist",
+        "green": "pure packed-W8 oracle returns output plus copied next state"
+      },
+      {
+        "red": "Metal GDN API/ABI did not exist",
+        "green": "Metal output and every committed state buffer matched the packed oracle"
+      },
+      {
+        "red": "overflowing dimensions panicked",
+        "green": "checked dimensions fail closed"
+      }
+    ],
+    "full_debug_crate": {
+      "unit_passed": 14,
+      "integration_passed": 5,
+      "integration_ignored_by_default": 1,
+      "failed": 0
+    },
+    "explicit_release_production_shape_gate": {
+      "passed": 1,
+      "failed": 0,
+      "hidden_size": 1024,
+      "key_heads": 16,
+      "value_heads": 16,
+      "key_dim": 128,
+      "value_dim": 128,
+      "conv_kernel_size": 4,
+      "output_absolute_tolerance": 0.0003,
+      "recurrent_absolute_tolerance": 0.001,
+      "qualification": "deterministic synthetic weights; no checkpoint"
+    },
+    "all_targets_check": "PASS",
+    "downstream_apxinf_model_accelerate_metal_w8_check": "PASS",
+    "fmt_check": "PASS",
+    "clippy": "NOT_RUN_COMPONENT_UNAVAILABLE"
+  },
+  "source_sha256": {
+    "crates/apxinf-metal/src/gdn.rs": "39bfd68a192d8168e649bf6e1046b3af9c988e3fad3de0ebeb4b3f47398c7aa5",
+    "crates/apxinf-metal/src/metal_w8_gdn.metal": "e79b20f0ee630c2876fda87b658714362b26d3f391d499087cf075351c74fa55",
+    "crates/apxinf-metal/src/metal_w8_gdn_bridge.mm": "866bca083ed75d124df3674753f70ceeb5538336316fba39bf7a4788b9f12c44",
+    "crates/apxinf-metal/tests/gdn_block.rs": "b610f6d4882e980e3e5579e90f5212b37fda58f24d5ec66ef37d17db8d213619",
+    "crates/apxinf-metal/build.rs": "919427b05f3c8363bb1fbf4c036f01f871800d766e5e895c682521bcc143080f",
+    "crates/apxinf-metal/src/lib.rs": "4bd974bc3acf708e97d17fa3361f0858d31e5ca52d1fc828b53f8df009f3aefb",
+    "crates/apxinf-metal/README.md": "2a943e4a3ac8040f6c5cbef546d0c556b9ea64655704c22370f652c183dbb753"
+  }
+}

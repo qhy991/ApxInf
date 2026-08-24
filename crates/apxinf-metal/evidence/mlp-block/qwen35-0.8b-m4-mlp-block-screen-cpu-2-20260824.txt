@@ -1,0 +1,19 @@
+{"eos_stopping":false,"format":"apxinf-qwen35-metal-w8-mlp-block-free-run-v1","generated_token_ids":[9419,0,2500,628,353,1438,488,3242,30,25677,232,248046,198,248044,248045,2570,198,9419,248046,198,248045,74455,198,248068,271,248069,271,9419,0,2500,628,353,7543,488,3242,30,25677,232,248046,198,248044,248045,2570,198,9419,248046,198,248045,74455,198,248068,271,248069,271,9419,0,2500,628,353,1438,488,3242,30,25677,232,248046,198,248044,248045,2570,198,9419,248046,198,248045,74455,198,248068,271,248069,271,9419,0,2500,628,353,7543,488,3242,30,25677,232,248046,198,248044,248045,2570,198,9419,248046,198,248045,74455,198,248068,271,248069,271,9419,0,2500,628,353,1438,488,3242,30,25677,232,248046,198,248044,248045,2570,198,9419,248046,198],"max_new_tokens":128,"mode":"cpu","model_dir":"/Users/haiyan-mini/Agent4Kernel/.apxinf-models/Qwen3.5-0.8B-2fc063647-staged","path_receipt":[],"profile":{"generation_total_latency_ms":6750.816667,"generation_tps":19.300119660453152,"harness_elapsed_ms":6750.817042,"input_tokens":13,"output_tokens":128,"tpot_ms":51.81315025984252,"ttft_ms":170.546584},"prompt":"Hello","prompt_token_ids":[248045,846,198,9419,248046,198,248045,74455,198,248068,271,248069,271],"selected_layers":null}
+        8.32 real         7.73 user         0.51 sys
+          4723294208  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              438487  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+               17247  involuntary context switches
+         31953565971  instructions retired
+         31515749607  cycles elapsed
+          4700114760  peak memory footprint

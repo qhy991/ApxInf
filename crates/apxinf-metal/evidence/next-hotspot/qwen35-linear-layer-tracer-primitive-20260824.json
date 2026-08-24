@@ -1,0 +1,155 @@
+{
+  "format": "apxinf-qwen35-metal-w8-linear-layer-tracer-primitive-v1",
+  "created_at_local_date": "2026-08-24",
+  "status": "synthetic_green_isolated_not_promoted",
+  "scope": {
+    "primitive": "MetalW8LinearLayerBlock",
+    "decode_only": true,
+    "synthetic_only": true,
+    "real_checkpoint_loaded": false,
+    "performance_benchmark_run": false,
+    "general_qwen35_wiring": false,
+    "cli_wiring": false,
+    "auto_model_wiring": false,
+    "default_path_changed": false
+  },
+  "tdd": {
+    "cycle_1": {
+      "behavior": "packed CPU oracle applies input RMSNorm, GDN, attention residual, post-attention RMSNorm, complete packed MLP, final residual, and returns the advanced canonical GDN state",
+      "red": "integration test failed to compile because PackedW8LinearLayerBlock was absent (E0432)",
+      "green": "packed_linear_layer_oracle_applies_both_residuals_and_advances_state passed"
+    },
+    "cycle_2": {
+      "behavior": "tiny Metal layer output and every state component match the packed CPU oracle while one decode uses one state transaction",
+      "red": "integration test failed to compile because MetalW8LinearLayerBlock was absent (E0432)",
+      "green": "metal_linear_layer_matches_the_packed_oracle_in_one_state_transaction passed"
+    },
+    "cycle_3": {
+      "behavior": "post-scratch injected failure records actual submitted work but copies no output and commits no state; retry starts from the original active state",
+      "green": "metal_linear_layer_failure_records_work_but_does_not_commit_state_or_output passed"
+    },
+    "cycle_4": {
+      "behavior": "reset clears receipts and seed authority; decode remains fail-closed until a fresh seed",
+      "green": "metal_linear_layer_reset_is_fail_closed_until_a_fresh_seed passed"
+    }
+  },
+  "abi_decision": {
+    "existing_opaque_handles_directly_composable": false,
+    "reason": "The existing GDN and MLP handles each privately own their Metal device, command queue, buffers, command-buffer creation, commit, and wait. Calling their public Rust APIs would necessarily create at least two command buffers and two waits.",
+    "minimal_refactor": "Expose existing packed GDN fields at crate scope, keep the public packed ABI unchanged, concatenate the existing GDN and MLP Metal kernel sources at build time, and construct one independent combined handle from those packed arrays.",
+    "runtime_handle_reuse_claimed": false,
+    "kernel_and_packed_contract_reused": true
+  },
+  "pipeline": {
+    "ordered_operations": [
+      "input RMSNorm",
+      "GDN W8 q/k/v/z/a/b projection",
+      "GDN depthwise convolution into scratch histories",
+      "GDN Q/K normalization",
+      "GDN recurrent update into scratch state",
+      "GDN output RMSNorm and z gate",
+      "GDN W8 output projection",
+      "attention residual",
+      "post-attention RMSNorm",
+      "MLP W8 gate+up projection",
+      "MLP SiLU times up",
+      "MLP W8 down projection",
+      "MLP residual"
+    ],
+    "dispatches_per_decode": 13,
+    "command_buffers_per_decode": 1,
+    "compute_encoders_per_decode": 1,
+    "commits_per_decode": 1,
+    "waits_per_decode": 1,
+    "state_host_transfer_bytes_per_decode": 0,
+    "state_commit": "four active/scratch MTLBuffer pointer swaps only after completed command and no injected fault"
+  },
+  "buffer_ledger": {
+    "allocated_buffers": 32,
+    "shared_buffers": 24,
+    "private_buffers": 8,
+    "production_shape_source": "official local Qwen/Qwen3.5-0.8B config text_config, read-only; no tensor/checkpoint load",
+    "production_shape": {
+      "hidden_size": 1024,
+      "intermediate_size": 3584,
+      "key_heads": 16,
+      "value_heads": 16,
+      "key_dim": 128,
+      "value_dim": 128,
+      "conv_kernel_size": 4,
+      "input_projection_rows": 8224
+    },
+    "production_bytes": {
+      "packed_weight_bytes": 21528576,
+      "packed_scale_bytes": 1345536,
+      "f32_parameter_bytes": 107136,
+      "active_state_bytes": 1146880,
+      "scratch_state_bytes": 1146880,
+      "activation_bytes": 133248,
+      "total_persistent_bytes": 25408256,
+      "host_input_bytes_per_decode": 4096,
+      "host_output_bytes_per_decode": 4096,
+      "state_host_transfer_bytes_per_decode": 0
+    }
+  },
+  "failure_receipt_contract": {
+    "invalid_host_input_submits_work": false,
+    "injected_post_execution_failure": {
+      "command_buffers": 1,
+      "compute_encoders": 1,
+      "commits": 1,
+      "waits": 1,
+      "host_input_bytes": "H * 4",
+      "host_output_bytes": 0,
+      "committed_state_versions": 0
+    },
+    "next_successful_retry_uses_original_active_state": true
+  },
+  "correctness": {
+    "packed_cpu_oracle_exact_composition": true,
+    "tiny_metal_output_absolute_tolerance": 0.001,
+    "tiny_metal_conv_state_absolute_tolerance": 0.00001,
+    "tiny_metal_recurrent_state_absolute_tolerance": 0.001,
+    "fault_retry_passed": true,
+    "reset_fail_closed_passed": true,
+    "static_single_encoder_contract_passed": true
+  },
+  "verification": {
+    "debug_crate": {
+      "command": "cargo test -p apxinf-metal -- --test-threads=1",
+      "result": "15 unit passed; gdn integration 7 passed and 1 explicitly ignored; linear-layer integration 4 passed; doctest runner initially unavailable because rustdoc was not on PATH"
+    },
+    "doctests": {
+      "command": "cargo test -p apxinf-metal --doc with explicit bundled RUSTDOC",
+      "result": "0 tests; passed"
+    },
+    "release_all_targets_check": {
+      "command": "cargo check --release -p apxinf-metal --all-targets",
+      "result": "passed",
+      "non_blocking_toolchain_warning": "bundled rust-objcopy could not load libLLVM.dylib while stripping debug info; Cargo completed successfully"
+    },
+    "release_linear_layer_tests": {
+      "command": "cargo test --release -p apxinf-metal --test linear_layer_block -- --test-threads=1",
+      "result": "3 passed; debug-only injected-fault test correctly excluded; same non-blocking rust-objcopy warning"
+    }
+  },
+  "files": {
+    "crates/apxinf-metal/src/linear_layer.rs": "644188813b4d2e6a5b3fd57f567c29931c3fdb4cd888c48e90b5651b23fff300",
+    "crates/apxinf-metal/src/metal_w8_linear_layer.metal": "e9c863c67c336be4576b3f79ab19aff0b8ed7e848b298c50111bdbb72f819645",
+    "crates/apxinf-metal/src/metal_w8_linear_layer_bridge.mm": "48a5b8ecdf14142eaf446b5c87ce68707eab805c6eaba9767483bb6da17e85af",
+    "crates/apxinf-metal/tests/linear_layer_block.rs": "d15f887b592638afe5f8460a2351566acfca7356a8f5000170fc2d4776f7bc2d",
+    "crates/apxinf-metal/src/lib.rs": "1e92af08f1d7a9d86389985869622cef7b2de08abe35208c5902fed09fb2bda8",
+    "crates/apxinf-metal/src/gdn.rs": "d3e2b92490c9222baa0531822dc95531e0288d430c0da3f943298a1a71243c88",
+    "crates/apxinf-metal/build.rs": "699509f71358ebd788c4b88831a9efad47b32763e3a063266048bf95849e036d",
+    "crates/apxinf-metal/README.md": "219c1ca0494be9a8cc761bd8bbd048853a5ad9aa67a54cef4d0398a44c629e0a"
+  },
+  "related_real_gate": {
+    "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-real-layer0-gate-summary-20260824.json",
+    "sha256": "0862cd73a36aa8e833e7899d92dc476c0ec6bc0347edf2955d6d3ee0f9a5028f",
+    "classification": "candidate-only correctness/resource evidence; no performance claim"
+  },
+  "promotion": {
+    "status": "not_wired_not_benchmarked_not_promoted",
+    "next_gate": "Only after a separate explicit diagnostic integration should a real-checkpoint correctness gate be considered. Performance claims require a quiet-host protocol and are outside this slice."
+  }
+}

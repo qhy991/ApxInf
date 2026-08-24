@@ -1,0 +1,182 @@
+{
+  "format": "apxinf-qwen35-native-next-hotspot-analysis-v1",
+  "date": "2026-08-24",
+  "qualification": "code audit, checkpoint-free synthetic screens, and an independent unwired tracer primitive; no real model was loaded and no formal performance run was executed",
+  "baseline": {
+    "source": "crates/apxinf-metal/evidence/combined/qwen35-0.8b-m4-combined-summary-20260824.json",
+    "candidate_tpot_ms": 31.222938322834644,
+    "candidate_generation_tps": 32.02773517534889,
+    "waits_per_decode_token": 25,
+    "wait_breakdown": {
+      "w8_mlp_blocks": 24,
+      "w8_lm_head": 1
+    },
+    "observed_w8_mlp_wait_ms_per_token": 9.643625181102362,
+    "observed_w8_head_wait_and_rerank_ms_per_token": 3.20970765625,
+    "residual_cpu_and_framework_ms_per_token": 18.369605485482282,
+    "explicit_cpu_metal_transfer_bytes_per_token": 200720
+  },
+  "exact_per_token_weight_traffic": {
+    "gdn_dense_f32": {
+      "layers": 18,
+      "bytes_per_layer": 42074112,
+      "bytes": 757334016,
+      "mib": 722.25
+    },
+    "full_attention_dense_f32": {
+      "layers": 6,
+      "bytes_per_layer": 29360128,
+      "bytes": 176160768,
+      "mib": 168.0
+    },
+    "mlp_w8_weights_and_scales": {
+      "layers": 24,
+      "bytes_per_layer": 11698176,
+      "bytes": 280756224,
+      "mib": 267.75
+    },
+    "lm_head_w8_weights_and_scales": {
+      "bytes": 270172160,
+      "mib": 257.65625
+    },
+    "norm_conv_and_small_f32_parameters": {
+      "bytes": 1993984,
+      "mib": 1.901611328125
+    },
+    "combined_current": {
+      "bytes": 1486417152,
+      "mib": 1417.557861328125
+    },
+    "all_dense_projections_w8_resident": {
+      "gdn_projection_bytes": 201166848,
+      "full_attention_projection_bytes": 46792704,
+      "total_bytes_including_existing_lanes_and_small_parameters": 800881920,
+      "total_mib": 763.780517578125,
+      "reduction_bytes": 685535232,
+      "reduction_percent": 46.11997588144085
+    }
+  },
+  "synthetic_screen": {
+    "sources": [
+      "crates/apxinf-core/examples/qwen35_attention_projection_screen.rs",
+      "crates/apxinf-metal/examples/qwen35_next_hotspot_screen.rs"
+    ],
+    "runs": 4,
+    "iterations_per_run": 9,
+    "cpu_accelerate_run_medians_us": {
+      "gdn_seven_f32_projections_one_layer": [654.791, 687.667, 669.333, 645.625],
+      "gdn_recurrent_core_one_layer": [105.583, 98.792, 91.792, 92.875],
+      "full_attention_five_f32_projections_one_layer": [452.333, 476.583, 469.75, 451.084]
+    },
+    "metal_w8_run_medians_us": {
+      "one_encoder_command_completion_floor": [153.042, 165.166, 160.416, 156.834],
+      "three_encoder_mlp_command_completion_floor": [175.833, 187.875],
+      "gdn_two_projection_calls_one_layer": [517.584, 511.334, 478.125, 511.208],
+      "full_attention_two_projection_calls_one_layer": [461.375, 467.416, 437.042, 433.166]
+    },
+    "median_of_run_medians_us": {
+      "cpu_gdn_projections": 662.062,
+      "cpu_gdn_recurrent_core": 95.8335,
+      "cpu_full_attention_projections": 461.0415,
+      "metal_gdn_two_projection_calls": 511.271,
+      "metal_full_attention_two_projection_calls": 449.2085
+    },
+    "warning": "These short screens use deterministic synthetic matrices with production shapes on a noisy host. They rank slices; they are not model or formal benchmark evidence."
+  },
+  "option_comparison": {
+    "a_gdn_projections_only": {
+      "dense_weight_reduction_bytes_per_token": 556167168,
+      "extra_waits_per_token": 36,
+      "extra_transfer_bytes_per_token": 887040,
+      "synthetic_projection_saving_ms_per_token": 2.714238,
+      "projection_only_estimated_tps": 35.07701118170684,
+      "assessment": "Only projection option with a material signal, but two CPU-interposed waits per layer leave much of the gain on the table."
+    },
+    "b_full_attention_projections_only": {
+      "dense_weight_reduction_bytes_per_token": 129368064,
+      "extra_waits_per_token": 12,
+      "extra_transfer_bytes_per_token": 221184,
+      "synthetic_projection_saving_ms_per_token": 0.070998,
+      "assessment": "At production shapes W8 Metal and F32 Accelerate are effectively tied; reject as the next isolated slice."
+    },
+    "c_transfer_and_wait_compression": {
+      "transfer_share_of_current_weight_stream_percent": 0.013503609213637835,
+      "observed_one_command_completion_floor_us_range": [153.042, 165.166],
+      "aggregate_25_wait_floor_ms_range": [3.82605, 4.12915],
+      "maximum_floor_removed_by_25_to_1_waits_ms_range": [3.673008, 3.963984],
+      "assessment": "Memcpy reduction is immaterial. Wait compression is valuable but cannot be performed independently because CPU attention is a strict dependency between every MLP block."
+    },
+    "d_full_model_resident": {
+      "projected_weight_stream_bytes_per_token": 800881920,
+      "projected_weight_stream_reduction_percent": 46.11997588144085,
+      "target_waits_per_token": 1,
+      "resident_bytes_excluding_scratch_at_context_128": 824671488,
+      "resident_mib_excluding_scratch_at_context_128": 786.468017578125,
+      "resident_bytes_excluding_scratch_at_context_4096": 922189056,
+      "resident_mib_excluding_scratch_at_context_4096": 879.468017578125,
+      "assessment": "Correct long-term architecture and required to close the gap to MLX, but too broad for the next tracer."
+    }
+  },
+  "selected_tracer": {
+    "name": "one decode-only resident Metal W8 GDN attention block",
+    "scope": "One selected linear-attention layer: fused q/k/v/z/a/b W8 input projection, depthwise convolution, SiLU/L2 preprocessing, transactional recurrent update, output RMSNorm and z gate, then W8 output projection in one command buffer. The existing CPU residual/post-norm and Metal MLP block remain unchanged.",
+    "why_smallest_valid": "The existing generic W8 matvec proves the two dense endpoints. Fusing the recurrent middle changes two waits into one and makes state resident; a projection-only route adds 36 waits, while a full layer or full model expands scope unnecessarily.",
+    "proposed_api": [
+      "PackedW8GdnBlock::from_f32(weights, config)",
+      "MetalW8GdnBlock::from_packed(packed)",
+      "MetalW8GdnBlock::seed_decode_state(query_conv, key_conv, value_conv, recurrent)",
+      "MetalW8GdnBlock::decode(&mut self, normalized_hidden: &[f32]) -> Result<&[f32]>",
+      "MetalW8GdnBlock::reset_state() and diagnostic state_digest()"
+    ],
+    "per_layer_storage": {
+      "packed_projection_weights_and_scales_bytes": 11175936,
+      "small_f32_parameters_bytes": 98944,
+      "double_buffered_recurrent_state_bytes": 2097152,
+      "double_buffered_conv_state_bytes": 196608,
+      "attention_input_output_and_scratch_bytes": 82048,
+      "incremental_bytes_over_existing_mlp_lane": 13650688,
+      "incremental_mib_over_existing_mlp_lane": 13.018310546875,
+      "qualification": "deterministic buffer payload; excludes Metal pipeline, queue, object, and allocator overhead"
+    },
+    "transfer": {
+      "decode_h2d_bytes_per_selected_layer": 4096,
+      "decode_d2h_bytes_per_selected_layer": 4096,
+      "one_time_cpu_prefill_state_seed_bytes_per_layer": 1146880
+    },
+    "correctness_gates": [
+      "Decode-only: sequence length must be one and start_pos must be positive; prefill stays CPU.",
+      "CPU W8 projection reference and CPU F32 GDN oracle compare all intermediate tensors with declared finite tolerances.",
+      "Prefill state seed verifies conv suffixes and the canonical [16,128,128] recurrent layout.",
+      "Recurrent and convolution state use committed/scratch buffers; swap only after command completion, fail closed, and never CPU-retry a possibly mutated state.",
+      "One-layer teacher-forced token gate first; then selected-layer call receipts, 128-token teacher exactness, and six 128-token free-run trajectories before replication.",
+      "All-18 replication requires zero process swaps, RSS below 6 GiB, and a quiet-host positive-pair performance gate."
+    ],
+    "directional_performance": {
+      "current_cpu_gdn_projection_plus_recurrent_us_per_layer": 757.8955,
+      "two_call_w8_projection_us_per_layer": 511.271,
+      "one_fused_command_expected_range_us_per_layer_before_real_quality_gate": [430.0, 520.0],
+      "all_18_directional_tps_range_if_quality_holds": [38.5, 41.0],
+      "required_candidate_admission": "At least 10% median end-to-end TPOT improvement with every paired run positive; otherwise stop and do not replicate."
+    },
+    "enabled_by_default": false,
+    "implemented_in_this_slice": true,
+    "implementation": {
+      "rust_api": "crates/apxinf-metal/src/gdn.rs",
+      "metal_source": "crates/apxinf-metal/src/metal_w8_gdn.metal",
+      "objective_c_bridge": "crates/apxinf-metal/src/metal_w8_gdn_bridge.mm",
+      "integration_tests": "crates/apxinf-metal/tests/gdn_block.rs",
+      "model_or_cli_wiring": false,
+      "real_model_loaded": false,
+      "tdd_receipt": {
+        "red_1": "public packed GDN oracle API was absent",
+        "green_1": "pure packed-W8 decode oracle advances a copied canonical state",
+        "red_2": "Metal GDN block API and ABI were absent",
+        "green_2": "one-command/one-wait Metal decode matched output and committed state",
+        "red_3": "overflowing dimensions panicked",
+        "green_3": "checked dimension validation fails closed",
+        "full_crate_tests": "14 unit passed; 5 integration passed; 1 explicit production-shape synthetic gate ignored by default",
+        "explicit_production_shape_gate": "passed in release mode"
+      }
+    }
+  }
+}

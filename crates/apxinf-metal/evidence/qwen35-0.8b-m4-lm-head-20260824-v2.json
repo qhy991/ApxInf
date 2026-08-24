@@ -1,0 +1,196 @@
+{
+  "format": "apxinf-qwen35-metal-w8-top4-rerank-evidence-v2",
+  "recorded_at": "2026-08-24T10:23:00+08:00",
+  "status": {
+    "default_enabled": false,
+    "requires_build_feature": "metal-w8",
+    "requires_runtime_flag": "--metal-w8-lm-head",
+    "native_f32_teacher_gate": "128/128",
+    "native_f32_100_token_trajectory": "exact",
+    "bf16_or_huggingface_exactness_claimed": false,
+    "formal_performance_gate": "deferred-background-load",
+    "candidate_performance_is_admitted": false
+  },
+  "historical_v1": {
+    "evidence": "qwen35-0.8b-m4-lm-head-20260824.json",
+    "evidence_sha256": "d95363e3d2645fd2ccddc20fbf164884253cd3e14524f1eb221b066c00bd04c0",
+    "frozen_release_binary_sha256": "ab4da2c5a120981a946dd4cb592af98ed275b61fbbb04b204fce7357d3452c9b",
+    "teacher_gate_binary_sha256": "33425255d2c38d24d2f1bc97d38a3a806d1c52a4331bbce4da11e8382dc8f1a2",
+    "preservation": "The v1 evidence and its contaminated block remain unchanged. No v2 result is substituted into the v1 accepted set."
+  },
+  "provenance": {
+    "repository_base_commit": "c9abe712232607da1ae03d9b6bf872323571c4c1",
+    "repository_was_dirty": true,
+    "model": "Qwen/Qwen3.5-0.8B",
+    "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "model_path": "/Users/haiyan-mini/Agent4Kernel/.apxinf-models/Qwen3.5-0.8B-2fc063647-staged",
+    "checkpoint_shape": {
+      "hidden_size": 1024,
+      "vocab_size": 248320,
+      "tie_word_embeddings": true
+    },
+    "host": {
+      "os": "macOS 26.2 (25C56)",
+      "soc": "Apple M4",
+      "memory_bytes": 17179869184,
+      "logical_cpus": 10
+    },
+    "toolchain": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "v2_release_binary": {
+      "path": "target/release/apxinf",
+      "sha256": "ba1ec08bb9fdee0f9abc9b44f86d67386646bf563d4e97f90b0233d016db80c8",
+      "size_bytes": 8540792
+    },
+    "v2_teacher_gate_binary": {
+      "path": "target/release/examples/qwen35_metal_w8_gate",
+      "sha256": "3cfca7026cf6a412248b1cb7a5b89f44f90be201c831f1aa18adbf6e0a560b35",
+      "size_bytes": 7368104
+    }
+  },
+  "implementation_contract": {
+    "body": "Qwen3.5 native CPU/Accelerate",
+    "prefill": "native CPU F32 full projection",
+    "decode_candidate_head": "Metal grouped W8 tied embedding, deterministic global top-4",
+    "decode_final_selection": "CPU scalar F32 rerank over four original tied-embedding rows and the same normalized hidden",
+    "tie_break": "lowest token ID",
+    "source_layout": "HF row-major [vocab,hidden]",
+    "quantization": "symmetric int8 per row/group",
+    "group_size": 64,
+    "scale_dtype": "f32",
+    "hidden_transfer_bytes_per_decode": 4096,
+    "candidate_result_bytes_per_decode": 16,
+    "command_buffers_per_decode": 1,
+    "host_waits_per_decode": 1,
+    "full_logits_materialized_during_decode": false,
+    "first_stage_candidates_per_8_row_group": 4,
+    "partial_buffer_bytes_qwen35_0_8b": 993280,
+    "incremental_persistent_buffer_bytes_over_v1": 744972,
+    "shader_single_source": "crates/apxinf-metal/src/metal_w8.metal",
+    "runtime_consumption": "build.rs reads the .metal source, generates one C++ raw-string include in OUT_DIR, and the Objective-C++ bridge compiles that exact source at runtime",
+    "post_state_advance_errors": "fail closed; no CPU fallback"
+  },
+  "correctness": {
+    "synthetic": {
+      "crate_tests": 7,
+      "passed": 7,
+      "coverage": [
+        "packed W8 scores and top-1 track the F32 fixture",
+        "invalid shapes and non-finite inputs fail",
+        "the discoverable .metal file is the single shader source consumed by the bridge",
+        "CPU top-4 oracle breaks exact-score ties by lowest token ID",
+        "real Metal top-4 equals the packed CPU W8 oracle",
+        "real Metal exact ties return [0,1,2,3]",
+        "real Metal retains four global winners that all occupy one 8-row first-stage group"
+      ]
+    },
+    "real_checkpoint_teacher_forced": {
+      "prompt": "Hello",
+      "prompt_tokens": 13,
+      "comparisons": 128,
+      "native_cpu_f32_vs_raw_w8_top1_matches": 128,
+      "native_cpu_f32_vs_f32_reranked_matches": 128,
+      "raw_w8_top1_mismatches": [],
+      "f32_reranked_mismatches": [],
+      "rerank_changes": [],
+      "rerank_changed_any_tested_native_token": false,
+      "elapsed_ms": 8013.556,
+      "oracle": "ApxInf native CPU/F32 projection on the exact same hidden state",
+      "qualification": "This is a native F32 gate only. It is not a Hugging Face or BF16 parity claim."
+    },
+    "frozen_100_token_trajectory": {
+      "cpu_and_v2_metal_exact_match": true,
+      "matches_v1_frozen_trajectory": true,
+      "token_vector_compact_json_sha256": "79e574ba6c3c81eda6f78c9d0412f2f91e6b3f6137e7cb7c146c7714d1a96578",
+      "first_10_tokens": [9419, 0, 2500, 628, 353, 1438, 488, 3242, 30, 25677],
+      "complete_token_vector": [9419,0,2500,628,353,1438,488,3242,30,25677,232,248046,198,248044,248045,2570,198,9419,248046,198,248045,74455,198,248068,271,248069,271,9419,0,2500,628,353,7543,488,3242,30,25677,232,248046,198,248044,248045,2570,198,9419,248046,198,248045,74455,198,248068,271,248069,271,9419,0,2500,628,353,1438,488,3242,30,25677,232,248046,198,248044,248045,2570,198,9419,248046,198,248045,74455,198,248068,271,248069,271,9419,0,2500,628,353,7543,488,3242,30,25677,232,248046,198,248044,248045,2570,198,9419,248046]
+    }
+  },
+  "overhead": {
+    "teacher_gate_isolated_128_steps": {
+      "metal_top4_total_ms": 544.691255,
+      "metal_top4_mean_us": 4255.4004296875,
+      "f32_rerank_total_ms": 0.750077,
+      "f32_rerank_mean_us": 5.8599765625,
+      "f32_rerank_share_of_top4_plus_rerank": 0.0013751744798100485
+    },
+    "interpretation": "The four exact F32 dot products added 5.86 microseconds per tested decode, about 0.14% of measured top-4-plus-rerank head time. The timing was collected during known background activity and is diagnostic, not a performance admission result."
+  },
+  "performance": {
+    "required_protocol": {
+      "binary": "one frozen v2 release binary for native CPU and Metal",
+      "features": ["accelerate", "metal-w8"],
+      "prompt": "Hello",
+      "forced_output_tokens": 100,
+      "eos_stop": false,
+      "max_context": 4096,
+      "only_runtime_difference": "presence of --metal-w8-lm-head",
+      "block_orders": ["ABBA", "BAAB", "ABBA", "BAAB", "ABBA", "BAAB"]
+    },
+    "formal_run": {
+      "executed": false,
+      "reason": "The host was not quiet: Logitech utilities consumed roughly 11-53% CPU (and earlier up to 84%), WindowServer roughly 36-38%, system swap was already 5828.75 MiB, and load average was 3.69. Running 24 samples would create a knowingly contaminated admission set."
+    },
+    "rejected_candidate_same_binary_pair": {
+      "accepted": false,
+      "order": "BA",
+      "binary_sha256": "ba1ec08bb9fdee0f9abc9b44f86d67386646bf563d4e97f90b0233d016db80c8",
+      "cpu": {
+        "generation_tps": 17.357539729737123,
+        "generation_total_latency_ms": 5879.322583,
+        "tpot_ms": 57.611851424242424,
+        "ttft_ms": 175.749292,
+        "wall_s": 7.66,
+        "max_rss_bytes": 4763975680,
+        "page_faults": 0,
+        "process_swaps": 0
+      },
+      "metal_top4_f32_rerank": {
+        "generation_tps": 22.44693277259837,
+        "generation_total_latency_ms": 4569.065917,
+        "tpot_ms": 44.54951641414141,
+        "ttft_ms": 158.663792,
+        "wall_s": 6.99,
+        "max_rss_bytes": 4757684224,
+        "page_faults": 4,
+        "process_swaps": 0
+      },
+      "candidate_effect_only": {
+        "generation_tps_ratio": 1.2932093558248952,
+        "generation_tps_improvement_percent": 29.320935582489515,
+        "generation_total_latency_speedup": 1.2867668555896652
+      },
+      "memory_observation": {
+        "rss_delta_metal_minus_cpu_bytes": -6291456,
+        "both_process_swap_counts": 0,
+        "system_swap_used_mib_after_runs": 5828.75,
+        "qualification": "RSS delta is within run-to-run noise and is not admitted because the host was contaminated."
+      }
+    }
+  },
+  "verification": [
+    {
+      "command": "cargo test -p apxinf-metal",
+      "result": "7 passed"
+    },
+    {
+      "command": "cargo test -p apxinf-model --features accelerate,metal-w8 qwen35 --lib",
+      "result": "19 passed; 39 filtered"
+    },
+    {
+      "command": "cargo run --release -p apxinf-model --example qwen35_metal_w8_gate --features accelerate,metal-w8 -- MODEL_DIR 128 Hello",
+      "result": "raw W8 top-1 128/128; F32 rerank 128/128; zero rerank changes"
+    },
+    {
+      "command": "target/release/apxinf generate --model MODEL_DIR --prompt Hello --max-tokens 100 --max-context 4096 --no-eos-stop --device cpu --dtype fp32 --json --metal-w8-lm-head",
+      "result": "100-token compact JSON SHA-256 79e574ba6c3c81eda6f78c9d0412f2f91e6b3f6137e7cb7c146c7714d1a96578; exact native F32 trajectory"
+    },
+    {
+      "command": "git diff --check -- crates/apxinf-metal crates/apxinf-model/src/qwen35/general.rs crates/apxinf-model/examples/qwen35_metal_w8_gate.rs",
+      "result": "passed"
+    }
+  ],
+  "pending": [
+    "Run the declared six-block same-binary ABBA/BAAB protocol after Logitech utilities and other background CPU activity are quiet.",
+    "Do not promote v2 performance until all six accepted blocks show the same direction and raw anomalous samples remain retained."
+  ]
+}

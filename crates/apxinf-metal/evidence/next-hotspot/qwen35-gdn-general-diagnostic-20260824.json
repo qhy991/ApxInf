@@ -1,0 +1,83 @@
+{
+  "format": "apxinf-qwen35-metal-w8-gdn-general-diagnostic-v1",
+  "date": "2026-08-24",
+  "scope": {
+    "platform": "macOS arm64",
+    "model": "tiny synthetic Qwen3.5 hybrid text model",
+    "real_checkpoint_loaded": false,
+    "formal_benchmark_run": false,
+    "default_route_changed": false,
+    "main_cli_changed": false,
+    "auto_model_changed": false
+  },
+  "api": {
+    "constructor": "GeneralQwen35::from_weights_with_metal_w8_gdn_layer(config, tensors, Device::Cpu, max_context, layer_index)",
+    "receipt": "GeneralQwen35::metal_w8_gdn_stats()",
+    "selection": "exactly one explicitly selected linear-attention layer",
+    "ordinary_constructors": "metal_w8_gdn=None"
+  },
+  "state_contract": {
+    "prefill": "CPU executes the selected GDN layer, then the exact F32 query/key/value K-sample convolution suffixes and F32 recurrent matrix seed both Metal state buffers",
+    "decode_gate": "sequence_length=1 and start_pos>0 only",
+    "decode_submission": "one Metal command buffer, one commit, one wait, six dispatches",
+    "output_handoff": "the Metal attention output is copied to an F32 CPU Tensor; CPU executes residual, post-attention norm, MLP, and all unselected layers",
+    "ownership": "after the first committed Metal decode, an unsupported multi-token continuation fails closed until reset instead of using stale CPU GDN state",
+    "metal_error": "terminal; no CPU attention fallback, no global position advance, no active/scratch state swap, no receipt increment",
+    "reset": "clears both Metal state buffers, marks the block unseeded, clears GDN receipts, and requires a new CPU prefill seed"
+  },
+  "tdd": {
+    "red": "model tests initially failed to compile because the explicit constructor, receipt, state field, and fault-injection hook did not exist",
+    "green_tests": [
+      "metal_w8_gdn_is_explicit_seeds_exactly_and_tracks_two_decode_steps",
+      "metal_w8_gdn_reset_clears_state_and_requires_a_new_prefill_seed",
+      "metal_w8_gdn_error_is_terminal_and_does_not_commit_or_advance",
+      "metal_w8_gdn_constructor_rejects_full_attention_selection",
+      "metal_gdn_clear_requires_a_fresh_prefill_seed_and_resets_receipts",
+      "exposed_diagnostic_failure_executes_scratch_without_committing"
+    ]
+  },
+  "verification": [
+    {
+      "command": "cargo test -p apxinf-metal",
+      "result": "14 unit passed; 7 integration passed; 1 explicit checkpoint-free production-shape test ignored"
+    },
+    {
+      "command": "cargo test -p apxinf-model --features accelerate,metal-w8 qwen35 --lib",
+      "result": "33 passed"
+    },
+    {
+      "command": "cargo check -p apxinf-model --no-default-features",
+      "result": "passed"
+    },
+    {
+      "command": "cargo check -p apxinf-model --all-targets --features accelerate,metal-w8",
+      "result": "passed"
+    },
+    {
+      "command": "cargo test -p apxinf-metal --release --no-run",
+      "result": "passed"
+    },
+    {
+      "command": "cargo check -p apxinf-model --release --features accelerate,metal-w8",
+      "result": "passed"
+    },
+    {
+      "command": "cargo clippy -p apxinf-metal --all-targets -- -D warnings",
+      "result": "not run: clippy component is not installed in the isolated Rust toolchain"
+    }
+  ],
+  "correctness_gates": {
+    "cpu_prefill_vs_diagnostic": "absolute tolerance 1e-7",
+    "cpu_vs_diagnostic_two_consecutive_decode_steps": "absolute tolerance 3e-3",
+    "prefill_receipt": "prefill_seed_calls=1; decode_calls=0; command_buffers=0; waits=0",
+    "two_decode_receipt": "decode_calls=2; command_buffers=2; waits=2; committed_state_version=2",
+    "failure_transaction": "Metal state snapshot, Metal receipts, and GeneralQwen35 position are unchanged; retry of the same token advances exactly once"
+  },
+  "source_sha256": {
+    "crates/apxinf-model/src/qwen35/general.rs": "d5cbc8a1da3cb82246db84a0c766ae05c6fe3dfb2b86aa4a703d820ca287bbed",
+    "crates/apxinf-metal/src/gdn.rs": "bee66ff4763164778fa4b603650b7da64f4bafe0dc005ea58a873497c2336693",
+    "crates/apxinf-metal/tests/gdn_block.rs": "41b6a77c87d209fa99fc1fa3e69b757674d299d3efad3ad86bb82486e0803c50",
+    "crates/apxinf-metal/src/metal_w8_gdn.metal": "e79b20f0ee630c2876fda87b658714362b26d3f391d499087cf075351c74fa55",
+    "crates/apxinf-metal/src/metal_w8_gdn_bridge.mm": "866bca083ed75d124df3674753f70ceeb5538336316fba39bf7a4788b9f12c44"
+  }
+}

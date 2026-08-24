@@ -1,0 +1,109 @@
+{
+  "format": "apxinf-qwen35-metal-w8-body-evidence-v1",
+  "candidate": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "checkpoint_sha256": "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
+    "prompt": "Hello",
+    "selected_layers": [0],
+    "projection": "MLP gate+up",
+    "quantization": "symmetric signed W8, group size 64",
+    "scope": "decode rows with start_pos > 0 only"
+  },
+  "archived_raw_evidence": {
+    "cpu_teacher": {
+      "path": "qwen35-0.8b-m4-layer0-cpu-teacher-20260824.json",
+      "sha256": "4a69ada3a02c3d4e8bb9a70cbd89f21fc7b002c8462d038de043369f74ac5c70"
+    },
+    "metal_body_teacher_gate": {
+      "path": "qwen35-0.8b-m4-layer0-teacher-gate-20260824.json",
+      "sha256": "45165d5cf80989b273b924d84b891d7cb19a5676e6bd7219920ed3787f5b54f6"
+    },
+    "strict_transformers_oracle": {
+      "path": "qwen35-0.8b-m4-layer0-strict-oracle-20260824.json",
+      "sha256": "0548b98e56692528c5c9180935f816ec27fffbced67d61089aa5cbe89fdb241d"
+    }
+  },
+  "correctness": {
+    "strict_f32_parity": {
+      "passed": false,
+      "transformers_logits": {
+        "max_abs": 0.013663232326507568,
+        "max_nrmse": 0.0005550464475288591,
+        "limit_max_abs": 0.0002,
+        "limit_max_nrmse": 0.00001
+      },
+      "convolution_state": {
+        "max_abs": 0.026764392852783203,
+        "max_nrmse": 0.0018545779645767417
+      },
+      "recurrent_state": {
+        "max_abs": 0.002005934715270996,
+        "max_nrmse": 0.0012719503318480822
+      },
+      "cached_vs_fresh": {
+        "max_abs": 0.013673752546310425,
+        "max_nrmse": 0.000554927087485229
+      }
+    },
+    "selection_quality": {
+      "first_step_top20_overlap": 20,
+      "cached_probe_top20_overlap": 20,
+      "top1_equal": true,
+      "direct_shared_generation_exact_tokens": 10,
+      "direct_shared_generation_exact_match": true,
+      "teacher_forced_decode_comparisons": 128,
+      "teacher_forced_argmax_matches": 128,
+      "teacher_forced_argmax_mismatches": 0,
+      "path_receipt": {
+        "selected_layer": 0,
+        "decode_calls": 128
+      }
+    },
+    "free_run_induction": {
+      "kind": "logical induction backed by a direct 10-token production-loop smoke",
+      "assumptions": [
+        "greedy decoding is deterministic and sampling is disabled",
+        "prefill stays on the unchanged CPU/F32 path and selects token 9419",
+        "the body candidate starts from the same prefill state",
+        "at teacher step n, the forced input is exactly the native CPU token selected at step n-1",
+        "the teacher gate advances the candidate's own quantized recurrent/KV state at every step"
+      ],
+      "argument": "The candidate and CPU choose the same next token at each of 128 consecutive decode steps. Therefore the token selected at step n is exactly the forced input used at step n+1. By induction, a no-EOS greedy free run follows the same candidate state and token path for the initial prefill token plus all 128 tested decode outputs.",
+      "implied_matching_generated_prefix_tokens": 129,
+      "directly_executed_free_run_tokens": 10,
+      "not_claimed": [
+        "a separately timed 129-token production run",
+        "logit or hidden-state F32 parity",
+        "sampling parity",
+        "other prompts or checkpoints",
+        "quality or correctness for any multi-layer body set"
+      ]
+    }
+  },
+  "performance_screen": {
+    "status": "raw receipt pending archive",
+    "reported_shape": "[1,1024] x [7168,1024]",
+    "reported_iterations_per_block": 50,
+    "reported_cpu_f32_accelerate_median_ns": 603860,
+    "reported_metal_w8_median_ns": 476278,
+    "reported_metal_vs_cpu_median_speedup": 1.2679,
+    "reported_metal_vs_w8_cpu_oracle_max_abs": 2.98e-7,
+    "reported_w8_vs_f32_nrmse": 0.001661,
+    "twenty_four_layer_first_order_estimate": {
+      "per_layer_saved_ns": 127582,
+      "projected_saved_ns_per_token": 3061968,
+      "comparison_cpu_tpot_ns": 57611851.42424242,
+      "projected_tpot_reduction_percent": 5.314823,
+      "projected_speedup": 1.056131522,
+      "decision": "The arithmetic estimate narrowly clears the 5% threshold, so an all-layer diagnostic correctness experiment is allowed. It is not a performance admission."
+    },
+    "qualification": "Unarchived candidate primitive screen plus a contaminated historical whole-token baseline; the estimate assumes 24 independent identical savings. The host was noisy and no formal end-to-end ABBA was run."
+  },
+  "admission": {
+    "default_enabled": false,
+    "f32_replacement": false,
+    "explicit_quantized_quality_lane": true,
+    "reason": "Token selection gates pass for the tested layer and prompt, but the frozen F32 logits and state envelopes fail by large margins."
+  }
+}

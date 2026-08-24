@@ -1,0 +1,186 @@
+{
+  "format": "apxinf-qwen35-metal-w8-gdn-real-layer0-gate-summary-v1",
+  "created_at_local_date": "2026-08-24",
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "selected_layer": 0,
+    "prompt": "Hello",
+    "steps": 128,
+    "diagnostic_only": true,
+    "default_path_changed": false,
+    "cli_changed": false,
+    "auto_model_changed": false,
+    "formal_abba_run": false,
+    "expanded_to_all_gdn_layers": false
+  },
+  "promotion": {
+    "status": "candidate_only_not_promoted",
+    "reason": "All correctness and resource gates passed, but timings are single-pass observations from an uncontrolled host with about 5.15 GiB of pre-existing global swap. They are not formal ABBA evidence."
+  },
+  "identity": {
+    "binary_path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/target/release/examples/qwen35_metal_w8_gdn_gate",
+    "binary_sha256": "9d5255a8de0c04a60b8a7228f93dc2b21604b90b1acff36d73a999c1bf45a88c",
+    "build_profile": "release",
+    "features": [
+      "accelerate",
+      "metal-w8"
+    ],
+    "gate_source_sha256": "3a59bcb43678231f863a85f36d84eb4b42bebc48d71dbf6a76104e810071a6b9",
+    "cargo_toml_sha256": "0c0dfc525e8753a48f285fcf8813054ddc45febfdeb510394bbd11b1cf77c833",
+    "model_dir": "/Users/haiyan-mini/Agent4Kernel/.apxinf-models/Qwen3.5-0.8B-2fc063647-staged",
+    "source_lock": "/Users/haiyan-mini/Agent4Kernel/ApxInf/.apxinf/onboarding/qwen35-0.8b/source-lock.json",
+    "repo_id": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "checkpoint": "model.safetensors-00001-of-00001.safetensors",
+    "checkpoint_bytes": 1746942600,
+    "checkpoint_sha256": "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696"
+  },
+  "execution_contract": {
+    "same_release_binary_for_all_four_runs": true,
+    "offline_local_checkpoint": true,
+    "output_receipts_create_new_no_replace": true,
+    "preflight_found_other_mlx_or_qwen_processes": false,
+    "stop_conditions": {
+      "nonzero_exit": true,
+      "child_swaps_above_zero": true,
+      "max_rss_bytes_above": 6442450944,
+      "material_memory_pressure_degradation": true
+    },
+    "stop_condition_triggered": false
+  },
+  "runs": {
+    "cpu_teacher128": {
+      "passed": true,
+      "teacher_inputs": 128,
+      "output_tokens": 128,
+      "prefill_ms": 303.973375,
+      "decode_ms": 6659.172875,
+      "decode_mean_ms": 52.0247880859375,
+      "wall_seconds": 11.72,
+      "max_rss_bytes": 3695607808,
+      "peak_memory_footprint_bytes": 4738387808,
+      "child_swaps": 0,
+      "global_swap_mib_before": 5157.06,
+      "global_swap_mib_after": 5157.06,
+      "throttled_pages_after": 0,
+      "receipt": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-real-cpu-teacher128-20260824.json",
+      "receipt_sha256": "5fdf053091bc0cad5b7c0709a8ca1d918626b5d0bd251ab03155b1487173b7fd",
+      "time_receipt": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-real-cpu-teacher128-time-20260824.txt",
+      "time_receipt_sha256": "0ee9028ee5246bc6003a4a463b5b94c0172000ecceb06c0ba27816c39311f3eb"
+    },
+    "layer0_gdn_teacher128": {
+      "passed": true,
+      "teacher_inputs": 128,
+      "output_tokens": 128,
+      "mismatch_count": 0,
+      "first_mismatch": null,
+      "prefill_path": {
+        "seed_calls": 1,
+        "decode_calls": 0,
+        "command_buffers": 0,
+        "waits": 0,
+        "committed_state_version": 0
+      },
+      "final_path": {
+        "seed_calls": 1,
+        "decode_calls": 128,
+        "command_buffers": 128,
+        "waits": 128,
+        "committed_state_version": 128
+      },
+      "prefill_ms": 302.05775,
+      "decode_ms": 6670.142833,
+      "decode_mean_ms": 52.1104908828125,
+      "metal_gdn_block_mean_us": 962.0198671875,
+      "wall_seconds": 9.12,
+      "max_rss_bytes": 4341006336,
+      "peak_memory_footprint_bytes": 4769943584,
+      "child_swaps": 0,
+      "global_swap_mib_before": 5157.06,
+      "global_swap_mib_after": 5149.06,
+      "throttled_pages_after": 0,
+      "receipt": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-real-layer0-teacher128-20260824.json",
+      "receipt_sha256": "3ca015d56bd01df92d7c2378d45018e5295085f229b7d762e0043bdc22376af3",
+      "time_receipt": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-real-layer0-teacher128-time-20260824.txt",
+      "time_receipt_sha256": "c69827fc046cc46190cb457a235f05e160a688e5bc9141de9ffe6eb8f24c2ecf"
+    },
+    "cpu_free128": {
+      "passed": true,
+      "generated_tokens": 128,
+      "decode_steps": 127,
+      "prefill_ms": 201.318209,
+      "decode_ms": 6585.175792,
+      "decode_mean_ms": 51.85177788976378,
+      "wall_seconds": 8.99,
+      "max_rss_bytes": 4744675328,
+      "peak_memory_footprint_bytes": 4721463112,
+      "child_swaps": 0,
+      "global_swap_mib_before": 5149.06,
+      "global_swap_mib_after": 5149.06,
+      "throttled_pages_after": 0,
+      "receipt": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-real-cpu-free128-20260824.json",
+      "receipt_sha256": "fb2948f8050064d750572a545208919f934cab6bffcc79782d186b67a7bebd9f",
+      "time_receipt": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-real-cpu-free128-time-20260824.txt",
+      "time_receipt_sha256": "1a253d25b6d3f4aa55a718bf4d85c550e5052544d7d188e4313d1f695f4f5ce5"
+    },
+    "layer0_gdn_free128": {
+      "passed": true,
+      "generated_tokens": 128,
+      "decode_steps": 127,
+      "mismatch_count": 0,
+      "first_mismatch": null,
+      "prefill_path": {
+        "seed_calls": 1,
+        "decode_calls": 0,
+        "command_buffers": 0,
+        "waits": 0,
+        "committed_state_version": 0
+      },
+      "final_path": {
+        "seed_calls": 1,
+        "decode_calls": 127,
+        "command_buffers": 127,
+        "waits": 127,
+        "committed_state_version": 127
+      },
+      "prefill_ms": 164.063333,
+      "decode_ms": 6523.980625,
+      "decode_mean_ms": 51.369926181102365,
+      "metal_gdn_block_mean_us": 925.8296692913385,
+      "wall_seconds": 8.26,
+      "max_rss_bytes": 4746199040,
+      "peak_memory_footprint_bytes": 4718350344,
+      "child_swaps": 0,
+      "global_swap_mib_before": 5149.06,
+      "global_swap_mib_after": 5149.06,
+      "throttled_pages_after": 0,
+      "receipt": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-real-layer0-free128-20260824.json",
+      "receipt_sha256": "99d9dd901049a38f639de7bd76006fb19424311fe8d914ce6df81fba3f60849e",
+      "time_receipt": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-real-layer0-free128-time-20260824.txt",
+      "time_receipt_sha256": "82c828c3e1336c1c203c632a5398b2b294fe8b316c20fbb8a36445756a026700"
+    }
+  },
+  "gate_results": {
+    "teacher_forced_128_exact": true,
+    "direct_free_run_128_exact": true,
+    "layer0_seed_calls_expected": true,
+    "layer0_decode_command_buffer_wait_counts_expected": true,
+    "all_child_swaps_zero": true,
+    "all_max_rss_below_6_gib": true,
+    "all_exits_zero": true,
+    "all_gates_passed": true
+  },
+  "candidate_timing_observations": {
+    "classification": "single-pass uncontrolled-host observations; not suitable for promotion",
+    "teacher_decode_delta_ms_gdn_minus_cpu": 10.969958,
+    "teacher_decode_delta_percent_gdn_minus_cpu": 0.164734543,
+    "teacher_metal_gdn_block_share_of_decode_percent": 1.846115534,
+    "free_decode_delta_ms_gdn_minus_cpu": -61.195167,
+    "free_decode_delta_percent_gdn_minus_cpu": -0.929286764,
+    "free_metal_gdn_block_share_of_decode_percent": 1.80227954,
+    "teacher_max_rss_delta_bytes_gdn_minus_cpu": 645398528,
+    "free_max_rss_delta_bytes_gdn_minus_cpu": 1523712,
+    "interpretation": "The opposite-sign decode deltas are within the expected noise of these single observations. This gate proves trajectory correctness, exact path accounting, and bounded resources; it does not prove a speedup."
+  },
+  "next_step": "Keep the layer-0 diagnostic path isolated. A future promotion decision requires a quiet-host formal ABBA run; do not infer all-18-layer correctness or performance from this gate."
+}

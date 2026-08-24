@@ -1,0 +1,18 @@
+2026-08-24T04:49:48Z
+12:49  up 15:09, 1 user, load averages: 3.69 3.95 3.79
+vm.swapusage: total = 7168.00M  used = 5958.12M  free = 1209.88M  (encrypted)
+ 1177  65.3  73440 /Library/Application Support/Logitech.localized/LogiOptionsPlus/logioptionsplus_agent.app/Contents/MacOS/logioptionsplus_agent --launchd
+ 2232  46.3  46848 /Library/Application Support/Logitech.localized/LogiOptionsPlus/logioptionsplus_logivoice.app/Contents/MacOS/logioptionsplus_logivoice --launchd
+39003   7.7  37920 /opt/homebrew/Cellar/python@3.14/3.14.3/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m unittest -v tests.test_bridge_install tests.test_install tests.test_kersor_evolve_plugin tests.test_mirror tests.test_plugins tests.test_release
+  333   5.2   7520 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/FSEvents.framework/Versions/A/Support/fseventsd
+  645   3.7 199408 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+  781   2.1  32800 /Library/Application Support/Logitech.localized/LogiOptionsPlus/logioptionsplus_agent.app/Contents/Frameworks/logioptionsplus_updater.app/Contents/MacOS/logioptionsplus_updater
+  523   2.1  21200 /usr/libexec/syspolicyd
+  519   2.0  35856 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mds_stores
+  358   2.0  17680 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mds
+39302   1.4  23856 /System/Library/PrivateFrameworks/CoreParsec.framework/parsec-fbf
+  369   1.3   7088 /usr/libexec/opendirectoryd
+  782   1.2   9264 /Applications/ToDesk.app/Contents/MacOS/ToDesk_Service -Module service
+ 3028   1.0  16176 /private/var/folders/nz/_d30_pdj29d06hr6fmkv3_sw0000gn/X/B9AA7AEE-130C-5C8E-884B-CAA665CD9CC7/d/Wrapper/Shadowrocket.app/PlugIns/PacketTunnel.appex/PacketTunnel -AppleLanguages ("zh-Hans-CN")
+ 2190   1.0 480432 /Applications/ChatGPT.app/Contents/Resources/codex -c features.code_mode_host=true app-server --analytics-default-enabled
+  751   1.0  41376 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN com.apple.bcmwlan 0x100000f35 com.apple.DriverKit-AppleBCMWLAN

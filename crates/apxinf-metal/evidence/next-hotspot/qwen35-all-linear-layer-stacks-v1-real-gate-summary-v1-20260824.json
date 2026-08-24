@@ -1,0 +1,467 @@
+{
+  "format": "apxinf-qwen35-metal-w8-all-linear-layer-stacks-v1-real-gate-summary-v1",
+  "created_at_local_date": "2026-08-24",
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "prompt": "Hello",
+    "teacher_forced_comparisons": 128,
+    "free_run_generated_tokens": 128,
+    "linear_attention_complete_layer_stacks": [
+      [0, 1, 2],
+      [4, 5, 6],
+      [8, 9, 10],
+      [12, 13, 14],
+      [16, 17, 18],
+      [20, 21, 22]
+    ],
+    "full_attention_cpu_attention_metal_mlp_layers": [3, 7, 11, 15, 19, 23],
+    "stack_mechanism": "metal-w8-linear-layer-stack3-v1",
+    "full_attention_mlp_mechanism": "metal-w8-mlp-block-g64",
+    "metal_w8_lm_head": false
+  },
+  "classification": {
+    "status": "candidate_only_not_promoted",
+    "formal": false,
+    "default": false,
+    "formal_abba": false,
+    "formal_rss_evidence": false,
+    "quiet_host_custody": false,
+    "unified_resource_sidecar": false,
+    "timing": "uncontrolled-host candidate-only single-pass observations",
+    "timing_use": "correctness and path-gate context only; never promotion evidence",
+    "default_note": "The six-Stack3 candidate remains reachable only through an explicit diagnostic gate route and is not the default path.",
+    "resource_note": "The supervisor and /usr/bin/time observations were not archived in one custody-bound sidecar and were not collected under a quiet-host gate."
+  },
+  "receipt_integrity": {
+    "cpu_teacher128": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-all-linear-layer-stacks-v1-cpu-teacher128-v1-20260824.json",
+      "sha256": "0d42eb0ddd5bdb78fd60b404ec948c6e47b873d3398fd7dc7dc32012c009541d",
+      "size": 10874,
+      "direct_regular_file": true,
+      "single_link": true
+    },
+    "candidate_teacher128": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-all-linear-layer-stacks-v1-gdn-out-g32-teacher128-v1-20260824.json",
+      "sha256": "f14e1941ab5ae0847ee7834ec7aaabc238a56a88df51827b85ee967bfbf98710",
+      "size": 53784,
+      "direct_regular_file": true,
+      "single_link": true,
+      "embedded_cpu_receipt_reference_matches": true
+    },
+    "cpu_free128": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-all-linear-layer-stacks-v1-cpu-free128-v1-20260824.json",
+      "sha256": "63c8dc6282fc617d5453d60a8825b52b0b6c293c329fa717593837bb688ddfbb",
+      "size": 10180,
+      "direct_regular_file": true,
+      "single_link": true
+    },
+    "candidate_free128": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-all-linear-layer-stacks-v1-gdn-out-g32-free128-v1-20260824.json",
+      "sha256": "5561d2989bcd769f534e1fdb75dbc66c78ac4fc7ef6abaffd1ed474f1528f92c",
+      "size": 53103,
+      "direct_regular_file": true,
+      "single_link": true,
+      "embedded_cpu_receipt_reference_matches": true
+    },
+    "all_four_identity_records_equal": true,
+    "all_four_end_custody_records_equal": true,
+    "independently_rehashed": true
+  },
+  "trajectory_gate": {
+    "compact_token_array_without_trailing_lf": {
+      "serialization": "UTF-8 bytes from json.dumps(token_array, ensure_ascii=False, separators=(',', ':')); no trailing LF",
+      "teacher_forced": {
+        "cpu_source_field": "cpu_teacher128.cpu_expected_output_ids",
+        "candidate_embedded_cpu_source_field": "candidate_teacher128.cpu_expected_output_ids",
+        "candidate_source_field": "candidate_teacher128.metal_w8_all_linear_layer_stacks_v1_actual_output_ids",
+        "array_lengths": {
+          "cpu": 128,
+          "candidate_embedded_cpu": 128,
+          "candidate": 128
+        },
+        "cpu_sha256": "52731c5723bb55d242f9cab3beb524c51a29878c0818ca819d6b038e71ce19cf",
+        "candidate_embedded_cpu_sha256": "52731c5723bb55d242f9cab3beb524c51a29878c0818ca819d6b038e71ce19cf",
+        "candidate_sha256": "52731c5723bb55d242f9cab3beb524c51a29878c0818ca819d6b038e71ce19cf"
+      },
+      "free_run": {
+        "cpu_source_field": "cpu_free128.generated_token_ids",
+        "candidate_embedded_cpu_source_field": "candidate_free128.cpu_generated_token_ids",
+        "candidate_source_field": "candidate_free128.metal_w8_all_linear_layer_stacks_v1_generated_token_ids",
+        "array_lengths": {
+          "cpu": 128,
+          "candidate_embedded_cpu": 128,
+          "candidate": 128
+        },
+        "cpu_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe",
+        "candidate_embedded_cpu_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe",
+        "candidate_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"
+      }
+    },
+    "jq_cM_stdout_with_one_trailing_lf": {
+      "serialization": "Exact stdout bytes from jq -cM FIELD RECEIPT; compact JSON token array followed by the single LF emitted by jq",
+      "teacher_forced_sha256": "7f51c1c2029c3c49766d9ff92985fb2756551016a517608a705b9456a0cca434",
+      "free_run_sha256": "cca80dce3d3cf520a6dfcc112a3f38d6a2d6cf8df43285d2431cc02ca81ab598"
+    },
+    "teacher_input_arrays_equal": true,
+    "teacher_forced_mismatch_count": 0,
+    "teacher_forced_exact_128_of_128": true,
+    "free_run_mismatch_count": 0,
+    "free_run_first_mismatch": null,
+    "free_run_exact_128_tokens": true,
+    "all_four_receipts_passed": true,
+    "all_required_candidate_prefill_and_decode_path_contract_checks_passed": true,
+    "intermediate_host_finite_checks_intentionally_disabled_by_versioned_contract": true,
+    "final_output_finite_checks_enabled": true
+  },
+  "custody": {
+    "same_identity_in_all_four_receipts": true,
+    "same_end_verification_in_all_four_receipts": true,
+    "start_and_end_binary_and_source_records_equal": true,
+    "independent_live_rehash_matches_embedded_identity": true,
+    "binary": {
+      "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/target/release/examples/qwen35_metal_w8_linear_layer_gate",
+      "sha256": "882441d89c820031bd61afebd2ffdf12de49817f16f73a9e6c48556bc7f55007",
+      "size": 8591536,
+      "build_profile": "release",
+      "features": ["accelerate", "metal-w8"],
+      "direct_regular_file": true,
+      "single_link": true
+    },
+    "sources": {
+      "closure": "stack3-direct-compile-inputs-v1",
+      "gate": {
+        "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/crates/apxinf-model/examples/qwen35_metal_w8_linear_layer_gate.rs",
+        "sha256": "f08f5f33fed59af287e96999bddc888addf8d941b80229dbbfdeedd7f5b6c8c3",
+        "size": 135476,
+        "direct_regular_file": true,
+        "single_link": true
+      },
+      "rust_and_bridge_sources": {
+        "apxinf_metal_build": {
+          "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/crates/apxinf-metal/build.rs",
+          "sha256": "634937112467cbaa11eb4edf208987ab278a127fed21471ad862fd82da1d3ab2",
+          "size": 5486,
+          "direct_regular_file": true,
+          "single_link": true
+        },
+        "gate_evidence": {
+          "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/crates/apxinf-model/examples/support/qwen35_gate_evidence.rs",
+          "sha256": "61fa9edbe3f949be2be4566af77c19e501ba55a458bf2c439ab28462c25f05b7",
+          "size": 35722,
+          "direct_regular_file": true,
+          "single_link": true
+        },
+        "general": {
+          "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/crates/apxinf-model/src/qwen35/general.rs",
+          "sha256": "832d889a260436e301b0d729617dc9c9d6ad2f5bee5c1dd18e137ebc63c0e554",
+          "size": 264615,
+          "direct_regular_file": true,
+          "single_link": true
+        },
+        "stack3_bridge": {
+          "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/crates/apxinf-metal/src/metal_w8_linear_layer_stack3_bridge.mm",
+          "sha256": "8f67a7defe0c368e3b68896bd577cddcbe42ab1fa245ec8a9112c7bdf0adc351",
+          "size": 43699,
+          "direct_regular_file": true,
+          "single_link": true
+        },
+        "stack3_rust": {
+          "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/crates/apxinf-metal/src/linear_layer/stack3.rs",
+          "sha256": "af96013326894e7eb1b6986e022f80ac31c163588c76cb459866b14fca2e2535",
+          "size": 31290,
+          "direct_regular_file": true,
+          "single_link": true
+        }
+      },
+      "compiled_shader_sources": {
+        "metal_w8_gdn": {
+          "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/crates/apxinf-metal/src/metal_w8_gdn.metal",
+          "sha256": "e79b20f0ee630c2876fda87b658714362b26d3f391d499087cf075351c74fa55",
+          "size": 8884,
+          "direct_regular_file": true,
+          "single_link": true
+        },
+        "metal_w8_gdn_out_g32": {
+          "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/crates/apxinf-metal/src/metal_w8_gdn_out_g32.metal",
+          "sha256": "97711bafb3038351e3408fab77ac5ceda429ffc3d7efb314822a2c7e105d486a",
+          "size": 1290,
+          "direct_regular_file": true,
+          "single_link": true
+        },
+        "metal_w8_linear_layer": {
+          "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/crates/apxinf-metal/src/metal_w8_linear_layer.metal",
+          "sha256": "e9c863c67c336be4576b3f79ab19aff0b8ed7e848b298c50111bdbb72f819645",
+          "size": 1764,
+          "direct_regular_file": true,
+          "single_link": true
+        },
+        "metal_w8_mlp": {
+          "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/crates/apxinf-metal/src/metal_w8_mlp.metal",
+          "sha256": "1d3f7d2945210841a670e603f98d78fc79cdcf748404c94bdfdba2755904f85e",
+          "size": 3239,
+          "direct_regular_file": true,
+          "single_link": true
+        }
+      }
+    },
+    "profile": {
+      "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/configs/hf-onboarding/qwen35-0.8b-macos-cpu.json",
+      "profile_id": "qwen35-0.8b-macos-cpu",
+      "sha256": "e5ba485f295b0e05eb78de817bff16c0fe7965557460ced874982ab882846816",
+      "size": 3187,
+      "direct_regular_file": true,
+      "single_link": true
+    },
+    "source_lock": {
+      "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/.apxinf/onboarding/qwen35-0.8b/source-lock.json",
+      "file_sha256": "55a43c039fe03cbe0c5a2feefffa46eba526db394a2ce3fa03075945d50ca268",
+      "canonical_content_sha256_without_content_field": "021209cc96e398db4aac6d126890f7bb5a5a3b5fce7204fed0328f544cbb7500",
+      "canonical_content_serialization": "UTF-8 bytes from json.dumps(body_without_content_sha256, ensure_ascii=False, sort_keys=True, separators=(',', ':')); no trailing LF",
+      "size": 40486,
+      "direct_regular_file": true,
+      "single_link": true
+    },
+    "model_dir": {
+      "path": "/Users/haiyan-mini/Agent4Kernel/.apxinf-models/Qwen3.5-0.8B-2fc063647-staged",
+      "closure": "exact-profile-artifacts-plus-safe-cache-v1",
+      "cache_present": false,
+      "exact_top_level_artifact_set_verified": true,
+      "artifacts": {
+        "chat_template.jinja": {
+          "sha256": "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80",
+          "size": 7755,
+          "direct_regular_file": true,
+          "single_link": true
+        },
+        "config.json": {
+          "sha256": "b90b86f35c8e6925ef74ee04d0e758f0a845c83a42089ad82bbaa948de9b4204",
+          "size": 2907,
+          "direct_regular_file": true,
+          "single_link": true
+        },
+        "model.safetensors-00001-of-00001.safetensors": {
+          "sha256": "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
+          "size": 1746942600,
+          "direct_regular_file": true,
+          "single_link": true
+        },
+        "model.safetensors.index.json": {
+          "sha256": "d8a08838a613b025eb7952ed9db11696213e57e76a375661ef5c12f9dd5dcf4e",
+          "size": 50900,
+          "direct_regular_file": true,
+          "single_link": true
+        },
+        "tokenizer.json": {
+          "sha256": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
+          "size": 12807982,
+          "direct_regular_file": true,
+          "single_link": true
+        },
+        "tokenizer_config.json": {
+          "sha256": "49e2b6e395f959f077f1e992b338919c0d4a9732fc6e613995e06557f843500c",
+          "size": 16709,
+          "direct_regular_file": true,
+          "single_link": true
+        }
+      }
+    }
+  },
+  "execution_counts": {
+    "prefill": {
+      "stack_count": 6,
+      "layers_per_stack": 3,
+      "each_stack": {
+        "prefill_seed_calls": [1, 1, 1],
+        "decode_calls": 0,
+        "successful_decodes": 0,
+        "failed_decodes": 0,
+        "command_buffers": 0,
+        "compute_encoders": 0,
+        "commits": 0,
+        "waits": 0,
+        "state_commits": 0,
+        "committed_stack_version": 0,
+        "host_to_device_bytes": 0,
+        "device_to_host_bytes": 0,
+        "terminal_error": false
+      },
+      "full_attention_mlp_layer_count": 6,
+      "each_full_attention_mlp_layer_decode_calls": 0
+    },
+    "teacher_forced_decode": {
+      "decode_steps": 128,
+      "stack_count": 6,
+      "each_stack": {
+        "prefill_seed_calls": [1, 1, 1],
+        "decode_calls": 128,
+        "successful_decodes": 128,
+        "failed_decodes": 0,
+        "command_buffers": 128,
+        "compute_encoders": 384,
+        "commits": 128,
+        "waits": 128,
+        "state_commits": 384,
+        "last_state_commit_mask": 7,
+        "committed_stack_version": 128,
+        "host_to_device_bytes": 524288,
+        "device_to_host_bytes": 524288,
+        "terminal_error": false
+      },
+      "all_stacks_total_decode_calls": 768,
+      "all_stacks_total_compute_encoders": 2304,
+      "all_stacks_total_state_commits": 2304,
+      "all_stacks_total_host_to_device_bytes": 3145728,
+      "all_stacks_total_device_to_host_bytes": 3145728,
+      "full_attention_mlp_layer_count": 6,
+      "each_full_attention_mlp_layer_decode_calls": 128,
+      "all_full_attention_mlp_layers_total_decode_calls": 768
+    },
+    "free_run_decode": {
+      "generated_tokens": 128,
+      "decode_steps_after_prefill_token": 127,
+      "stack_count": 6,
+      "each_stack": {
+        "prefill_seed_calls": [1, 1, 1],
+        "decode_calls": 127,
+        "successful_decodes": 127,
+        "failed_decodes": 0,
+        "command_buffers": 127,
+        "compute_encoders": 381,
+        "commits": 127,
+        "waits": 127,
+        "state_commits": 381,
+        "last_state_commit_mask": 7,
+        "committed_stack_version": 127,
+        "host_to_device_bytes": 520192,
+        "device_to_host_bytes": 520192,
+        "terminal_error": false
+      },
+      "all_stacks_total_decode_calls": 762,
+      "all_stacks_total_compute_encoders": 2286,
+      "all_stacks_total_state_commits": 2286,
+      "all_stacks_total_host_to_device_bytes": 3121152,
+      "all_stacks_total_device_to_host_bytes": 3121152,
+      "full_attention_mlp_layer_count": 6,
+      "each_full_attention_mlp_layer_decode_calls": 127,
+      "all_full_attention_mlp_layers_total_decode_calls": 762
+    },
+    "duplicate_mlp_execution": false,
+    "all_prefill_generation_and_aggregate_receipts_consistent": true
+  },
+  "aggregate_buffer_ledger": {
+    "scope": "resident-mtlbuffer-only",
+    "includes_lm_head": false,
+    "stack3_component": {
+      "stack_count": 6,
+      "layers_per_stack": 3,
+      "persistent_bytes_each": 76351488,
+      "persistent_bytes_subtotal": 458108928,
+      "allocated_buffers_each": 76,
+      "shared_buffers_each": 68,
+      "private_buffers_each": 8,
+      "command_buffers_per_decode_each": 1,
+      "compute_encoders_per_decode_each": 3,
+      "commits_per_decode_each": 1,
+      "waits_per_decode_each": 1,
+      "host_to_device_bytes_per_decode_each": 4096,
+      "device_to_host_bytes_per_decode_each": 4096,
+      "state_host_transfer_bytes_per_decode_each": 0,
+      "final_output_finite_checks_per_decode_each": 1,
+      "intermediate_host_finite_checks_per_decode_each": 0
+    },
+    "full_attention_mlp_component": {
+      "layer_count": 6,
+      "persistent_bytes_each": 11749376,
+      "persistent_bytes_subtotal": 70496256,
+      "allocated_buffers_each": 8,
+      "shared_buffers_each": 6,
+      "private_buffers_each": 2,
+      "command_buffers_per_decode_each": 1,
+      "compute_encoders_per_decode_each": 3,
+      "commits_per_decode_each": 1,
+      "waits_per_decode_each": 1,
+      "host_to_device_bytes_per_decode_each": 4096,
+      "device_to_host_bytes_per_decode_each": 4096,
+      "state_host_transfer_bytes_per_decode_each": 0
+    },
+    "aggregate": {
+      "total_persistent_mtlbuffer_bytes": 528605184,
+      "allocated_buffers": 504,
+      "shared_buffers": 444,
+      "private_buffers": 60,
+      "command_buffers_per_decode": 12,
+      "compute_encoders_per_decode": 36,
+      "commits_per_decode": 12,
+      "waits_per_decode": 12,
+      "host_to_device_bytes_per_decode": 49152,
+      "device_to_host_bytes_per_decode": 49152,
+      "state_host_transfer_bytes_per_decode": 0,
+      "final_output_finite_checks_per_decode": 6,
+      "intermediate_host_finite_checks_per_decode": 0
+    },
+    "independent_component_sum_matches_both_candidate_receipts": true,
+    "exclusions": "CPU F32 weights, host Vec allocations, Metal pipelines/libraries/queues, driver allocations, KV cache, and lm_head"
+  },
+  "resource_observations": {
+    "classification": "uncontrolled-host candidate-only observations; no unified custody-bound sidecar and no quiet-host custody",
+    "candidate_free_run": {
+      "supervisor_peak_process_group_rss_kib": 4585904,
+      "usr_bin_time_maximum_resident_set_size_bytes": 4800937984,
+      "process_swaps": 0
+    },
+    "cpu_free_run": {
+      "usr_bin_time_maximum_resident_set_size_bytes": 4247420928,
+      "process_swaps": 0
+    },
+    "observation_source": "Values were captured by the external supervisor and /usr/bin/time around the runs, outside the four JSON receipts.",
+    "formal_rss_conclusion": null,
+    "promotion_allowed_from_these_resource_observations": false
+  },
+  "decode_timing_observations": {
+    "classification": "uncontrolled-host candidate-only single-pass observations; formal=false; default=false",
+    "teacher_forced": {
+      "decode_steps": 128,
+      "cpu_prefill_ms": 474.6165,
+      "candidate_prefill_ms": 309.94987499999996,
+      "cpu_decode_ms": 9635.497875000001,
+      "candidate_decode_ms": 4267.568791000001,
+      "cpu_decode_mean_ms": 75.27732714843751,
+      "candidate_decode_mean_ms": 33.340381179687505,
+      "cpu_timing_contaminated": true,
+      "note": "The 75 ms CPU teacher timing is visibly contaminated and is not used for a teacher-forced speed claim.",
+      "performance_comparison_allowed": false
+    },
+    "free_run": {
+      "decode_steps_after_prefill_token": 127,
+      "cpu_prefill_ms": 379.10175000000004,
+      "candidate_prefill_ms": 358.690791,
+      "cpu_decode_ms": 6563.461834,
+      "candidate_decode_ms": 4495.591417,
+      "cpu_decode_mean_ms": 51.680801842519685,
+      "candidate_decode_mean_ms": 35.39835761417323,
+      "observed_candidate_latency_reduction_percent": 31.505788702663462,
+      "observed_candidate_throughput_ratio": 1.4599773923360526,
+      "note": "This raw CPU-versus-candidate observation may be retained for context but cannot support promotion.",
+      "performance_comparison_allowed_for_promotion": false
+    },
+    "formal_performance_conclusion": null,
+    "promotion_allowed_from_these_timings": false
+  },
+  "gate_result": {
+    "independent_archive_review": {
+      "p0_findings": 0,
+      "p1_findings": 0
+    },
+    "teacher_forced_exact": true,
+    "free_run_exact": true,
+    "candidate_path_contract_valid": true,
+    "custody_valid": true,
+    "execution_counts_valid": true,
+    "aggregate_ledger_valid": true,
+    "correctness_and_path_gate_passed": true,
+    "performance_promotion_gate_passed": false,
+    "default_path_changed": false,
+    "next_required_performance_step": "quiet-host controlled ABBA with a Stack3-frozen harness and separately archived formal timing, RSS, swap, thermal, load, and custody evidence"
+  }
+}

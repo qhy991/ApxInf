@@ -1,0 +1,84 @@
+{
+  "format": "apxinf-qwen35-metal-w8-cli-wiring-v1",
+  "date": "2026-08-24",
+  "status": "PASS_SYNTHETIC_AND_COMPILE_ONLY",
+  "scope": {
+    "new_flag": "--metal-w8-mlp-block",
+    "existing_flag": "--metal-w8-lm-head",
+    "mlp_only": "all Qwen3.5 layers use complete decode-only Metal W8 MLP blocks",
+    "combined": "one model construction selects all complete MLP blocks plus existing lm_head v2",
+    "default": "both flags false preserves the ordinary CPU/F32 path",
+    "real_checkpoint_rerun_after_wiring": false,
+    "reason_no_real_rerun": "the change only wires the already frozen constructors through CLI and AutoModel; no model, shader, or numerical semantics changed"
+  },
+  "admission_boundary": {
+    "provider": "native only",
+    "model": "qwen3_5/qwen35 only",
+    "device": "CPU only",
+    "text_weight_dtype": "F32 only",
+    "platform": "Apple Silicon macOS only",
+    "feature": "metal-w8 required",
+    "rejected_without_fallback": [
+      "MLX provider",
+      "CUDA device",
+      "BF16 or other precision policy",
+      "non-Qwen3.5 model",
+      "feature-missing binary",
+      "unsupported platform"
+    ]
+  },
+  "runtime_receipt": {
+    "json_field": "generation_path",
+    "qwen_format": "apxinf-qwen35-generation-path-v1",
+    "reports": [
+      "requested metal_w8_mlp_block state",
+      "requested metal_w8_lm_head state",
+      "every selected MLP layer index, decode call count, and elapsed nanoseconds",
+      "head prefill/decode/teacher call counts and top4/rerank elapsed nanoseconds"
+    ]
+  },
+  "verification": {
+    "tdd_red": [
+      "root parser test failed because Commands::Generate lacked metal_w8_mlp_block",
+      "apxinf-model test failed because LoadOptions lacked metal_w8_mlp_block"
+    ],
+    "default_auto_validation_tests": "2 passed",
+    "feature_auto_validation_tests": "4 passed",
+    "tiny_combined_model_test": "passed",
+    "tiny_registry_route_test": "passed for MLP-only and combined",
+    "metal_w8_model_regression_tests": "9 passed",
+    "root_default_bin_serial": "46 passed, 2 real-MLX tests ignored",
+    "root_feature_bin_serial": "46 passed, 2 real-MLX tests ignored",
+    "root_default_mlx_cli_integration": "8 passed",
+    "root_feature_mlx_cli_integration": "8 passed",
+    "root_default_all_targets_check": "passed",
+    "root_accelerate_metal_w8_all_targets_check": "passed",
+    "model_default_all_targets_check": "passed",
+    "model_accelerate_metal_w8_examples_check": "passed",
+    "release_build": "passed",
+    "help_contains_both_flags": true,
+    "format_and_diff_check": "passed",
+    "parallel_test_note": "an initial parallel root run had two existing startup-deadline failures under host contention; the complete bin suite passed serially in both default and feature builds"
+  },
+  "custody": {
+    "repository_head": "c9abe712232607da1ae03d9b6bf872323571c4c1",
+    "release_binary_sha256": "b4965794f1e1d56b0187e7f0395048e7690fb11d69b47d020d2e3825cabc8bda",
+    "source_sha256": {
+      "src/main.rs": "504ee822dfe887fb0248f8e4e4e7ae070152f1f8986aac1715acd8536351bce5",
+      "crates/apxinf-model/src/auto.rs": "385337d9fee55146e40042e5af9467171b6ef8771512c3067988c8c6fa32f947",
+      "crates/apxinf-model/src/builtin.rs": "1646882014c09ff688f4aa054970e1d1f63b15a86dff85cfd8c99186a2a33c2f",
+      "crates/apxinf-model/src/llm_trait.rs": "e6404dbecd4771ffd11286e1f2c613ac31dffde8c1f844d14a3f46244a47434b",
+      "crates/apxinf-model/src/qwen35/general.rs": "3bca6ed0d230f29fb2cc303cb8a0476a9e3e2b54b0856439298c6b10cb3a69c2",
+      "Cargo.toml": "655ab74910cb00b4a8a4364e5371fd31e86aed975eca67482341566d5c9e20c2",
+      "Cargo.lock": "3470a636b735d6f94c9c8ffa79785bd70f9bcaa8e7c95b6d82ccd4d060abb6bd",
+      "README.md": "f4f858d0b62a5ad3d9f2d104400426ec78ff52b9d7020edfd8f4e37ee8d880dd",
+      "doc/20260823-qwen35-macos-bringup/README.md": "da0ae525258dd51a4f638687a739a211b84142f51ec5f7d29083527fb87cf52b"
+    },
+    "frozen_pre_wiring_combined_evidence_sha256": "e48510bb6b09f8cafc58e84d83e3bd0b49f77e666090feba4d5c224d5cbf5199"
+  },
+  "performance": {
+    "formal_benchmark_after_wiring": false,
+    "frozen_candidate_status": "PROMISING_AWAIT_QUIET_HOST_FORMAL",
+    "default_promotion": false
+  }
+}

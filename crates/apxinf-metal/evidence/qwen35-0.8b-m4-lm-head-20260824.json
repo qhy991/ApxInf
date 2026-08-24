@@ -1,0 +1,245 @@
+{
+  "format": "apxinf-metal-w8-evidence-v1",
+  "recorded_at": "2026-08-24",
+  "status": {
+    "default_enabled": false,
+    "requires_build_feature": "metal-w8",
+    "requires_runtime_flag": "--metal-w8-lm-head",
+    "native_f32_teacher_gate": "128/128",
+    "bf16_or_huggingface_exactness_claimed": false,
+    "performance_gate": "passed-6/6-with-retained-contamination"
+  },
+  "provenance": {
+    "repository_base_commit": "c9abe712232607da1ae03d9b6bf872323571c4c1",
+    "repository_was_dirty": true,
+    "model": "Qwen/Qwen3.5-0.8B",
+    "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "checkpoint_shape": {
+      "hidden_size": 1024,
+      "vocab_size": 248320,
+      "tie_word_embeddings": true
+    },
+    "host": {
+      "os": "macOS 26.2 (25C56)",
+      "soc": "Apple M4",
+      "memory_bytes": 17179869184,
+      "logical_cpus": 10
+    },
+    "toolchain": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "frozen_release_binary_sha256": "ab4da2c5a120981a946dd4cb592af98ed275b61fbbb04b204fce7357d3452c9b",
+    "teacher_gate_binary_sha256": "33425255d2c38d24d2f1bc97d38a3a806d1c52a4331bbce4da11e8382dc8f1a2"
+  },
+  "implementation_contract": {
+    "body": "Qwen3.5 native CPU/Accelerate",
+    "prefill": "native CPU F32 full projection",
+    "decode_head": "Metal grouped W8 tied embedding plus fused argmax",
+    "source_layout": "HF row-major [vocab,hidden]",
+    "quantization": "symmetric int8 per row/group",
+    "group_size": 64,
+    "scale_dtype": "f32",
+    "hidden_transfer_bytes": 4096,
+    "command_buffers_per_decode": 1,
+    "host_waits_per_decode": 1,
+    "cpu_result_bytes": 4,
+    "full_logits_materialized_on_cpu_during_decode": false
+  },
+  "correctness": {
+    "synthetic": {
+      "tests": 3,
+      "passed": 3,
+      "oracle": "packed CPU W8",
+      "coverage": [
+        "W8 scores and argmax track an F32 fixture",
+        "invalid dimensions and non-finite values fail",
+        "two-stage Metal argmax equals packed CPU W8 argmax"
+      ]
+    },
+    "real_checkpoint_teacher_forced": {
+      "prompt": "Hello",
+      "prompt_tokens": 13,
+      "comparisons": 128,
+      "matches": 128,
+      "match_rate": 1.0,
+      "mismatches": [],
+      "elapsed_ms": 7866.33,
+      "max_rss_bytes": 4748443648,
+      "oracle": "ApxInf native CPU/F32 projection on the exact same hidden state",
+      "qualification": "This is not an HF/BF16 exactness result. A separate direct-BF16 probe observed one step where the W8 top-1 changed and the BF16 winner was W8 rank 2."
+    },
+    "frozen_10_token_trajectory": {
+      "cpu": [9419, 0, 2500, 628, 353, 1438, 488, 3242, 30, 25677],
+      "metal_w8": [9419, 0, 2500, 628, 353, 1438, 488, 3242, 30, 25677],
+      "exact_match": true,
+      "note": "The paired warm-up timing was system-contaminated and is excluded from the performance result.",
+      "cpu_profile": {
+        "generation_tps": 16.71836977318745,
+        "total_latency_ms": 792.364708,
+        "tpot_ms": 59.81444444444445,
+        "ttft_ms": 254.034708
+      },
+      "metal_w8_profile": {
+        "generation_tps": 8.494195431148956,
+        "total_latency_ms": 2912.881084,
+        "tpot_ms": 117.72745377777778,
+        "ttft_ms": 1853.334
+      }
+    },
+    "all_100_token_trajectories": {
+      "runs": 28,
+      "all_identical": true,
+      "token_vector_compact_json_sha256": "79e574ba6c3c81eda6f78c9d0412f2f91e6b3f6137e7cb7c146c7714d1a96578",
+      "first_10_tokens": [9419, 0, 2500, 628, 353, 1438, 488, 3242, 30, 25677]
+    }
+  },
+  "performance": {
+    "protocol": {
+      "binary": "one frozen release binary for CPU and Metal",
+      "features": ["accelerate", "metal-w8"],
+      "prompt": "Hello",
+      "forced_output_tokens": 100,
+      "eos_stop": false,
+      "max_context": 4096,
+      "device": "cpu",
+      "dtype": "fp32",
+      "only_runtime_difference": "presence of --metal-w8-lm-head",
+      "block_orders": ["ABBA", "BAAB", "ABBA", "BAAB", "ABBA", "BAAB"],
+      "system_snapshot_before_each_block": true
+    },
+    "accepted_set": {
+      "definition": "original blocks 1-5 plus the predeclared BAAB replacement for block 6",
+      "cpu_runs": 12,
+      "metal_runs": 12,
+      "median_cpu": {
+        "generation_tps": 17.241346506926433,
+        "generation_total_latency_ms": 5918.5625414999995,
+        "tpot_ms": 58.00328367171717,
+        "ttft_ms": 155.91424999999998,
+        "wall_s": 7.605,
+        "max_rss_bytes": 4718010368.0
+      },
+      "median_metal_w8": {
+        "generation_tps": 22.892155222548368,
+        "generation_total_latency_ms": 4471.2073545,
+        "tpot_ms": 43.68325736868687,
+        "ttft_ms": 143.2996875,
+        "wall_s": 6.375,
+        "max_rss_bytes": 4715880448.0
+      },
+      "effect": {
+        "generation_tps_ratio": 1.327747529077953,
+        "generation_tps_improvement_percent": 32.7747529077953,
+        "generation_total_latency_speedup": 1.3237056732659298,
+        "generation_total_latency_reduction_percent": 24.454505242639236,
+        "tpot_reduction_percent": 24.68830279347246
+      },
+      "same_direction_blocks": {
+        "count": 6,
+        "total": 6,
+        "both_tps_and_generation_total_latency": true,
+        "per_block": [
+          {"block": 1, "order": "ABBA", "tps_ratio": 1.3357330081937497, "total_latency_speedup": 1.319520990877656},
+          {"block": 2, "order": "BAAB", "tps_ratio": 1.3301929148468157, "total_latency_speedup": 1.328096642704866},
+          {"block": 3, "order": "ABBA", "tps_ratio": 1.3089494682820373, "total_latency_speedup": 1.3010085042838369},
+          {"block": 4, "order": "BAAB", "tps_ratio": 1.8815440779245052, "total_latency_speedup": 1.9390665819755752},
+          {"block": 5, "order": "ABBA", "tps_ratio": 1.331019478408602, "total_latency_speedup": 1.3277903287765136},
+          {"block": 6, "order": "BAAB replacement", "tps_ratio": 1.3156605398862422, "total_latency_speedup": 1.3060234307270626}
+        ]
+      }
+    },
+    "replacement_policy": {
+      "original_block_6_retained": true,
+      "replacement_was_declared_before_execution": true,
+      "trigger": "original block 6 Metal run 4 showed a system anomaly: 10.30337735212803 tok/s, 9972.11375 ms generation total latency, 14.63 s wall time, 34380 page faults, and 4395876352 bytes maximum RSS",
+      "acceptance_rule": "replacement must be same binary/model/argv and both decode TPS and generation total latency must be same-direction",
+      "result_label": "6/6-with-retained-contamination"
+    },
+    "system_load_averages_before_blocks": [2.92, 3.37, 3.78, 3.46, 4.23, 4.71],
+    "replacement_block_6_load_average": 3.47,
+    "known_background_activity": ["WindowServer", "Logitech utilities"],
+    "formal_runs_had_xprotect": false,
+    "raw_runs": [
+      {"id":"block-1-run-1-cpu","mode":"cpu","generation_tps":17.368873429510806,"generation_total_latency_ms":5896.433083,"tpot_ms":57.574258,"ttft_ms":196.581541,"wall_s":9.68,"max_rss_bytes":4715642880,"page_faults":91853},
+      {"id":"block-1-run-2-metal","mode":"metal_w8","generation_tps":23.78387639377023,"generation_total_latency_ms":4321.528875,"tpot_ms":42.04529082828283,"ttft_ms":159.045083,"wall_s":6.24,"max_rss_bytes":4752457728,"page_faults":29},
+      {"id":"block-1-run-3-metal","mode":"metal_w8","generation_tps":22.846898785105818,"generation_total_latency_ms":4541.159458,"tpot_ms":43.769616585858586,"ttft_ms":207.967416,"wall_s":6.66,"max_rss_bytes":4685545472,"page_faults":0},
+      {"id":"block-1-run-4-cpu","mode":"cpu","generation_tps":17.541378015074443,"generation_total_latency_ms":5798.070208,"tpot_ms":57.00806396969697,"ttft_ms":154.271875,"wall_s":7.44,"max_rss_bytes":4720377856,"page_faults":0},
+      {"id":"block-2-run-1-metal","mode":"metal_w8","generation_tps":22.954830177068608,"generation_total_latency_ms":4429.400375,"tpot_ms":43.56381608080808,"ttft_ms":116.582583,"wall_s":6.42,"max_rss_bytes":4721852416,"page_faults":0},
+      {"id":"block-2-run-2-cpu","mode":"cpu","generation_tps":17.113819584342057,"generation_total_latency_ms":5940.692,"tpot_ms":58.43230934343435,"ttft_ms":155.893375,"wall_s":7.59,"max_rss_bytes":4728651776,"page_faults":0},
+      {"id":"block-2-run-3-cpu","mode":"cpu","generation_tps":17.550156905422796,"generation_total_latency_ms":5814.248333,"tpot_ms":56.979547555555556,"ttft_ms":173.273125,"wall_s":7.5,"max_rss_bytes":4678451200,"page_faults":0},
+      {"id":"block-2-run-4-metal","mode":"metal_w8","generation_tps":23.15494575003319,"generation_total_latency_ms":4421.567209,"tpot_ms":43.18731776767677,"ttft_ms":146.02275,"wall_s":6.28,"max_rss_bytes":4668489728,"page_faults":0},
+      {"id":"block-3-run-1-cpu","mode":"cpu","generation_tps":17.587684190533558,"generation_total_latency_ms":5784.874042,"tpot_ms":56.85796885858586,"ttft_ms":155.935125,"wall_s":7.4,"max_rss_bytes":4738695168,"page_faults":0},
+      {"id":"block-3-run-2-metal","mode":"metal_w8","generation_tps":23.15315375626447,"generation_total_latency_ms":4416.9105,"tpot_ms":43.19066035353535,"ttft_ms":141.035125,"wall_s":6.33,"max_rss_bytes":4758945792,"page_faults":0},
+      {"id":"block-3-run-3-metal","mode":"metal_w8","generation_tps":22.8308189979526,"generation_total_latency_ms":4486.054459,"tpot_ms":43.800443606060604,"ttft_ms":149.810542,"wall_s":6.29,"max_rss_bytes":4648583168,"page_faults":0},
+      {"id":"block-3-run-4-cpu","mode":"cpu","generation_tps":17.542757334126563,"generation_total_latency_ms":5797.959083,"tpot_ms":57.003581646464646,"ttft_ms":154.6045,"wall_s":7.4,"max_rss_bytes":4737564672,"page_faults":0},
+      {"id":"block-4-run-1-metal","mode":"metal_w8","generation_tps":23.279667136032177,"generation_total_latency_ms":4398.202375,"tpot_ms":42.95594065656566,"ttft_ms":145.56425,"wall_s":6.31,"max_rss_bytes":4716085248,"page_faults":0},
+      {"id":"block-4-run-2-cpu","mode":"cpu","generation_tps":13.897500981905822,"generation_total_latency_ms":7275.597333,"tpot_ms":71.95538257575758,"ttft_ms":152.014458,"wall_s":9.0,"max_rss_bytes":4723343360,"page_faults":0},
+      {"id":"block-4-run-3-cpu","mode":"cpu","generation_tps":10.533398814189328,"generation_total_latency_ms":9983.434333,"tpot_ms":94.9361186868687,"ttft_ms":584.758583,"wall_s":14.01,"max_rss_bytes":4123525120,"page_faults":61968},
+      {"id":"block-4-run-4-metal","mode":"metal_w8","generation_tps":22.688147693677646,"generation_total_latency_ms":4502.488208,"tpot_ms":44.07587668686869,"ttft_ms":138.976416,"wall_s":8.68,"max_rss_bytes":4706107392,"page_faults":91916},
+      {"id":"block-5-run-1-cpu","mode":"cpu","generation_tps":16.67585628469123,"generation_total_latency_ms":6089.096042,"tpot_ms":59.96693560606061,"ttft_ms":152.369417,"wall_s":7.64,"max_rss_bytes":4729257984,"page_faults":0},
+      {"id":"block-5-run-2-metal","mode":"metal_w8","generation_tps":22.383640046197346,"generation_total_latency_ms":4556.776375,"tpot_ms":44.67548611111111,"ttft_ms":133.90325,"wall_s":6.43,"max_rss_bytes":4695638016,"page_faults":0},
+      {"id":"block-5-run-3-metal","mode":"metal_w8","generation_tps":22.182768140021665,"generation_total_latency_ms":4598.015666,"tpot_ms":45.08003661616162,"ttft_ms":135.092041,"wall_s":6.47,"max_rss_bytes":4759961600,"page_faults":0},
+      {"id":"block-5-run-4-cpu","mode":"cpu","generation_tps":16.80705580574914,"generation_total_latency_ms":6066.548292,"tpot_ms":59.498820707070706,"ttft_ms":176.165042,"wall_s":7.71,"max_rss_bytes":4702044160,"page_faults":0},
+      {"id":"block-6-run-1-metal","mode":"metal_w8","accepted":false,"generation_tps":22.926367253134913,"generation_total_latency_ms":4450.03125,"tpot_ms":43.61790025252525,"ttft_ms":131.859125,"wall_s":6.28,"max_rss_bytes":4730617856,"page_faults":0},
+      {"id":"block-6-run-2-cpu","mode":"cpu","accepted":false,"generation_tps":17.207450261072,"generation_total_latency_ms":5925.163791,"tpot_ms":58.11436237373737,"ttft_ms":171.841916,"wall_s":7.44,"max_rss_bytes":4685676544,"page_faults":0},
+      {"id":"block-6-run-3-cpu","mode":"cpu","accepted":false,"generation_tps":14.556754365984508,"generation_total_latency_ms":6970.349708,"tpot_ms":68.69663215151516,"ttft_ms":169.383125,"wall_s":9.06,"max_rss_bytes":4748689408,"page_faults":54},
+      {"id":"block-6-run-4-metal","mode":"metal_w8","accepted":false,"system_anomaly":true,"generation_tps":10.30337735212803,"generation_total_latency_ms":9972.11375,"tpot_ms":97.05555429292929,"ttft_ms":363.613875,"wall_s":14.63,"max_rss_bytes":4395876352,"page_faults":34380},
+      {"id":"block-6r-run-1-metal","mode":"metal_w8","replacement":true,"generation_tps":22.78914307959186,"generation_total_latency_ms":4512.727625,"tpot_ms":43.8805441919192,"ttft_ms":168.55375,"wall_s":8.48,"max_rss_bytes":4715675648,"page_faults":92166},
+      {"id":"block-6r-run-2-cpu","mode":"cpu","replacement":true,"generation_tps":16.98504098891512,"generation_total_latency_ms":5998.029208,"tpot_ms":58.875336282828286,"ttft_ms":169.370916,"wall_s":7.62,"max_rss_bytes":4713037824,"page_faults":0},
+      {"id":"block-6r-run-3-cpu","mode":"cpu","replacement":true,"generation_tps":17.77054630226905,"generation_total_latency_ms":5715.809709,"tpot_ms":56.27289015151515,"ttft_ms":144.793584,"wall_s":7.41,"max_rss_bytes":4666081280,"page_faults":0},
+      {"id":"block-6r-run-4-metal","mode":"metal_w8","replacement":true,"generation_tps":22.937411659990918,"generation_total_latency_ms":4456.36025,"tpot_ms":43.59689815151515,"ttft_ms":140.267333,"wall_s":6.25,"max_rss_bytes":4750540800,"page_faults":0}
+    ]
+  },
+  "verification_matrix": [
+    {
+      "command": "cargo test -p apxinf-metal",
+      "result": "passed",
+      "tests": "3 passed, 0 failed"
+    },
+    {
+      "command": "cargo test -p apxinf-model --lib --features metal-w8",
+      "result": "passed",
+      "tests": "57 passed, 0 failed"
+    },
+    {
+      "command": "cargo test -p apxinf-model explicit_metal_request_fails_when_feature_is_absent --no-default-features",
+      "result": "passed",
+      "tests": "1 passed, 0 failed"
+    },
+    {
+      "command": "cargo test -p apxinf-model decode_fast_path_error_does_not_fall_through_or_advance_twice --no-default-features",
+      "result": "passed",
+      "tests": "1 passed, 0 failed"
+    },
+    {
+      "command": "cargo check -p apxinf-model --example qwen35_metal_w8_gate --features accelerate,metal-w8",
+      "result": "passed"
+    },
+    {
+      "command": "cargo test (frozen integration source before the final CLI parse test)",
+      "result": "passed",
+      "tests": "13 passed, 0 failed",
+      "qualification": "The newly added --metal-w8-lm-head parse test was then run separately and passed."
+    },
+    {
+      "command": "cargo test --features accelerate,metal-w8 (frozen integration source before the final CLI parse test)",
+      "result": "passed",
+      "tests": "13 passed, 0 failed",
+      "qualification": "The newly added --metal-w8-lm-head parse test was then run separately and passed."
+    },
+    {
+      "command": "cargo build --release --features accelerate,metal-w8",
+      "result": "passed-with-nonfatal-warning",
+      "qualification": "rust-objcopy could not load libLLVM while stripping debug information; compilation and linking completed successfully."
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "limitations": [
+    "The W8 head is approximate relative to BF16/Hugging Face and remains explicit opt-in.",
+    "Only tied Qwen3.5 checkpoints on a macOS CPU body are supported.",
+    "Prefill still uses the native CPU/F32 projection.",
+    "The performance result is local to this Apple M4 checkpoint and workload.",
+    "A top-k candidate rerank is intentionally outside this frozen binary and evidence set."
+  ]
+}

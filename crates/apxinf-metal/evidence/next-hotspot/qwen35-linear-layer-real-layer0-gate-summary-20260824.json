@@ -1,0 +1,221 @@
+{
+  "format": "apxinf-qwen35-metal-w8-linear-layer-real-layer0-gate-summary-v1",
+  "created_at_local_date": "2026-08-24",
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "selected_layer": 0,
+    "prompt": "Hello",
+    "teacher_forced_steps": 128,
+    "diagnostic_only": true,
+    "default_path_changed": false,
+    "cli_changed": false,
+    "auto_model_changed": false,
+    "formal_abba_run": false,
+    "expanded_to_all_linear_layers": false
+  },
+  "promotion": {
+    "status": "rejected_by_quality_gate",
+    "reason": "The complete layer-0 W8 lane changed one of 128 teacher-forced argmax tokens. The path and resource receipts passed, but the frozen quality contract requires zero mismatches.",
+    "free_run_status": "not_run_after_teacher_failure"
+  },
+  "identity": {
+    "binary_path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/target/release/examples/qwen35_metal_w8_linear_layer_gate",
+    "binary_sha256": "97216c4b0d3114c1e7d0382291bf6a202d1601a093a4adef6e4fcfe62cc7ecf1",
+    "binary_bytes": 7564576,
+    "build_profile": "release",
+    "features": [
+      "accelerate",
+      "metal-w8"
+    ],
+    "general_source_sha256": "be04403ab76eeb27def03e3ea476916dbaf8a810a670a4b4f9434b97aff6fcec",
+    "gate_source_sha256": "9e4978fc74eea75b9f680536a82b0153de0af7ecd441b0d35d02ab9ae8d6f710",
+    "cargo_toml_sha256": "b0e1d9e2fcf4f50bb591d43cdaab4f91ccecc5e7ffb8e00071ea2db23cdc9600",
+    "primitive_evidence_sha256": "de00221126b6ae77cc0567003a52c0c2c179cfd4e719f7268359f1a0dec4849e",
+    "model_dir": "/Users/haiyan-mini/Agent4Kernel/.apxinf-models/Qwen3.5-0.8B-2fc063647-staged",
+    "source_lock": "/Users/haiyan-mini/Agent4Kernel/ApxInf/.apxinf/onboarding/qwen35-0.8b/source-lock.json",
+    "repo_id": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "checkpoint": "model.safetensors-00001-of-00001.safetensors",
+    "checkpoint_bytes": 1746942600,
+    "checkpoint_sha256": "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696"
+  },
+  "implementation_contract": {
+    "constructor": "GeneralQwen35::from_weights_with_metal_w8_linear_layer",
+    "selected_layers": 1,
+    "cpu_prefill_seeds_exact_gdn_state": true,
+    "decode_shape": [
+      1,
+      1024
+    ],
+    "metal_owned_decode_sequence": [
+      "input_rms_norm",
+      "state_resident_gdn",
+      "attention_residual",
+      "post_attention_rms_norm",
+      "complete_w8_mlp",
+      "mlp_residual"
+    ],
+    "cpu_selected_layer_decode_work_after_route": false,
+    "failure_is_terminal_until_reset": true,
+    "default_constructors_construct_lane": false
+  },
+  "synthetic_and_compile_gates": {
+    "general_linear_layer_targeted_tests": {
+      "passed": 4,
+      "failed": 0,
+      "covers": [
+        "explicit_constructor_and_two_decode_steps",
+        "full_attention_selection_rejected",
+        "post_execution_fault_no_active_state_or_position_commit_and_terminal_latch",
+        "reset_clears_state_receipts_and_fault_latch"
+      ]
+    },
+    "qwen35_feature_tests": {
+      "passed": 37,
+      "failed": 0
+    },
+    "qwen35_default_feature_tests": {
+      "passed": 18,
+      "failed": 0
+    },
+    "gate_example_tests": {
+      "passed": 2,
+      "failed": 0
+    },
+    "release_gate_build": "passed_with_nonblocking_rust_objcopy_missing_libLLVM_strip_warning",
+    "release_all_targets_check": "passed_with_the_same_nonblocking_strip_warning"
+  },
+  "buffer_ledger": {
+    "allocated_buffers": 32,
+    "shared_buffers": 24,
+    "private_buffers": 8,
+    "packed_weight_bytes": 21528576,
+    "packed_scale_bytes": 1345536,
+    "f32_parameter_bytes": 107136,
+    "active_state_bytes": 1146880,
+    "scratch_state_bytes": 1146880,
+    "activation_bytes": 133248,
+    "total_persistent_bytes": 25408256,
+    "host_input_bytes_per_decode": 4096,
+    "host_output_bytes_per_decode": 4096,
+    "state_host_transfer_bytes_per_decode": 0,
+    "command_buffers_per_decode": 1,
+    "compute_encoders_per_decode": 1,
+    "commits_per_decode": 1,
+    "waits_per_decode": 1
+  },
+  "runs": {
+    "cpu_teacher128": {
+      "exit_zero": true,
+      "passed": true,
+      "teacher_inputs": 128,
+      "output_tokens": 128,
+      "prefill_ms": 311.600208,
+      "decode_ms": 6851.177208,
+      "decode_mean_ms": 53.5248219375,
+      "wall_seconds": 12.64,
+      "max_rss_bytes": 3633758208,
+      "peak_memory_footprint_bytes": 4743581536,
+      "child_swaps": 0,
+      "global_swap_mib_before": 5061.06,
+      "global_swap_mib_after": 5061.06,
+      "memory_free_percent_before": 78,
+      "memory_free_percent_after": 71,
+      "receipt": "crates/apxinf-metal/evidence/next-hotspot/qwen35-linear-layer-real-cpu-teacher128-20260824.json",
+      "receipt_sha256": "69cd2d141162b9ebfe4c0e26ce82f6c62aee838edd0db50e3fddac68c02d3c11",
+      "time_receipt": "crates/apxinf-metal/evidence/next-hotspot/qwen35-linear-layer-real-cpu-teacher128-time-20260824.txt",
+      "time_receipt_sha256": "45239397ebf0b9991b40f2aeb11f45b1c515922f1b11148194595f0ca4391efc"
+    },
+    "layer0_linear_layer_teacher128": {
+      "exit_zero": false,
+      "passed": false,
+      "teacher_inputs": 128,
+      "output_tokens": 128,
+      "matches": 127,
+      "mismatches": 1,
+      "first_mismatch": {
+        "step": 14,
+        "teacher_input": 248045,
+        "cpu_expected": 2570,
+        "metal_actual": 69267
+      },
+      "prefill_path": {
+        "seed_calls": 1,
+        "decode_calls": 0,
+        "command_buffers": 0,
+        "compute_encoders": 0,
+        "commits": 0,
+        "waits": 0,
+        "committed_state_version": 0
+      },
+      "final_path": {
+        "seed_calls": 1,
+        "decode_calls": 128,
+        "successful_decodes": 128,
+        "failed_decodes": 0,
+        "command_buffers": 128,
+        "compute_encoders": 128,
+        "commits": 128,
+        "waits": 128,
+        "host_to_device_bytes": 524288,
+        "device_to_host_bytes": 524288,
+        "committed_state_version": 128,
+        "terminal_error": false
+      },
+      "prefill_ms": 358.933125,
+      "decode_ms": 6538.909791,
+      "decode_mean_ms": 51.0852327421875,
+      "metal_linear_layer_block_mean_us": 1133.4974140625,
+      "wall_seconds": 9.09,
+      "max_rss_bytes": 4245372928,
+      "peak_memory_footprint_bytes": 4752101408,
+      "child_swaps": 0,
+      "global_swap_mib_before": 5061.06,
+      "global_swap_mib_after": 5061.06,
+      "memory_free_percent_before": 71,
+      "memory_free_percent_after": 70,
+      "receipt": "crates/apxinf-metal/evidence/next-hotspot/qwen35-linear-layer-real-layer0-teacher128-20260824.json",
+      "receipt_sha256": "050b91f761c7ef2adfbbc832177608c1318babd61645def4a229621443a858e4",
+      "time_receipt": "crates/apxinf-metal/evidence/next-hotspot/qwen35-linear-layer-real-layer0-teacher128-time-20260824.txt",
+      "time_receipt_sha256": "6bcbfa92db14601ea2d8700a6e15703c5944034aa004cac636f05bf4ba3b5886"
+    },
+    "cpu_free128": {
+      "status": "not_run_after_teacher_failure"
+    },
+    "layer0_linear_layer_free128": {
+      "status": "not_run_after_teacher_failure"
+    }
+  },
+  "gate_results": {
+    "teacher_forced_128_exact": false,
+    "path_receipts_exact": true,
+    "child_swaps_zero": true,
+    "max_rss_below_6_gib": true,
+    "global_swap_unchanged": true,
+    "free_run_allowed": false,
+    "all_gates_passed": false
+  },
+  "root_cause_assessment": {
+    "classification": "quality_failure_with_correct_execution_receipts",
+    "known_independent_evidence": {
+      "layer0_w8_gdn_teacher128_mismatches": 0,
+      "layer0_w8_mlp_teacher128_mismatches": 0,
+      "gdn_summary_sha256": "0862cd73a36aa8e833e7899d92dc476c0ec6bc0347edf2955d6d3ee0f9a5028f",
+      "mlp_summary_sha256": "a6ea6ef843ca89024415c735114633f7810525aae499808a1d9001c4a2be8b70"
+    },
+    "inference": "Because the independently quantized layer-0 GDN-only and MLP-only teacher gates each had zero token mismatches, while the complete lane has one isolated teacher-forced mismatch and its synthetic packed-oracle/state/receipt tests pass, the leading hypothesis is compounded W8 error across both residual branches crossing a small downstream logit margin. This is an inference, not proof; no additional checkpoint run was made after the stop gate.",
+    "not_claimed": [
+      "strict_f32_parity",
+      "performance_speedup",
+      "all_18_linear_layer_correctness"
+    ]
+  },
+  "candidate_timing_observation": {
+    "classification": "invalid_for_promotion_because_quality_failed_and_host_was_uncontrolled",
+    "cpu_decode_mean_ms": 53.5248219375,
+    "linear_layer_decode_mean_ms": 51.0852327421875,
+    "linear_layer_minus_cpu_percent": -4.557865131,
+    "metal_block_mean_us": 1133.4974140625
+  },
+  "next_step": "Keep the constructor diagnostic-only and unpromoted. Before another real run, use synthetic/offline quantization design work to reduce combined error, for example selectively retaining higher precision for the most sensitive projection branch; require a fresh no-replace teacher128 receipt and zero mismatches before permitting free-run or any multi-layer expansion."
+}

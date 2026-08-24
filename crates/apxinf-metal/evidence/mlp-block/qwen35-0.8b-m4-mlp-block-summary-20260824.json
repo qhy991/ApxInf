@@ -1,0 +1,198 @@
+{
+  "format": "apxinf-qwen35-metal-w8-mlp-block-evidence-v1",
+  "candidate": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "checkpoint_sha256": "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
+    "config_sha256": "b90b86f35c8e6925ef74ee04d0e758f0a845c83a42089ad82bbaa948de9b4204",
+    "tokenizer_sha256": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
+    "prompt": "Hello",
+    "prompt_token_count": 13,
+    "selected_layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+    "operation": "W8 gate+up matvec -> SiLU(gate)*up -> W8 down matvec",
+    "quantization": "symmetric signed W8, group size 64",
+    "scope": "decode rows with start_pos > 0 only",
+    "default_enabled": false
+  },
+  "build_identity": {
+    "gate_binary_sha256": "b74398e49c2c9efeb5dd30a705b8114a02e40ffe3ff98e419793167fd4f12bdc",
+    "free_run_binary_sha256": "4f8c4e1abca749a3a28a9c6d910154cecfa3f657cf4e82d88df56a676352a208",
+    "features": ["accelerate", "metal-w8"],
+    "source_sha256": {
+      "crates/apxinf-metal/src/lib.rs": "32c1db1067370328fb4b870bb2ed7efa6249e2fa0588342a1e6fb47990ceea34",
+      "crates/apxinf-metal/src/metal_w8_mlp.metal": "1d3f7d2945210841a670e603f98d78fc79cdcf748404c94bdfdba2755904f85e",
+      "crates/apxinf-metal/src/metal_w8_mlp_bridge.mm": "69c8f40642c0c2ccd1c3c4a533be9343130281b9a1d39c767be48496e04c64e6",
+      "crates/apxinf-metal/build.rs": "3b3ed547379affc0b0f84747b8302577dc7080e00ed170ec8b95fcaea0725409",
+      "crates/apxinf-model/src/qwen35/general.rs": "60b54d5dbee58d13cf4a3b2c643d081f0dcca7954e978e5d927586daed741fa0",
+      "crates/apxinf-model/examples/qwen35_metal_w8_mlp_block_gate.rs": "5e0c7d0c3ae0e1d2152abcb73299b8cf9190af857558174eafa099525c7a3eb6",
+      "crates/apxinf-model/examples/qwen35_metal_w8_mlp_block_free_run.rs": "c8d8788fe9e95098a23d9a5ba11ac602b37abbf4bbabeffd01b50b96c6bccfbd",
+      "Cargo.lock": "3470a636b735d6f94c9c8ffa79785bd70f9bcaa8e7c95b6d82ccd4d060abb6bd"
+    },
+    "preserved_historical_sources": {
+      "crates/apxinf-metal/src/metal_w8.metal": "d8bf035389c8c030d5532583074ddf4caaac5ddb431ab2733281b73a2bc64fa1",
+      "crates/apxinf-metal/src/metal_w8_matvec.metal": "5036746ac4345d4f303750faef84a646f870cbf929afd2f0672da52a6ee377b8",
+      "crates/apxinf-metal/src/metal_w8_bridge.mm": "1717e639068c682b94a84fb4697aa80056408bca133127815a39798fb67d38af"
+    }
+  },
+  "execution_contract": {
+    "command_buffers_per_selected_layer_decode": 1,
+    "dispatches_per_command_buffer": 3,
+    "commits_per_selected_layer_decode": 1,
+    "host_waits_per_selected_layer_decode": 1,
+    "intermediate_buffers_gpu_private": true,
+    "metal_errors_fail_closed_without_cpu_retry": true,
+    "prefill_remains_cpu_f32": true,
+    "attention_gdn_state_and_residual_remain_cpu_f32": true
+  },
+  "storage_and_transfer": {
+    "hidden_size": 1024,
+    "intermediate_size": 3584,
+    "per_layer_bytes": {
+      "gate_up_w8_values": 7340032,
+      "gate_up_f32_scales": 458752,
+      "down_w8_values": 3670016,
+      "down_f32_scales": 229376,
+      "shared_input": 4096,
+      "private_gate_up": 28672,
+      "private_activated": 14336,
+      "shared_output": 4096,
+      "total": 11749376
+    },
+    "all_24_layers_bytes": 281985024,
+    "all_24_layers_mib": 268.921875,
+    "reusable_host_output_bytes_per_layer": 4096,
+    "reusable_host_output_bytes_all_24_layers": 98304,
+    "metal_plus_reusable_host_output_bytes_all_24_layers": 282083328,
+    "metal_plus_reusable_host_output_mib_all_24_layers": 269.015625,
+    "host_to_metal_bytes_per_selected_layer_token": 4096,
+    "metal_to_host_bytes_per_selected_layer_token": 4096,
+    "all_24_layers_transfer_bytes_per_token": 196608,
+    "transfer_reduction_vs_gate_up_sidecars_percent": 75.0,
+    "all_24_layers_host_waits_per_token": 24,
+    "cpu_f32_weights_retained_for_kill_switch": true
+  },
+  "correctness": {
+    "synthetic": {
+      "metal_matches_complete_packed_w8_cpu_oracle": true,
+      "includes_gate_up_silu_multiply_and_down": true,
+      "invalid_shape_and_non_finite_inputs_fail_closed": true
+    },
+    "tiny_model": {
+      "prefill_cpu_exact": true,
+      "decode_cpu_f32_max_abs_envelope": 0.002,
+      "selected_layer_hit_receipt_passed": true
+    },
+    "layer0_teacher_forced": {
+      "comparisons": 128,
+      "matches": 128,
+      "mismatches": 0,
+      "decode_calls": 128,
+      "passed": true,
+      "receipt_path": "qwen35-0.8b-m4-mlp-block-layer0-teacher-gate-20260824.json",
+      "receipt_sha256": "0a53c89baaceba301598d78d1c8fc2129fbeadfe6cdbc4939b9010d675bf6694"
+    },
+    "all24_teacher_forced": {
+      "comparisons": 128,
+      "matches": 128,
+      "mismatches": 0,
+      "selected_layer_receipts": 24,
+      "decode_calls_per_layer": 128,
+      "passed": true,
+      "cpu_teacher_path": "qwen35-0.8b-m4-mlp-block-cpu-teacher-20260824.json",
+      "cpu_teacher_sha256": "db225b437ce431282f522e8f9e242a43cd64728961341a8a2efd0ed2796d63de",
+      "gate_path": "qwen35-0.8b-m4-mlp-block-all24-teacher-gate-20260824.json",
+      "gate_sha256": "e6fa4cc82d1cc9f78f77b3f83b36e81655aecd2355dc1ef70ad96fb7b29d62fd",
+      "raw_path": "qwen35-0.8b-m4-mlp-block-all24-teacher-gate-20260824.txt",
+      "raw_sha256": "f67df548d4c3fcb1ee1ecab558c939626fc75f6e419fd71aa52c0f0e465bf81f",
+      "process_max_rss_bytes": 4575838208,
+      "process_page_faults": 0,
+      "process_swaps": 0
+    },
+    "direct_free_run": {
+      "max_new_tokens": 128,
+      "eos_stopping": false,
+      "all_six_trajectories_exact_match": true,
+      "generated_token_vector_compact_json_sha256": "cca80dce3d3cf520a6dfcc112a3f38d6a2d6cf8df43285d2431cc02ca81ab598",
+      "selected_layer_receipts": 24,
+      "decode_calls_per_layer": 127,
+      "reason_for_127_calls": "The first generated token comes from unchanged CPU/F32 prefill; each remaining token executes every selected block.",
+      "all_six_process_swaps": 0,
+      "cpu_receipt_path": "qwen35-0.8b-m4-mlp-block-free-run-cpu-20260824.json",
+      "cpu_receipt_sha256": "dbc746bd19d53b6765dd863cfeb18c8d966e5e54dc93a051530fe3708ceabe09",
+      "cpu_raw_sha256": "6edf86fe4c17ab2c61468af44c87f851f615869a5b5aae7d023a06f4eba7b906",
+      "block_receipt_path": "qwen35-0.8b-m4-mlp-block-free-run-all24-20260824.json",
+      "block_receipt_sha256": "e4fa83e4fa28c3695e75700ce07139e3bd9711e614fcc5d8667fec749839e2ac",
+      "block_raw_sha256": "833848d320a212c88d2e96404c4c3d172bebb1f23092ee689e06f4eba7b906"
+    },
+    "strict_f32_parity": {
+      "claimed": false,
+      "rerun_for_complete_block": false,
+      "qualification": "The prior one-layer gate+up-only strict oracle already failed logits, convolution state, recurrent state, and cached-vs-fresh envelopes. Adding a W8 down projection cannot inherit strict F32 parity; token-selection quality is the declared gate.",
+      "prior_summary_path": "../body/qwen35-0.8b-m4-layer0-summary-20260824.json",
+      "prior_summary_sha256": "187e1e8627a1ab1da50dae5817e4e762bae169d07e2177c9bfb00ff49ef51639",
+      "prior_strict_oracle_sha256": "0548b98e56692528c5c9180935f816ec27fffbced67d61089aa5cbe89fdb241d"
+    }
+  },
+  "candidate_performance_screen": {
+    "qualification": "Three CPU and three block samples from one binary in A-B-B-A-A-B order. Logitech, XProtect, CloudKit and other desktop work remained active; system swap was already about 4.62 GiB. This is a candidate screen, not formal ABBA evidence.",
+    "sample_order": ["cpu", "block", "block", "cpu", "cpu", "block"],
+    "max_new_tokens_per_sample": 128,
+    "cpu_generation_tps": [19.366782950961777, 19.300119660453152, 19.163455443294424],
+    "block_generation_tps": [22.57496226059125, 21.837464128309115, 21.908283356797053],
+    "cpu_generation_tps_median": 19.300119660453152,
+    "block_generation_tps_median": 21.908283356797053,
+    "median_tps_ratio": 1.135137177500933,
+    "median_tps_change_percent": 13.5137177500933,
+    "paired_tps_ratios": [1.1656537029279894, 1.1314678101740012, 1.1432324103356362],
+    "positive_pairs": 3,
+    "cpu_tpot_ms": [51.634801842519686, 51.81315025984252, 52.18265583464567],
+    "block_tpot_ms": [44.29686253543307, 45.79286285826772, 45.644835960629926],
+    "cpu_tpot_ms_median": 51.81315025984252,
+    "block_tpot_ms_median": 45.644835960629926,
+    "block_execution_ms_per_token": [10.063149322834647, 10.69394601574803, 10.407541039370079],
+    "block_execution_ms_per_token_median": 10.407541039370079,
+    "cpu_max_rss_bytes": [4601675776, 4723294208, 4713512960],
+    "block_max_rss_bytes": [4942823424, 4509810688, 5004328960],
+    "cpu_process_page_faults": [21669, 0, 0],
+    "block_process_page_faults": [4, 25, 4],
+    "all_process_swaps_zero": true,
+    "post_screen_load_averages": [3.64, 3.34, 3.50],
+    "post_screen_system_swap_used_mib": 4622.44,
+    "additional_samples": [
+      {
+        "path": "qwen35-0.8b-m4-mlp-block-screen-block-2-20260824.json",
+        "sha256": "d2a843c4db61e6f352221c6cff07c3a4c264d54f051bd6c0696bfdabd9b71ae2",
+        "raw_sha256": "468607d1cf6acbcce3c4df445527a4823685333e1285b005b9027476053679ba"
+      },
+      {
+        "path": "qwen35-0.8b-m4-mlp-block-screen-cpu-2-20260824.json",
+        "sha256": "efdb48d869ffb9c9029fff4691931496b1acf9331060e924997197fcad2038c0",
+        "raw_sha256": "9e6e527f6e7be8d7e412ddd9738a682f3083994761c4245e8282ae1d943ae4bd"
+      },
+      {
+        "path": "qwen35-0.8b-m4-mlp-block-screen-cpu-3-20260824.json",
+        "sha256": "c97c68d84ad61662e3062ad49e0af6cb23314cfaff3ecf8c6b0022ed592f3bfb",
+        "raw_sha256": "8284dfd0c5e93d29db55e7e2da4b569d5f5daf03baa90295a5e2b4709efb7695"
+      },
+      {
+        "path": "qwen35-0.8b-m4-mlp-block-screen-block-3-20260824.json",
+        "sha256": "b38b8e2171907cd9746223a156b6b1faf32a9732094835d52e073f834cb7f533",
+        "raw_sha256": "27e6463ce5b6fe1b752c730218b27532390044cdea1cc643ef23220a00893911"
+      }
+    ],
+    "formal": false
+  },
+  "decision": {
+    "required_candidate_improvement_percent": 5.0,
+    "required_positive_pairs": 2,
+    "observed_candidate_median_improvement_percent": 13.5137177500933,
+    "observed_positive_pairs": 3,
+    "status": "PROMISING_AWAIT_QUIET_HOST_FORMAL",
+    "actions": [
+      "Keep the complete MLP block as an explicit diagnostic quality lane with ordinary constructors as the kill switch.",
+      "Do not enable it by default or wire it into the production CLI from this noisy screen.",
+      "Do not claim strict F32 parity.",
+      "Run a predeclared same-binary quiet-host ABBA/BAAB admission only after desktop load and existing swap are controlled."
+    ]
+  }
+}
