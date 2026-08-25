@@ -1,0 +1,113 @@
+{
+  "format": "apxinf-qwen35-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-campaign-start-diagnostic-v1",
+  "schema_version": 1,
+  "created_at_utc": "2026-08-25T17:23:15Z",
+  "created_at_local": "2026-08-26T01:23:15+0800",
+  "status": "CAMPAIGN_V1_CONSUMED_BEFORE_FIRST_GENERATION_REQUEST",
+  "one_shot_custody": {
+    "campaign_start_path_did_not_exist_before_create_new_publication": true,
+    "this_creation_consumes_v1_even_if_interrupted_or_failed": true,
+    "retry_resample_replacement_reorder_or_recreation_allowed": false,
+    "generation_requests_before_this_receipt": 0,
+    "setup_only_gateway_load_and_tokenization_requests_before_this_receipt": true,
+    "setup_only_gateway_was_shut_down_before_this_receipt": true,
+    "port_9000_listener_before_this_receipt": false,
+    "omniinfer_or_llama_server_process_before_this_receipt": false
+  },
+  "predeclaration": {
+    "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-predeclared-diagnostic-v1-20260826.json",
+    "commit": "59e1b0d7af3f44155605537bd80b1fbec26aae7b",
+    "size_bytes": 17336,
+    "sha256": "30e19f858198186a7d718e41423215b5f65636f0cd886023eb468cc285efb427"
+  },
+  "git_custody": {
+    "repository": "https://github.com/qhy991/ApxInf.git",
+    "head": "59e1b0d7af3f44155605537bd80b1fbec26aae7b",
+    "origin_main": "59e1b0d7af3f44155605537bd80b1fbec26aae7b",
+    "head_equals_origin_main": true,
+    "porcelain_status": [],
+    "worktree_clean": true
+  },
+  "model_custody": {
+    "path": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+    "device": 16777234,
+    "inode": 5245200133,
+    "size_bytes": 811843072,
+    "hard_link_count": 1,
+    "change_time_seconds": 1787612128,
+    "birth_time_seconds": 1787612125,
+    "sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c"
+  },
+  "direct_runner_custody": {
+    "path": "/tmp/apxinf-llama-runner-build/bin/apxinf-llama-cpp-raw-token-runner",
+    "size_bytes": 6499056,
+    "sha256": "ccfa5ecd78119d4f8cdd8721e7faae360cb94b8334f9d61ed47e2e00290f2716",
+    "llama_cpp_source_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+    "llama_cpp_source_tree": "21045aed8b426d7a5e25a98e646054cbd9487e81",
+    "source_checkout_clean_detached": true,
+    "fixed_process_args": ["--model", "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf", "--gpu-layers", "-1", "--gpu-device", "MTL0", "--threads", "4"],
+    "GGML_BACKEND_PATH_unset_required": true
+  },
+  "omniinfer_custody": {
+    "cli": {
+      "path": "/tmp/apxinf-omniinfer-prep.F7GNFt/OmniInfer/omniinfer",
+      "release": "v0.3.26",
+      "release_commit": "79af77228f329a79ac665014089e23983e69e79f",
+      "size_bytes": 9719136,
+      "sha256": "65487424ca9179850b80079beafa5ad69a66e0841d328ee8dd8a1fd4b613d661"
+    },
+    "prebuilt_manifest": {
+      "path": "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/prebuilt.json",
+      "size_bytes": 1054,
+      "sha256": "49748f180d45f8689cfd772a4baf1e4a9db90d163e0d6cdda10ea9293a4f9c6a",
+      "backend": "llama.cpp-mac",
+      "tag": "b10280",
+      "source_commit": "61881b1f7f0b13d9e46d561fc25afcd6bbaec479",
+      "archive_sha256": "5dc4b11192ef34895c7f92a9f1dd3bd3d5864a63976ea2327fe2e0944891cb75"
+    },
+    "runtime_recursive_manifest": {
+      "root": "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac",
+      "canonicalization": "from root, LC_ALL=C sort every ./relative regular-file path; one UTF-8 line per file as relative_path TAB decimal_size TAB lowercase_sha256 LF",
+      "regular_file_count": 45,
+      "total_size_bytes": 27249057,
+      "sha256": "1d06916fd1c86c306596c8e6bec51c30d185686fd042138234024cb894e48d1f"
+    },
+    "local_state": {
+      "path": "/tmp/apxinf-omniinfer-prep.F7GNFt/state/.local/config/state.json",
+      "size_bytes": 264,
+      "sha256": "9343581d8dc451259bfdaf5aadb8c530f47e44ee56541d9b817d39030aee2fad",
+      "selected_backend": "llama.cpp-mac",
+      "selected_model": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+      "selected_ctx_size": 256,
+      "selected_no_mmproj": true,
+      "selected_request_defaults": {}
+    },
+    "required_future_launch_args": ["-ngl", "999", "-b", "13", "-ub", "13", "-t", "4", "-tb", "4", "-np", "1", "--cache-ram", "0", "--no-cache-idle-slots", "--no-cache-prompt", "--slot-prompt-similarity", "0", "--slot-save-path", "/tmp/apxinf-omniinfer-prep.F7GNFt/slots-cold", "-c", "256"]
+  },
+  "host_snapshot": {
+    "hostname": "haiyan-Mac-mini.local",
+    "hardware": "Apple M4",
+    "logical_cpus": 10,
+    "os": "macOS 26.2 build 25C56",
+    "kernel": "Darwin 25.2.0 RELEASE_ARM64_T8132 arm64",
+    "uptime": "2 days 3 hours 42 minutes",
+    "load_averages": [2.04, 2.45, 2.65],
+    "power_source": "AC Power",
+    "thermal_warning_recorded": false,
+    "performance_warning_recorded": false,
+    "swap_total_mib": 6144.0,
+    "swap_used_mib": 5200.19,
+    "swap_free_mib": 943.81,
+    "quiet_host_attested": false,
+    "quiet_host_reason": "com.apple.WebKit.GPU observed at 99.3 percent CPU and system swap was already nonzero",
+    "top_non_runtime_processes": [
+      {"pid": 988, "cpu_percent": 99.3, "rss_kib": 12064, "command": "com.apple.WebKit.GPU"},
+      {"pid": 1177, "cpu_percent": 3.4, "rss_kib": 101616, "command": "logioptionsplus_agent"},
+      {"pid": 606, "cpu_percent": 3.1, "rss_kib": 12384, "command": "trustd --agent"},
+      {"pid": 2232, "cpu_percent": 1.6, "rss_kib": 81552, "command": "logioptionsplus_logivoice"}
+    ],
+    "user_or_system_processes_terminated": false,
+    "classification_effect": "all later values remain non-formal diagnostic observations; no cross-boundary winner or promotion claim is allowed"
+  },
+  "next_fixed_slot": "D_warmup"
+}
