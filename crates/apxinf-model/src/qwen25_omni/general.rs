@@ -103,6 +103,7 @@ pub struct GeneralQwen25Omni {
     backend: Arc<dyn Backend>,
     kv: Box<dyn KvCache>,
     rope_delta: i64,
+    vision_qkv_bias_rope: bool,
     #[cfg(feature = "cuda")]
     decode_graph: Option<Qwen25OmniDecodeGraph>,
     #[cfg(feature = "cuda")]
@@ -318,6 +319,37 @@ impl GeneralQwen25Omni {
             config.text.head_dim,
             config.text.max_position_embeddings,
         );
+        #[cfg(feature = "cuda")]
+        let vision_qkv_bias_rope = {
+            let enabled =
+                parse_binary_env("APXINF_QWEN25_VISION_QKV_BIAS_ROPE").map_err(Error::Other)?;
+            if enabled {
+                let cuda = cuda_backend(&*backend).ok_or_else(|| {
+                    Error::Other("Qwen2.5-Omni vision QKV bias/RoPE requires CudaBackend".into())
+                })?;
+                let vision = &config.vision;
+                if cuda.context().caps().sm != 89
+                    || vision.depth != 32
+                    || vision.hidden_size != 1_280
+                    || vision.n_heads != 16
+                    || vision.head_dim != 80
+                    || !parse_binary_env("APXINF_VISION_GROUPED_SPARSE").map_err(Error::Other)?
+                    || !parse_binary_env("APXINF_VISION_GROUPED_FA2").map_err(Error::Other)?
+                    || !parse_binary_env("APXINF_VISION_FULL_FA2").map_err(Error::Other)?
+                {
+                    return Err(Error::Other(
+                        "APXINF_QWEN25_VISION_QKV_BIAS_ROPE=1 requires the pinned SM89 vision stack and all accepted vision selectors"
+                            .into(),
+                    ));
+                }
+                eprintln!(
+                    "ApxInf Qwen2.5-Omni vision QKV bias/RoPE: exact one-owner projection epilogue"
+                );
+            }
+            enabled
+        };
+        #[cfg(not(feature = "cuda"))]
+        let vision_qkv_bias_rope = false;
         #[cfg(feature = "cuda")]
         let long_decode_split_cta = if long_decode_split_cta_enabled()? {
             if !parse_binary_env("APXINF_TMROPE_POSITION_CACHE").map_err(Error::Other)? {
@@ -551,6 +583,7 @@ impl GeneralQwen25Omni {
             backend,
             kv,
             rope_delta: 0,
+            vision_qkv_bias_rope,
             #[cfg(feature = "cuda")]
             decode_graph,
             #[cfg(feature = "cuda")]
@@ -854,6 +887,7 @@ impl GeneralQwen25Omni {
                 &*self.backend,
                 image.pixel_values,
                 image.grid_thw,
+                self.vision_qkv_bias_rope,
             )?;
             hidden = scatter_replace(&hidden, &positions, &encoded, &*self.backend)?;
         }
