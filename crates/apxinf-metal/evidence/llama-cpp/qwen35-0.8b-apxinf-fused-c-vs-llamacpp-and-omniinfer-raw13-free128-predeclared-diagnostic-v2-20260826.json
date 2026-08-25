@@ -1,0 +1,372 @@
+{
+  "format": "apxinf-qwen35-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-predeclared-diagnostic-v2",
+  "schema_version": 2,
+  "campaign_id": "qwen35-0.8b-raw13-free128-omniinfer-diagnostic-v2-20260826",
+  "created_at_utc": "2026-08-25T17:56:55Z",
+  "created_at_local": "2026-08-26T01:56:55+0800",
+  "status": "PREDECLARED_BEFORE_ANY_V2_GENERATION_REQUEST",
+  "v1_lineage": {
+    "relationship": "independent new one-shot diagnostic for the same frozen workload after a pre-generation transport failure",
+    "supersedes_v1": false,
+    "replaces_v1": false,
+    "resumes_v1": false,
+    "retries_v1": false,
+    "v1_consumed": true,
+    "v1_generation_requests": 0,
+    "v1_performance_samples": 0,
+    "v1_retry_allowed": false,
+    "v1_failure": "outer python3 -c source transport produced a SyntaxError before subprocess.run, model load, or generation",
+    "immutable_receipts": {
+      "predeclaration": {
+        "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-predeclared-diagnostic-v1-20260826.json",
+        "commit": "59e1b0d7af3f44155605537bd80b1fbec26aae7b",
+        "size_bytes": 17336,
+        "sha256": "30e19f858198186a7d718e41423215b5f65636f0cd886023eb468cc285efb427"
+      },
+      "campaign_start": {
+        "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-campaign-start-diagnostic-v1-20260826.json",
+        "commit": "2f6a289ea31ba68a39d9918f6d938012f3d0fe5f",
+        "size_bytes": 5893,
+        "sha256": "9f5edfba719cb6587627d6e77167b172b0259d4658c9eb699641b93fae320560"
+      },
+      "partial_raw": {
+        "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-raw-campaign-diagnostic-v1-20260826.json",
+        "commit": "49b4a7554d085641f11fb3802feb2c439389dd20",
+        "size_bytes": 4068,
+        "sha256": "943b511b86b350147c67020c84be2f27eeeb00bdd75699cd26f41b79bbd76f0b"
+      },
+      "rejected_summary": {
+        "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-diagnostic-summary-v1-20260826.json",
+        "commit": "73e1d9e06807d168b22bd04f0f36bf5b25272b01",
+        "size_bytes": 1288,
+        "sha256": "6504de4a4a606c9e10a28057962e1a11497af99c526bf92a0b13258394f7dc7d"
+      }
+    }
+  },
+  "classification": {
+    "formal_performance_result": false,
+    "timing_use": "same-host fixed-workload diagnostic only",
+    "promotion_or_default_activation_allowed": false,
+    "fresh_all-runtime_campaign_claimed": false,
+    "reasons_not_formal": [
+      "the ApxInf sidecar was collected earlier in a separate production A/C campaign and is not resampled here",
+      "the ApxInf sidecar uses a non-equivalent serialized weight regime",
+      "direct llama.cpp and OmniInfer are sampled sequentially rather than counterbalanced",
+      "each refreshed runtime has only one untimed warmup and three measured samples",
+      "host quiescence is observed rather than enforced",
+      "direct token-ready timing, OmniInfer native predicted timing, and OmniInfer client wall timing have different boundaries",
+      "D continues after selecting EOG tokens, while N ignore_eos suppresses EOG logits; their generated trajectories and sampling semantics are not equivalent"
+    ]
+  },
+  "comparison_shape": {
+    "historical_sidecar": "ApxInf_sidecar",
+    "fresh_exact_gguf_artifact_cohort": [
+      "D_direct_llama_cpp",
+      "N_omniinfer"
+    ],
+    "artifact_cohort_does_not_imply_same_sampling_workload": true,
+    "ollama_role": "exclusion evidence only",
+    "fresh_performance_request_counts": {
+      "ApxInf_sidecar": 0,
+      "D_direct_llama_cpp_including_warmup": 4,
+      "N_omniinfer_including_warmup": 4,
+      "O_ollama": 0
+    }
+  },
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "host": "Apple M4 macOS arm64 Metal",
+    "semantic_prompt": "Hello",
+    "rendered_prompt": "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "prompt_token_ids": [248045, 846, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271],
+    "prompt_token_ids_compact_json_sha256": "4b890fa15ee3d7db4e9dd18bd79c6362d40e9e016ae4f9f74cb7fc420ef3b6d3",
+    "generated_tokens": 128,
+    "sampling": {
+      "D_direct_llama_cpp": "unbiased greedy argmax; EOG tokens may be selected and are fed back while termination is disabled",
+      "N_omniinfer": "temperature zero with ignore_eos true; b10280 suppresses EOG-token logits to force 128 returned tokens"
+    },
+    "both_return_128_tokens": true,
+    "generated_token_trajectory_or_sampling_semantics_equal": false,
+    "concurrency": 1,
+    "requested_external_batch": 13,
+    "requested_external_ubatch": 13,
+    "external_threads": 4,
+    "external_batch_threads": 4
+  },
+  "artifact_admission": {
+    "strict_all_runtime_exact_artifact_cohort_exists": false,
+    "reason": "the ApxInf fused path consumes a staged SafeTensors-derived custom G32/G64 W8 hybrid and cannot consume the pure Q8_0 GGUF without changing implementation and weight semantics",
+    "external_exact_gguf_cohort": {
+      "members": ["D_direct_llama_cpp", "N_omniinfer"],
+      "path": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+      "size_bytes": 811843072,
+      "sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c",
+      "quantization": "pure llama.cpp Q8_0",
+      "secondary_conversion_during_load_allowed": false
+    },
+    "cohort_scope": "same serialized GGUF, frozen prompt token IDs, and returned-token count only; not the same generated trajectory or sampling workload"
+  },
+  "execution_driver": {
+    "repository": "https://github.com/qhy991/ApxInf.git",
+    "commit": "a3f06958b4e4e14aa9f74f2cafa63e05d8c0dae6",
+    "origin_main_at_publication": "a3f06958b4e4e14aa9f74f2cafa63e05d8c0dae6",
+    "path": "benchmarks/cross_runtime/fixed_raw13_free128_driver.py",
+    "absolute_path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/benchmarks/cross_runtime/fixed_raw13_free128_driver.py",
+    "size_bytes": 37687,
+    "sha256": "30597a003a4de62b7b227b1a6249504fe3f5cbe79bf726e2dbd902c6a724d99a",
+    "schema_version": 2,
+    "transport": "absolute file-backed Python invocation only; python -c, eval, shell-carried source, retry wrappers, and JSON-stringified source are forbidden",
+    "interpreter": {
+      "path": "/opt/homebrew/Cellar/python@3.14/3.14.3/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+      "version": "3.14.3 (main, Feb  3 2026, 15:32:20) [Clang 17.0.0 (clang-1700.6.3.2)]",
+      "size_bytes": 52448,
+      "sha256": "ff73afba45e095e0dadc9b51deb9b994ef90d097c36a211955c57336ce76508f"
+    },
+    "self_test": {
+      "passed_after_final_edit": true,
+      "model_or_network_execution": false,
+      "scope": "fixture, prompt hash, interpreter, and driver self-identity only; not runtime or orchestration validation"
+    },
+    "sample_receipt_binding": "each D/N receipt must echo this campaign_id and must read the create-new v2 start file, match its SHA, and verify clean HEAD == origin/main == supplied start commit"
+  },
+  "runtime_arms": {
+    "ApxInf_sidecar": {
+      "source": "historical accepted production A/C campaign",
+      "source_campaign_arm": "C_gdn_core_fused_v1",
+      "historical_not_v2_sample": true,
+      "v2_generation_requests": 0,
+      "fused_candidate_commit": "10ebe67d5ed921505bf33da2df585ecb8ebaa311",
+      "raw_receipt": {
+        "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-production-ac-v1-raw-campaign-v1-20260826.json",
+        "commit": "f3dc06de71873769ca81ad28f1979825b63b0ecc",
+        "size_bytes": 375432,
+        "sha256": "b899d5621ca0ad48616713ea5c0c85ff4a45e54d9e5dee216cca10fc4ba349ae"
+      },
+      "accepted_summary": {
+        "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-production-ac-v1-accepted-diagnostic-summary-v1-20260826.json",
+        "commit": "a8554262cf1fe5492cff9255b7d4de610d8781c1",
+        "size_bytes": 9180,
+        "sha256": "43707cf7ced70ae2bf453debba666cbce61e55d0c23b18b002d24b187e5b8d8e"
+      },
+      "tpot_samples_ms": [14.244145669291338, 14.215104984251967, 14.628695866141731, 14.381256228346457],
+      "pooled_even_median_tpot_ms": 14.312700948818897,
+      "derived_generation_tps": 69.86801467982333,
+      "timing_definition": "127 token-ready intervals between the first and 128th generated token",
+      "weight_regime": "custom G32/G64 W8 hybrid with CPU F32 remainder",
+      "serialized_artifact_equal_to_external_gguf": false
+    },
+    "D_direct_llama_cpp": {
+      "runtime": "repository-specific raw-token llama.cpp C API runner",
+      "llama_cpp_source_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+      "llama_cpp_source_tree": "21045aed8b426d7a5e25a98e646054cbd9487e81",
+      "source_checkout_clean_detached": true,
+      "runner_binary_path": "/tmp/apxinf-llama-runner-build/bin/apxinf-llama-cpp-raw-token-runner",
+      "runner_binary_size_bytes": 6499056,
+      "runner_binary_sha256": "ccfa5ecd78119d4f8cdd8721e7faae360cb94b8334f9d61ed47e2e00290f2716",
+      "requested_context_length": 142,
+      "expected_effective_context_length": 256,
+      "requested_and_effective_context_are_distinct": true,
+      "fixed_args": ["--gpu-layers", "-1", "--gpu-device", "MTL0", "--threads", "4"],
+      "ggml_backend_path_must_be_unset": true,
+      "process_model": "one new runner process, model load, context, and KV cache per slot",
+      "trajectory_admission_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"
+    },
+    "N_omniinfer": {
+      "runtime": "omnimind-ai/OmniInfer official macOS arm64 release",
+      "repository": "https://github.com/omnimind-ai/OmniInfer",
+      "release": "v0.3.26",
+      "release_commit": "79af77228f329a79ac665014089e23983e69e79f",
+      "release_archive_sha256": "0f83ea36aad7126976ff2a53a58f0ce20e934d2bd0133d40f4ce974658a48cf4",
+      "cli_binary_path": "/tmp/apxinf-omniinfer-prep.F7GNFt/OmniInfer/omniinfer",
+      "cli_binary_size_bytes": 9719136,
+      "cli_binary_sha256": "65487424ca9179850b80079beafa5ad69a66e0841d328ee8dd8a1fd4b613d661",
+      "state_root": "/tmp/apxinf-omniinfer-prep.F7GNFt/state",
+      "runtime_root": "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime",
+      "backend": "llama.cpp-mac",
+      "backend_release": "b10280",
+      "backend_source_commit": "61881b1f7f0b13d9e46d561fc25afcd6bbaec479",
+      "backend_archive_sha256": "5dc4b11192ef34895c7f92a9f1dd3bd3d5864a63976ea2327fe2e0944891cb75",
+      "llama_server_path": "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/bin/llama-server",
+      "llama_server_size_bytes": 33472,
+      "llama_server_sha256": "02723fc39fbeebd9849ce4c9ca3799649df3cf91f101c2cd56b8756e1db54d28",
+      "gateway_base_url": "http://127.0.0.1:9000",
+      "requested_and_expected_effective_context_length": 256,
+      "isolated_slot_save_path": "/tmp/apxinf-omniinfer-prep.F7GNFt/slots-cold-v2",
+      "launch_args_exact": ["--slot-prompt-similarity", "0", "--cache-idle-slots", "-ngl", "999", "--cache-ram", "8192", "-ngl", "999", "-b", "13", "-ub", "13", "-t", "4", "-tb", "4", "-np", "1", "--cache-ram", "0", "--slots", "--no-cache-idle-slots", "--no-cache-prompt", "--slot-prompt-similarity", "0", "--slot-save-path", "/tmp/apxinf-omniinfer-prep.F7GNFt/slots-cold-v2"],
+      "launch_argument_semantics": "the first values are the immutable official backend defaults and the later explicit values are intentional last-occurrence overrides; the driver requires this entire array and reconstructed launch command byte-for-byte",
+      "request_defaults_must_equal": {},
+      "effective_parameters_must_equal": {},
+      "mmproj_must_be_null": true,
+      "resident_model_cold_kv_model": "one resident model; POST /omni/cache/clear must acknowledge exact cleared_slots [0] before every request",
+      "eog_semantics": "ignore_eos true suppresses EOG logits; N is not expected or allowed to match D's canonical trajectory",
+      "setup_only_preflight_observed_before_this_predeclaration": {
+        "chat_or_generation_requests": 0,
+        "health_props_state_requests_only": true,
+        "backend_apply_template_request_only": true,
+        "tokenize_request_only": true,
+        "cache_clear_request_only": true,
+        "exact_prompt_ids_observed": true,
+        "exact_cleared_slots_observed": [0],
+        "gateway_shut_down_after_observation": true
+      },
+      "builtin_benchmark_not_used": "the exact local GGUF has no known byte-identical stable pinned public HTTPS model URL, so the official submission benchmark cannot honestly bind this artifact"
+    },
+    "O_ollama": {
+      "status": "EXCLUDED_BEFORE_V2_SAMPLING",
+      "performance_requests": 0,
+      "samples": [],
+      "local_client": "/Applications/Ollama.app/Contents/Resources/ollama 0.4.1",
+      "reasons": [
+        "the installed service is not running and this old build predates demonstrated qwen3_5 support",
+        "the public API does not admit frozen raw token IDs or return generated token IDs",
+        "the public API does not expose ignore-EOS while the canonical trajectory contains EOG before token 128"
+      ]
+    }
+  },
+  "runtime_custody": {
+    "state_json": {
+      "path": "/tmp/apxinf-omniinfer-prep.F7GNFt/state/.local/config/state.json",
+      "size_bytes": 264,
+      "sha256": "9343581d8dc451259bfdaf5aadb8c530f47e44ee56541d9b817d39030aee2fad"
+    },
+    "prebuilt_json": {
+      "path": "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/prebuilt.json",
+      "size_bytes": 1054,
+      "sha256": "49748f180d45f8689cfd772a4baf1e4a9db90d163e0d6cdda10ea9293a4f9c6a"
+    },
+    "immutable_runtime_closure": {
+      "root": "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac",
+      "included": "all regular files and symbolic links except ./logs/**",
+      "canonicalization": "from root, LC_ALL=C sort NUL-delimited ./relative paths; regular file line is F TAB ./relative_path TAB octal_lstat_mode TAB decimal_size TAB lowercase_sha256 LF; symbolic-link line is L TAB ./relative_path TAB octal_lstat_mode TAB exact_readlink_target LF",
+      "regular_file_count": 44,
+      "symbolic_link_count": 18,
+      "entry_count": 62,
+      "regular_file_total_size_bytes": 27247524,
+      "sha256": "fa89c0d9f35ec2fb69694a027cb8457be976f480b3c20a60d54b1d2e2187c853",
+      "start_end_equality_required": true
+    },
+    "mutable_runtime_logs": {
+      "excluded_from_immutable_closure": true,
+      "reason": "llama-server necessarily writes its runtime log during model load and inference",
+      "record_before_and_after": true,
+      "mutation_is_expected_and_not_an_artifact_change": true
+    },
+    "isolated_slot_directory": {
+      "path": "/tmp/apxinf-omniinfer-prep.F7GNFt/slots-cold-v2",
+      "must_exist_and_be_empty_at_campaign_start": true,
+      "runtime_scratch_mutation_allowed": true
+    }
+  },
+  "fixed_execution_schedule": {
+    "precondition": "this predeclaration and then a create-new campaign-start receipt must be committed and pushed before the first v2 generation request",
+    "setup_only_before_start_allowed": "gateway start, model load, health, props, state, apply-template, tokenize, and cache-clear only; no chat/completion/generation request",
+    "one_shot": {
+      "campaign_start_must_not_exist_before_create_new": true,
+      "existing_start_causes_fail_closed_without_sampling": true,
+      "creation_consumes_v2_even_if_interrupted_or_failed": true,
+      "retry_resample_replacement_reorder_recreation_allowed": false,
+      "raw_campaign_must_be_create_new": true,
+      "partial_raw_must_be_published_after_any_post_start_failure": true
+    },
+    "steps": [
+      "verify setup-only gateway is stopped and no OmniInfer or llama-server process remains",
+      "capture host, Git, model, runner, driver, interpreter, runtime, state, and empty-slot start custody",
+      "commit and push the create-new v2 campaign-start receipt",
+      "D_warmup: one untimed fresh-process direct llama.cpp generation",
+      "D1: one measured fresh-process direct llama.cpp generation",
+      "D2: one measured fresh-process direct llama.cpp generation",
+      "D3: one measured fresh-process direct llama.cpp generation",
+      "start the pinned OmniInfer gateway and load the exact GGUF with the exact launch contract",
+      "run the committed driver's zero-generation preflight",
+      "N_warmup: exact all-slot clear followed by one untimed OmniInfer chat generation",
+      "N1: exact all-slot clear followed by one measured OmniInfer chat generation",
+      "N2: exact all-slot clear followed by one measured OmniInfer chat generation",
+      "N3: exact all-slot clear followed by one measured OmniInfer chat generation",
+      "capture end custody, shut down the isolated gateway, and publish a create-new raw receipt"
+    ],
+    "fixed_slot_order": ["D_warmup", "D1", "D2", "D3", "N_warmup", "N1", "N2", "N3"],
+    "measured_slots": ["D1", "D2", "D3", "N1", "N2", "N3"],
+    "warmup_slots_retained_but_excluded_from_statistics": ["D_warmup", "N_warmup"],
+    "outlier_removal": false,
+    "retry": false,
+    "resampling": false,
+    "replacement_after_failure": false
+  },
+  "omniinfer_request_contract": {
+    "endpoint": "POST /v1/chat/completions",
+    "body": {
+      "messages": [{"role": "user", "content": "Hello"}],
+      "temperature": 0,
+      "max_tokens": 128,
+      "stream": false,
+      "think": false,
+      "cache_prompt": false,
+      "ignore_eos": true
+    },
+    "template_preflight": "backend POST /apply-template with add_generation_prompt true and chat_template_kwargs.enable_thinking false must exactly yield the frozen rendered prompt",
+    "cache_reset": "gateway POST /omni/cache/clear must return ok true and exact cleared_slots [0] immediately before every N request",
+    "response_admission": "usage must be 13 prompt, 128 completion, 141 total; timings must be prompt_n 13, predicted_n 128, cache_n 0; finish_reason must be length; required timings must be finite, positive, and arithmetically self-consistent"
+  },
+  "timing_and_statistics": {
+    "ApxInf_sidecar_generation_tps": "historical 127000 / (token_128_ready_ms - first_token_ready_ms)",
+    "D_generation_tps": "fresh 127000 / (token_128_ready_ms - first_token_ready_ms)",
+    "D_process_wall_ms": "outer monotonic subprocess wall including model load, setup, generation, proof, and receipt",
+    "N_native_predicted_tps": "response timings.predicted_per_second, checked as 128000 / predicted_ms",
+    "N_native_prefill_tps": "response timings.prompt_per_second, checked as 13000 / prompt_ms",
+    "N_client_gateway_wall_ms": "client monotonic wall around the full HTTP helper call, including request serialization, connection setup, gateway/backend work, response transfer, and JSON decode",
+    "gateway_overhead_subtraction_allowed": false,
+    "cross_boundary_ratio_delta_or_winner_allowed": false,
+    "statistics_per_measured_metric": ["raw samples", "median", "mean", "population coefficient of variation", "minimum", "maximum"],
+    "population_cv_formula": "sqrt(sum((x-mean)^2)/n)/mean",
+    "stability_gate": {
+      "maximum_cv": 0.05,
+      "metrics": ["D generation TPS", "N native predicted TPS", "N client gateway wall ms"],
+      "failure_effect": "retain all raw samples, mark side-by-side observational reporting rejected, and do not retry, replace, or remove observations"
+    }
+  },
+  "quality_and_failure_contract": {
+    "D_each_slot": "exact prompt IDs, 128 output IDs, canonical trajectory SHA, context/batch/thread/placement/execution-proof/source/model admissions must all pass",
+    "N_each_slot": "exact state, runtime argv, no request defaults, exact cache clear, prompt/output counts, no cache hit, length termination, and timing admissions must all pass",
+      "N_output_trajectory_claim_allowed": false,
+    "D_and_N_same_sampling_workload_claim_allowed": false,
+    "hard_stop_conditions": [
+      "power source changes away from AC",
+      "thermal state is serious or critical",
+      "fixed artifact, path, identity, hash, runtime, prompt, cache, response, or Git admission fails",
+      "any sample request fails or times out",
+      "a required timing is absent, non-finite, or non-positive",
+      "the D output trajectory differs from the canonical hash"
+    ],
+    "first_failure_effect": "stop immediately, mark remaining slots unattempted, publish partial raw, consume v2, and publish no accepted comparative summary"
+  },
+  "host_policy": {
+    "user_or_system_processes_may_be_terminated": false,
+    "record_before_and_after": ["power source", "thermal warnings", "load averages", "swap", "top CPU processes", "runtime PIDs"],
+    "quiet_host_required": false,
+    "classification_if_background_load_exists": "diagnostic only"
+  },
+  "claim_policy": {
+    "allowed": [
+      "report ApxInf fused C only as a historical same-revision non-equivalent-weight sidecar",
+      "report fresh D values for the exact Q8_0 GGUF under its token-ready boundary",
+      "report fresh N native core values separately from N client gateway wall values",
+      "place independently labeled observations side by side if every quality and stability gate passes, while stating that D/N sampling workloads differ"
+    ],
+    "forbidden": [
+      "ApxInf-to-D, ApxInf-to-N, or D-to-N speed ratios, deltas, winner, or ranking claims",
+      "claim that all arms use the same serialized model artifact or quantization",
+      "call the historical ApxInf sidecar fresh v2 data",
+      "claim D and N use the same llama.cpp commit or timing boundary",
+      "claim D and N execute the same generated-token trajectory, sampling semantics, or directly comparable performance workload",
+      "claim N output IDs equal the canonical D trajectory",
+      "treat N client wall time as native decode time",
+      "claim formal significance, production superiority, quality parity, memory parity, energy parity, or authorization for default activation"
+    ]
+  },
+  "output_paths": {
+    "campaign_start": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-campaign-start-diagnostic-v2-20260826.json",
+    "raw_campaign": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-raw-campaign-diagnostic-v2-20260826.json",
+    "summary": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-diagnostic-summary-v2-20260826.json"
+  }
+}
