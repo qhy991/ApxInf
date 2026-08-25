@@ -8,6 +8,63 @@ pub const HEAD_DIM: usize = 128;
 pub const WIDTH: usize = QUERY_HEADS * HEAD_DIM;
 pub const MAX_SPLITS: usize = 64;
 
+#[allow(clippy::too_many_arguments)]
+pub fn short_w32_write(
+    ctx: &CudaContext,
+    query: &CudaBuffer,
+    key_cache: &CudaBuffer,
+    value_cache: &CudaBuffer,
+    output: &CudaBuffer,
+    bucket_kv_len: usize,
+    max_seq_len: usize,
+    scale: f32,
+    position: CudaDeviceAddress,
+) -> Result<()> {
+    let row_bytes = WIDTH * DType::BF16.size_in_bytes();
+    let cache_bytes = KV_HEADS
+        .checked_mul(max_seq_len)
+        .and_then(|value| value.checked_mul(HEAD_DIM))
+        .and_then(|value| value.checked_mul(DType::BF16.size_in_bytes()))
+        .ok_or_else(|| Error::Other("Qwen2.5-Omni W32 attention cache overflow".into()))?;
+    if ctx.caps().sm != 89
+        || bucket_kv_len != 32_768
+        || max_seq_len != 32_768
+        || !scale.is_finite()
+        || scale <= 0.0
+        || query.device() != ctx.device_id()
+        || query.len() < row_bytes
+        || output.device() != ctx.device_id()
+        || output.len() < row_bytes
+        || key_cache.device() != ctx.device_id()
+        || key_cache.len() < cache_bytes
+        || value_cache.device() != ctx.device_id()
+        || value_cache.len() < cache_bytes
+        || position.device() != ctx.device_id()
+        || position.len() < 4
+    {
+        return Err(Error::Other(
+            "Qwen2.5-Omni W32 attention contract mismatch".into(),
+        ));
+    }
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_static_qwen25_omni_attention_flash_w32_bf16(
+            query.ptr(),
+            key_cache.ptr(),
+            value_cache.ptr(),
+            output.ptr(),
+            QUERY_HEADS as i32,
+            KV_HEADS as i32,
+            HEAD_DIM as i32,
+            bucket_kv_len as i32,
+            max_seq_len as i32,
+            scale,
+            position.ptr(),
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)
+    }
+}
+
 pub struct SplitCtaWorkspace {
     partial_max: CudaBuffer,
     partial_sum: CudaBuffer,

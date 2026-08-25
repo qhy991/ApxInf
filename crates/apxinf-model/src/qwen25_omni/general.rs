@@ -156,6 +156,15 @@ fn short_decode_exact_residual_norm_enabled() -> Result<bool> {
 }
 
 #[cfg(feature = "cuda")]
+fn short_decode_w32_attention_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| parse_binary_env("APXINF_QWEN25_SHORT_DECODE_W32_ATTENTION"))
+        .clone()
+        .map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
 fn fused_tmrope_kv_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
     ENABLED
@@ -314,6 +323,7 @@ impl GeneralQwen25Omni {
             let packed_qkv = packed_qkv_enabled()?;
             let m1_packed_mlp = m1_packed_mlp_enabled()?;
             let short_exact_residual_norm = short_decode_exact_residual_norm_enabled()?;
+            let short_w32_attention = short_decode_w32_attention_enabled()?;
             let m1_gemv_tactics =
                 parse_binary_env("APXINF_QWEN25_M1_GEMV_TACTICS").map_err(Error::Other)?;
             let fused_tmrope_kv = fused_tmrope_kv_enabled()?;
@@ -350,6 +360,12 @@ impl GeneralQwen25Omni {
                         .into(),
                 ));
             }
+            if short_w32_attention && !short_exact_residual_norm {
+                return Err(Error::Other(
+                    "APXINF_QWEN25_SHORT_DECODE_W32_ATTENTION=1 requires APXINF_QWEN25_SHORT_DECODE_EXACT_RESIDUAL_NORM=1"
+                        .into(),
+                ));
+            }
             if fused_tmrope_kv && !graph_enabled {
                 return Err(Error::Other(
                     "APXINF_QWEN25_FUSED_TMROPE_KV requires APXINF_QWEN25_DECODE_GRAPH=1".into(),
@@ -371,7 +387,11 @@ impl GeneralQwen25Omni {
                 let cuda = cuda_backend(&*backend).ok_or_else(|| {
                     Error::Other("Qwen2.5-Omni decode graph requires CudaBackend".into())
                 })?;
-                if (select_token || packed_qkv || fused_tmrope_kv || short_exact_residual_norm)
+                if (select_token
+                    || packed_qkv
+                    || fused_tmrope_kv
+                    || short_exact_residual_norm
+                    || short_w32_attention)
                     && cuda.context().caps().sm != 89
                 {
                     return Err(Error::Other(format!(
@@ -407,12 +427,16 @@ impl GeneralQwen25Omni {
                         "ApxInf Qwen2.5-Omni short-decode exact residual RMSNorm: BF16-rounded graph path"
                     );
                 }
+                if short_w32_attention {
+                    eprintln!("ApxInf Qwen2.5-Omni short-decode W32 attention: 32 split-K warps");
+                }
                 let short = Qwen25OmniDecodeGraph::new(
                     cuda,
                     Self::decode_graph_config(&config),
                     select_token,
                     fused_tmrope_kv,
                     short_exact_residual_norm,
+                    short_w32_attention,
                     false,
                 )?;
                 let long = if long_graph_enabled {
@@ -421,6 +445,7 @@ impl GeneralQwen25Omni {
                         Self::decode_graph_config(&config),
                         select_token,
                         fused_tmrope_kv,
+                        false,
                         false,
                         true,
                     )?)

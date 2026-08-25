@@ -12,6 +12,21 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_static_qwen25_omni_attention_flash_w32_bf16(
+        query: *const c_void,
+        key_cache: *const c_void,
+        value_cache: *const c_void,
+        output: *mut c_void,
+        query_heads: i32,
+        kv_heads: i32,
+        head_dim: i32,
+        bucket_kv_len: i32,
+        max_seq_len: i32,
+        scale: f32,
+        position: *const c_void,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_static_qwen25_omni_attention_flash_split_cta_bf16(
         query: *const c_void,
         key_cache: *const c_void,

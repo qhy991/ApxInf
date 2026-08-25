@@ -167,6 +167,7 @@ fn decode_forward_capturable(
     select_token: bool,
     fuse_tmrope_kv: bool,
     fuse_residual_norm: bool,
+    use_w32_attention: bool,
 ) -> Result<()> {
     if weights.layers.len() != config.n_layers || config.n_layers == 0 {
         return Err(Error::Other(
@@ -426,6 +427,18 @@ fn decode_forward_capturable(
                 (config.head_dim as f32).sqrt().recip(),
                 cache_position,
             )?;
+        } else if use_w32_attention {
+            kernels::qwen25_omni_attention::short_w32_write(
+                context,
+                &workspace.q_rope,
+                cache.k_buffer(index),
+                cache.v_buffer(index),
+                &workspace.attn_out,
+                config.max_seq_len,
+                config.max_seq_len,
+                (config.head_dim as f32).sqrt().recip(),
+                cache_position,
+            )?;
         } else {
             kernels::attention::flash_bf16_into(
                 context,
@@ -638,6 +651,7 @@ pub struct Qwen25OmniDecodeGraph {
     select_token: bool,
     fuse_tmrope_kv: bool,
     fuse_residual_norm: bool,
+    use_w32_attention: bool,
 }
 
 impl Qwen25OmniDecodeGraph {
@@ -647,6 +661,7 @@ impl Qwen25OmniDecodeGraph {
         select_token: bool,
         fuse_tmrope_kv: bool,
         fuse_residual_norm: bool,
+        use_w32_attention: bool,
         grouped_long_attention: bool,
     ) -> Result<Self> {
         if config.n_layers == 0
@@ -666,6 +681,7 @@ impl Qwen25OmniDecodeGraph {
             select_token,
             fuse_tmrope_kv,
             fuse_residual_norm,
+            use_w32_attention,
         })
     }
 
@@ -692,6 +708,7 @@ impl Qwen25OmniDecodeGraph {
             self.select_token,
             self.fuse_tmrope_kv,
             self.fuse_residual_norm,
+            self.use_w32_attention,
         )?;
         backend.synchronize()?;
         cache.clear()?;
@@ -706,6 +723,7 @@ impl Qwen25OmniDecodeGraph {
             self.select_token,
             self.fuse_tmrope_kv,
             self.fuse_residual_norm,
+            self.use_w32_attention,
         );
         let graph = backend.end_capture()?;
         capture?;
@@ -744,6 +762,7 @@ impl Qwen25OmniDecodeGraph {
                 self.select_token,
                 self.fuse_tmrope_kv,
                 self.fuse_residual_norm,
+                self.use_w32_attention,
             )?;
         } else {
             graph.replay()?;
