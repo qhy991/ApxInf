@@ -16,7 +16,6 @@ constexpr uint32_t kStackDepth = 3;
 constexpr uint32_t kRowsPerThreadgroup = 8;
 constexpr uint32_t kMatVecThreads = kRowsPerThreadgroup * 32;
 constexpr uint32_t kElementThreads = 256;
-constexpr uint32_t kQkStagedThreads = 128;
 constexpr uint32_t kAllSeededMask = (1u << kStackDepth) - 1;
 
 struct GdnParams {
@@ -244,7 +243,6 @@ struct ApxinfMetalW8MlpStack3BoundaryHandleV1 {
     id<MTLBuffer> mlp_gate_up;
     id<MTLBuffer> mlp_activated;
 
-    uint32_t gdn_recurrent_threads;
     uint32_t seeded_mask;
     bool terminal_error;
 };
@@ -682,7 +680,7 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     [encoder setBuffer:handle->core offset:0 atIndex:6];
     [encoder setBytes:&layer.gdn_params length:sizeof(layer.gdn_params) atIndex:7];
     [encoder dispatchThreadgroups:MTLSizeMake(layer.gdn_params.value_heads, 1, 1)
-             threadsPerThreadgroup:MTLSizeMake(handle->gdn_recurrent_threads, 1, 1)];
+             threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
     buffer_barrier(encoder);
 
     [encoder setComputePipelineState:handle->gdn_norm_gate_pipeline];
@@ -771,12 +769,10 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
 
 }  // namespace
 
-static int create_boundary_impl(
+extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
     const BoundaryMlpDescriptorV1 *boundary,
     const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
-    void **output, char *error_output, size_t error_capacity,
-    NSString *recurrent_kernel, uint32_t recurrent_threads,
-    bool require_qwen35_qk_staged_shape) {
+    void **output, char *error_output, size_t error_capacity) {
     @autoreleasepool {
         if (output == nullptr) {
             write_error(error_output, error_capacity,
@@ -794,15 +790,6 @@ static int create_boundary_impl(
         if (!derive_shape(layers[0], &shape)) {
             write_error(error_output, error_capacity,
                         "invalid Metal W8 MLP-to-Stack3 boundary v1 packed contract");
-            return 1;
-        }
-        if (require_qwen35_qk_staged_shape &&
-            (shape.hidden_size != 1024 || shape.key_heads != 16 ||
-             shape.value_heads != 16 || shape.key_dim != 128 ||
-             shape.value_dim != 128 || shape.conv_kernel_size != 4 ||
-             recurrent_threads != kQkStagedThreads)) {
-            write_error(error_output, error_capacity,
-                        "Metal W8 MLP-to-Stack3 boundary qk-staged v1 requires the accepted Qwen3.5-0.8B shape and 128 threads");
             return 1;
         }
         for (uint32_t index = 1; index < kStackDepth; ++index) {
@@ -856,7 +843,7 @@ static int create_boundary_impl(
         handle->gdn_normalize_pipeline =
             make_pipeline(handle->device, library, @"gdn_normalize_qk", &error);
         handle->gdn_recurrent_pipeline =
-            make_pipeline(handle->device, library, recurrent_kernel, &error);
+            make_pipeline(handle->device, library, @"gdn_recurrent_update", &error);
         handle->gdn_norm_gate_pipeline =
             make_pipeline(handle->device, library, @"gdn_norm_gate", &error);
         handle->gdn_output_pipeline =
@@ -956,33 +943,11 @@ static int create_boundary_impl(
                         "allocate persistent Metal W8 MLP-to-Stack3 boundary v1 buffers failed");
             return 1;
         }
-        handle->gdn_recurrent_threads = recurrent_threads;
         handle->seeded_mask = 0;
         handle->terminal_error = false;
         *output = handle;
         return 0;
     }
-}
-
-extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
-    const BoundaryMlpDescriptorV1 *boundary,
-    const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
-    void **output, char *error_output, size_t error_capacity) {
-    return create_boundary_impl(boundary, layers, layer_count, output,
-                                error_output, error_capacity,
-                                @"gdn_recurrent_update", kElementThreads,
-                                false);
-}
-
-extern "C" int
-apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_qk_staged_v1(
-    const BoundaryMlpDescriptorV1 *boundary,
-    const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
-    void **output, char *error_output, size_t error_capacity) {
-    return create_boundary_impl(boundary, layers, layer_count, output,
-                                error_output, error_capacity,
-                                @"gdn_recurrent_update_qk_staged_v1",
-                                kQkStagedThreads, true);
 }
 
 extern "C" int apxinf_metal_w8_mlp_stack3_boundary_seed_states_v1(

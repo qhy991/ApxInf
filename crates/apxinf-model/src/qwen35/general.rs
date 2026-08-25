@@ -930,36 +930,6 @@ impl GeneralQwen35 {
         Ok(model)
     }
 
-    /// Diagnostic-only continuation of boundary + tail-head v1. This route
-    /// selects the primitive-gated 128-thread Q/K-staged recurrent kernel in
-    /// all six Stack3 transactions. Every existing constructor stays on the
-    /// legacy 256-thread recurrent kernel.
-    #[cfg(feature = "metal-w8")]
-    pub fn from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_qk_staged_v1(
-        config: Qwen35Config,
-        tensors: HashMap<String, Tensor>,
-        device: Device,
-        max_context: usize,
-    ) -> Result<Self> {
-        if !config.text.tie_word_embeddings {
-            return Err(Error::Other(
-                "qwen3.5 Metal W8 boundary + tail-head GDN qk-staged v1 requires tied word embeddings"
-                    .into(),
-            ));
-        }
-        Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(&config.text)?;
-        let backend = create_backend(device)?;
-        let weights = Qwen35TextWeights::from_map(&config, tensors)?;
-        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack_gdn_qk_staged_v1(
-            &weights,
-            &config.text,
-        )?;
-        let mut model =
-            Self::new_with_metal_options(config, weights, backend, max_context, false, None, None)?;
-        model.metal_w8_mlp_stack3_boundary_tail_head_v1 = Some(lane);
-        Ok(model)
-    }
-
     /// Diagnostic-only v2 composite: every maximal three-layer linear run is
     /// one Stack3 transaction, each full-attention layer owns one standalone
     /// Metal MLP block, and the tied output uses the existing top-4 Metal head
@@ -4385,20 +4355,6 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         config: &Qwen35TextConfig,
         layer_indices: [usize; 3],
     ) -> Result<Self> {
-        Self::pack_with_recurrent_profile(
-            weights,
-            config,
-            layer_indices,
-            apxinf_metal::GdnRecurrentProfileV1::Legacy256,
-        )
-    }
-
-    fn pack_with_recurrent_profile(
-        weights: &Qwen35TextWeights,
-        config: &Qwen35TextConfig,
-        layer_indices: [usize; 3],
-        recurrent_profile: apxinf_metal::GdnRecurrentProfileV1,
-    ) -> Result<Self> {
         let packed = layer_indices
             .into_iter()
             .map(|layer_index| {
@@ -4428,23 +4384,11 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         })?
         .try_into()
         .map_err(|_| Error::Other("qwen3.5 Metal W8 stack3-v1 ledger depth changed".into()))?;
-        let packed_refs = [&packed[0].packed, &packed[1].packed, &packed[2].packed];
-        let block = match recurrent_profile {
-            apxinf_metal::GdnRecurrentProfileV1::Legacy256 => {
-                apxinf_metal::MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1(packed_refs)
-            }
-            apxinf_metal::GdnRecurrentProfileV1::QkStaged128 => {
-                apxinf_metal::MetalW8LinearLayerStack3::from_packed_gdn_out_g32_qk_staged_v1(
-                    packed_refs,
-                )
-            }
-            apxinf_metal::GdnRecurrentProfileV1::LeaderBroadcast128 => {
-                return Err(Error::Other(
-                    "qwen3.5 production-topology Stack3 lane does not authorize leader-broadcast"
-                        .into(),
-                ));
-            }
-        }
+        let block = apxinf_metal::MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1([
+            &packed[0].packed,
+            &packed[1].packed,
+            &packed[2].packed,
+        ])
         .map_err(|error| {
             Error::Other(format!(
                 "qwen3.5 Metal W8 stack3-v1 layers {layer_indices:?} construction failed: {error}"
@@ -4508,15 +4452,7 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         let ledger = self.block.buffer_ledger();
         Qwen35MetalW8LinearLayerStack3V1Stats {
             layer_indices: self.layer_indices,
-            mechanism: match self.block.recurrent_profile() {
-                apxinf_metal::GdnRecurrentProfileV1::Legacy256 => "metal-w8-linear-layer-stack3-v1",
-                apxinf_metal::GdnRecurrentProfileV1::QkStaged128 => {
-                    "metal-w8-linear-layer-stack3-gdn-qk-staged-v1"
-                }
-                apxinf_metal::GdnRecurrentProfileV1::LeaderBroadcast128 => {
-                    "invalid-unreachable-leader-broadcast-stack3"
-                }
-            },
+            mechanism: "metal-w8-linear-layer-stack3-v1",
             quantization: self.quantization,
             prefill_seed_calls: self.prefill_seed_calls,
             execution: self.block.stats(),
@@ -4807,22 +4743,6 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
         boundary_mlp_layer_index: usize,
         stack_layer_indices: [usize; 3],
     ) -> Result<Self> {
-        Self::pack_with_recurrent_profile(
-            weights,
-            config,
-            boundary_mlp_layer_index,
-            stack_layer_indices,
-            apxinf_metal::GdnRecurrentProfileV1::Legacy256,
-        )
-    }
-
-    fn pack_with_recurrent_profile(
-        weights: &Qwen35TextWeights,
-        config: &Qwen35TextConfig,
-        boundary_mlp_layer_index: usize,
-        stack_layer_indices: [usize; 3],
-        recurrent_profile: apxinf_metal::GdnRecurrentProfileV1,
-    ) -> Result<Self> {
         if config.layer_types.get(boundary_mlp_layer_index) != Some(&Qwen35LayerType::FullAttention)
             || !matches!(
                 weights
@@ -4903,25 +4823,13 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
                 "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} assembly failed: {error}"
             ))
         })?;
-        let block = match recurrent_profile {
-            apxinf_metal::GdnRecurrentProfileV1::Legacy256 => {
-                apxinf_metal::MetalW8MlpStack3BoundaryV1::from_packed(&packed)
-            }
-            apxinf_metal::GdnRecurrentProfileV1::QkStaged128 => {
-                apxinf_metal::MetalW8MlpStack3BoundaryV1::from_packed_gdn_qk_staged_v1(&packed)
-            }
-            apxinf_metal::GdnRecurrentProfileV1::LeaderBroadcast128 => {
-                return Err(Error::Other(
-                    "qwen3.5 production-topology MLP→Stack3 lane does not authorize leader-broadcast"
-                        .into(),
-                ));
-            }
-        }
-        .map_err(|error| {
+        let block = apxinf_metal::MetalW8MlpStack3BoundaryV1::from_packed(&packed).map_err(
+            |error| {
                 Error::Other(format!(
                     "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} construction failed: {error}"
                 ))
-            })?;
+            },
+        )?;
         Ok(Self {
             boundary_mlp_layer_index,
             stack_layer_indices,
@@ -4942,15 +4850,7 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
         Qwen35MetalW8MlpStack3BoundaryRegionV1Stats {
             boundary_mlp_layer_index: self.boundary_mlp_layer_index,
             stack_layer_indices: self.stack_layer_indices,
-            mechanism: match self.block.recurrent_profile() {
-                apxinf_metal::GdnRecurrentProfileV1::Legacy256 => "metal-w8-mlp-stack3-boundary-v1",
-                apxinf_metal::GdnRecurrentProfileV1::QkStaged128 => {
-                    "metal-w8-mlp-stack3-boundary-gdn-qk-staged-v1"
-                }
-                apxinf_metal::GdnRecurrentProfileV1::LeaderBroadcast128 => {
-                    "invalid-unreachable-leader-broadcast-boundary"
-                }
-            },
+            mechanism: "metal-w8-mlp-stack3-boundary-v1",
             quantization: self.quantization,
             prefill_seed_calls: self.prefill_seed_calls,
             execution: self.block.stats(),
@@ -5286,29 +5186,6 @@ impl Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 #[cfg(feature = "metal-w8")]
 impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
     fn pack(weights: &Qwen35TextWeights, config: &Qwen35TextConfig) -> Result<Self> {
-        Self::pack_with_recurrent_profile(
-            weights,
-            config,
-            apxinf_metal::GdnRecurrentProfileV1::Legacy256,
-        )
-    }
-
-    fn pack_gdn_qk_staged_v1(
-        weights: &Qwen35TextWeights,
-        config: &Qwen35TextConfig,
-    ) -> Result<Self> {
-        Self::pack_with_recurrent_profile(
-            weights,
-            config,
-            apxinf_metal::GdnRecurrentProfileV1::QkStaged128,
-        )
-    }
-
-    fn pack_with_recurrent_profile(
-        weights: &Qwen35TextWeights,
-        config: &Qwen35TextConfig,
-        recurrent_profile: apxinf_metal::GdnRecurrentProfileV1,
-    ) -> Result<Self> {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(config)?;
         if weights.layers.len() != 24 || weights.lm_head_weight.is_some() {
             return Err(Error::Other(
@@ -5316,21 +5193,19 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                     .into(),
             ));
         }
-        let initial_stack = Qwen35MetalW8LinearLayerStack3V1::pack_with_recurrent_profile(
+        let initial_stack = Qwen35MetalW8LinearLayerStack3V1::pack(
             weights,
             config,
             QWEN35_MLP_STACK3_BOUNDARY_INITIAL_STACK_V1,
-            recurrent_profile,
         )?;
         let boundaries = QWEN35_MLP_STACK3_BOUNDARY_REGIONS_V1
             .into_iter()
             .map(|(boundary_mlp_layer_index, stack_layer_indices)| {
-                Qwen35MetalW8MlpStack3BoundaryRegionV1::pack_with_recurrent_profile(
+                Qwen35MetalW8MlpStack3BoundaryRegionV1::pack(
                     weights,
                     config,
                     boundary_mlp_layer_index,
                     stack_layer_indices,
-                    recurrent_profile,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -5407,17 +5282,7 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
 
     fn stats(&self) -> Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
         Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
-            mechanism: match self.initial_stack.block.recurrent_profile() {
-                apxinf_metal::GdnRecurrentProfileV1::Legacy256 => {
-                    "metal-w8-mlp-stack3-boundary-tail-head-v1"
-                }
-                apxinf_metal::GdnRecurrentProfileV1::QkStaged128 => {
-                    "metal-w8-mlp-stack3-boundary-tail-head-gdn-qk-staged-v1"
-                }
-                apxinf_metal::GdnRecurrentProfileV1::LeaderBroadcast128 => {
-                    "invalid-unreachable-leader-broadcast-tail"
-                }
-            },
+            mechanism: "metal-w8-mlp-stack3-boundary-tail-head-v1",
             initial_stack: self.initial_stack.stats(),
             boundaries: self
                 .boundaries
@@ -7750,20 +7615,6 @@ mod tests {
         assert!(diagnostic.metal_w8_linear_layer_stacks_v1_stats().is_none());
         assert!(diagnostic.metal_w8_mlp_block_layer_stats().is_empty());
         assert!(diagnostic.metal_w8_lm_head_stats().is_none());
-
-        let qk_error =
-            GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_qk_staged_v1(
-                config.clone(),
-                tensors.clone(),
-                Device::Cpu,
-                16,
-            )
-            .err()
-            .expect("qk-staged tail-head route must propagate the fixed-shape lock");
-        let qk_error = qk_error.to_string();
-        assert!(qk_error.contains("stack3-v1 layers [0, 1, 2] construction failed"));
-        assert!(qk_error.contains("qk-staged v1 requires the accepted Qwen3.5-0.8B shape"));
-        assert!(qk_error.contains("got H=64/KH=2/VH=2/KD=32/VD=32/conv=4"));
 
         let mut untied_config = config;
         untied_config.text.tie_word_embeddings = false;

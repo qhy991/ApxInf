@@ -1,7 +1,6 @@
 use apxinf_metal::{
-    GdnDecodeState, GdnDimensions, GdnF32Weights, GdnRecurrentProfileV1,
-    MetalW8MlpStack3BoundaryV1, PackedW8GdnBlock, PackedW8LinearLayerBlock, PackedW8MlpBlock,
-    PackedW8MlpStack3BoundaryV1, W8GroupSize,
+    GdnDecodeState, GdnDimensions, GdnF32Weights, MetalW8MlpStack3BoundaryV1, PackedW8GdnBlock,
+    PackedW8LinearLayerBlock, PackedW8MlpBlock, PackedW8MlpStack3BoundaryV1, W8GroupSize,
 };
 
 fn values(elements: usize, multiplier: usize, modulus: usize, scale: f32) -> Vec<f32> {
@@ -200,7 +199,6 @@ fn metal_boundary_v1_matches_packed_output_and_all_three_states_in_one_transacti
     let expected_ledger = packed.buffer_ledger().unwrap();
 
     let mut metal = MetalW8MlpStack3BoundaryV1::from_packed(&packed).unwrap();
-    assert_eq!(metal.recurrent_profile(), GdnRecurrentProfileV1::Legacy256);
     assert_eq!(metal.buffer_ledger(), expected_ledger);
     metal.seed_decode_states(&states).unwrap();
     let actual = metal.decode(&input).unwrap().to_vec();
@@ -245,31 +243,6 @@ fn metal_boundary_v1_matches_packed_output_and_all_three_states_in_one_transacti
     assert_eq!(stats.last_state_commit_mask, 0b111);
     assert_eq!(stats.committed_stack_version, 1);
     assert!(!stats.terminal_error);
-}
-
-#[test]
-fn boundary_qk_staged_v1_rejects_non_qwen35_08b_shape_before_metal() {
-    let (dims, layer0) = layer_fixture(0);
-    let (_, layer1) = layer_fixture(1);
-    let (_, layer2) = layer_fixture(2);
-    let packed = PackedW8MlpStack3BoundaryV1::new(
-        boundary_mlp(dims.hidden_size, 128),
-        &vec![1.0; dims.hidden_size],
-        1.0e-6,
-        [layer0, layer1, layer2],
-    )
-    .unwrap();
-
-    let error = MetalW8MlpStack3BoundaryV1::from_packed_gdn_qk_staged_v1(&packed)
-        .err()
-        .expect("qk-staged boundary must reject an unqualified shape");
-
-    assert!(error
-        .to_string()
-        .contains("requires the accepted Qwen3.5-0.8B shape"));
-    assert!(error
-        .to_string()
-        .contains("got H=64/KH=2/VH=2/KD=32/VD=32/conv=4"));
 }
 
 #[test]
