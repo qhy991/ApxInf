@@ -27,3 +27,24 @@ pub(crate) fn parse_binary_env(name: &str) -> std::result::Result<bool, String> 
         Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} must be UTF-8")),
     }
 }
+
+#[cfg(all(test, feature = "cuda"))]
+mod tests {
+    use super::parse_binary_env;
+
+    #[test]
+    fn binary_environment_contract_rejects_non_binary_values() {
+        const NAME: &str = "APXINF_TEST_QWEN25_BINARY_ENV";
+        std::env::remove_var(NAME);
+        assert!(!parse_binary_env(NAME).unwrap());
+        std::env::set_var(NAME, "0");
+        assert!(!parse_binary_env(NAME).unwrap());
+        std::env::set_var(NAME, "1");
+        assert!(parse_binary_env(NAME).unwrap());
+        std::env::set_var(NAME, "true");
+        assert!(parse_binary_env(NAME)
+            .unwrap_err()
+            .contains("must be 0 or 1"));
+        std::env::remove_var(NAME);
+    }
+}

@@ -35,7 +35,8 @@ fn load_qwen25_omni(
     {
         let chunk_tactics = qwen25_omni_chunk_tactics_enabled()?;
         let m1_packed_mlp = qwen25_omni_m1_packed_mlp_enabled()?;
-        if chunk_tactics || m1_packed_mlp {
+        let m1_gemv_tactics = qwen25_omni_m1_gemv_tactics_enabled()?;
+        if chunk_tactics || m1_packed_mlp || m1_gemv_tactics {
             use crate::accelerator::cuda::{downcast, kernels};
             let cuda = downcast(&*backend)
                 .ok_or_else(|| Error::Other("Qwen2.5-Omni tactics require CudaBackend".into()))?;
@@ -98,6 +99,25 @@ fn load_qwen25_omni(
                     milliseconds: 0.10788639634847641,
                 });
             }
+            if m1_gemv_tactics {
+                tactics.extend([
+                    Tactic {
+                        m: 1,
+                        n: 2048,
+                        k: 2048,
+                        heuristic_rank: 1,
+                        milliseconds: 0.01777760125696659,
+                    },
+                    Tactic {
+                        m: 1,
+                        n: 2048,
+                        k: 11008,
+                        heuristic_rank: 3,
+                        milliseconds: 0.06169920042157173,
+                    },
+                ]);
+                eprintln!("ApxInf Qwen2.5-Omni M1 GEMV tactics: WO rank1 and Down rank3");
+            }
             kernels::gemm::install_cublaslt_bf16_tactics(cuda.context(), &tactics)?;
         }
     }
@@ -120,6 +140,11 @@ fn qwen25_omni_chunk_tactics_enabled() -> Result<bool> {
 #[cfg(feature = "cuda")]
 fn qwen25_omni_m1_packed_mlp_enabled() -> Result<bool> {
     crate::qwen25_omni::parse_binary_env("APXINF_QWEN25_M1_PACKED_MLP").map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
+fn qwen25_omni_m1_gemv_tactics_enabled() -> Result<bool> {
+    crate::qwen25_omni::parse_binary_env("APXINF_QWEN25_M1_GEMV_TACTICS").map_err(Error::Other)
 }
 
 pub fn validate_qwen25_omni_load_options(device: Device, options: &LoadOptions) -> Result<()> {

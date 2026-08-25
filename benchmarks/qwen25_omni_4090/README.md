@@ -120,7 +120,8 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_QWEN25_CHUNKED_PREFILL=1` and `APXINF_QWEN25_DECODE_GRAPH=1`, plus
 `APXINF_QWEN25_GPU_ARGMAX=1`, `APXINF_QWEN25_EAGER_GPU_ARGMAX=1` and
 `APXINF_QWEN25_GPU_LAST_ROW=1`, plus
-`APXINF_QWEN25_M1_PACKED_MLP=1`. The decode
+`APXINF_QWEN25_M1_PACKED_MLP=1` and
+`APXINF_QWEN25_M1_GEMV_TACTICS=1`. The decode
 graph and exact two-stage GPU token selection are deliberately restricted to
 SM89 one-token decode with `start_pos < 3072`; prefill and longer-KV decode
 keep the accepted ordinary path except for the explicit long-decode selector.
@@ -139,7 +140,11 @@ fails closed. The M1 packed-MLP selector requires the decode graph, concatenates
 Gate/Up weights at model load, installs one exact RTX 4090 cuBLASLt tactic for
 `[1,2048] @ [2048,22016]`, and captures one packed projection plus a bit-exact
 SiLU/multiply node. Eager decode and prefill keep separate Gate/Up weights and
-their prior tactics. `APXINF_QWEN25_PACKED_QKV=1` selects one
+their prior tactics. The M1 GEMV selector installs exact RTX 4090 cuBLASLt
+tactics for the one-token WO `[1,2048] @ [2048,2048]` and Down
+`[1,11008] @ [11008,2048]` projections. Exact keys prevent those tactics from
+changing prefill or unmatched shapes; unset or `0` retains vendor selection.
+`APXINF_QWEN25_PACKED_QKV=1` selects one
 packed QKV owner shared by both paths. `APXINF_QWEN25_FUSED_TMROPE_KV=1`
 publishes rotated K and unchanged V directly to their caches during graph
 decode. `APXINF_QWEN25_FUSED_SILU_MUL=1` replaces separate Gate SiLU and
