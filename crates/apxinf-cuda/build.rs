@@ -448,6 +448,16 @@ fn main() {
                 }
                 if fa2_sm80 {
                     fa2_sources.push(fa2_hdim128_causal);
+                    if !fa2_bf16_hdim96_only {
+                        let fa2_split_hdim256 = fa2_root
+                            .join("flash_attn/flash_fwd_split_hdim256_bf16_sm80.cu");
+                        assert!(
+                            fa2_split_hdim256.is_file(),
+                            "vendored FlashAttention-2 split-KV source is incomplete under {}",
+                            fa2_root.display()
+                        );
+                        fa2_sources.push(fa2_split_hdim256);
+                    }
                 }
                 if fa2_f16_sm100 {
                     println!("cargo:rustc-cfg=apxinf_fa2_f16_sm100");
@@ -583,6 +593,9 @@ fn main() {
                         }
                         if fa2_sm80 {
                             cmd.arg("-DAPXINF_FA2_CAUSAL_HDIM128=1");
+                            if !fa2_bf16_hdim96_only {
+                                cmd.arg("-DAPXINF_FA2_SM80=1");
+                            }
                         }
                         for include in &fa2_includes {
                             cmd.arg(format!("-I{}", include.display()));
