@@ -2,7 +2,10 @@ use super::{
     checked_sum, f32_bytes, rms_norm, GdnDecodeState, GdnDimensions, MetalW8Error,
     PackedW8LinearLayerBlock,
 };
-use crate::{PackedW8MlpBlock, W8GroupSize};
+use crate::{
+    GdnRecurrentProfileV1, PackedW8MlpBlock, W8GroupSize, QWEN35_GDN_KEY_DIM_V1,
+    QWEN35_GDN_KEY_HEADS_V1, QWEN35_GDN_VALUE_DIM_V1, QWEN35_GDN_VALUE_HEADS_V1,
+};
 
 const STACK_DEPTH: usize = 3;
 
@@ -74,6 +77,7 @@ pub struct MlpStack3BoundaryMetalStatsV1 {
 /// No model loader or default runtime constructs this versioned type.
 pub struct MetalW8MlpStack3BoundaryV1 {
     dims: GdnDimensions,
+    recurrent_profile: GdnRecurrentProfileV1,
     inner: platform::BoundaryHandleV1,
     output: Vec<f32>,
     seeded: bool,
@@ -324,17 +328,40 @@ impl PackedW8MlpStack3BoundaryV1 {
 
 impl MetalW8MlpStack3BoundaryV1 {
     pub fn from_packed(weights: &PackedW8MlpStack3BoundaryV1) -> Result<Self, MetalW8Error> {
+        Self::from_packed_with_recurrent_profile_v1(weights, GdnRecurrentProfileV1::Legacy256)
+    }
+
+    /// Explicit Qwen3.5-only continuation lane selected by the accepted
+    /// count-18 primitive screen. Ordinary constructors remain on legacy-256.
+    pub fn from_packed_gdn_qk_staged_v1(
+        weights: &PackedW8MlpStack3BoundaryV1,
+    ) -> Result<Self, MetalW8Error> {
+        Self::from_packed_with_recurrent_profile_v1(weights, GdnRecurrentProfileV1::QkStaged128)
+    }
+
+    fn from_packed_with_recurrent_profile_v1(
+        weights: &PackedW8MlpStack3BoundaryV1,
+        recurrent_profile: GdnRecurrentProfileV1,
+    ) -> Result<Self, MetalW8Error> {
         validate_u32_contract(weights)?;
+        if recurrent_profile == GdnRecurrentProfileV1::QkStaged128 {
+            validate_qwen35_qk_staged_shape(weights.dims)?;
+        }
         let buffer_ledger = weights.buffer_ledger()?;
         Ok(Self {
             dims: weights.dims,
-            inner: platform::BoundaryHandleV1::new(weights)?,
+            recurrent_profile,
+            inner: platform::BoundaryHandleV1::new(weights, recurrent_profile)?,
             output: vec![0.0; weights.hidden_size()],
             seeded: false,
             terminal_error: false,
             stats: MlpStack3BoundaryMetalStatsV1::default(),
             buffer_ledger,
         })
+    }
+
+    pub fn recurrent_profile(&self) -> GdnRecurrentProfileV1 {
+        self.recurrent_profile
     }
 
     pub fn seed_decode_states(
@@ -460,6 +487,27 @@ impl MetalW8MlpStack3BoundaryV1 {
         }
         execution.result
     }
+}
+
+fn validate_qwen35_qk_staged_shape(dims: GdnDimensions) -> Result<(), MetalW8Error> {
+    if dims.hidden_size != 1024
+        || dims.key_heads != QWEN35_GDN_KEY_HEADS_V1
+        || dims.value_heads != QWEN35_GDN_VALUE_HEADS_V1
+        || dims.key_dim != QWEN35_GDN_KEY_DIM_V1
+        || dims.value_dim != QWEN35_GDN_VALUE_DIM_V1
+        || dims.conv_kernel_size != 4
+    {
+        return Err(MetalW8Error::new(format!(
+            "Metal W8 MLP→Stack3 boundary qk-staged v1 requires the accepted Qwen3.5-0.8B shape H=1024/KH=16/VH=16/KD=128/VD=128/conv=4, got H={}/KH={}/VH={}/KD={}/VD={}/conv={}",
+            dims.hidden_size,
+            dims.key_heads,
+            dims.value_heads,
+            dims.key_dim,
+            dims.value_dim,
+            dims.conv_kernel_size
+        )));
+    }
+    Ok(())
 }
 
 fn validate_precision_contract(
@@ -773,8 +821,8 @@ mod tests {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock,
-        PackedW8MlpStack3BoundaryV1, STACK_DEPTH,
+        GdnDecodeState, GdnDimensions, GdnRecurrentProfileV1, MetalW8Error,
+        PackedW8LinearLayerBlock, PackedW8MlpStack3BoundaryV1, STACK_DEPTH,
     };
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
@@ -902,6 +950,14 @@ mod platform {
             error: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
+        fn apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_qk_staged_v1(
+            boundary: *const BoundaryMlpDescriptorV1,
+            layers: *const BoundaryStackLayerDescriptorV1,
+            layer_count: u32,
+            output: *mut *mut c_void,
+            error: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn apxinf_metal_w8_mlp_stack3_boundary_seed_states_v1(
             handle: *mut c_void,
             states: *const BoundaryStateDescriptorV1,
@@ -933,7 +989,10 @@ mod platform {
     pub(super) struct BoundaryHandleV1(NonNull<c_void>);
 
     impl BoundaryHandleV1 {
-        pub(super) fn new(weights: &PackedW8MlpStack3BoundaryV1) -> Result<Self, MetalW8Error> {
+        pub(super) fn new(
+            weights: &PackedW8MlpStack3BoundaryV1,
+            recurrent_profile: GdnRecurrentProfileV1,
+        ) -> Result<Self, MetalW8Error> {
             let boundary = BoundaryMlpDescriptorV1 {
                 gate_up_weights: weights.boundary_mlp.gate_up.values().as_ptr(),
                 gate_up_scales: weights.boundary_mlp.gate_up.scales().as_ptr(),
@@ -951,14 +1010,33 @@ mod platform {
             let mut output = std::ptr::null_mut();
             let mut error = [0 as c_char; ERROR_CAPACITY];
             let status = unsafe {
-                apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
-                    &boundary,
-                    layers.as_ptr(),
-                    layers.len() as u32,
-                    &mut output,
-                    error.as_mut_ptr(),
-                    error.len(),
-                )
+                match recurrent_profile {
+                    GdnRecurrentProfileV1::Legacy256 => {
+                        apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
+                            &boundary,
+                            layers.as_ptr(),
+                            layers.len() as u32,
+                            &mut output,
+                            error.as_mut_ptr(),
+                            error.len(),
+                        )
+                    }
+                    GdnRecurrentProfileV1::QkStaged128 => {
+                        apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_qk_staged_v1(
+                            &boundary,
+                            layers.as_ptr(),
+                            layers.len() as u32,
+                            &mut output,
+                            error.as_mut_ptr(),
+                            error.len(),
+                        )
+                    }
+                    GdnRecurrentProfileV1::LeaderBroadcast128 => {
+                        return Err(MetalW8Error::new(
+                            "leader-broadcast is not authorized for the production-topology MLP→Stack3 boundary lane",
+                        ));
+                    }
+                }
             };
             if status != 0 {
                 return Err(bridge_error(
@@ -1097,7 +1175,8 @@ mod platform {
 #[cfg(not(target_os = "macos"))]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8MlpStack3BoundaryV1, STACK_DEPTH,
+        GdnDecodeState, GdnDimensions, GdnRecurrentProfileV1, MetalW8Error,
+        PackedW8MlpStack3BoundaryV1, STACK_DEPTH,
     };
 
     #[derive(Clone, Copy, Debug, Default)]
@@ -1120,7 +1199,10 @@ mod platform {
     pub(super) struct BoundaryHandleV1;
 
     impl BoundaryHandleV1 {
-        pub(super) fn new(_weights: &PackedW8MlpStack3BoundaryV1) -> Result<Self, MetalW8Error> {
+        pub(super) fn new(
+            _weights: &PackedW8MlpStack3BoundaryV1,
+            _recurrent_profile: GdnRecurrentProfileV1,
+        ) -> Result<Self, MetalW8Error> {
             Err(MetalW8Error::new(
                 "Metal W8 MLP→Stack3 boundary v1 requires macOS",
             ))

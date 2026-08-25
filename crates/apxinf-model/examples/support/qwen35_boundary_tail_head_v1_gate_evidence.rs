@@ -18,7 +18,7 @@ const PROFILE_BYTES: &[u8] =
     include_bytes!("../../../../configs/hf-onboarding/qwen35-0.8b-macos-cpu.json");
 const GENERAL_SOURCE_BYTES: &[u8] = include_bytes!("../../src/qwen35/general.rs");
 const FROZEN_GENERAL_SOURCE_SHA256: &str =
-    "2c58b87df49cc483915f87ad7607c5b537f34516cfc264552b989fe976bb6f7a";
+    "26d6c010f0bb7f8f407643ee9fd9a5eb0499962152d200c56489ebd9475779dc";
 const LLM_TRAIT_SOURCE_BYTES: &[u8] = include_bytes!("../../src/llm_trait.rs");
 const APXINF_MODEL_LIB_SOURCE_BYTES: &[u8] = include_bytes!("../../src/lib.rs");
 const APXINF_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!("../../Cargo.toml");
@@ -52,8 +52,13 @@ const APXINF_CORE_STORAGE_SOURCE_BYTES: &[u8] =
 const APXINF_CORE_TENSOR_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-core/src/tensor.rs");
 const GATE_EVIDENCE_SOURCE_BYTES: &[u8] =
     include_bytes!("qwen35_boundary_tail_head_v1_gate_evidence.rs");
+const PRODUCTION_AC_PREDECLARATION_BYTES: &[u8] = include_bytes!(
+    "../../../apxinf-metal/evidence/next-hotspot/qwen35-gdn-recurrent-qk-staged-production-ac-v1-predeclared-gate-v1-20260825.json"
+);
 const APXINF_METAL_LIB_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-metal/src/lib.rs");
 const GDN_RUST_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-metal/src/gdn.rs");
+const GDN_RECURRENT_PROFILE_RUST_SOURCE_BYTES: &[u8] =
+    include_bytes!("../../../apxinf-metal/src/gdn_recurrent_profile_v1.rs");
 const LINEAR_LAYER_RUST_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/linear_layer.rs");
 const STACK3_RUST_SOURCE_BYTES: &[u8] =
@@ -72,6 +77,8 @@ const MLP_STACK3_BOUNDARY_BRIDGE_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_mlp_stack3_boundary_v1_bridge.mm");
 const TAIL_MLP_HEAD_V1_BRIDGE_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_tail_mlp_head_v1_bridge.mm");
+const GDN_RECURRENT_COUNT18_PROFILE_BRIDGE_SOURCE_BYTES: &[u8] =
+    include_bytes!("../../../apxinf-metal/src/metal_gdn_recurrent_count18_profile_v1_bridge.mm");
 const METAL_W8_MLP_BRIDGE_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_mlp_bridge.mm");
 const METAL_W8_HEAD_BRIDGE_SOURCE_BYTES: &[u8] =
@@ -90,7 +97,7 @@ const METAL_W8_LINEAR_LAYER_SOURCE_BYTES: &[u8] =
 const METAL_W8_GDN_OUT_G32_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_gdn_out_g32.metal");
 const MAX_CACHE_ENTRIES: usize = 4096;
-const SOURCE_SET_ID: &str = "boundary-tail-head-v1-explicit-audited-source-set-v3";
+const SOURCE_SET_ID: &str = "boundary-tail-head-v1-explicit-audited-source-set-v4";
 const SOURCE_SET_COVERAGE: &str = "explicit-non-transitive-source-set-v1";
 
 #[derive(Clone, Copy)]
@@ -102,7 +109,7 @@ struct BuildSourceSpec {
     metal_shader: bool,
 }
 
-fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 47] {
+fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 50] {
     [
         BuildSourceSpec {
             receipt_name: "gate_evidence",
@@ -110,6 +117,13 @@ fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 47] {
             manifest_relative_path:
                 "examples/support/qwen35_boundary_tail_head_v1_gate_evidence.rs",
             embedded_bytes: GATE_EVIDENCE_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "production_ac_predeclaration",
+            label: "GDN qk-staged production A/C predeclaration",
+            manifest_relative_path: "../apxinf-metal/evidence/next-hotspot/qwen35-gdn-recurrent-qk-staged-production-ac-v1-predeclared-gate-v1-20260825.json",
+            embedded_bytes: PRODUCTION_AC_PREDECLARATION_BYTES,
             metal_shader: false,
         },
         BuildSourceSpec {
@@ -316,6 +330,13 @@ fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 47] {
             metal_shader: false,
         },
         BuildSourceSpec {
+            receipt_name: "gdn_recurrent_profile_rust",
+            label: "Metal GDN recurrent profile Rust source",
+            manifest_relative_path: "../apxinf-metal/src/gdn_recurrent_profile_v1.rs",
+            embedded_bytes: GDN_RECURRENT_PROFILE_RUST_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
             receipt_name: "linear_layer_rust",
             label: "Metal linear-layer Rust source",
             manifest_relative_path: "../apxinf-metal/src/linear_layer.rs",
@@ -400,6 +421,14 @@ fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 47] {
             metal_shader: true,
         },
         BuildSourceSpec {
+            receipt_name: "gdn_recurrent_count18_profile_bridge",
+            label: "Metal GDN recurrent count-18 profile bridge source",
+            manifest_relative_path:
+                "../apxinf-metal/src/metal_gdn_recurrent_count18_profile_v1_bridge.mm",
+            embedded_bytes: GDN_RECURRENT_COUNT18_PROFILE_BRIDGE_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
             receipt_name: "metal_w8_matvec",
             label: "Metal W8 matvec shader source",
             manifest_relative_path: "../apxinf-metal/src/metal_w8_matvec.metal",
@@ -449,8 +478,9 @@ fn source_specs_for_set(source_set_id: &str) -> Result<Vec<BuildSourceSpec>, Box
 }
 
 fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>> {
-    const EXPECTED_NAMES: [&str; 47] = [
+    const EXPECTED_NAMES: [&str; 50] = [
         "gate_evidence",
+        "production_ac_predeclaration",
         "apxinf_model_lib",
         "apxinf_model_manifest",
         "accelerator",
@@ -480,6 +510,7 @@ fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>
         "apxinf_metal_lib",
         "apxinf_metal_build",
         "gdn_rust",
+        "gdn_recurrent_profile_rust",
         "linear_layer_rust",
         "stack3_rust",
         "mlp_stack3_boundary_rust",
@@ -491,6 +522,7 @@ fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>
         "stack3_bridge",
         "mlp_stack3_boundary_bridge",
         "tail_mlp_head_v1_bridge",
+        "gdn_recurrent_count18_profile_bridge",
         "metal_w8_head",
         "metal_w8_matvec",
         "metal_w8_mlp",
@@ -529,7 +561,7 @@ fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>
         })
         .map(|spec| spec.manifest_relative_path.to_string())
         .collect::<BTreeSet<_>>();
-    if declared_build_inputs.len() != 13 || attested_build_inputs != declared_build_inputs {
+    if declared_build_inputs.len() != 14 || attested_build_inputs != declared_build_inputs {
         return Err(invalid(
             "boundary-tail v1 explicit source set does not exactly cover apxinf-metal build inputs",
         ));
@@ -1488,18 +1520,20 @@ mod tests {
             .iter()
             .map(|spec| spec.receipt_name)
             .collect::<Vec<_>>();
-        assert_eq!(names.len(), 47);
+        assert_eq!(names.len(), 50);
         assert_eq!(
             names.iter().copied().collect::<BTreeSet<_>>().len(),
             names.len()
         );
         for required in [
             "gate_evidence",
+            "production_ac_predeclaration",
             "apxinf_model_lib",
             "apxinf_model_manifest",
             "accelerator",
             "profiling",
             "general",
+            "gdn_recurrent_profile_rust",
             "llm_trait",
             "qwen35_mod",
             "qwen35_config",
@@ -1535,6 +1569,7 @@ mod tests {
             "stack3_bridge",
             "mlp_stack3_boundary_bridge",
             "tail_mlp_head_v1_bridge",
+            "gdn_recurrent_count18_profile_bridge",
             "metal_w8_gdn",
             "metal_w8_mlp",
             "metal_w8_linear_layer",

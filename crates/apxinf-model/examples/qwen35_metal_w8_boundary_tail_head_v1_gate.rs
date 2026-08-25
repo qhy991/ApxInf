@@ -1,6 +1,7 @@
-//! Same-binary four-mode gate for the explicit Qwen3.5 MLP→Stack3 boundary
-//! body + fused tail-head v1 diagnostic. This example is not reachable from
-//! CLI, AutoModel, registry, or any default constructor.
+//! Same-binary six-mode gate for the explicit Qwen3.5 MLP→Stack3 boundary
+//! body + fused tail-head v1 diagnostic, including the opt-in GDN Q/K-staged
+//! continuation lane. This example is not reachable from CLI, AutoModel,
+//! registry, or any default constructor.
 
 #[path = "support/qwen35_boundary_tail_head_v1_gate_evidence.rs"]
 mod gate_evidence;
@@ -31,8 +32,12 @@ use apxinf_tokenizer::{ChatMessage, Tokenizer};
 const CPU_TEACHER_FORMAT: &str = "apxinf-qwen35-metal-w8-boundary-tail-head-v1-cpu-teacher-v2";
 const CANDIDATE_TEACHER_FORMAT: &str =
     "apxinf-qwen35-metal-w8-boundary-tail-head-v1-teacher-gate-v2";
+const QK_STAGED_TEACHER_FORMAT: &str =
+    "apxinf-qwen35-metal-w8-boundary-tail-head-v1-gdn-qk-staged-v1-teacher-gate-v1";
 const CPU_FREE_FORMAT: &str = "apxinf-qwen35-metal-w8-boundary-tail-head-v1-cpu-free-run-v2";
 const CANDIDATE_FREE_FORMAT: &str = "apxinf-qwen35-metal-w8-boundary-tail-head-v1-free-run-gate-v2";
+const QK_STAGED_FREE_FORMAT: &str =
+    "apxinf-qwen35-metal-w8-boundary-tail-head-v1-gdn-qk-staged-v1-free-run-gate-v1";
 const SOURCE_LOCK_FORMAT: &str = "apxinf-hf-source-lock-v1";
 const REPO_ID: &str = "Qwen/Qwen3.5-0.8B";
 const LOCKED_REVISION: &str = "2fc06364715b967f1860aea9cf38778875588b17";
@@ -71,8 +76,69 @@ struct PinnedOutputTarget {
 enum Mode {
     CpuTeacher,
     BoundaryTailV1Teacher,
+    BoundaryTailQkStagedV1Teacher,
     CpuFree,
     BoundaryTailV1Free,
+    BoundaryTailQkStagedV1Free,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CandidateProfile {
+    Legacy256,
+    QkStaged128,
+}
+
+impl CandidateProfile {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Legacy256 => "legacy-256",
+            Self::QkStaged128 => "qk-staged-128",
+        }
+    }
+
+    const fn kernel(self) -> &'static str {
+        match self {
+            Self::Legacy256 => "gdn_recurrent_update",
+            Self::QkStaged128 => "gdn_recurrent_update_qk_staged_v1",
+        }
+    }
+
+    const fn threads_per_threadgroup(self) -> usize {
+        match self {
+            Self::Legacy256 => 256,
+            Self::QkStaged128 => 128,
+        }
+    }
+
+    const fn outer_mechanism(self) -> &'static str {
+        match self {
+            Self::Legacy256 => "metal-w8-mlp-stack3-boundary-tail-head-v1",
+            Self::QkStaged128 => "metal-w8-mlp-stack3-boundary-tail-head-gdn-qk-staged-v1",
+        }
+    }
+
+    const fn initial_mechanism(self) -> &'static str {
+        match self {
+            Self::Legacy256 => "metal-w8-linear-layer-stack3-v1",
+            Self::QkStaged128 => "metal-w8-linear-layer-stack3-gdn-qk-staged-v1",
+        }
+    }
+
+    const fn boundary_mechanism(self) -> &'static str {
+        match self {
+            Self::Legacy256 => "metal-w8-mlp-stack3-boundary-v1",
+            Self::QkStaged128 => "metal-w8-mlp-stack3-boundary-gdn-qk-staged-v1",
+        }
+    }
+
+    const fn constructor(self) -> &'static str {
+        match self {
+            Self::Legacy256 => {
+                "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1"
+            }
+            Self::QkStaged128 => "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_qk_staged_v1",
+        }
+    }
 }
 
 impl Mode {
@@ -80,8 +146,10 @@ impl Mode {
         match value {
             "cpu-teacher" => Ok(Self::CpuTeacher),
             "boundary-tail-v1-teacher" => Ok(Self::BoundaryTailV1Teacher),
+            "boundary-tail-gdn-qk-staged-v1-teacher" => Ok(Self::BoundaryTailQkStagedV1Teacher),
             "cpu-free" => Ok(Self::CpuFree),
             "boundary-tail-v1-free" => Ok(Self::BoundaryTailV1Free),
+            "boundary-tail-gdn-qk-staged-v1-free" => Ok(Self::BoundaryTailQkStagedV1Free),
             other => Err(format!("invalid --mode {other:?}")),
         }
     }
@@ -90,8 +158,12 @@ impl Mode {
         match self {
             Self::CpuTeacher => "cpu_teacher",
             Self::BoundaryTailV1Teacher => "metal_w8_boundary_tail_v1_teacher_forced",
+            Self::BoundaryTailQkStagedV1Teacher => {
+                "metal_w8_boundary_tail_gdn_qk_staged_v1_teacher_forced"
+            }
             Self::CpuFree => "cpu_free_run",
             Self::BoundaryTailV1Free => "metal_w8_boundary_tail_v1_free_run",
+            Self::BoundaryTailQkStagedV1Free => "metal_w8_boundary_tail_gdn_qk_staged_v1_free_run",
         }
     }
 
@@ -99,17 +171,38 @@ impl Mode {
         match self {
             Self::CpuTeacher => CPU_TEACHER_FORMAT,
             Self::BoundaryTailV1Teacher => CANDIDATE_TEACHER_FORMAT,
+            Self::BoundaryTailQkStagedV1Teacher => QK_STAGED_TEACHER_FORMAT,
             Self::CpuFree => CPU_FREE_FORMAT,
             Self::BoundaryTailV1Free => CANDIDATE_FREE_FORMAT,
+            Self::BoundaryTailQkStagedV1Free => QK_STAGED_FREE_FORMAT,
         }
     }
 
     const fn requires_input_receipt(self) -> bool {
-        matches!(self, Self::BoundaryTailV1Teacher | Self::BoundaryTailV1Free)
+        self.candidate_profile().is_some()
     }
 
     const fn is_candidate(self) -> bool {
         self.requires_input_receipt()
+    }
+
+    const fn is_teacher(self) -> bool {
+        matches!(
+            self,
+            Self::CpuTeacher | Self::BoundaryTailV1Teacher | Self::BoundaryTailQkStagedV1Teacher
+        )
+    }
+
+    const fn candidate_profile(self) -> Option<CandidateProfile> {
+        match self {
+            Self::BoundaryTailV1Teacher | Self::BoundaryTailV1Free => {
+                Some(CandidateProfile::Legacy256)
+            }
+            Self::BoundaryTailQkStagedV1Teacher | Self::BoundaryTailQkStagedV1Free => {
+                Some(CandidateProfile::QkStaged128)
+            }
+            Self::CpuTeacher | Self::CpuFree => None,
+        }
     }
 }
 
@@ -526,13 +619,13 @@ fn boundary_tail_generation_receipt_is_exact(
     receipt: &Value,
     body_tail_calls: usize,
     phase: TailPhaseCounts,
+    profile: CandidateProfile,
 ) -> bool {
     if phase.prefill != 0
         || phase.decode.checked_add(phase.teacher) != Some(body_tail_calls)
         || receipt.get("format").and_then(Value::as_str)
             != Some("apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1")
-        || receipt.get("mechanism").and_then(Value::as_str)
-            != Some("metal-w8-mlp-stack3-boundary-tail-head-v1")
+        || receipt.get("mechanism").and_then(Value::as_str) != Some(profile.outer_mechanism())
         || receipt
             .get("cpu_full_attention_and_kv")
             .and_then(Value::as_bool)
@@ -585,8 +678,7 @@ fn boundary_tail_generation_receipt_is_exact(
         return false;
     };
     let initial_valid = initial.get("layer_indices") == Some(&json!([0, 1, 2]))
-        && initial.get("mechanism").and_then(Value::as_str)
-            == Some("metal-w8-linear-layer-stack3-v1")
+        && initial.get("mechanism").and_then(Value::as_str) == Some(profile.initial_mechanism())
         && initial.get("prefill_seed_calls") == Some(&json!([1, 1, 1]))
         && initial.get("decode_calls").and_then(Value::as_u64) == Some(calls)
         && initial.get("successful_decodes").and_then(Value::as_u64) == Some(calls)
@@ -619,7 +711,7 @@ fn boundary_tail_generation_receipt_is_exact(
                     == Some(boundary_mlp_layer_index as u64)
                     && entry.get("stack_layer_indices") == Some(&json!(stack_layer_indices))
                     && entry.get("mechanism").and_then(Value::as_str)
-                        == Some("metal-w8-mlp-stack3-boundary-v1")
+                        == Some(profile.boundary_mechanism())
                     && entry.get("prefill_seed_calls") == Some(&json!([1, 1, 1]))
                     && entry.get("decode_calls").and_then(Value::as_u64) == Some(calls)
                     && entry.get("successful_decodes").and_then(Value::as_u64) == Some(calls)
@@ -763,6 +855,7 @@ fn boundary_tail_path_checks(
     generation_receipt: &Value,
     body_tail_calls: usize,
     phase: TailPhaseCounts,
+    profile: CandidateProfile,
 ) -> BoundaryTailPathChecks {
     let calls = body_tail_calls;
     let triple = calls.checked_mul(3);
@@ -841,9 +934,8 @@ fn boundary_tail_path_checks(
         schedule_valid: stats.initial_stack.layer_indices == [0, 1, 2]
             && stats_boundaries == BOUNDARY_REGIONS
             && stats.tail_layer_index == 23,
-        mechanism_and_precision_valid: stats.mechanism
-            == "metal-w8-mlp-stack3-boundary-tail-head-v1"
-            && stats.initial_stack.mechanism == "metal-w8-linear-layer-stack3-v1"
+        mechanism_and_precision_valid: stats.mechanism == profile.outer_mechanism()
+            && stats.initial_stack.mechanism == profile.initial_mechanism()
             && stats
                 .initial_stack
                 .quantization
@@ -851,7 +943,7 @@ fn boundary_tail_path_checks(
                 .copied()
                 .all(quantization_profile_is_exact)
             && stats.boundaries.iter().all(|region| {
-                region.mechanism == "metal-w8-mlp-stack3-boundary-v1"
+                region.mechanism == profile.boundary_mechanism()
                     && region
                         .quantization
                         .iter()
@@ -865,6 +957,7 @@ fn boundary_tail_path_checks(
             generation_receipt,
             body_tail_calls,
             phase,
+            profile,
         ),
         terminal_clear: !stats.terminal_error
             && generation_receipt
@@ -1200,7 +1293,7 @@ fn usage() -> &'static str {
     "Usage: qwen35_metal_w8_boundary_tail_head_v1_gate \
   --model-dir OFFICIAL_LOCAL_QWEN35_0_8B \
   --source-lock SOURCE_LOCK.json \
-  --mode cpu-teacher|boundary-tail-v1-teacher|cpu-free|boundary-tail-v1-free \
+  --mode cpu-teacher|boundary-tail-v1-teacher|boundary-tail-gdn-qk-staged-v1-teacher|cpu-free|boundary-tail-v1-free|boundary-tail-gdn-qk-staged-v1-free \
   [--input-receipt CPU_RECEIPT.json] \
   --output NEW_RECEIPT.json"
 }
@@ -1531,10 +1624,12 @@ fn generation_profile_json(
 fn free_timing_classification(mode: Mode) -> &'static str {
     match mode {
         Mode::CpuFree => "CPU reference single-pass diagnostic timing only; never promotion evidence",
-        Mode::BoundaryTailV1Free => {
+        Mode::BoundaryTailV1Free | Mode::BoundaryTailQkStagedV1Free => {
             "candidate-only single pass under an uncontrolled host; never formal or promotion evidence"
         }
-        Mode::CpuTeacher | Mode::BoundaryTailV1Teacher => {
+        Mode::CpuTeacher
+        | Mode::BoundaryTailV1Teacher
+        | Mode::BoundaryTailQkStagedV1Teacher => {
             unreachable!("free timing classification is only defined for free modes")
         }
     }
@@ -1615,7 +1710,7 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
         let mut cpu_model =
             GeneralQwen35::from_weights(config.clone(), tensors.clone(), Device::Cpu, max_context)?;
         let oracle = match args.mode {
-            Mode::BoundaryTailV1Teacher => {
+            Mode::BoundaryTailV1Teacher | Mode::BoundaryTailQkStagedV1Teacher => {
                 let (prefill_token, oracle) = compute_same_process_teacher_oracle(
                     &mut cpu_model,
                     &prompt_tokens,
@@ -1626,9 +1721,12 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
                     oracle,
                 }
             }
-            Mode::BoundaryTailV1Free => SameProcessCpuOracle::Free(
-                compute_same_process_free_oracle(&mut cpu_model, &prompt_tokens)?,
-            ),
+            Mode::BoundaryTailV1Free | Mode::BoundaryTailQkStagedV1Free => {
+                SameProcessCpuOracle::Free(compute_same_process_free_oracle(
+                    &mut cpu_model,
+                    &prompt_tokens,
+                )?)
+            }
             Mode::CpuTeacher | Mode::CpuFree => unreachable!("candidate mode checked above"),
         };
         drop(cpu_model);
@@ -1638,15 +1736,24 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
     };
     let same_process_cpu_oracle_ms = same_process_oracle_started.elapsed().as_secs_f64() * 1_000.0;
     let construct_started = Instant::now();
-    let mut model = if args.mode.is_candidate() {
-        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
-            config,
-            tensors,
-            Device::Cpu,
-            max_context,
-        )?
-    } else {
-        GeneralQwen35::from_weights(config, tensors, Device::Cpu, max_context)?
+    let mut model = match args.mode.candidate_profile() {
+        Some(CandidateProfile::Legacy256) => {
+            GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
+                config,
+                tensors,
+                Device::Cpu,
+                max_context,
+            )?
+        }
+        Some(CandidateProfile::QkStaged128) => {
+            GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_qk_staged_v1(
+                config,
+                tensors,
+                Device::Cpu,
+                max_context,
+            )?
+        }
+        None => GeneralQwen35::from_weights(config, tensors, Device::Cpu, max_context)?,
     };
     let model_construct_ms = construct_started.elapsed().as_secs_f64() * 1_000.0;
     let identity = json!({
@@ -1668,18 +1775,30 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
             "identity_fields": ["device", "inode", "size", "nlink", "ctime", "sha256"],
         },
         "cpu_reference_constructor": "GeneralQwen35::from_weights",
-        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1",
+        "candidate_constructors": {
+            "A_legacy_256": CandidateProfile::Legacy256.constructor(),
+            "C_qk_staged_128": CandidateProfile::QkStaged128.constructor(),
+        },
         "custody": custody.receipt_json(),
     });
+    let selected_profile = args.mode.candidate_profile();
     let setup = json!({
         "checkpoint_load_ms": checkpoint_load_ms,
         "model_construct_ms": model_construct_ms,
         "same_process_cpu_oracle_ms": same_process_cpu_oracle_ms,
         "same_process_cpu_oracle": args.mode.is_candidate(),
+        "selected_candidate": selected_profile.map(|profile| json!({
+            "profile": profile.label(),
+            "kernel": profile.kernel(),
+            "threads_per_threadgroup": profile.threads_per_threadgroup(),
+            "constructor": profile.constructor(),
+            "production_recurrent_dispatches_per_decode": 18,
+            "scope": "initial Stack3 plus five MLP-to-Stack3 boundaries; tail unchanged",
+        })),
         "timing_classification": "single-pass diagnostic timing only; never formal promotion evidence",
     });
-    let result = match args.mode {
-        Mode::CpuTeacher | Mode::BoundaryTailV1Teacher => run_teacher(
+    let result = if args.mode.is_teacher() {
+        run_teacher(
             &args,
             &mut model,
             &prompt_tokens,
@@ -1688,8 +1807,9 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
             same_process_cpu_oracle.as_ref(),
             identity,
             setup,
-        )?,
-        Mode::CpuFree | Mode::BoundaryTailV1Free => run_free(
+        )?
+    } else {
+        run_free(
             &args,
             &mut model,
             &prompt_tokens,
@@ -1697,7 +1817,7 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
             same_process_cpu_oracle.as_ref(),
             identity,
             setup,
-        )?,
+        )?
     };
     let result = finalize_run_with_end_custody(result, &output_target, || {
         custody.verify_unchanged_receipt()
@@ -1763,6 +1883,10 @@ fn run_teacher(
             input_receipt_guard: None,
         });
     }
+    let candidate_profile = args
+        .mode
+        .candidate_profile()
+        .ok_or("non-CPU teacher mode omitted its candidate profile")?;
 
     let aggregate = model
         .metal_w8_mlp_stack3_boundary_tail_head_v1_aggregate_ledger()
@@ -1779,6 +1903,7 @@ fn run_teacher(
         &prefill_generation,
         0,
         TailPhaseCounts::teacher(0),
+        candidate_profile,
     );
     let input_path = args
         .input_receipt
@@ -1845,6 +1970,7 @@ fn run_teacher(
         &final_generation,
         STEPS,
         TailPhaseCounts::teacher(STEPS),
+        candidate_profile,
     );
     let passed = evaluation.passed && prefill_checks.all_valid() && final_checks.all_valid();
     gate_evidence::verify_file_unchanged(
@@ -1858,6 +1984,8 @@ fn run_teacher(
         receipt: json!({
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
+            "candidate_profile": candidate_profile.label(),
+            "candidate_kernel": candidate_profile.kernel(),
             "identity": identity,
             "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
@@ -1932,7 +2060,7 @@ fn run_free(
     identity: Value,
     setup: Value,
 ) -> Result<RunResult, Box<dyn Error>> {
-    let input = if args.mode == Mode::BoundaryTailV1Free {
+    let input = if args.mode.is_candidate() {
         let input_path = args
             .input_receipt
             .as_ref()
@@ -1993,6 +2121,10 @@ fn run_free(
         });
     }
 
+    let candidate_profile = args
+        .mode
+        .candidate_profile()
+        .ok_or("non-CPU free mode omitted its candidate profile")?;
     let (input_path, input_attestation, expected) = input.expect("candidate input checked above");
     let mismatches = evaluate_free_trajectory(&expected, &generated)?;
     let stats = model
@@ -2011,6 +2143,7 @@ fn run_free(
         &generation,
         body_tail_calls,
         TailPhaseCounts::free(body_tail_calls),
+        candidate_profile,
     );
     let passed = mismatches.is_empty() && checks.all_valid();
     gate_evidence::verify_file_unchanged(
@@ -2022,6 +2155,8 @@ fn run_free(
         receipt: json!({
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
+            "candidate_profile": candidate_profile.label(),
+            "candidate_kernel": candidate_profile.kernel(),
             "identity": identity,
             "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
@@ -2218,11 +2353,15 @@ mod tests {
         }
     }
 
-    fn generation_receipt_fixture(calls: usize, phase: TailPhaseCounts) -> Value {
+    fn generation_receipt_fixture(
+        calls: usize,
+        phase: TailPhaseCounts,
+        profile: CandidateProfile,
+    ) -> Value {
         let transfer = calls * 4_096;
         json!({
             "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
-            "mechanism": "metal-w8-mlp-stack3-boundary-tail-head-v1",
+            "mechanism": profile.outer_mechanism(),
             "cpu_full_attention_and_kv": true,
             "cpu_prefill_all_24_layers": true,
             "metal_w8_initial_complete_linear_layer_stack3": true,
@@ -2233,7 +2372,7 @@ mod tests {
             "f32_tied_four_candidate_rerank": true,
             "initial_stack": {
                 "layer_indices": [0, 1, 2],
-                "mechanism": "metal-w8-linear-layer-stack3-v1",
+                "mechanism": profile.initial_mechanism(),
                 "prefill_seed_calls": [1, 1, 1],
                 "decode_calls": calls,
                 "successful_decodes": calls,
@@ -2252,7 +2391,7 @@ mod tests {
             "boundaries": BOUNDARY_REGIONS.map(|(boundary_mlp_layer_index, stack_layer_indices)| json!({
                 "boundary_mlp_layer_index": boundary_mlp_layer_index,
                 "stack_layer_indices": stack_layer_indices,
-                "mechanism": "metal-w8-mlp-stack3-boundary-v1",
+                "mechanism": profile.boundary_mechanism(),
                 "prefill_seed_calls": [1, 1, 1],
                 "decode_calls": calls,
                 "successful_decodes": calls,
@@ -2314,20 +2453,24 @@ mod tests {
     }
 
     #[test]
-    fn four_modes_have_distinct_versioned_receipt_formats() {
+    fn six_modes_have_distinct_versioned_receipt_formats_and_candidate_profiles() {
         let modes = [
             Mode::parse("cpu-teacher").unwrap(),
             Mode::parse("boundary-tail-v1-teacher").unwrap(),
+            Mode::parse("boundary-tail-gdn-qk-staged-v1-teacher").unwrap(),
             Mode::parse("cpu-free").unwrap(),
             Mode::parse("boundary-tail-v1-free").unwrap(),
+            Mode::parse("boundary-tail-gdn-qk-staged-v1-free").unwrap(),
         ];
         assert_eq!(
             modes.map(Mode::label),
             [
                 "cpu_teacher",
                 "metal_w8_boundary_tail_v1_teacher_forced",
+                "metal_w8_boundary_tail_gdn_qk_staged_v1_teacher_forced",
                 "cpu_free_run",
                 "metal_w8_boundary_tail_v1_free_run",
+                "metal_w8_boundary_tail_gdn_qk_staged_v1_free_run",
             ]
         );
         let formats = modes.map(Mode::receipt_format);
@@ -2336,15 +2479,33 @@ mod tests {
                 .into_iter()
                 .collect::<std::collections::BTreeSet<_>>()
                 .len(),
-            4
+            6
         );
         assert!(formats
             .iter()
             .all(|format| format.contains("boundary-tail-head-v1")));
         assert!(!modes[0].requires_input_receipt());
         assert!(modes[1].requires_input_receipt());
-        assert!(!modes[2].requires_input_receipt());
-        assert!(modes[3].requires_input_receipt());
+        assert!(modes[2].requires_input_receipt());
+        assert!(!modes[3].requires_input_receipt());
+        assert!(modes[4].requires_input_receipt());
+        assert!(modes[5].requires_input_receipt());
+        assert_eq!(
+            modes[1].candidate_profile(),
+            Some(CandidateProfile::Legacy256)
+        );
+        assert_eq!(
+            modes[2].candidate_profile(),
+            Some(CandidateProfile::QkStaged128)
+        );
+        assert_eq!(
+            modes[4].candidate_profile(),
+            Some(CandidateProfile::Legacy256)
+        );
+        assert_eq!(
+            modes[5].candidate_profile(),
+            Some(CandidateProfile::QkStaged128)
+        );
     }
 
     #[test]
@@ -2581,39 +2742,66 @@ mod tests {
     #[test]
     fn generation_receipt_locks_six_regions_tail_phases_and_commit_masks() {
         let phase = TailPhaseCounts::teacher(7);
-        let receipt = generation_receipt_fixture(7, phase);
+        let profile = CandidateProfile::Legacy256;
+        let receipt = generation_receipt_fixture(7, phase, profile);
         assert!(boundary_tail_generation_receipt_is_exact(
-            &receipt, 7, phase
+            &receipt, 7, phase, profile
         ));
 
         let mut wrong = receipt.clone();
         wrong["initial_stack"]["last_state_commit_mask"] = json!(0b011);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong, 7, phase, profile
+        ));
         let mut wrong = receipt.clone();
         wrong["boundaries"][3]["last_state_commit_mask"] = json!(0b110);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong, 7, phase, profile
+        ));
         let mut wrong = receipt.clone();
         wrong["decode_head"]["teacher_calls"] = json!(6);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong, 7, phase, profile
+        ));
 
         let mut wrong = receipt.clone();
         wrong["terminal_error"] = json!(true);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong, 7, phase, profile
+        ));
         let mut wrong = receipt;
         wrong["decode_head"]["terminal_error"] = json!(true);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong, 7, phase, profile
+        ));
 
         let free_phase = TailPhaseCounts::free(7);
-        let free_receipt = generation_receipt_fixture(7, free_phase);
+        let free_receipt = generation_receipt_fixture(7, free_phase, profile);
         assert!(boundary_tail_generation_receipt_is_exact(
             &free_receipt,
             7,
-            free_phase
+            free_phase,
+            profile,
         ));
         let mut wrong = free_receipt;
         wrong["prefill_head"]["tail_transactions"] = json!(1);
         assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong, 7, free_phase
+            &wrong, 7, free_phase, profile,
+        ));
+
+        let qk_profile = CandidateProfile::QkStaged128;
+        let qk_receipt = generation_receipt_fixture(7, phase, qk_profile);
+        assert!(boundary_tail_generation_receipt_is_exact(
+            &qk_receipt,
+            7,
+            phase,
+            qk_profile,
+        ));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &qk_receipt,
+            7,
+            phase,
+            profile,
         ));
     }
 

@@ -1,6 +1,6 @@
 use apxinf_metal::{
-    GdnDecodeState, GdnDimensions, GdnF32Weights, MetalW8LinearLayerStack3, PackedW8GdnBlock,
-    PackedW8LinearLayerBlock, PackedW8MlpBlock, W8GroupSize,
+    GdnDecodeState, GdnDimensions, GdnF32Weights, GdnRecurrentProfileV1, MetalW8LinearLayerStack3,
+    PackedW8GdnBlock, PackedW8LinearLayerBlock, PackedW8MlpBlock, W8GroupSize,
 };
 
 fn values(elements: usize, multiplier: usize, modulus: usize, scale: f32) -> Vec<f32> {
@@ -125,6 +125,7 @@ fn stack3_v1_matches_three_sequential_packed_cpu_layers_in_one_transaction() {
     }
 
     let mut stack = MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1(layers).unwrap();
+    assert_eq!(stack.recurrent_profile(), GdnRecurrentProfileV1::Legacy256);
     stack.seed_decode_states(&initial).unwrap();
     let actual = stack.decode(&hidden).unwrap().to_vec();
 
@@ -167,6 +168,25 @@ fn stack3_v1_matches_three_sequential_packed_cpu_layers_in_one_transaction() {
     assert_eq!(stats.state_commits, 3);
     assert_eq!(stats.last_state_commit_mask, 0b111);
     assert_eq!(stats.committed_stack_version, 1);
+}
+
+#[test]
+fn stack3_qk_staged_v1_rejects_non_qwen35_08b_shape_before_metal() {
+    let (_, layer0) = fixture(0);
+    let (_, layer1) = fixture(1);
+    let (_, layer2) = fixture(2);
+
+    let error =
+        MetalW8LinearLayerStack3::from_packed_gdn_out_g32_qk_staged_v1([&layer0, &layer1, &layer2])
+            .err()
+            .expect("qk-staged Stack3 must reject an unqualified shape");
+
+    assert!(error
+        .to_string()
+        .contains("requires the accepted Qwen3.5-0.8B shape"));
+    assert!(error
+        .to_string()
+        .contains("got H=64/KH=2/VH=2/KD=32/VD=32/conv=4"));
 }
 
 #[cfg(all(target_os = "macos", debug_assertions))]

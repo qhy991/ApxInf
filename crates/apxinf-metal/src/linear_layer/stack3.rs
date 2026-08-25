@@ -2,6 +2,10 @@ use super::{
     checked_sum, f32_bytes, GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock,
     W8GroupSize,
 };
+use crate::{
+    GdnRecurrentProfileV1, QWEN35_GDN_KEY_DIM_V1, QWEN35_GDN_KEY_HEADS_V1, QWEN35_GDN_VALUE_DIM_V1,
+    QWEN35_GDN_VALUE_HEADS_V1,
+};
 
 const STACK_DEPTH: usize = 3;
 
@@ -56,6 +60,7 @@ pub struct LinearLayerStack3MetalStats {
 /// finiteness. No default runtime constructs this type.
 pub struct MetalW8LinearLayerStack3 {
     dims: GdnDimensions,
+    recurrent_profile: GdnRecurrentProfileV1,
     inner: platform::LinearLayerStack3Handle,
     output: Vec<f32>,
     seeded: bool,
@@ -70,10 +75,34 @@ impl MetalW8LinearLayerStack3 {
     pub fn from_packed_gdn_out_g32_v1(
         weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
     ) -> Result<Self, MetalW8Error> {
+        Self::from_packed_gdn_out_g32_with_recurrent_profile_v1(
+            weights,
+            GdnRecurrentProfileV1::Legacy256,
+        )
+    }
+
+    /// Explicit Qwen3.5-only continuation lane selected by the accepted
+    /// count-18 primitive screen. Ordinary constructors remain on legacy-256.
+    pub fn from_packed_gdn_out_g32_qk_staged_v1(
+        weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+    ) -> Result<Self, MetalW8Error> {
+        Self::from_packed_gdn_out_g32_with_recurrent_profile_v1(
+            weights,
+            GdnRecurrentProfileV1::QkStaged128,
+        )
+    }
+
+    fn from_packed_gdn_out_g32_with_recurrent_profile_v1(
+        weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+        recurrent_profile: GdnRecurrentProfileV1,
+    ) -> Result<Self, MetalW8Error> {
         for (index, weights) in weights.iter().enumerate() {
             validate_precision_v1(index, weights)?;
         }
         let dims = weights[0].gdn.dimensions();
+        if recurrent_profile == GdnRecurrentProfileV1::QkStaged128 {
+            validate_qwen35_qk_staged_shape(dims)?;
+        }
         let intermediate_size = weights[0].intermediate_size();
         let layer_rms_norm_eps = weights[0].rms_norm_eps;
         for (index, candidate) in weights.iter().enumerate().skip(1) {
@@ -106,13 +135,18 @@ impl MetalW8LinearLayerStack3 {
         let buffer_ledger = stack_buffer_ledger(weights)?;
         Ok(Self {
             dims,
-            inner: platform::LinearLayerStack3Handle::new(weights)?,
+            recurrent_profile,
+            inner: platform::LinearLayerStack3Handle::new(weights, recurrent_profile)?,
             output: vec![0.0; dims.hidden_size],
             seeded: false,
             terminal_error: false,
             stats: LinearLayerStack3MetalStats::default(),
             buffer_ledger,
         })
+    }
+
+    pub fn recurrent_profile(&self) -> GdnRecurrentProfileV1 {
+        self.recurrent_profile
     }
 
     pub fn seed_decode_states(
@@ -240,6 +274,27 @@ impl MetalW8LinearLayerStack3 {
         }
         execution.result
     }
+}
+
+fn validate_qwen35_qk_staged_shape(dims: GdnDimensions) -> Result<(), MetalW8Error> {
+    if dims.hidden_size != 1024
+        || dims.key_heads != QWEN35_GDN_KEY_HEADS_V1
+        || dims.value_heads != QWEN35_GDN_VALUE_HEADS_V1
+        || dims.key_dim != QWEN35_GDN_KEY_DIM_V1
+        || dims.value_dim != QWEN35_GDN_VALUE_DIM_V1
+        || dims.conv_kernel_size != 4
+    {
+        return Err(MetalW8Error::new(format!(
+            "Metal W8 stack3 qk-staged v1 requires the accepted Qwen3.5-0.8B shape H=1024/KH=16/VH=16/KD=128/VD=128/conv=4, got H={}/KH={}/VH={}/KD={}/VD={}/conv={}",
+            dims.hidden_size,
+            dims.key_heads,
+            dims.value_heads,
+            dims.key_dim,
+            dims.value_dim,
+            dims.conv_kernel_size
+        )));
+    }
+    Ok(())
 }
 
 fn validate_precision_v1(
@@ -498,7 +553,8 @@ mod tests {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock, STACK_DEPTH,
+        GdnDecodeState, GdnDimensions, GdnRecurrentProfileV1, MetalW8Error,
+        PackedW8LinearLayerBlock, STACK_DEPTH,
     };
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
@@ -613,6 +669,13 @@ mod platform {
             error: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
+        fn apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_qk_staged_v1(
+            layers: *const Stack3LayerDescriptorV1,
+            layer_count: u32,
+            output: *mut *mut c_void,
+            error: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn apxinf_metal_w8_linear_layer_stack3_seed_states_v1(
             handle: *mut c_void,
             states: *const Stack3StateDescriptorV1,
@@ -646,18 +709,37 @@ mod platform {
     impl LinearLayerStack3Handle {
         pub(super) fn new(
             weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+            recurrent_profile: GdnRecurrentProfileV1,
         ) -> Result<Self, MetalW8Error> {
             let descriptors = weights.map(Stack3LayerDescriptorV1::from_packed);
             let mut output = std::ptr::null_mut();
             let mut error = [0 as c_char; ERROR_CAPACITY];
             let status = unsafe {
-                apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1(
-                    descriptors.as_ptr(),
-                    descriptors.len() as u32,
-                    &mut output,
-                    error.as_mut_ptr(),
-                    error.len(),
-                )
+                match recurrent_profile {
+                    GdnRecurrentProfileV1::Legacy256 => {
+                        apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1(
+                            descriptors.as_ptr(),
+                            descriptors.len() as u32,
+                            &mut output,
+                            error.as_mut_ptr(),
+                            error.len(),
+                        )
+                    }
+                    GdnRecurrentProfileV1::QkStaged128 => {
+                        apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_qk_staged_v1(
+                            descriptors.as_ptr(),
+                            descriptors.len() as u32,
+                            &mut output,
+                            error.as_mut_ptr(),
+                            error.len(),
+                        )
+                    }
+                    GdnRecurrentProfileV1::LeaderBroadcast128 => {
+                        return Err(MetalW8Error::new(
+                            "leader-broadcast is not authorized for the production-topology stack3 lane",
+                        ));
+                    }
+                }
             };
             if status != 0 {
                 return Err(bridge_error("create Metal W8 stack3 v1", &error));
@@ -784,7 +866,8 @@ mod platform {
 #[cfg(not(target_os = "macos"))]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock, STACK_DEPTH,
+        GdnDecodeState, GdnDimensions, GdnRecurrentProfileV1, MetalW8Error,
+        PackedW8LinearLayerBlock, STACK_DEPTH,
     };
 
     #[derive(Clone, Copy, Debug, Default)]
@@ -809,6 +892,7 @@ mod platform {
     impl LinearLayerStack3Handle {
         pub(super) fn new(
             _weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+            _recurrent_profile: GdnRecurrentProfileV1,
         ) -> Result<Self, MetalW8Error> {
             Err(MetalW8Error::new("Metal W8 stack3 v1 requires macOS"))
         }

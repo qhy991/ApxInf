@@ -969,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_is_additive_and_production_bridges_remain_legacy() {
+    fn candidate_is_additive_and_only_explicit_stack_routes_can_select_qk_staging() {
         let shader = include_str!("metal_w8_gdn.metal");
         assert!(shader.contains("kernel void gdn_recurrent_update("));
         assert!(shader.contains("kernel void gdn_recurrent_update_leader_broadcast_v1("));
@@ -1002,13 +1002,40 @@ mod tests {
         for bridge in [
             include_str!("metal_w8_gdn_bridge.mm"),
             include_str!("metal_w8_linear_layer_bridge.mm"),
-            include_str!("metal_w8_linear_layer_stack3_bridge.mm"),
-            include_str!("metal_w8_mlp_stack3_boundary_v1_bridge.mm"),
         ] {
             assert!(bridge.contains("@\"gdn_recurrent_update\""));
             assert!(!bridge.contains("gdn_recurrent_update_leader_broadcast_v1"));
             assert!(!bridge.contains("gdn_recurrent_update_qk_staged_v1"));
         }
+        let stack3 = include_str!("metal_w8_linear_layer_stack3_bridge.mm");
+        assert!(stack3.contains("apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1("));
+        assert!(
+            stack3.contains("apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_qk_staged_v1(")
+        );
+        assert!(stack3.contains("@\"gdn_recurrent_update\""));
+        assert!(stack3.contains("@\"gdn_recurrent_update_qk_staged_v1\""));
+        assert!(stack3.contains(
+            "@\"gdn_recurrent_update\",\n                              kElementThreads, false"
+        ));
+        assert!(stack3.contains("@\"gdn_recurrent_update_qk_staged_v1\",\n                              kQkStagedThreads, true"));
+        assert!(stack3
+            .contains("threadsPerThreadgroup:MTLSizeMake(handle->gdn_recurrent_threads, 1, 1)"));
+        assert!(stack3.contains("require_qwen35_qk_staged_shape"));
+        assert!(!stack3.contains("gdn_recurrent_update_leader_broadcast_v1"));
+        let boundary = include_str!("metal_w8_mlp_stack3_boundary_v1_bridge.mm");
+        assert!(boundary.contains("apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1("));
+        assert!(boundary
+            .contains("apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_qk_staged_v1("));
+        assert!(boundary.contains("@\"gdn_recurrent_update\""));
+        assert!(boundary.contains("@\"gdn_recurrent_update_qk_staged_v1\""));
+        assert!(boundary.contains(
+            "@\"gdn_recurrent_update\", kElementThreads,\n                                false"
+        ));
+        assert!(boundary.contains("@\"gdn_recurrent_update_qk_staged_v1\",\n                                kQkStagedThreads, true"));
+        assert!(boundary
+            .contains("threadsPerThreadgroup:MTLSizeMake(handle->gdn_recurrent_threads, 1, 1)"));
+        assert!(boundary.contains("require_qwen35_qk_staged_shape"));
+        assert!(!boundary.contains("gdn_recurrent_update_leader_broadcast_v1"));
     }
 
     #[cfg(target_os = "macos")]

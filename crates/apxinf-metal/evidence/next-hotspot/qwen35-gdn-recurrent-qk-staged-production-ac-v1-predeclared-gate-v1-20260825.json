@@ -1,0 +1,130 @@
+{
+  "format": "apxinf-qwen35-gdn-recurrent-qk-staged-production-ac-v1-predeclared-gate-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "PREDECLARED_BEFORE_PRODUCTION_TOPOLOGY_PERFORMANCE_SAMPLING",
+  "baseline_parent_commit": "93522e11b0b2d65e19eeea2008977b3bba02d96a",
+  "candidate_source_binding": "the explicit production-path A/C plumbing, six-mode gate, custody closure, tests, and this predeclaration must be committed and pushed together before the first production-topology candidate performance sample",
+  "primitive_authorization": {
+    "source": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-recurrent-local-reuse-v1-accepted-diagnostic-summary-v1-20260825.json",
+    "selected_arm": "C qk-staged-128",
+    "pooled_C_over_A_improvement_percent": 7.004434137490471,
+    "scope": "count-matched primitive only; authorizes this separate explicit full-path continuation gate, not default activation"
+  },
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "target": "Apple M4 Metal",
+    "prompt": "Hello",
+    "prompt_token_ids": [248045, 846, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271],
+    "prompt_tokens": 13,
+    "output_tokens": 128,
+    "decoding": "greedy argmax, EOS stopping disabled",
+    "runtime_path": "explicit Metal W8 MLP-to-Stack3 boundary plus fused tail-head v1",
+    "same_binary_for_A_and_C": true,
+    "default_registry_cli_and_ordinary_constructors_unchanged": true
+  },
+  "arms": {
+    "A": {
+      "profile": "legacy-256",
+      "kernel": "gdn_recurrent_update",
+      "threads_per_threadgroup": 256,
+      "constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1"
+    },
+    "C": {
+      "profile": "qk-staged-128",
+      "kernel": "gdn_recurrent_update_qk_staged_v1",
+      "threads_per_threadgroup": 128,
+      "constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_qk_staged_v1"
+    }
+  },
+  "production_mapping": {
+    "initial_stack_linear_layers": [0, 1, 2],
+    "five_boundary_stack_linear_layers": [[4, 5, 6], [8, 9, 10], [12, 13, 14], [16, 17, 18], [20, 21, 22]],
+    "recurrent_dispatches_per_decode": 18,
+    "changed_transactions_per_decode": 6,
+    "changed_scope": "the recurrent dispatch inside the initial Stack3 and each of five MLP-to-Stack3 boundary transactions",
+    "unchanged_scope": "all other kernels, dispatch counts, barriers, encoders, command buffers, commits, waits, state publication, full attention and KV, prefill, tail MLP/head, exact F32 rerank, and host transfer topology",
+    "standalone_gdn_and_single_linear_layer_bridges_remain_A": true,
+    "fixed_shape_lock": "H=1024/KH=16/VH=16/KD=128/VD=128/conv=4 on both Rust and Objective-C++ boundaries"
+  },
+  "fixed_schedule": {
+    "cpu_teacher_receipts": 1,
+    "teacher_order": ["A", "C", "C", "A"],
+    "cpu_free_receipts": 1,
+    "free_block_1_order": ["A", "C", "C", "A"],
+    "free_block_2_order": ["C", "A", "A", "C"],
+    "candidate_teacher_receipts": 4,
+    "candidate_free_receipts": 8,
+    "total_create_new_receipts": 14,
+    "same_release_binary_for_all_receipts": true,
+    "no_retries": true,
+    "no_resampling": true,
+    "no_replacement_after_failure": true,
+    "no_outlier_removal": true,
+    "no_cell_median_substitution": true
+  },
+  "exactness_and_path_admission": {
+    "logic": "AND",
+    "all_four_teacher_candidate_receipts_must_pass": true,
+    "teacher_steps_per_receipt": 128,
+    "teacher_body_token_mismatches_must_be_zero": true,
+    "teacher_top4_must_be_unique_in_range_and_contain_f32_winner": true,
+    "teacher_direct_f32_rerank_mismatches_must_be_zero": true,
+    "teacher_end_to_end_mismatches_must_be_zero": true,
+    "all_four_teacher_chains_top4_arrays_and_rerank_arrays_must_be_identical": true,
+    "all_eight_free_candidate_receipts_must_pass": true,
+    "all_free_128_token_trajectories_must_equal_the_cpu_receipt": true,
+    "all_prefill_and_final_path_checks_must_pass": true,
+    "all_aggregate_ledgers_must_remain_exact": true,
+    "A_mechanisms_must_be_legacy_outer_initial_and_all_five_boundaries": true,
+    "C_mechanisms_must_be_qk_staged_outer_initial_and_all_five_boundaries": true,
+    "terminal_error_must_remain_clear": true,
+    "hidden_tensor_exactness_claimed_by_this_gate": false,
+    "primitive_bit_exactness_is_separate_evidence": true
+  },
+  "precommitted_performance_admission": {
+    "logic": "AND",
+    "improvement_definition": "I(C over A)=100*(A-C)/A",
+    "changed_body_metric": {
+      "per_receipt_value": "(final_generation_path_receipt.initial_stack.block_elapsed_ns + sum(final_generation_path_receipt.boundaries[*].block_elapsed_ns)) / body_call_count",
+      "teacher_body_call_count": 128,
+      "per_arm_statistic": "even median of the two A or two C teacher receipt values",
+      "C_over_A_improvement_percent_at_least": 0.5,
+      "tail_transaction_excluded_because_unchanged": true
+    },
+    "end_to_end_metric": {
+      "field": "profile.tpot_ms from the eight free candidate receipts",
+      "per_block_statistic": "even median of two A values and even median of two C values",
+      "pooled_statistic": "even median of all four A values and even median of all four C values",
+      "pooled_C_over_A_improvement_percent_at_least": 0.25,
+      "both_counterbalanced_blocks_must_be_strictly_positive": true,
+      "clearly_negative_block_definition": "C-over-A improvement at or below -0.50 percent"
+    },
+    "diagnostic_only_fields": ["generation_tps", "generation_total_latency_ms", "harness_elapsed_ms", "ttft_ms"],
+    "sampled_attempt_failures_must_be_zero": true
+  },
+  "custody": {
+    "implementation_gate_support_predeclaration_and_tests_committed_together": true,
+    "candidate_commit_must_be_on_clean_main_origin_main_and_live_github_main_before_sampling": true,
+    "release_features": ["accelerate", "metal-w8"],
+    "binary_source_set_profile_source_lock_model_artifacts_and_input_receipts_rehashed_at_each_start_and_end": true,
+    "publication": "each raw receipt is create-new and published only after successful end-custody verification",
+    "raw_receipt_sha256_and_size_rehashed_into_the_decision_summary": true
+  },
+  "classification": {
+    "strict_quiet_host_preflight_required_for_formal_promotion": true,
+    "if_quiet_host_fails": "complete the fixed schedule once only as non-formal diagnostic evidence",
+    "explicit_continuation_acceptance": "exactness, path, custody, fixed-schedule and both performance gates pass; permits retaining only the explicit opt-in C route",
+    "formal_promotion_acceptance": "explicit continuation acceptance plus strict quiet-host preflight; still requires a separate default-activation decision",
+    "failure_action": "archive raw receipts and a rejection summary, then revert the production C plumbing and six-mode harness while preserving primitive evidence and this predeclaration"
+  },
+  "cross_runtime_rule": {
+    "frozen_comparison_is_unchanged_until_explicit_full_path_continuation_acceptance": true,
+    "current_apxinf_metal_W8_tps": 66.33672849846097,
+    "current_llama_cpp_metal_Q8_0_tps": 70.66394293407429,
+    "current_llama_cpp_advantage_percent": 6.52310497300709,
+    "llama_cpp_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+    "after_acceptance": "refresh same-host same-prompt same-128-token greedy diagnostic comparisons for llama.cpp and omnimind-ai/OmniInfer; separate llama.cpp core timing from OmniInfer gateway/orchestration wall time",
+    "ascend_omni_ai_npu_project": "cross-hardware service metrics only, never a same-hardware engine claim"
+  }
+}
