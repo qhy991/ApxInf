@@ -18,7 +18,7 @@ const PROFILE_BYTES: &[u8] =
     include_bytes!("../../../../configs/hf-onboarding/qwen35-0.8b-macos-cpu.json");
 const GENERAL_SOURCE_BYTES: &[u8] = include_bytes!("../../src/qwen35/general.rs");
 const FROZEN_GENERAL_SOURCE_SHA256: &str =
-    "2c58b87df49cc483915f87ad7607c5b537f34516cfc264552b989fe976bb6f7a";
+    "745358bfc19cf56a5a484e3ce9b5874b0149978a135c59c0b01f21f098acba35";
 const LLM_TRAIT_SOURCE_BYTES: &[u8] = include_bytes!("../../src/llm_trait.rs");
 const APXINF_MODEL_LIB_SOURCE_BYTES: &[u8] = include_bytes!("../../src/lib.rs");
 const APXINF_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!("../../Cargo.toml");

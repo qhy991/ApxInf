@@ -1,6 +1,6 @@
 use apxinf_metal::{
     MetalW8TailMlpHeadV1, PackedW8MlpBlock, PackedW8Rows, PackedW8TailMlpHeadV1,
-    TailMlpHeadBufferLedgerV1,
+    TailMlpHeadBufferLedgerV1, TailMlpHeadRowsKernelV1,
 };
 
 fn values(elements: usize, multiplier: usize, modulus: usize, scale: f32) -> Vec<f32> {
@@ -129,6 +129,51 @@ fn tail_v1_ledger_is_exact_for_tiny_and_qwen35_official_dimensions() {
     assert_eq!(qwen.host_output_bytes_per_decode, 4_112);
 }
 
+#[test]
+fn tail_v1_rows_kernel_selector_is_explicit_and_legacy_by_default() {
+    assert_eq!(
+        TailMlpHeadRowsKernelV1::default(),
+        TailMlpHeadRowsKernelV1::LegacyR8Sg8
+    );
+    assert_eq!(
+        TailMlpHeadRowsKernelV1::LegacyR8Sg8.receipt_label(),
+        "w8_rows_topk4"
+    );
+    assert_eq!(
+        TailMlpHeadRowsKernelV1::Pair2R16Sg8.receipt_label(),
+        "w8_rows_topk4_pair2_r16_sg8"
+    );
+    assert_eq!(
+        TailMlpHeadRowsKernelV1::LegacyR8Sg8.execution_shape(),
+        (8, 1, 8, 256, false)
+    );
+    assert_eq!(
+        TailMlpHeadRowsKernelV1::Pair2R16Sg8.execution_shape(),
+        (16, 2, 8, 256, false)
+    );
+    let legacy = TailMlpHeadBufferLedgerV1::from_dimensions_with_rows_kernel(
+        1_024,
+        3_584,
+        248_320,
+        TailMlpHeadRowsKernelV1::LegacyR8Sg8,
+    )
+    .unwrap();
+    let pair2_r16_sg8 = TailMlpHeadBufferLedgerV1::from_dimensions_with_rows_kernel(
+        1_024,
+        3_584,
+        248_320,
+        TailMlpHeadRowsKernelV1::Pair2R16Sg8,
+    )
+    .unwrap();
+    assert_eq!(
+        legacy,
+        TailMlpHeadBufferLedgerV1::from_dimensions(1_024, 3_584, 248_320).unwrap()
+    );
+    assert_eq!(legacy.partial_topk_bytes, 993_280);
+    assert_eq!(pair2_r16_sg8.partial_topk_bytes, 496_640);
+    assert_eq!(pair2_r16_sg8.total_persistent_bytes, 282_426_384);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_tail_v1_matches_packed_hidden_and_top4_in_one_transaction() {
@@ -195,6 +240,128 @@ fn metal_tail_v1_matches_packed_hidden_and_top4_in_one_transaction() {
     assert_eq!(stats.output_commits, 2);
     assert_eq!(stats.last_output_commit_mask, 0b11);
     assert!(!stats.terminal_error);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_tail_pair2_r16_sg8_matches_legacy_and_cpu_for_an_incomplete_final_row_group() {
+    let hidden_size = 64;
+    let intermediate_size = 64;
+    let vocab_size = 19;
+    let projection_elements = hidden_size * intermediate_size;
+    let packed = PackedW8TailMlpHeadV1::new(
+        PackedW8MlpBlock::pack_f32(
+            &values(projection_elements, 149, 257, 0.04),
+            &values(projection_elements, 151, 251, 0.04),
+            &values(projection_elements, 157, 241, 0.04),
+            hidden_size,
+            intermediate_size,
+        )
+        .unwrap(),
+        &values(hidden_size, 163, 239, 0.2)
+            .into_iter()
+            .map(|value| 1.0 + value)
+            .collect::<Vec<_>>(),
+        &values(hidden_size, 167, 233, 0.2)
+            .into_iter()
+            .map(|value| 1.0 + value)
+            .collect::<Vec<_>>(),
+        1.0e-6,
+        PackedW8Rows::pack_f32(
+            &values(vocab_size * hidden_size, 173, 229, 0.1),
+            vocab_size,
+            hidden_size,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let input = values(hidden_size, 179, 227, 0.8);
+    let expected = packed.decode_reference(&input).unwrap();
+    let mut legacy = MetalW8TailMlpHeadV1::from_packed(&packed).unwrap();
+    let mut pair2_r16_sg8 = MetalW8TailMlpHeadV1::from_packed_with_rows_kernel(
+        &packed,
+        TailMlpHeadRowsKernelV1::Pair2R16Sg8,
+    )
+    .unwrap();
+
+    assert_eq!(legacy.rows_kernel(), TailMlpHeadRowsKernelV1::LegacyR8Sg8);
+    assert_eq!(
+        pair2_r16_sg8.rows_kernel(),
+        TailMlpHeadRowsKernelV1::Pair2R16Sg8
+    );
+    let observed = pair2_r16_sg8.rows_kernel_receipt();
+    assert_eq!(observed.kernel, TailMlpHeadRowsKernelV1::Pair2R16Sg8);
+    assert_eq!(observed.rows_per_threadgroup, 16);
+    assert_eq!(observed.rows_per_simdgroup, 2);
+    assert_eq!(observed.simdgroups_per_threadgroup, 8);
+    assert_eq!(observed.threads_per_threadgroup, 256);
+    assert_eq!(observed.partial_count, 2);
+    assert_eq!(observed.partial_topk_bytes, 64);
+    assert!(observed.pipeline_max_total_threads_per_threadgroup >= 256);
+    assert_eq!(observed.pipeline_thread_execution_width, 32);
+    let legacy_output = legacy.decode(&input).unwrap();
+    let legacy_hidden = legacy_output.normalized_hidden.to_vec();
+    let legacy_candidates = legacy_output.candidate_token_ids;
+    let pair2_r16_sg8_output = pair2_r16_sg8.decode(&input).unwrap();
+    assert_close(
+        &legacy_hidden,
+        &expected.normalized_hidden,
+        3.0e-3,
+        "legacy normalized hidden",
+    );
+    assert_close(
+        pair2_r16_sg8_output.normalized_hidden,
+        &expected.normalized_hidden,
+        3.0e-3,
+        "pair2 r16 sg8 normalized hidden",
+    );
+    assert_eq!(legacy_candidates, expected.candidate_token_ids);
+    assert_eq!(
+        pair2_r16_sg8_output.candidate_token_ids,
+        expected.candidate_token_ids
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_tail_pair2_r16_sg8_preserves_lowest_token_ties_with_invalid_tail_rows() {
+    let hidden_size = 64;
+    let intermediate_size = 64;
+    let vocab_size = 17;
+    let projection_elements = hidden_size * intermediate_size;
+    let packed = PackedW8TailMlpHeadV1::new(
+        PackedW8MlpBlock::pack_f32(
+            &values(projection_elements, 181, 223, 0.04),
+            &values(projection_elements, 191, 211, 0.04),
+            &values(projection_elements, 193, 199, 0.04),
+            hidden_size,
+            intermediate_size,
+        )
+        .unwrap(),
+        &vec![1.0; hidden_size],
+        &vec![1.0; hidden_size],
+        1.0e-6,
+        PackedW8Rows::pack_f32(
+            &vec![0.0; vocab_size * hidden_size],
+            vocab_size,
+            hidden_size,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let input = values(hidden_size, 197, 197, 0.8);
+    let expected = packed.decode_reference(&input).unwrap();
+    let mut pair2_r16_sg8 = MetalW8TailMlpHeadV1::from_packed_with_rows_kernel(
+        &packed,
+        TailMlpHeadRowsKernelV1::Pair2R16Sg8,
+    )
+    .unwrap();
+
+    assert_eq!(expected.candidate_token_ids, [0, 1, 2, 3]);
+    assert_eq!(
+        pair2_r16_sg8.decode(&input).unwrap().candidate_token_ids,
+        [0, 1, 2, 3]
+    );
 }
 
 #[cfg(all(target_os = "macos", debug_assertions))]
@@ -605,6 +772,33 @@ fn tail_v1_bridge_shape_and_shader_custody_match_the_public_contract() {
     assert_eq!(bridge.matches("[command waitUntilCompleted]").count(), 1);
     assert!(!bridge.contains("kernel void w8_mlp_gate_up("));
     assert!(!bridge.contains("kernel void w8_rows_topk4("));
+    assert!(bridge.contains("@\"w8_rows_topk4_pair2_r16_sg8\""));
+    assert!(bridge.contains("kHeadPair2R16Threads"));
+    assert!(bridge.contains("apxinf_metal_w8_tail_mlp_head_create_with_rows_kernel_v1("));
+    assert!(bridge.contains("apxinf_metal_w8_tail_mlp_head_rows_kernel_receipt_v1("));
+    assert!(bridge.contains("handle->partial_topk.length"));
+    assert!(bridge.contains("rows_topk_function.name"));
+    assert!(bridge.contains("handle->rows_kernel != rows_kernel"));
+    assert!(bridge.contains("handle->rows_topk_pipeline.threadExecutionWidth"));
+    assert!(bridge.contains("uint32_t rows_kernel"));
+    assert!(bridge.contains("rows_kernel > kRowsKernelPair2R16Sg8"));
+
+    let shader = include_str!("../src/metal_w8.metal");
+    assert_eq!(
+        shader
+            .matches("kernel void w8_rows_topk4_pair2_r16_sg8(")
+            .count(),
+        1
+    );
+    assert!(shader.contains("constexpr uint rows_per_simdgroup = 2;"));
+    assert!(shader.contains("constexpr uint simdgroups_per_threadgroup = 8;"));
+    assert!(shader.contains("rows_per_simdgroup * simdgroups_per_threadgroup;"));
+    assert!(bridge.contains("kHeadPair2R16RowsPerThreadgroup = 16"));
+    assert!(bridge.contains("kHeadPair2R16RowsPerSimdgroup = 2"));
+    assert!(bridge.contains("kHeadPair2R16SimdgroupsPerThreadgroup = 8"));
+    assert!(bridge.contains("maxTotalThreadsPerThreadgroup"));
+    let standalone_bridge = include_str!("../src/metal_w8_bridge.mm");
+    assert!(!standalone_bridge.contains("w8_rows_topk4_pair2_r16_sg8"));
 
     let build = include_str!("../build.rs");
     assert!(build.contains("format!(\"{mlp_shader}\\n{linear_layer_shader}\\n{shader}\")"));
