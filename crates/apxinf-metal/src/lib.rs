@@ -69,6 +69,106 @@ impl Display for MetalW8Error {
 
 impl Error for MetalW8Error {}
 
+/// Explicit gate/up execution profile for the standalone Metal W8 MLP
+/// primitive. The legacy constructor remains fixed to [`Self::LegacySeparate`]
+/// and its original three-encoder ABI; this selector is used only by the
+/// versioned production-topology constructor.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum W8MlpGateUpProfileV1 {
+    #[default]
+    LegacySeparate = 0,
+    SemanticPairSilu = 1,
+}
+
+impl W8MlpGateUpProfileV1 {
+    pub const fn selector(self) -> u32 {
+        self as u32
+    }
+
+    pub const fn expected_function_name(self) -> &'static str {
+        match self {
+            Self::LegacySeparate => "w8_mlp_gate_up",
+            Self::SemanticPairSilu => "w8_mlp_gate_up_semantic_pair_silu",
+        }
+    }
+
+    const fn from_selector(selector: u32) -> Option<Self> {
+        match selector {
+            0 => Some(Self::LegacySeparate),
+            1 => Some(Self::SemanticPairSilu),
+            _ => None,
+        }
+    }
+
+    const fn kernel_dispatches_per_call(self) -> u32 {
+        match self {
+            Self::LegacySeparate => 3,
+            Self::SemanticPairSilu => 2,
+        }
+    }
+
+    const fn explicit_buffer_barriers_per_production_call(self) -> u32 {
+        match self {
+            Self::LegacySeparate => 2,
+            Self::SemanticPairSilu => 1,
+        }
+    }
+
+    const fn semantic_pairs_per_threadgroup(self) -> u32 {
+        match self {
+            Self::LegacySeparate => 0,
+            Self::SemanticPairSilu => 8,
+        }
+    }
+}
+
+impl TryFrom<u32> for W8MlpGateUpProfileV1 {
+    type Error = MetalW8Error;
+
+    fn try_from(selector: u32) -> Result<Self, Self::Error> {
+        Self::from_selector(selector).ok_or_else(|| {
+            MetalW8Error::new(format!(
+                "Metal W8 MLP gate/up profile {selector} is invalid; expected 0 or 1"
+            ))
+        })
+    }
+}
+
+/// Fail-closed proof of the live Metal gate/up pipeline and the exact call
+/// topology selected by a [`MetalW8MlpBlock`] constructor. `function_name` is
+/// derived from the live `MTLFunction.name`, then checked against both the
+/// requested selector and `requested_function_name` before construction can
+/// succeed. Fields ending in `_per_call` are the declared topology validated
+/// before each commit. `last_observed_*` fields are counters gathered at the
+/// actual command/encoder/dispatch/barrier call sites and published only after
+/// a successful completion; they remain zero while `successful_calls == 0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W8MlpGateUpRuntimeReceiptV1 {
+    pub requested_profile: W8MlpGateUpProfileV1,
+    pub observed_profile: W8MlpGateUpProfileV1,
+    pub requested_function_name: &'static str,
+    pub function_name: &'static str,
+    pub threads_per_threadgroup: u32,
+    pub simdgroups_per_threadgroup: u32,
+    pub semantic_pairs_per_threadgroup: u32,
+    pub pipeline_max_total_threads_per_threadgroup: u32,
+    pub pipeline_thread_execution_width: u32,
+    pub static_threadgroup_memory_bytes: u32,
+    pub dynamic_threadgroup_memory_bytes: u32,
+    pub gate_up_threadgroups_per_call: u32,
+    pub command_buffers_per_call: u32,
+    pub compute_encoders_per_call: u32,
+    pub kernel_dispatches_per_call: u32,
+    pub explicit_buffer_barriers_per_call: u32,
+    pub internal_threadgroup_barriers_per_call: u32,
+    pub successful_calls: u64,
+    pub last_observed_command_buffers: u32,
+    pub last_observed_compute_encoders: u32,
+    pub last_observed_kernel_dispatches: u32,
+    pub last_observed_explicit_buffer_barriers: u32,
+}
+
 /// Row-wise/group-wise W8 representation used by the packed CPU oracle.
 /// G64 is the canonical legacy Metal ABI. G32 is diagnostic data that may be
 /// consumed only by an explicitly versioned precision-specific Metal API.
@@ -717,6 +817,26 @@ pub struct MetalW8MlpBlock {
 
 impl MetalW8MlpBlock {
     pub fn from_packed(weights: &PackedW8MlpBlock) -> Result<Self, MetalW8Error> {
+        Self::from_packed_impl(weights, W8MlpGateUpProfileV1::LegacySeparate, false)
+    }
+
+    /// Construct the standalone A/B primitive with the same one-encoder
+    /// production topology used by fused decode transactions. Both profiles
+    /// are explicit: legacy gate/up and SiLU use three dispatches separated by
+    /// two buffer barriers; the semantic-pair profile uses two dispatches and
+    /// one buffer barrier.
+    pub fn from_packed_with_gate_up_profile_v1(
+        weights: &PackedW8MlpBlock,
+        profile: W8MlpGateUpProfileV1,
+    ) -> Result<Self, MetalW8Error> {
+        Self::from_packed_impl(weights, profile, true)
+    }
+
+    fn from_packed_impl(
+        weights: &PackedW8MlpBlock,
+        profile: W8MlpGateUpProfileV1,
+        production_topology: bool,
+    ) -> Result<Self, MetalW8Error> {
         weights
             .gate_up
             .require_metal_g64("MLP gate/up projection")?;
@@ -735,9 +855,15 @@ impl MetalW8MlpBlock {
                 "Metal W8 MLP dimensions exceed the u32 kernel contract",
             ));
         }
-        let buffer_ledger = weights.buffer_ledger()?;
+        let mut buffer_ledger = weights.buffer_ledger()?;
+        let inner = if production_topology {
+            buffer_ledger.compute_encoders_per_decode = 1;
+            platform::MlpBlockHandle::new_with_gate_up_profile_v1(weights, profile)?
+        } else {
+            platform::MlpBlockHandle::new(weights)?
+        };
         Ok(Self {
-            inner: platform::MlpBlockHandle::new(weights)?,
+            inner,
             hidden_size,
             intermediate_size,
             output: vec![0.0; hidden_size],
@@ -768,6 +894,10 @@ impl MetalW8MlpBlock {
         self.buffer_ledger
     }
 
+    pub fn gate_up_runtime_receipt_v1(&self) -> Result<W8MlpGateUpRuntimeReceiptV1, MetalW8Error> {
+        self.inner.gate_up_runtime_receipt_v1()
+    }
+
     pub fn forward(&mut self, input: &[f32]) -> Result<&[f32], MetalW8Error> {
         if input.len() != self.hidden_size {
             return Err(MetalW8Error::new(format!(
@@ -788,11 +918,71 @@ impl MetalW8MlpBlock {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{MetalW8Error, PackedW8MlpBlock, PackedW8Rows, W8_GROUP_SIZE, W8_TOP_K};
+    use super::{
+        MetalW8Error, PackedW8MlpBlock, PackedW8Rows, W8MlpGateUpProfileV1,
+        W8MlpGateUpRuntimeReceiptV1, W8_GROUP_SIZE, W8_TOP_K,
+    };
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
 
     const ERROR_CAPACITY: usize = 1024;
+    const FUNCTION_NAME_CAPACITY: usize = 64;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct RawMlpGateUpRuntimeReceiptV1 {
+        requested_profile: u32,
+        observed_profile: u32,
+        requested_function_name: [c_char; FUNCTION_NAME_CAPACITY],
+        observed_function_name: [c_char; FUNCTION_NAME_CAPACITY],
+        threads_per_threadgroup: u32,
+        simdgroups_per_threadgroup: u32,
+        semantic_pairs_per_threadgroup: u32,
+        pipeline_max_total_threads_per_threadgroup: u32,
+        pipeline_thread_execution_width: u32,
+        static_threadgroup_memory_bytes: u32,
+        dynamic_threadgroup_memory_bytes: u32,
+        gate_up_threadgroups_per_call: u32,
+        command_buffers_per_call: u32,
+        compute_encoders_per_call: u32,
+        kernel_dispatches_per_call: u32,
+        explicit_buffer_barriers_per_call: u32,
+        internal_threadgroup_barriers_per_call: u32,
+        successful_calls: u64,
+        last_observed_command_buffers: u32,
+        last_observed_compute_encoders: u32,
+        last_observed_kernel_dispatches: u32,
+        last_observed_explicit_buffer_barriers: u32,
+    }
+
+    impl Default for RawMlpGateUpRuntimeReceiptV1 {
+        fn default() -> Self {
+            Self {
+                requested_profile: u32::MAX,
+                observed_profile: u32::MAX,
+                requested_function_name: [0; FUNCTION_NAME_CAPACITY],
+                observed_function_name: [0; FUNCTION_NAME_CAPACITY],
+                threads_per_threadgroup: 0,
+                simdgroups_per_threadgroup: 0,
+                semantic_pairs_per_threadgroup: 0,
+                pipeline_max_total_threads_per_threadgroup: 0,
+                pipeline_thread_execution_width: 0,
+                static_threadgroup_memory_bytes: 0,
+                dynamic_threadgroup_memory_bytes: 0,
+                gate_up_threadgroups_per_call: 0,
+                command_buffers_per_call: 0,
+                compute_encoders_per_call: 0,
+                kernel_dispatches_per_call: 0,
+                explicit_buffer_barriers_per_call: 0,
+                internal_threadgroup_barriers_per_call: 0,
+                successful_calls: 0,
+                last_observed_command_buffers: 0,
+                last_observed_compute_encoders: 0,
+                last_observed_kernel_dispatches: 0,
+                last_observed_explicit_buffer_barriers: 0,
+            }
+        }
+    }
 
     extern "C" {
         fn apxinf_metal_w8_create(
@@ -846,6 +1036,25 @@ mod platform {
             error: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
+        fn apxinf_metal_w8_mlp_block_create_with_gate_up_profile_v1(
+            gate_up_weights: *const i8,
+            gate_up_scales: *const f32,
+            down_weights: *const i8,
+            down_scales: *const f32,
+            hidden_size: u32,
+            intermediate_size: u32,
+            group_size: u32,
+            gate_up_profile: u32,
+            output: *mut *mut c_void,
+            error: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn apxinf_metal_w8_mlp_block_gate_up_runtime_receipt_v1(
+            handle: *mut c_void,
+            receipt: *mut RawMlpGateUpRuntimeReceiptV1,
+            error: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn apxinf_metal_w8_mlp_block_forward(
             handle: *mut c_void,
             input: *const f32,
@@ -862,7 +1071,12 @@ mod platform {
 
     pub(super) struct MatVecHandle(NonNull<c_void>);
 
-    pub(super) struct MlpBlockHandle(NonNull<c_void>);
+    pub(super) struct MlpBlockHandle {
+        handle: NonNull<c_void>,
+        requested_profile: W8MlpGateUpProfileV1,
+        production_topology: bool,
+        intermediate_size: u32,
+    }
 
     impl Handle {
         pub(super) fn new(weights: &PackedW8Rows) -> Result<Self, MetalW8Error> {
@@ -971,28 +1185,216 @@ mod platform {
 
     impl MlpBlockHandle {
         pub(super) fn new(weights: &PackedW8MlpBlock) -> Result<Self, MetalW8Error> {
+            Self::new_impl(weights, W8MlpGateUpProfileV1::LegacySeparate, false)
+        }
+
+        pub(super) fn new_with_gate_up_profile_v1(
+            weights: &PackedW8MlpBlock,
+            profile: W8MlpGateUpProfileV1,
+        ) -> Result<Self, MetalW8Error> {
+            Self::new_impl(weights, profile, true)
+        }
+
+        fn new_impl(
+            weights: &PackedW8MlpBlock,
+            profile: W8MlpGateUpProfileV1,
+            production_topology: bool,
+        ) -> Result<Self, MetalW8Error> {
             let mut output = std::ptr::null_mut();
             let mut error = [0 as c_char; ERROR_CAPACITY];
             let status = unsafe {
-                apxinf_metal_w8_mlp_block_create(
-                    weights.gate_up.values.as_ptr(),
-                    weights.gate_up.scales.as_ptr(),
-                    weights.down.values.as_ptr(),
-                    weights.down.scales.as_ptr(),
-                    weights.down.rows as u32,
-                    weights.down.columns as u32,
-                    W8_GROUP_SIZE as u32,
-                    &mut output,
+                if production_topology {
+                    apxinf_metal_w8_mlp_block_create_with_gate_up_profile_v1(
+                        weights.gate_up.values.as_ptr(),
+                        weights.gate_up.scales.as_ptr(),
+                        weights.down.values.as_ptr(),
+                        weights.down.scales.as_ptr(),
+                        weights.down.rows as u32,
+                        weights.down.columns as u32,
+                        W8_GROUP_SIZE as u32,
+                        profile.selector(),
+                        &mut output,
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                } else {
+                    apxinf_metal_w8_mlp_block_create(
+                        weights.gate_up.values.as_ptr(),
+                        weights.gate_up.scales.as_ptr(),
+                        weights.down.values.as_ptr(),
+                        weights.down.scales.as_ptr(),
+                        weights.down.rows as u32,
+                        weights.down.columns as u32,
+                        W8_GROUP_SIZE as u32,
+                        &mut output,
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                }
+            };
+            if status != 0 {
+                return Err(bridge_error("create Metal W8 MLP block", &error));
+            }
+            let handle = NonNull::new(output).ok_or_else(|| {
+                MetalW8Error::new("create Metal W8 MLP block returned a null handle")
+            })?;
+            let initial_receipt = match Self::read_gate_up_runtime_receipt_v1(
+                handle,
+                profile,
+                production_topology,
+                weights.down.columns as u32,
+            ) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    unsafe { apxinf_metal_w8_mlp_block_destroy(handle.as_ptr()) };
+                    return Err(error);
+                }
+            };
+            if initial_receipt.successful_calls != 0 {
+                unsafe { apxinf_metal_w8_mlp_block_destroy(handle.as_ptr()) };
+                return Err(MetalW8Error::new(
+                    "new Metal W8 MLP handle reported prior successful calls",
+                ));
+            }
+            Ok(Self {
+                handle,
+                requested_profile: profile,
+                production_topology,
+                intermediate_size: weights.down.columns as u32,
+            })
+        }
+
+        fn read_gate_up_runtime_receipt_v1(
+            handle: NonNull<c_void>,
+            requested_profile: W8MlpGateUpProfileV1,
+            production_topology: bool,
+            intermediate_size: u32,
+        ) -> Result<W8MlpGateUpRuntimeReceiptV1, MetalW8Error> {
+            let mut raw = RawMlpGateUpRuntimeReceiptV1::default();
+            let mut error = [0 as c_char; ERROR_CAPACITY];
+            let status = unsafe {
+                apxinf_metal_w8_mlp_block_gate_up_runtime_receipt_v1(
+                    handle.as_ptr(),
+                    &mut raw,
                     error.as_mut_ptr(),
                     error.len(),
                 )
             };
             if status != 0 {
-                return Err(bridge_error("create Metal W8 MLP block", &error));
+                return Err(bridge_error(
+                    "read Metal W8 MLP gate/up runtime receipt v1",
+                    &error,
+                ));
             }
-            NonNull::new(output).map(Self).ok_or_else(|| {
-                MetalW8Error::new("create Metal W8 MLP block returned a null handle")
+            let observed_profile = W8MlpGateUpProfileV1::from_selector(raw.observed_profile)
+                .ok_or_else(|| {
+                    MetalW8Error::new(
+                        "Metal W8 MLP gate/up runtime receipt returned an unknown observed profile",
+                    )
+                })?;
+            let raw_requested_profile =
+                W8MlpGateUpProfileV1::from_selector(raw.requested_profile).ok_or_else(|| {
+                    MetalW8Error::new(
+                        "Metal W8 MLP gate/up runtime receipt returned an unknown requested profile",
+                    )
+                })?;
+            let raw_requested_name = raw_function_name(
+                &raw.requested_function_name,
+                "requested Metal W8 MLP gate/up function name",
+            )?;
+            let raw_observed_name = raw_function_name(
+                &raw.observed_function_name,
+                "observed Metal W8 MLP gate/up function name",
+            )?;
+            let expected_encoders = if production_topology { 1 } else { 3 };
+            let expected_barriers = if production_topology {
+                requested_profile.explicit_buffer_barriers_per_production_call()
+            } else {
+                0
+            };
+            let expected_gate_up_rows = match requested_profile {
+                W8MlpGateUpProfileV1::LegacySeparate => intermediate_size
+                    .checked_mul(2)
+                    .ok_or_else(|| MetalW8Error::new("Metal W8 MLP gate/up row count overflow"))?,
+                W8MlpGateUpProfileV1::SemanticPairSilu => intermediate_size,
+            };
+            let expected_gate_up_threadgroups = expected_gate_up_rows.div_ceil(8);
+            let last_observed_matches = if raw.successful_calls == 0 {
+                raw.last_observed_command_buffers == 0
+                    && raw.last_observed_compute_encoders == 0
+                    && raw.last_observed_kernel_dispatches == 0
+                    && raw.last_observed_explicit_buffer_barriers == 0
+            } else {
+                raw.last_observed_command_buffers == 1
+                    && raw.last_observed_compute_encoders == expected_encoders
+                    && raw.last_observed_kernel_dispatches
+                        == observed_profile.kernel_dispatches_per_call()
+                    && raw.last_observed_explicit_buffer_barriers == expected_barriers
+            };
+            let receipt_matches = raw_requested_profile == requested_profile
+                && observed_profile == requested_profile
+                && raw_requested_name == requested_profile.expected_function_name()
+                && raw_observed_name == observed_profile.expected_function_name()
+                && raw.threads_per_threadgroup == 256
+                && raw.simdgroups_per_threadgroup == 8
+                && raw.semantic_pairs_per_threadgroup
+                    == observed_profile.semantic_pairs_per_threadgroup()
+                && raw.pipeline_max_total_threads_per_threadgroup >= raw.threads_per_threadgroup
+                && raw.pipeline_thread_execution_width == 32
+                && raw.static_threadgroup_memory_bytes == 0
+                && raw.dynamic_threadgroup_memory_bytes == 0
+                && raw.gate_up_threadgroups_per_call == expected_gate_up_threadgroups
+                && raw
+                    .pipeline_thread_execution_width
+                    .checked_mul(raw.simdgroups_per_threadgroup)
+                    == Some(raw.threads_per_threadgroup)
+                && raw.command_buffers_per_call == 1
+                && raw.compute_encoders_per_call == expected_encoders
+                && raw.kernel_dispatches_per_call == observed_profile.kernel_dispatches_per_call()
+                && raw.explicit_buffer_barriers_per_call == expected_barriers
+                && raw.internal_threadgroup_barriers_per_call == 0
+                && last_observed_matches;
+            if !receipt_matches {
+                return Err(MetalW8Error::new(
+                    "Metal W8 MLP gate/up runtime receipt drifted from the requested function or exact dispatch/barrier topology",
+                ));
+            }
+            Ok(W8MlpGateUpRuntimeReceiptV1 {
+                requested_profile,
+                observed_profile,
+                requested_function_name: requested_profile.expected_function_name(),
+                function_name: observed_profile.expected_function_name(),
+                threads_per_threadgroup: raw.threads_per_threadgroup,
+                simdgroups_per_threadgroup: raw.simdgroups_per_threadgroup,
+                semantic_pairs_per_threadgroup: raw.semantic_pairs_per_threadgroup,
+                pipeline_max_total_threads_per_threadgroup: raw
+                    .pipeline_max_total_threads_per_threadgroup,
+                pipeline_thread_execution_width: raw.pipeline_thread_execution_width,
+                static_threadgroup_memory_bytes: raw.static_threadgroup_memory_bytes,
+                dynamic_threadgroup_memory_bytes: raw.dynamic_threadgroup_memory_bytes,
+                gate_up_threadgroups_per_call: raw.gate_up_threadgroups_per_call,
+                command_buffers_per_call: raw.command_buffers_per_call,
+                compute_encoders_per_call: raw.compute_encoders_per_call,
+                kernel_dispatches_per_call: raw.kernel_dispatches_per_call,
+                explicit_buffer_barriers_per_call: raw.explicit_buffer_barriers_per_call,
+                internal_threadgroup_barriers_per_call: raw.internal_threadgroup_barriers_per_call,
+                successful_calls: raw.successful_calls,
+                last_observed_command_buffers: raw.last_observed_command_buffers,
+                last_observed_compute_encoders: raw.last_observed_compute_encoders,
+                last_observed_kernel_dispatches: raw.last_observed_kernel_dispatches,
+                last_observed_explicit_buffer_barriers: raw.last_observed_explicit_buffer_barriers,
             })
+        }
+
+        pub(super) fn gate_up_runtime_receipt_v1(
+            &self,
+        ) -> Result<W8MlpGateUpRuntimeReceiptV1, MetalW8Error> {
+            Self::read_gate_up_runtime_receipt_v1(
+                self.handle,
+                self.requested_profile,
+                self.production_topology,
+                self.intermediate_size,
+            )
         }
 
         pub(super) fn forward(
@@ -1003,7 +1405,7 @@ mod platform {
             let mut error = [0 as c_char; ERROR_CAPACITY];
             let status = unsafe {
                 apxinf_metal_w8_mlp_block_forward(
-                    self.0.as_ptr(),
+                    self.handle.as_ptr(),
                     input.as_ptr(),
                     input.len() as u32,
                     output.as_mut_ptr(),
@@ -1021,8 +1423,62 @@ mod platform {
 
     impl Drop for MlpBlockHandle {
         fn drop(&mut self) {
-            unsafe { apxinf_metal_w8_mlp_block_destroy(self.0.as_ptr()) };
+            unsafe { apxinf_metal_w8_mlp_block_destroy(self.handle.as_ptr()) };
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn raw_invalid_mlp_gate_up_profile_is_rejected_for_testing(
+        weights: &PackedW8MlpBlock,
+    ) -> Result<(), MetalW8Error> {
+        let mut output = std::ptr::null_mut();
+        let mut error = [0 as c_char; ERROR_CAPACITY];
+        let status = unsafe {
+            apxinf_metal_w8_mlp_block_create_with_gate_up_profile_v1(
+                weights.gate_up.values.as_ptr(),
+                weights.gate_up.scales.as_ptr(),
+                weights.down.values.as_ptr(),
+                weights.down.scales.as_ptr(),
+                weights.down.rows as u32,
+                weights.down.columns as u32,
+                W8_GROUP_SIZE as u32,
+                u32::MAX,
+                &mut output,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        if status == 0 {
+            if !output.is_null() {
+                unsafe { apxinf_metal_w8_mlp_block_destroy(output) };
+            }
+            return Err(MetalW8Error::new(
+                "raw Metal W8 MLP create accepted an invalid gate/up profile",
+            ));
+        }
+        if !output.is_null() {
+            unsafe { apxinf_metal_w8_mlp_block_destroy(output) };
+            return Err(MetalW8Error::new(
+                "raw Metal W8 MLP create published a handle after rejecting an invalid gate/up profile",
+            ));
+        }
+        Ok(())
+    }
+
+    fn raw_function_name(
+        raw: &[c_char; FUNCTION_NAME_CAPACITY],
+        label: &str,
+    ) -> Result<String, MetalW8Error> {
+        let nul = raw
+            .iter()
+            .position(|&byte| byte == 0)
+            .ok_or_else(|| MetalW8Error::new(format!("{label} is not NUL-terminated")))?;
+        let bytes = raw[..nul]
+            .iter()
+            .map(|&byte| byte as u8)
+            .collect::<Vec<_>>();
+        String::from_utf8(bytes)
+            .map_err(|_| MetalW8Error::new(format!("{label} is not valid UTF-8")))
     }
 
     fn bridge_error(context: &str, buffer: &[c_char]) -> MetalW8Error {
@@ -1039,7 +1495,10 @@ mod platform {
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
-    use super::{MetalW8Error, PackedW8MlpBlock, PackedW8Rows, W8_TOP_K};
+    use super::{
+        MetalW8Error, PackedW8MlpBlock, PackedW8Rows, W8MlpGateUpProfileV1,
+        W8MlpGateUpRuntimeReceiptV1, W8_TOP_K,
+    };
 
     pub(super) struct Handle;
     pub(super) struct MatVecHandle;
@@ -1076,6 +1535,19 @@ mod platform {
 
     impl MlpBlockHandle {
         pub(super) fn new(_weights: &PackedW8MlpBlock) -> Result<Self, MetalW8Error> {
+            Err(MetalW8Error::new("Metal W8 MLP block requires macOS"))
+        }
+
+        pub(super) fn new_with_gate_up_profile_v1(
+            _weights: &PackedW8MlpBlock,
+            _profile: W8MlpGateUpProfileV1,
+        ) -> Result<Self, MetalW8Error> {
+            Err(MetalW8Error::new("Metal W8 MLP block requires macOS"))
+        }
+
+        pub(super) fn gate_up_runtime_receipt_v1(
+            &self,
+        ) -> Result<W8MlpGateUpRuntimeReceiptV1, MetalW8Error> {
             Err(MetalW8Error::new("Metal W8 MLP block requires macOS"))
         }
 
@@ -1287,6 +1759,37 @@ mod tests {
         assert!(error.to_string().contains("group size 64"));
     }
 
+    #[test]
+    fn metal_mlp_gate_up_profile_rejects_unknown_selectors() {
+        assert_eq!(
+            W8MlpGateUpProfileV1::try_from(0).unwrap(),
+            W8MlpGateUpProfileV1::LegacySeparate
+        );
+        assert_eq!(
+            W8MlpGateUpProfileV1::try_from(1).unwrap(),
+            W8MlpGateUpProfileV1::SemanticPairSilu
+        );
+        let error = W8MlpGateUpProfileV1::try_from(2).unwrap_err();
+        assert!(error.to_string().contains("invalid; expected 0 or 1"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn raw_metal_mlp_gate_up_create_rejects_an_invalid_selector() {
+        let hidden_size = 64;
+        let intermediate_size = 64;
+        let elements = hidden_size * intermediate_size;
+        let packed = PackedW8MlpBlock::pack_f32(
+            &vec![0.01; elements],
+            &vec![0.02; elements],
+            &vec![0.03; elements],
+            hidden_size,
+            intermediate_size,
+        )
+        .unwrap();
+        platform::raw_invalid_mlp_gate_up_profile_is_rejected_for_testing(&packed).unwrap();
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_mlp_block_matches_the_complete_quantized_cpu_oracle() {
@@ -1314,6 +1817,139 @@ mod tests {
                 "row {row}: Metal={actual}, CPU W8={expected}"
             );
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_mlp_semantic_pair_is_bit_exact_across_two_sequential_calls() {
+        let hidden_size = 128;
+        let intermediate_size = 128;
+        let (gate, first_input) = fixture(intermediate_size, hidden_size);
+        let up = gate
+            .iter()
+            .enumerate()
+            .map(|(index, value)| value * -0.4 + (index % 11) as f32 * 0.0002)
+            .collect::<Vec<_>>();
+        let down = (0..hidden_size * intermediate_size)
+            .map(|index| (((index * 43 + 23) % 211) as f32 - 105.0) * 0.0013)
+            .collect::<Vec<_>>();
+        let second_input = first_input
+            .iter()
+            .enumerate()
+            .map(|(index, value)| value * -0.73 + (index % 9) as f32 * 0.0007)
+            .collect::<Vec<_>>();
+        let packed =
+            PackedW8MlpBlock::pack_f32(&gate, &up, &down, hidden_size, intermediate_size).unwrap();
+
+        let mut legacy = MetalW8MlpBlock::from_packed(&packed).unwrap();
+        let mut arm_a = MetalW8MlpBlock::from_packed_with_gate_up_profile_v1(
+            &packed,
+            W8MlpGateUpProfileV1::LegacySeparate,
+        )
+        .unwrap();
+        let mut arm_b = MetalW8MlpBlock::from_packed_with_gate_up_profile_v1(
+            &packed,
+            W8MlpGateUpProfileV1::SemanticPairSilu,
+        )
+        .unwrap();
+
+        let legacy_receipt = legacy.gate_up_runtime_receipt_v1().unwrap();
+        assert_eq!(legacy_receipt.compute_encoders_per_call, 3);
+        assert_eq!(legacy_receipt.kernel_dispatches_per_call, 3);
+        assert_eq!(legacy_receipt.explicit_buffer_barriers_per_call, 0);
+        assert_eq!(legacy_receipt.successful_calls, 0);
+        assert_eq!(legacy_receipt.last_observed_command_buffers, 0);
+        assert_eq!(legacy.buffer_ledger().compute_encoders_per_decode, 3);
+
+        let arm_a_receipt = arm_a.gate_up_runtime_receipt_v1().unwrap();
+        assert_eq!(
+            arm_a_receipt.requested_profile,
+            W8MlpGateUpProfileV1::LegacySeparate
+        );
+        assert_eq!(
+            arm_a_receipt.observed_profile,
+            arm_a_receipt.requested_profile
+        );
+        assert_eq!(arm_a_receipt.function_name, "w8_mlp_gate_up");
+        assert_eq!(arm_a_receipt.compute_encoders_per_call, 1);
+        assert_eq!(arm_a_receipt.kernel_dispatches_per_call, 3);
+        assert_eq!(arm_a_receipt.explicit_buffer_barriers_per_call, 2);
+        assert_eq!(arm_a_receipt.internal_threadgroup_barriers_per_call, 0);
+        assert_eq!(arm_a_receipt.successful_calls, 0);
+        assert_eq!(arm_a_receipt.last_observed_command_buffers, 0);
+        assert_eq!(arm_a.buffer_ledger().compute_encoders_per_decode, 1);
+
+        let arm_b_receipt = arm_b.gate_up_runtime_receipt_v1().unwrap();
+        assert_eq!(
+            arm_b_receipt.requested_profile,
+            W8MlpGateUpProfileV1::SemanticPairSilu
+        );
+        assert_eq!(
+            arm_b_receipt.observed_profile,
+            arm_b_receipt.requested_profile
+        );
+        assert_eq!(
+            arm_b_receipt.function_name,
+            "w8_mlp_gate_up_semantic_pair_silu"
+        );
+        assert_eq!(arm_b_receipt.threads_per_threadgroup, 256);
+        assert_eq!(arm_b_receipt.simdgroups_per_threadgroup, 8);
+        assert_eq!(arm_b_receipt.semantic_pairs_per_threadgroup, 8);
+        assert_eq!(arm_b_receipt.pipeline_thread_execution_width, 32);
+        assert_eq!(arm_b_receipt.static_threadgroup_memory_bytes, 0);
+        assert_eq!(arm_b_receipt.dynamic_threadgroup_memory_bytes, 0);
+        assert_eq!(arm_b_receipt.gate_up_threadgroups_per_call, 16);
+        assert_eq!(arm_b_receipt.compute_encoders_per_call, 1);
+        assert_eq!(arm_b_receipt.kernel_dispatches_per_call, 2);
+        assert_eq!(arm_b_receipt.explicit_buffer_barriers_per_call, 1);
+        assert_eq!(arm_b_receipt.internal_threadgroup_barriers_per_call, 0);
+        assert_eq!(arm_b_receipt.successful_calls, 0);
+        assert_eq!(arm_b_receipt.last_observed_command_buffers, 0);
+        assert_eq!(arm_b.buffer_ledger().compute_encoders_per_decode, 1);
+
+        for input in [&first_input, &second_input] {
+            let legacy_bits = legacy
+                .forward(input)
+                .unwrap()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>();
+            let arm_a_bits = arm_a
+                .forward(input)
+                .unwrap()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>();
+            let arm_b_bits = arm_b
+                .forward(input)
+                .unwrap()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>();
+            assert_eq!(arm_a_bits, legacy_bits);
+            assert_eq!(arm_b_bits, arm_a_bits);
+        }
+
+        let legacy_receipt = legacy.gate_up_runtime_receipt_v1().unwrap();
+        assert_eq!(legacy_receipt.successful_calls, 2);
+        assert_eq!(legacy_receipt.last_observed_command_buffers, 1);
+        assert_eq!(legacy_receipt.last_observed_compute_encoders, 3);
+        assert_eq!(legacy_receipt.last_observed_kernel_dispatches, 3);
+        assert_eq!(legacy_receipt.last_observed_explicit_buffer_barriers, 0);
+
+        let arm_a_receipt = arm_a.gate_up_runtime_receipt_v1().unwrap();
+        assert_eq!(arm_a_receipt.successful_calls, 2);
+        assert_eq!(arm_a_receipt.last_observed_command_buffers, 1);
+        assert_eq!(arm_a_receipt.last_observed_compute_encoders, 1);
+        assert_eq!(arm_a_receipt.last_observed_kernel_dispatches, 3);
+        assert_eq!(arm_a_receipt.last_observed_explicit_buffer_barriers, 2);
+
+        let arm_b_receipt = arm_b.gate_up_runtime_receipt_v1().unwrap();
+        assert_eq!(arm_b_receipt.successful_calls, 2);
+        assert_eq!(arm_b_receipt.last_observed_command_buffers, 1);
+        assert_eq!(arm_b_receipt.last_observed_compute_encoders, 1);
+        assert_eq!(arm_b_receipt.last_observed_kernel_dispatches, 2);
+        assert_eq!(arm_b_receipt.last_observed_explicit_buffer_barriers, 1);
     }
 
     #[cfg(target_os = "macos")]
@@ -1377,6 +2013,7 @@ mod tests {
         assert!(shader.contains("kernel void w8_rows_topk4("));
         assert!(shader.contains("kernel void w8_final_topk4("));
         assert!(mlp_shader.contains("kernel void w8_mlp_gate_up("));
+        assert!(mlp_shader.contains("kernel void w8_mlp_gate_up_semantic_pair_silu("));
         assert!(mlp_shader.contains("kernel void w8_mlp_silu_mul("));
         assert!(mlp_shader.contains("kernel void w8_mlp_down("));
         assert!(!shader.contains("kernel void w8_mlp_"));
@@ -1384,6 +2021,9 @@ mod tests {
         assert!(bridge.contains("#include \"metal_w8_source.inc\""));
         assert!(bridge.contains("#include \"metal_w8_matvec_source.inc\""));
         assert!(mlp_bridge.contains("#include \"metal_w8_mlp_source.inc\""));
+        assert!(mlp_bridge.contains("apxinf_metal_w8_mlp_block_create_with_gate_up_profile_v1("));
+        assert!(mlp_bridge.contains("apxinf_metal_w8_mlp_block_gate_up_runtime_receipt_v1("));
+        assert!(mlp_bridge.contains("live_gate_up_profile_matches(handle)"));
         assert!(!bridge.contains("kernel void w8_rows_matvec("));
         assert!(!bridge.contains("kernel void w8_rows_topk4("));
         assert!(!bridge.contains("kernel void w8_final_topk4("));
