@@ -20,9 +20,9 @@ keeps only the aggregate evidence listed below.
 ## Accepted artifact
 
 - Binary SHA-256:
-  `67ebb11e203e7dd9b0bacaac243483b8aa06aebb6d12b20d55ac8eced5eb0f1a`
+  `30b3a2b9fc0eade3ac742bb9038d7037bd593a5f394ab5d281a8673202d73680`
 - Immediate rollback SHA-256:
-  `b1a6252930d0312000cceda77c449988e22c17072fc62e930e196b3ad292083c`
+  `67ebb11e203e7dd9b0bacaac243483b8aa06aebb6d12b20d55ac8eced5eb0f1a`
 - Service owner: runit plus `agent-gpu-broker`
 - Desired state after validation: stopped
 
@@ -51,6 +51,7 @@ The accepted implementation combines:
 - exact SM89 cuBLASLt tactics for the one-token WO and Down projections;
 - BF16-exact residual-add/RMSNorm fusion in the short one-token decode graph;
 - a 32-warp split-K attention geometry in the SM89 short decode graph;
+- one packed-QKV bias/TMRoPE/KV-publish owner in the short decode graph;
 - grouped variable-length FA2 for windowed vision attention and FA2 for the
   four full-attention vision blocks.
 
@@ -76,13 +77,21 @@ alternating pairs win; paired wall speedup median is `1.0688x` and the slowest
 pair is `1.0664x`. The 128+128 guard also wins 5/5 at about `1.011x`. The 12K
 and post-32K graphs do not install W32; their wall medians remain within 0.08%.
 
+The latest QKV-prelude refinement lowers the frozen 1,024+128 wall median from
+1.12922 s to 1.11967 s and TPOT from 8.358 ms to 8.280 ms. All five alternating
+pairs win; paired wall speedup median is `1.0077x` and the slowest pair is
+`1.0062x`. The 128+128 guard improves about `1.43%`. The 12K/post-32K paths do
+not install the candidate; their wall medians remain within 0.19%. One guard
+sample had a simultaneous long-prefill TTFT health outlier and is retained in
+the raw evidence rather than discarded.
+
 ## Accepted measurements
 
 | Workload | ApxInf TTFT | ApxInf TPOT | vLLM-Omni 0.26.0 TPOT | Result |
 |---|---:|---:|---:|---|
-| 1,024 + 32 | 65.871 ms | 8.415 ms | 22.617 ms | ApxInf TPOT `2.688x` |
-| 1,024 + 128 | 65.950 ms | 8.369 ms | — | paired wall `1.0688x` |
-| 128 + 128 | 16.609 ms | 7.727 ms | 22.681 ms | ApxInf TPOT `2.935x` |
+| 1,024 + 32 | 65.729 ms | 8.288 ms | 22.617 ms | ApxInf TPOT `2.729x` |
+| 1,024 + 128 | 65.771 ms | 8.280 ms | — | paired wall `1.0077x` |
+| 128 + 128 | 16.613 ms | 7.610 ms | 22.681 ms | ApxInf TPOT `2.980x` |
 | 8,192 + 8 | 406.548 ms | 10.694 ms | 19.111 ms | ApxInf TPOT `1.787x` |
 | 12,288 + 8 | 655.240 ms | 13.075 ms | 19.094 ms | ApxInf TPOT `1.460x` |
 | 32,760 + 8 | 2,596.522 ms | 10.242 ms | 17.577 ms | ApxInf TPOT `1.716x` |
@@ -123,6 +132,8 @@ being admitted to OOM.
   residual/RMSNorm promotion, long-context guards, and node-level attribution;
 - `results/promotion-short-w32-attention.json`: current 1K short-decode
   attention geometry promotion, 128/12K/32K guards, and Systems attribution;
+- `results/promotion-fused-qkv-prelude.json`: current short-decode packed-QKV
+  producer promotion, long-path guards, cache correctness, and node attribution;
 - `results/promotion-grouped-varlen-fa2.json`: current real-image promotion and
   complete multimodal controls;
 - `results/omni-packed-mlp-acceptance-summary.json`: final endpoint acceptance

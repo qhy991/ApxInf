@@ -168,6 +168,7 @@ fn decode_forward_capturable(
     fuse_tmrope_kv: bool,
     fuse_residual_norm: bool,
     use_w32_attention: bool,
+    fuse_qkv_prelude: bool,
 ) -> Result<()> {
     if weights.layers.len() != config.n_layers || config.n_layers == 0 {
         return Err(Error::Other(
@@ -221,7 +222,7 @@ fn decode_forward_capturable(
                 config.rms_norm_eps,
             )?;
         }
-        let packed_views = match &layer.qkv {
+        let (packed_views, qkv_prelude_done) = match &layer.qkv {
             Qwen25OmniDecodeQkvWeights::Packed { weight, bias } => {
                 let total = hidden + 2 * kv_width;
                 kernels::gemm::write(
@@ -236,32 +237,50 @@ fn decode_forward_capturable(
                     0.0,
                     &workspace.qkv,
                 )?;
-                kernels::elementwise::add_bias_bf16_into(
-                    context,
-                    &workspace.qkv,
-                    &weight_view(bias, device)?,
-                    &workspace.qkv,
-                    total,
-                    1,
-                )?;
-                let element_bytes = DType::BF16.size_in_bytes();
-                Some((
-                    workspace
-                        .qkv
-                        .view(0, hidden * element_bytes)
-                        .map_err(Error::Cuda)?,
-                    workspace
-                        .qkv
-                        .view(hidden * element_bytes, kv_width * element_bytes)
-                        .map_err(Error::Cuda)?,
-                    workspace
-                        .qkv
-                        .view(
-                            (hidden + kv_width) * element_bytes,
-                            kv_width * element_bytes,
-                        )
-                        .map_err(Error::Cuda)?,
-                ))
+                if fuse_qkv_prelude {
+                    kernels::qwen25_omni_attention::packed_qkv_prelude_write(
+                        context,
+                        &workspace.qkv,
+                        &weight_view(bias, device)?,
+                        &workspace.q_rope,
+                        cache.k_buffer(index),
+                        cache.v_buffer(index),
+                        config.rope_theta,
+                        positions,
+                        cache_position,
+                    )?;
+                    (None, true)
+                } else {
+                    kernels::elementwise::add_bias_bf16_into(
+                        context,
+                        &workspace.qkv,
+                        &weight_view(bias, device)?,
+                        &workspace.qkv,
+                        total,
+                        1,
+                    )?;
+                    let element_bytes = DType::BF16.size_in_bytes();
+                    (
+                        Some((
+                            workspace
+                                .qkv
+                                .view(0, hidden * element_bytes)
+                                .map_err(Error::Cuda)?,
+                            workspace
+                                .qkv
+                                .view(hidden * element_bytes, kv_width * element_bytes)
+                                .map_err(Error::Cuda)?,
+                            workspace
+                                .qkv
+                                .view(
+                                    (hidden + kv_width) * element_bytes,
+                                    kv_width * element_bytes,
+                                )
+                                .map_err(Error::Cuda)?,
+                        )),
+                        false,
+                    )
+                }
             }
             Qwen25OmniDecodeQkvWeights::Separate {
                 wq,
@@ -331,70 +350,72 @@ fn decode_forward_capturable(
                     kv_width,
                     1,
                 )?;
-                None
+                (None, false)
             }
         };
-        let (q, k, v) = packed_views.as_ref().map(|(q, k, v)| (q, k, v)).unwrap_or((
-            &workspace.q,
-            &workspace.k,
-            &workspace.v,
-        ));
-        kernels::rope::apply_tmrope_bf16_into(
-            context,
-            q,
-            &workspace.q_rope,
-            config.head_dim,
-            config.n_heads,
-            config.rope_theta,
-            config.mrope_section,
-            positions,
-        )?;
-        if fuse_tmrope_kv {
-            kernels::rope::apply_tmrope_kv_write_bf16(
-                context,
-                k,
-                v,
-                cache.k_buffer(index),
-                cache.v_buffer(index),
-                config.head_dim,
-                config.n_kv_heads,
-                config.max_seq_len,
-                config.rope_theta,
-                config.mrope_section,
-                positions,
-                cache_position,
-            )?;
-        } else {
+        if !qkv_prelude_done {
+            let (q, k, v) = packed_views.as_ref().map(|(q, k, v)| (q, k, v)).unwrap_or((
+                &workspace.q,
+                &workspace.k,
+                &workspace.v,
+            ));
             kernels::rope::apply_tmrope_bf16_into(
                 context,
-                k,
-                &workspace.k_rope,
+                q,
+                &workspace.q_rope,
                 config.head_dim,
-                config.n_kv_heads,
+                config.n_heads,
                 config.rope_theta,
                 config.mrope_section,
                 positions,
             )?;
-            kernels::cache::append_at(
-                context,
-                DType::BF16,
-                cache.k_buffer(index),
-                &workspace.k_rope,
-                config.n_kv_heads,
-                config.head_dim,
-                config.max_seq_len,
-                cache_position,
-            )?;
-            kernels::cache::append_at(
-                context,
-                DType::BF16,
-                cache.v_buffer(index),
-                v,
-                config.n_kv_heads,
-                config.head_dim,
-                config.max_seq_len,
-                cache_position,
-            )?;
+            if fuse_tmrope_kv {
+                kernels::rope::apply_tmrope_kv_write_bf16(
+                    context,
+                    k,
+                    v,
+                    cache.k_buffer(index),
+                    cache.v_buffer(index),
+                    config.head_dim,
+                    config.n_kv_heads,
+                    config.max_seq_len,
+                    config.rope_theta,
+                    config.mrope_section,
+                    positions,
+                    cache_position,
+                )?;
+            } else {
+                kernels::rope::apply_tmrope_bf16_into(
+                    context,
+                    k,
+                    &workspace.k_rope,
+                    config.head_dim,
+                    config.n_kv_heads,
+                    config.rope_theta,
+                    config.mrope_section,
+                    positions,
+                )?;
+                kernels::cache::append_at(
+                    context,
+                    DType::BF16,
+                    cache.k_buffer(index),
+                    &workspace.k_rope,
+                    config.n_kv_heads,
+                    config.head_dim,
+                    config.max_seq_len,
+                    cache_position,
+                )?;
+                kernels::cache::append_at(
+                    context,
+                    DType::BF16,
+                    cache.v_buffer(index),
+                    v,
+                    config.n_kv_heads,
+                    config.head_dim,
+                    config.max_seq_len,
+                    cache_position,
+                )?;
+            }
         }
         if let Some(long_attention) = workspace.long_attention.as_ref() {
             let element_bytes = DType::BF16.size_in_bytes();
@@ -652,6 +673,7 @@ pub struct Qwen25OmniDecodeGraph {
     fuse_tmrope_kv: bool,
     fuse_residual_norm: bool,
     use_w32_attention: bool,
+    fuse_qkv_prelude: bool,
 }
 
 impl Qwen25OmniDecodeGraph {
@@ -662,6 +684,7 @@ impl Qwen25OmniDecodeGraph {
         fuse_tmrope_kv: bool,
         fuse_residual_norm: bool,
         use_w32_attention: bool,
+        fuse_qkv_prelude: bool,
         grouped_long_attention: bool,
     ) -> Result<Self> {
         if config.n_layers == 0
@@ -682,6 +705,7 @@ impl Qwen25OmniDecodeGraph {
             fuse_tmrope_kv,
             fuse_residual_norm,
             use_w32_attention,
+            fuse_qkv_prelude,
         })
     }
 
@@ -709,6 +733,7 @@ impl Qwen25OmniDecodeGraph {
             self.fuse_tmrope_kv,
             self.fuse_residual_norm,
             self.use_w32_attention,
+            self.fuse_qkv_prelude,
         )?;
         backend.synchronize()?;
         cache.clear()?;
@@ -724,6 +749,7 @@ impl Qwen25OmniDecodeGraph {
             self.fuse_tmrope_kv,
             self.fuse_residual_norm,
             self.use_w32_attention,
+            self.fuse_qkv_prelude,
         );
         let graph = backend.end_capture()?;
         capture?;
@@ -763,6 +789,7 @@ impl Qwen25OmniDecodeGraph {
                 self.fuse_tmrope_kv,
                 self.fuse_residual_norm,
                 self.use_w32_attention,
+                self.fuse_qkv_prelude,
             )?;
         } else {
             graph.replay()?;

@@ -20,7 +20,8 @@ use crate::kernels::embedding::lookup;
 use crate::kernels::norm::{layer, residual_add_rms_exact_bf16_into, rms};
 use crate::kernels::preprocess::{avg_pool1d_bf16, im2col1d_bf16};
 use crate::kernels::qwen25_omni_attention::{
-    grouped2_split_cta_write, grouped4_split_cta_write, short_w32_write, SplitCtaWorkspace,
+    grouped2_split_cta_write, grouped4_split_cta_write, packed_qkv_prelude_write,
+    short_w32_write, SplitCtaWorkspace,
 };
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
 use crate::kernels::selection::argmax_bf16_into;
@@ -1136,6 +1137,164 @@ fn qwen25_short_w32_attention_matches_w16_reduction_gate() {
     .unwrap_err()
     .to_string()
     .contains("W32 attention contract mismatch"));
+}
+
+#[test]
+fn qwen25_packed_qkv_prelude_matches_three_node_contract() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    if ctx.caps().sm != 89 {
+        return;
+    }
+    let (query_heads, kv_heads, head_dim, max_seq_len, cache_pos) =
+        (16usize, 2usize, 128usize, 32_768usize, 1_024usize);
+    let query_width = query_heads * head_dim;
+    let kv_width = kv_heads * head_dim;
+    let fused_width = query_width + 2 * kv_width;
+    let qkv_values = (0..fused_width)
+        .map(|index| ((index as f32 * 0.031) - 2.0).sin())
+        .collect::<Vec<_>>();
+    let bias_values = (0..fused_width)
+        .map(|index| ((index as f32 * 0.017) - 1.0).cos() * 0.25)
+        .collect::<Vec<_>>();
+    let baseline_qkv = upload_fp32_as_bf16(&ctx, &qkv_values, vec![1, fused_width]).unwrap();
+    let candidate_qkv = upload_fp32_as_bf16(&ctx, &qkv_values, vec![1, fused_width]).unwrap();
+    let bias = upload_fp32_as_bf16(&ctx, &bias_values, vec![fused_width]).unwrap();
+    let baseline_qkv_buffer = CudaBuffer::from_tensor(&baseline_qkv).unwrap();
+    let candidate_qkv_buffer = CudaBuffer::from_tensor(&candidate_qkv).unwrap();
+    let bias_buffer = CudaBuffer::from_tensor(&bias).unwrap();
+    crate::kernels::elementwise::add_bias_bf16_into(
+        &ctx,
+        &baseline_qkv_buffer,
+        &bias_buffer,
+        &baseline_qkv_buffer,
+        fused_width,
+        1,
+    )
+    .unwrap();
+    let element_bytes = DType::BF16.size_in_bytes();
+    let baseline_q = baseline_qkv_buffer
+        .view(0, query_width * element_bytes)
+        .unwrap();
+    let baseline_k = baseline_qkv_buffer
+        .view(query_width * element_bytes, kv_width * element_bytes)
+        .unwrap();
+    let baseline_v = baseline_qkv_buffer
+        .view(
+            (query_width + kv_width) * element_bytes,
+            kv_width * element_bytes,
+        )
+        .unwrap();
+    let baseline_query = upload_fp32_as_bf16(
+        &ctx,
+        &vec![0.0; query_width],
+        vec![1, query_width],
+    )
+    .unwrap();
+    let candidate_query = upload_fp32_as_bf16(
+        &ctx,
+        &vec![0.0; query_width],
+        vec![1, query_width],
+    )
+    .unwrap();
+    let baseline_query_buffer = CudaBuffer::from_tensor(&baseline_query).unwrap();
+    let candidate_query_buffer = CudaBuffer::from_tensor(&candidate_query).unwrap();
+    let baseline_cache =
+        CudaKVCache::new(ctx.device_id(), 1, kv_heads, head_dim, max_seq_len).unwrap();
+    let candidate_cache =
+        CudaKVCache::new(ctx.device_id(), 1, kv_heads, head_dim, max_seq_len).unwrap();
+    let position_values = [1_024u32, 768u32, 512u32];
+    let position_bytes = position_values
+        .into_iter()
+        .flat_map(u32::to_ne_bytes)
+        .collect::<Vec<_>>();
+    let positions = CudaBuffer::alloc(position_bytes.len(), ctx.device_id()).unwrap();
+    positions.copy_from_host(&position_bytes).unwrap();
+    let cache_position_buffer = CudaBuffer::alloc(4, ctx.device_id()).unwrap();
+    cache_position_buffer
+        .copy_from_host(&(cache_pos as u32).to_ne_bytes())
+        .unwrap();
+    let cache_position = cache_position_buffer.address();
+    let theta = 1_000_000.0f32;
+    let sections = [16usize, 24usize, 24usize];
+    crate::kernels::rope::apply_tmrope_bf16_into(
+        &ctx,
+        &baseline_q,
+        &baseline_query_buffer,
+        head_dim,
+        query_heads,
+        theta,
+        sections,
+        positions.address(),
+    )
+    .unwrap();
+    crate::kernels::rope::apply_tmrope_kv_write_bf16(
+        &ctx,
+        &baseline_k,
+        &baseline_v,
+        baseline_cache.k_buffer(0),
+        baseline_cache.v_buffer(0),
+        head_dim,
+        kv_heads,
+        max_seq_len,
+        theta,
+        sections,
+        positions.address(),
+        cache_position,
+    )
+    .unwrap();
+    packed_qkv_prelude_write(
+        &ctx,
+        &candidate_qkv_buffer,
+        &bias_buffer,
+        &candidate_query_buffer,
+        candidate_cache.k_buffer(0),
+        candidate_cache.v_buffer(0),
+        theta,
+        positions.address(),
+        cache_position,
+    )
+    .unwrap();
+    ctx.synchronize().unwrap();
+    assert_eq!(
+        download_bf16_as_fp32(&candidate_query).unwrap(),
+        download_bf16_as_fp32(&baseline_query).unwrap()
+    );
+
+    for head in 0..kv_heads {
+        let offset = (head * max_seq_len * head_dim + cache_pos * head_dim) * element_bytes;
+        for (baseline, candidate) in [
+            (baseline_cache.k_buffer(0), candidate_cache.k_buffer(0)),
+            (baseline_cache.v_buffer(0), candidate_cache.v_buffer(0)),
+        ] {
+            let baseline = baseline
+                .view(offset, head_dim * element_bytes)
+                .unwrap()
+                .into_tensor(Shape::new(vec![head_dim]), DType::BF16);
+            let candidate = candidate
+                .view(offset, head_dim * element_bytes)
+                .unwrap()
+                .into_tensor(Shape::new(vec![head_dim]), DType::BF16);
+            assert_eq!(
+                download_bf16_as_fp32(&candidate).unwrap(),
+                download_bf16_as_fp32(&baseline).unwrap()
+            );
+        }
+    }
+
+    assert!(packed_qkv_prelude_write(
+        &ctx,
+        &candidate_qkv_buffer,
+        &bias_buffer,
+        &candidate_query_buffer,
+        candidate_cache.k_buffer(0),
+        candidate_cache.v_buffer(0),
+        10_000.0,
+        positions.address(),
+        cache_position,
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("packed QKV prelude contract mismatch"));
 }
 
 #[cfg(apxinf_fa2_causal_sm80)]

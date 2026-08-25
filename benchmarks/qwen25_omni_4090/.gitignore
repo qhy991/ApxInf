@@ -9,3 +9,4 @@ results/*
 !results/promotion-m1-gemv-tactics.json
 !results/promotion-short-exact-residual-norm.json
 !results/promotion-short-w32-attention.json
+!results/promotion-fused-qkv-prelude.json

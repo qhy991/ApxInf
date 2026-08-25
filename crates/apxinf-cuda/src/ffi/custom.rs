@@ -27,6 +27,18 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_static_qwen25_omni_qkv_bias_tmrope_kv_write_bf16(
+        packed_qkv: *const c_void,
+        bias: *const c_void,
+        query: *mut c_void,
+        key_cache: *mut c_void,
+        value_cache: *mut c_void,
+        theta: f32,
+        positions: *const c_void,
+        cache_position: *const c_void,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_static_qwen25_omni_attention_flash_split_cta_bf16(
         query: *const c_void,
         key_cache: *const c_void,

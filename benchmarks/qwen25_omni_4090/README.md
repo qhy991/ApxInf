@@ -123,7 +123,8 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_QWEN25_M1_PACKED_MLP=1` and
 `APXINF_QWEN25_M1_GEMV_TACTICS=1`, plus
 `APXINF_QWEN25_SHORT_DECODE_EXACT_RESIDUAL_NORM=1` and
-`APXINF_QWEN25_SHORT_DECODE_W32_ATTENTION=1`. The decode
+`APXINF_QWEN25_SHORT_DECODE_W32_ATTENTION=1`, plus
+`APXINF_QWEN25_SHORT_DECODE_FUSED_QKV_PRELUDE=1`. The decode
 graph and exact two-stage GPU token selection are deliberately restricted to
 SM89 one-token decode with `start_pos < 3072`; prefill and longer-KV decode
 keep the accepted ordinary path except for the explicit long-decode selector.
@@ -160,6 +161,12 @@ eager, prefill, 12K, and post-32K execution keep W16 or their existing dedicated
 attention owners. The changed merge order is not byte-exact for every synthetic
 activation, so promotion requires complete text, image, and audio token
 trajectories rather than an operator-only claim.
+The fused QKV prelude selector replaces packed-QKV bias, Q TMRoPE, and K
+TMRoPE/KV publication with one short-graph node. Projection+bias is explicitly
+rounded to BF16 before TMRoPE, Q is written directly in the attention layout,
+and K/V publish directly to their persistent cache slot. It requires W32 and
+the pinned SM89 Qwen2.5-Omni-3B graph; prefill, eager, 12K, and post-32K paths
+retain their existing owners.
 `APXINF_QWEN25_PACKED_QKV=1` selects one
 packed QKV owner shared by both paths. `APXINF_QWEN25_FUSED_TMROPE_KV=1`
 publishes rotated K and unchanged V directly to their caches during graph
