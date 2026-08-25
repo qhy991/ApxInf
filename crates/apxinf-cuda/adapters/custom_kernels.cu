@@ -116,6 +116,27 @@ apxinf_static_qwen25_omni_attention_flash_w32_bf16(
   return cudaGetLastError();
 }
 
+extern "C" cudaError_t
+apxinf_static_qwen25_omni_qkv_bias_tmrope_kv_write_bf16(
+    const void* packed_qkv, const void* bias, void* query, void* key_cache,
+    void* value_cache, float theta, const void* positions,
+    const void* cache_position, cudaStream_t stream) {
+  if (packed_qkv == nullptr || bias == nullptr || query == nullptr ||
+      key_cache == nullptr || value_cache == nullptr || positions == nullptr ||
+      cache_position == nullptr || theta != 1000000.0f) {
+    return cudaErrorInvalidValue;
+  }
+  qwen25_omni_qkv_bias_tmrope_kv_write_bf16_kernel<<<20, 128, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(packed_qkv),
+      static_cast<const __nv_bfloat16*>(bias),
+      static_cast<__nv_bfloat16*>(query),
+      static_cast<__nv_bfloat16*>(key_cache),
+      static_cast<__nv_bfloat16*>(value_cache), theta,
+      static_cast<const uint32_t*>(positions),
+      static_cast<const uint32_t*>(cache_position));
+  return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_static_qwen25_omni_attention_flash_split_cta_bf16(
     const void* query, const void* key_cache, const void* value_cache,
     void* partial_max, void* partial_sum, void* partial_accumulator,

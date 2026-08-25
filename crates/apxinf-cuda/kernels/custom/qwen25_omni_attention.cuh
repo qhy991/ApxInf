@@ -1,5 +1,84 @@
 #pragma once
 
+// Decode-only packed QKV prelude for Qwen2.5-Omni-3B.  This preserves the
+// incumbent seam exactly: projection+bias is first rounded to BF16, then Q/K
+// TMRoPE reads those rounded values, while V publishes the rounded value.
+// Q is written in the attention consumer layout and K/V directly into their
+// persistent head-major cache slot.
+__global__ void qwen25_omni_qkv_bias_tmrope_kv_write_bf16_kernel(
+    const __nv_bfloat16* packed_qkv, const __nv_bfloat16* bias,
+    __nv_bfloat16* query, __nv_bfloat16* key_cache,
+    __nv_bfloat16* value_cache, float theta, const uint32_t* positions,
+    const uint32_t* cache_position) {
+  constexpr int kQueryHeads = 16;
+  constexpr int kKvHeads = 2;
+  constexpr int kHeadDim = 128;
+  constexpr int kQueryWidth = kQueryHeads * kHeadDim;
+  constexpr int kKvWidth = kKvHeads * kHeadDim;
+  constexpr int kFusedWidth = kQueryWidth + 2 * kKvWidth;
+  constexpr int kMaxSeqLen = 32768;
+  constexpr int kSectionT = 16;
+  constexpr int kSectionH = 24;
+
+  const int projection_head = blockIdx.x;
+  const int dimension = threadIdx.x;
+  if (projection_head >= kQueryHeads + 2 * kKvHeads ||
+      dimension >= kHeadDim) {
+    return;
+  }
+
+  if (projection_head >= kQueryHeads + kKvHeads) {
+    const int head = projection_head - kQueryHeads - kKvHeads;
+    const int source = kQueryWidth + kKvWidth + head * kHeadDim + dimension;
+    const __nv_bfloat16 rounded = __float2bfloat16(
+        __bfloat162float(packed_qkv[source]) + __bfloat162float(bias[source]));
+    const int64_t destination =
+        (static_cast<int64_t>(head) * kMaxSeqLen + *cache_position) *
+            kHeadDim +
+        dimension;
+    value_cache[destination] = rounded;
+    return;
+  }
+
+  const bool is_query = projection_head < kQueryHeads;
+  const int head = is_query ? projection_head : projection_head - kQueryHeads;
+  const int source_base =
+      (is_query ? 0 : kQueryWidth) + head * kHeadDim;
+  const int half = kHeadDim / 2;
+  const int paired_dimension = dimension < half ? dimension + half
+                                                 : dimension - half;
+  const __nv_bfloat16 value_rounded = __float2bfloat16(
+      __bfloat162float(packed_qkv[source_base + dimension]) +
+      __bfloat162float(bias[source_base + dimension]));
+  const __nv_bfloat16 pair_rounded = __float2bfloat16(
+      __bfloat162float(packed_qkv[source_base + paired_dimension]) +
+      __bfloat162float(bias[source_base + paired_dimension]));
+  const int axis = dimension < 2 * kSectionT
+      ? 0
+      : (dimension < 2 * (kSectionT + kSectionH) ? 1 : 2);
+  const int pair = dimension % half;
+  const float frequency =
+      1.0f / powf(theta, 2.0f * static_cast<float>(pair) / kHeadDim);
+  const float angle = static_cast<float>(positions[axis]) * frequency;
+  const float cosine = cosf(angle);
+  const float sine = sinf(angle);
+  const float value = __bfloat162float(value_rounded);
+  const float rotated = dimension < half ? -__bfloat162float(pair_rounded)
+                                         : __bfloat162float(pair_rounded);
+  const __nv_bfloat16 output =
+      __float2bfloat16(value * cosine + rotated * sine);
+
+  if (is_query) {
+    query[head * kHeadDim + dimension] = output;
+  } else {
+    const int64_t destination =
+        (static_cast<int64_t>(head) * kMaxSeqLen + *cache_position) *
+            kHeadDim +
+        dimension;
+    key_cache[destination] = output;
+  }
+}
+
 // Long-context decode candidate.  The incumbent assigns one CTA to each Q
 // head, which exposes only 24 CTAs on an RTX 4090.  This stage partitions the
 // valid KV interval across CTAs and writes numerically stable online-softmax

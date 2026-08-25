@@ -7,6 +7,62 @@ pub const KV_HEADS: usize = 2;
 pub const HEAD_DIM: usize = 128;
 pub const WIDTH: usize = QUERY_HEADS * HEAD_DIM;
 pub const MAX_SPLITS: usize = 64;
+pub const PACKED_QKV_WIDTH: usize = WIDTH + 2 * KV_HEADS * HEAD_DIM;
+
+#[allow(clippy::too_many_arguments)]
+pub fn packed_qkv_prelude_write(
+    ctx: &CudaContext,
+    packed_qkv: &CudaBuffer,
+    bias: &CudaBuffer,
+    query: &CudaBuffer,
+    key_cache: &CudaBuffer,
+    value_cache: &CudaBuffer,
+    theta: f32,
+    positions: CudaDeviceAddress,
+    cache_position: CudaDeviceAddress,
+) -> Result<()> {
+    let element_bytes = DType::BF16.size_in_bytes();
+    let packed_bytes = PACKED_QKV_WIDTH * element_bytes;
+    let query_bytes = WIDTH * element_bytes;
+    let cache_bytes = KV_HEADS * 32_768 * HEAD_DIM * element_bytes;
+    if ctx.caps().sm != 89
+        || theta.to_bits() != 1_000_000.0f32.to_bits()
+        || packed_qkv.device() != ctx.device_id()
+        || packed_qkv.len() < packed_bytes
+        || bias.device() != ctx.device_id()
+        || bias.len() < packed_bytes
+        || query.device() != ctx.device_id()
+        || query.len() < query_bytes
+        || key_cache.device() != ctx.device_id()
+        || key_cache.len() < cache_bytes
+        || value_cache.device() != ctx.device_id()
+        || value_cache.len() < cache_bytes
+        || positions.device() != ctx.device_id()
+        || positions.len() < 12
+        || cache_position.device() != ctx.device_id()
+        || cache_position.len() < 4
+    {
+        return Err(Error::Other(
+            "Qwen2.5-Omni packed QKV prelude contract mismatch".into(),
+        ));
+    }
+    unsafe {
+        ffi::check_cuda(
+            ffi::apxinf_static_qwen25_omni_qkv_bias_tmrope_kv_write_bf16(
+                packed_qkv.ptr(),
+                bias.ptr(),
+                query.ptr(),
+                key_cache.ptr(),
+                value_cache.ptr(),
+                theta,
+                positions.ptr(),
+                cache_position.ptr(),
+                ctx.stream().handle(),
+            ),
+        )
+        .map_err(Error::Cuda)
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn short_w32_write(
