@@ -3,7 +3,6 @@ fn main() {
     println!("cargo:rerun-if-changed=src/metal_w8_mlp_bridge.mm");
     println!("cargo:rerun-if-changed=src/metal_w8_gdn_bridge.mm");
     println!("cargo:rerun-if-changed=src/metal_w8_linear_layer_bridge.mm");
-    println!("cargo:rerun-if-changed=src/metal_rms_norm_count43_profile_v1_bridge.mm");
     println!("cargo:rerun-if-changed=src/metal_w8_linear_layer_stack3_bridge.mm");
     println!("cargo:rerun-if-changed=src/metal_w8_mlp_stack3_boundary_v1_bridge.mm");
     println!("cargo:rerun-if-changed=src/metal_w8_tail_mlp_head_v1_bridge.mm");
@@ -139,15 +138,6 @@ fn main() {
         .flag("-fobjc-arc")
         .flag("-fblocks")
         .compile("apxinf_metal_w8_linear_layer_bridge");
-
-    cc::Build::new()
-        .cpp(true)
-        .file("src/metal_rms_norm_count43_profile_v1_bridge.mm")
-        .include(&output_dir)
-        .flag("-std=c++17")
-        .flag("-fobjc-arc")
-        .flag("-fblocks")
-        .compile("apxinf_metal_rms_norm_count43_profile_v1_bridge");
 
     cc::Build::new()
         .cpp(true)
