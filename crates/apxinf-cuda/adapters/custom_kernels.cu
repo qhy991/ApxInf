@@ -192,6 +192,25 @@ extern "C" cudaError_t apxinf_static_qwen25_omni_vision_qkv_bias_rope_bf16(
   return cudaGetLastError();
 }
 
+extern "C" cudaError_t apxinf_static_qwen25_omni_vision_bias_residual_exact_bf16(
+    const void* projection, const void* bias, const void* residual,
+    void* output, int sequence, int hidden, cudaStream_t stream) {
+  if (projection == nullptr || bias == nullptr || residual == nullptr ||
+      output == nullptr || sequence <= 0 || sequence > 65535 || hidden != 1280) {
+    return cudaErrorInvalidValue;
+  }
+  constexpr int kHidden = 1280;
+  constexpr int kThreads = 256;
+  dim3 grid((kHidden + kThreads - 1) / kThreads, sequence, 1);
+  qwen25_omni_vision_bias_residual_exact_bf16_kernel<kHidden><<<
+      grid, kThreads, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(projection),
+      static_cast<const __nv_bfloat16*>(bias),
+      static_cast<const __nv_bfloat16*>(residual),
+      static_cast<__nv_bfloat16*>(output), sequence);
+  return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_static_qwen25_omni_attention_flash_split_cta_bf16(
     const void* query, const void* key_cache, const void* value_cache,
     void* partial_max, void* partial_sum, void* partial_accumulator,

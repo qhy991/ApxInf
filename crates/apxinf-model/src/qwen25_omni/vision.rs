@@ -130,6 +130,7 @@ pub fn forward(
     grid_thw: &[[u32; 3]],
     use_fused_qkv_bias_rope: bool,
     use_fused_silu_mul: bool,
+    use_fused_bias_residual: bool,
 ) -> Result<Tensor> {
     let vision = &config.vision;
     let raw_tokens = validate_input(config, pixel_values, grid_thw)?;
@@ -199,8 +200,14 @@ pub fn forward(
                 &groups,
             )?
         };
-        let attention = backend.add_bias(&backend.matmul(&attention, &block.wo)?, &block.bo)?;
-        hidden = backend.add(&hidden, &attention)?;
+        let attention = backend.matmul(&attention, &block.wo)?;
+        hidden = projection_bias_residual(
+            backend,
+            &attention,
+            &block.bo,
+            &hidden,
+            use_fused_bias_residual,
+        )?;
         let normalized = backend.rms_norm(&hidden, &block.norm2, 1e-6)?;
         let gate = backend.add_bias(&backend.matmul(&normalized, &block.w_gate)?, &block.b_gate)?;
         let up = backend.add_bias(&backend.matmul(&normalized, &block.w_up)?, &block.b_up)?;
@@ -209,8 +216,14 @@ pub fn forward(
         } else {
             backend.mul(&backend.silu(&gate)?, &up)?
         };
-        let mlp = backend.add_bias(&backend.matmul(&mlp, &block.w_down)?, &block.b_down)?;
-        hidden = backend.add(&hidden, &mlp)?;
+        let mlp = backend.matmul(&mlp, &block.w_down)?;
+        hidden = projection_bias_residual(
+            backend,
+            &mlp,
+            &block.b_down,
+            &hidden,
+            use_fused_bias_residual,
+        )?;
     }
 
     let normalized = backend.rms_norm(&hidden, &weights.merger_norm, 1e-6)?;
@@ -226,6 +239,31 @@ pub fn forward(
         &backend.matmul(&merged, &weights.merger_fc2)?,
         &weights.merger_fc2_bias,
     )
+}
+
+fn projection_bias_residual(
+    backend: &dyn Backend,
+    projection: &Tensor,
+    bias: &Tensor,
+    residual: &Tensor,
+    use_fused: bool,
+) -> Result<Tensor> {
+    if use_fused {
+        #[cfg(feature = "cuda")]
+        {
+            let cuda = cuda_backend(backend).ok_or_else(|| {
+                Error::Other("vision exact bias/residual fusion requires CudaBackend".into())
+            })?;
+            return cuda.qwen25_omni_vision_bias_residual_exact(projection, bias, residual);
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            return Err(Error::Other(
+                "vision exact bias/residual fusion requires CUDA".into(),
+            ));
+        }
+    }
+    backend.add(&backend.add_bias(projection, bias)?, residual)
 }
 
 /// Validate processor-owned image views without executing a backend operator.

@@ -55,3 +55,17 @@ __global__ void qwen25_omni_vision_qkv_bias_rope_bf16_kernel(
   output[index0] = __float2bfloat16(value0 * cosine - value1 * sine);
   output[index1] = __float2bfloat16(value0 * sine + value1 * cosine);
 }
+
+template <int kHidden>
+__global__ void qwen25_omni_vision_bias_residual_exact_bf16_kernel(
+    const __nv_bfloat16* projection, const __nv_bfloat16* bias,
+    const __nv_bfloat16* residual, __nv_bfloat16* output, int sequence) {
+  const int item = blockIdx.x * blockDim.x + threadIdx.x;
+  const int token = blockIdx.y;
+  if (token >= sequence || item >= kHidden) return;
+  const int64_t index = static_cast<int64_t>(token) * kHidden + item;
+  const __nv_bfloat16 rounded_projection = __float2bfloat16(
+      __bfloat162float(projection[index]) + __bfloat162float(bias[item]));
+  output[index] = __float2bfloat16(
+      __bfloat162float(rounded_projection) + __bfloat162float(residual[index]));
+}

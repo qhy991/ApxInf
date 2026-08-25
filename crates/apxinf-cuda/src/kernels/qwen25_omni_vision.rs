@@ -8,6 +8,54 @@ pub const HEADS: usize = 16;
 pub const HEAD_DIM: usize = 80;
 pub const HIDDEN: usize = HEADS * HEAD_DIM;
 
+pub fn bias_residual_exact(
+    ctx: &CudaContext,
+    projection: &Tensor,
+    bias: &Tensor,
+    residual: &Tensor,
+) -> Result<Tensor> {
+    let sequence = projection.shape().dims().first().copied().unwrap_or(0);
+    let device = Device::Cuda(ctx.device_id());
+    let matrix_shape = [sequence, HIDDEN];
+    if ctx.caps().sm != 89
+        || sequence == 0
+        || sequence > 65_535
+        || projection.dtype() != DType::BF16
+        || projection.device() != device
+        || projection.shape().dims() != matrix_shape
+        || residual.dtype() != DType::BF16
+        || residual.device() != device
+        || residual.shape().dims() != matrix_shape
+        || bias.dtype() != DType::BF16
+        || bias.device() != device
+        || bias.shape().dims() != [HIDDEN]
+    {
+        return Err(Error::Other(
+            "Qwen2.5-Omni vision exact bias/residual contract mismatch".into(),
+        ));
+    }
+    let projection = CudaBuffer::from_tensor(projection).map_err(Error::Cuda)?;
+    let bias = CudaBuffer::from_tensor(bias).map_err(Error::Cuda)?;
+    let residual = CudaBuffer::from_tensor(residual).map_err(Error::Cuda)?;
+    let bytes = sequence
+        .checked_mul(HIDDEN)
+        .and_then(|elements| elements.checked_mul(DType::BF16.size_in_bytes()))
+        .ok_or_else(|| Error::Other("vision exact bias/residual output size overflow".into()))?;
+    let output = uninitialized_buffer(ctx, bytes)?;
+    check_cuda(unsafe {
+        ffi::apxinf_static_qwen25_omni_vision_bias_residual_exact_bf16(
+            projection.ptr(),
+            bias.ptr(),
+            residual.ptr(),
+            output.ptr(),
+            sequence as i32,
+            HIDDEN as i32,
+            ctx.stream().handle(),
+        )
+    })?;
+    Ok(output.into_tensor(Shape::new(vec![sequence, HIDDEN]), DType::BF16))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn qkv_bias_rope(
     ctx: &CudaContext,

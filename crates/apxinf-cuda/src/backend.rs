@@ -222,6 +222,20 @@ impl CudaBackend {
         self.ctx.device_id()
     }
 
+    pub fn qwen25_omni_vision_bias_residual_exact(
+        &self,
+        projection: &Tensor,
+        bias: &Tensor,
+        residual: &Tensor,
+    ) -> Result<Tensor> {
+        kernels::qwen25_omni_vision::bias_residual_exact(
+            &self.ctx,
+            projection,
+            bias,
+            residual,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn qwen25_omni_vision_qkv_bias_rope(
         &self,
