@@ -17,6 +17,14 @@ constexpr uint32_t kRowsPerThreadgroup = 8;
 constexpr uint32_t kMatVecThreads = kRowsPerThreadgroup * 32;
 constexpr uint32_t kElementThreads = 256;
 constexpr uint32_t kAllSeededMask = (1u << kStackDepth) - 1;
+constexpr uint32_t kLegacyProfile = 0;
+constexpr uint32_t kFusedProfile = 2;
+constexpr uint32_t kFusedThreads = 128;
+constexpr uint32_t kRequiredThreadExecutionWidth = 32;
+constexpr uint32_t kFusedSourceThreadgroupBytes = (4 * 128 + 3) * sizeof(float);
+constexpr uint32_t kFusedStaticThreadgroupBytes = 2064;
+constexpr size_t kFunctionChainCapacity = 256;
+constexpr float kFixedGdnRmsNormEps = 1.0e-6f;
 
 struct GdnParams {
     uint32_t hidden_size;
@@ -114,6 +122,25 @@ struct BoundaryExecutionReceiptV1 {
     uint32_t waits;
     uint32_t state_commits;
     uint32_t state_commit_mask;
+    uint32_t requested_profile;
+    uint32_t observed_profile;
+    uint32_t kernel_dispatches;
+    uint32_t explicit_buffer_barriers;
+    uint32_t gdn_core_seams;
+    uint32_t gdn_core_kernel_dispatches;
+    uint32_t gdn_core_explicit_buffer_barriers;
+    uint32_t threads_per_threadgroup;
+    uint32_t gdn_core_threadgroups;
+    uint32_t gdn_core_launched_threads;
+    uint32_t pipeline_thread_execution_width;
+    uint32_t source_declared_threadgroup_memory_bytes;
+    uint32_t pipeline_static_threadgroup_memory_bytes;
+    uint32_t internal_threadgroup_barrier_sites_per_threadgroup;
+    uint32_t fixed_shape_validated;
+    uint32_t rms_norm_eps_bits;
+    uint32_t persistent_output_groups_per_row;
+    uint32_t core_kernel_output_groups_per_row;
+    char observed_function_chain[kFunctionChainCapacity];
 };
 
 static_assert(sizeof(GdnParams) == 52, "Metal W8 GDN parameter ABI changed");
@@ -128,7 +155,7 @@ static_assert(sizeof(BoundaryStateDescriptorV1) == 64,
               "Metal W8 stack3 state descriptor ABI changed");
 static_assert(sizeof(BoundaryMutableStateDescriptorV1) == 64,
               "Metal W8 stack3 mutable state descriptor ABI changed");
-static_assert(sizeof(BoundaryExecutionReceiptV1) == 40,
+static_assert(sizeof(BoundaryExecutionReceiptV1) == 368,
               "Metal W8 stack3 execution receipt ABI changed");
 
 struct BoundaryStackShape {
@@ -212,10 +239,17 @@ struct ApxinfMetalW8MlpStack3BoundaryHandleV1 {
     id<MTLComputePipelineState> gdn_normalize_pipeline;
     id<MTLComputePipelineState> gdn_recurrent_pipeline;
     id<MTLComputePipelineState> gdn_norm_gate_pipeline;
+    id<MTLComputePipelineState> gdn_core_fused_pipeline;
     id<MTLComputePipelineState> gdn_output_pipeline;
     id<MTLComputePipelineState> mlp_gate_up_pipeline;
     id<MTLComputePipelineState> mlp_activation_pipeline;
     id<MTLComputePipelineState> mlp_down_pipeline;
+
+    id<MTLFunction> gdn_depthwise_function;
+    id<MTLFunction> gdn_normalize_function;
+    id<MTLFunction> gdn_recurrent_function;
+    id<MTLFunction> gdn_norm_gate_function;
+    id<MTLFunction> gdn_core_fused_function;
 
     // Five immutable full-attention boundary MLP/RMS buffers. They extend the
     // Stack3 resident set without allocating another hidden or scratch row.
@@ -244,6 +278,8 @@ struct ApxinfMetalW8MlpStack3BoundaryHandleV1 {
     id<MTLBuffer> mlp_activated;
 
     uint32_t seeded_mask;
+    uint32_t gdn_core_profile;
+    bool production_receipt_enabled;
     bool terminal_error;
 };
 
@@ -277,6 +313,149 @@ id<MTLComputePipelineState> make_pipeline(
                            : [device newComputePipelineStateWithFunction:function error:error];
 }
 
+id<MTLComputePipelineState> make_pipeline(
+    id<MTLDevice> device, id<MTLFunction> function, NSError **error) {
+    return function == nil ? nil
+                           : [device newComputePipelineStateWithFunction:function error:error];
+}
+
+uint32_t f32_bits(float value) {
+    uint32_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value), "F32 bit custody changed");
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+bool valid_production_profile(uint32_t profile) {
+    return profile == kLegacyProfile || profile == kFusedProfile;
+}
+
+bool fixed_fused_shape(const BoundaryStackLayerDescriptorV1 &layer) {
+    return layer.hidden_size == 1024 && layer.key_heads == 16 &&
+           layer.value_heads == 16 && layer.value_heads == layer.key_heads &&
+           layer.key_dim == 128 && layer.value_dim == 128 &&
+           layer.conv_kernel_size == 4 &&
+           f32_bits(layer.gdn_rms_norm_eps) == f32_bits(kFixedGdnRmsNormEps);
+}
+
+bool live_fixed_shape(const GdnParams &params) {
+    return params.hidden_size == 1024 && params.key_heads == 16 &&
+           params.value_heads == 16 && params.value_heads == params.key_heads &&
+           params.key_dim == 128 && params.value_dim == 128 &&
+           params.conv_kernel_size == 4 && params.key_width == 2048 &&
+           params.value_width == 2048 && params.qkv_width == 6144 &&
+           params.input_rows == 8224 && params.input_groups_per_row == 16 &&
+           params.output_groups_per_row == 64 &&
+           f32_bits(params.rms_norm_eps) == f32_bits(kFixedGdnRmsNormEps);
+}
+
+bool live_pipeline_matches(id<MTLFunction> function,
+                           id<MTLComputePipelineState> pipeline,
+                           NSString *expected_name, uint32_t required_threads,
+                           uint32_t expected_static_threadgroup_bytes) {
+    return function != nil && pipeline != nil && expected_name != nil &&
+           [function.name isEqualToString:expected_name] &&
+           pipeline.threadExecutionWidth == kRequiredThreadExecutionWidth &&
+           pipeline.maxTotalThreadsPerThreadgroup >= required_threads &&
+           pipeline.staticThreadgroupMemoryLength ==
+               expected_static_threadgroup_bytes;
+}
+
+bool live_profile_matches(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle) {
+    if (handle == nullptr || !valid_production_profile(handle->gdn_core_profile)) {
+        return false;
+    }
+    if (handle->gdn_core_profile == kFusedProfile) {
+        return live_pipeline_matches(handle->gdn_core_fused_function,
+                                     handle->gdn_core_fused_pipeline,
+                                     @"gdn_core_fused_v1", kFusedThreads,
+                                     kFusedStaticThreadgroupBytes);
+    }
+    if (!handle->production_receipt_enabled) {
+        return handle->gdn_depthwise_function != nil &&
+               handle->gdn_depthwise_pipeline != nil &&
+               handle->gdn_normalize_function != nil &&
+               handle->gdn_normalize_pipeline != nil &&
+               handle->gdn_recurrent_function != nil &&
+               handle->gdn_recurrent_pipeline != nil &&
+               handle->gdn_norm_gate_function != nil &&
+               handle->gdn_norm_gate_pipeline != nil;
+    }
+    return live_pipeline_matches(handle->gdn_depthwise_function,
+                                 handle->gdn_depthwise_pipeline,
+                                 @"gdn_depthwise_preprocess", kElementThreads, 0) &&
+           live_pipeline_matches(handle->gdn_normalize_function,
+                                 handle->gdn_normalize_pipeline,
+                                 @"gdn_normalize_qk", 32, 0) &&
+           live_pipeline_matches(handle->gdn_recurrent_function,
+                                 handle->gdn_recurrent_pipeline,
+                                 @"gdn_recurrent_update", kElementThreads, 0) &&
+           live_pipeline_matches(handle->gdn_norm_gate_function,
+                                 handle->gdn_norm_gate_pipeline,
+                                 @"gdn_norm_gate", 16, 0);
+}
+
+id<MTLComputePipelineState> selected_gdn_core_pipeline(
+    ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle) {
+    return handle->gdn_core_profile == kFusedProfile
+               ? handle->gdn_core_fused_pipeline
+               : handle->gdn_recurrent_pipeline;
+}
+
+void write_observed_function_chain(
+    ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
+    BoundaryExecutionReceiptV1 *receipt) {
+    if (handle->gdn_core_profile == kFusedProfile) {
+        std::snprintf(receipt->observed_function_chain, kFunctionChainCapacity,
+                      "%s", handle->gdn_core_fused_function.name.UTF8String);
+        return;
+    }
+    std::snprintf(receipt->observed_function_chain, kFunctionChainCapacity,
+                  "%s|%s|%s|%s",
+                  handle->gdn_depthwise_function.name.UTF8String,
+                  handle->gdn_normalize_function.name.UTF8String,
+                  handle->gdn_recurrent_function.name.UTF8String,
+                  handle->gdn_norm_gate_function.name.UTF8String);
+}
+
+uint32_t expected_transaction_dispatches(uint32_t profile) {
+    return profile == kFusedProfile ? 35 : 44;
+}
+
+uint32_t expected_transaction_barriers(uint32_t profile) {
+    return profile == kFusedProfile ? 31 : 40;
+}
+
+uint32_t expected_gdn_core_dispatches(uint32_t profile) {
+    return profile == kFusedProfile ? 3 : 12;
+}
+
+uint32_t expected_gdn_core_threadgroups(uint32_t profile) {
+    return profile == kFusedProfile ? 48 : 126;
+}
+
+uint32_t expected_gdn_core_launched_threads(uint32_t profile) {
+    return profile == kFusedProfile ? 6144 : 30864;
+}
+
+void record_dispatch(BoundaryExecutionReceiptV1 *receipt, bool gdn_core,
+                     uint32_t threadgroups, uint32_t launched_threads) {
+    ++receipt->kernel_dispatches;
+    if (gdn_core) {
+        ++receipt->gdn_core_kernel_dispatches;
+        receipt->gdn_core_threadgroups += threadgroups;
+        receipt->gdn_core_launched_threads += launched_threads;
+    }
+}
+
+void observe_consistent_group_count(uint32_t *field, uint32_t observed) {
+    if (*field == 0) {
+        *field = observed;
+    } else if (*field != observed) {
+        *field = UINT32_MAX;
+    }
+}
+
 id<MTLBuffer> make_shared_f32(id<MTLDevice> device, size_t count) {
     size_t bytes = 0;
     if (!checked_product(count, sizeof(float), &bytes)) {
@@ -298,8 +477,13 @@ id<MTLBuffer> make_private_f32(id<MTLDevice> device, size_t count) {
     return [device newBufferWithLength:bytes options:MTLResourceStorageModePrivate];
 }
 
-void buffer_barrier(id<MTLComputeCommandEncoder> encoder) {
+void buffer_barrier(id<MTLComputeCommandEncoder> encoder,
+                    BoundaryExecutionReceiptV1 *receipt, bool gdn_core) {
     [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    ++receipt->explicit_buffer_barriers;
+    if (gdn_core) {
+        ++receipt->gdn_core_explicit_buffer_barriers;
+    }
 }
 
 bool all_finite(const float *values, size_t count) {
@@ -556,7 +740,8 @@ bool valid_state_counts(const BoundaryStackLayer &layer, uint32_t query_count,
 
 void encode_boundary_mlp(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
                          id<MTLBuffer> input, id<MTLBuffer> output,
-                         id<MTLComputeCommandEncoder> encoder) {
+                         id<MTLComputeCommandEncoder> encoder,
+                         BoundaryExecutionReceiptV1 *receipt) {
     [encoder setComputePipelineState:handle->layer_rms_pipeline];
     [encoder setBuffer:input offset:0 atIndex:0];
     [encoder setBuffer:handle->boundary_post_attention_rms_weight offset:0 atIndex:1];
@@ -566,7 +751,8 @@ void encode_boundary_mlp(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
                atIndex:3];
     [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
-    buffer_barrier(encoder);
+    record_dispatch(receipt, false, 0, 0);
+    buffer_barrier(encoder, receipt, false);
 
     [encoder setComputePipelineState:handle->mlp_gate_up_pipeline];
     [encoder setBuffer:handle->boundary_gate_up_weights offset:0 atIndex:0];
@@ -581,7 +767,8 @@ void encode_boundary_mlp(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     [encoder dispatchThreadgroups:MTLSizeMake(
                 (gate_up_rows + kRowsPerThreadgroup - 1) / kRowsPerThreadgroup, 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
-    buffer_barrier(encoder);
+    record_dispatch(receipt, false, 0, 0);
+    buffer_barrier(encoder, receipt, false);
 
     [encoder setComputePipelineState:handle->mlp_activation_pipeline];
     [encoder setBuffer:handle->mlp_gate_up offset:0 atIndex:0];
@@ -592,7 +779,8 @@ void encode_boundary_mlp(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     [encoder dispatchThreads:MTLSizeMake(
                 handle->boundary_mlp_params.intermediate_size, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
-    buffer_barrier(encoder);
+    record_dispatch(receipt, false, 0, 0);
+    buffer_barrier(encoder, receipt, false);
 
     [encoder setComputePipelineState:handle->mlp_down_pipeline];
     [encoder setBuffer:handle->boundary_down_weights offset:0 atIndex:0];
@@ -607,7 +795,8 @@ void encode_boundary_mlp(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
                     kRowsPerThreadgroup,
                 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
-    buffer_barrier(encoder);
+    record_dispatch(receipt, false, 0, 0);
+    buffer_barrier(encoder, receipt, false);
 
     [encoder setComputePipelineState:handle->residual_pipeline];
     [encoder setBuffer:input offset:0 atIndex:0];
@@ -619,12 +808,18 @@ void encode_boundary_mlp(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     [encoder dispatchThreads:MTLSizeMake(
                 handle->boundary_layer_params.hidden_size, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
+    record_dispatch(receipt, false, 0, 0);
 }
 
 void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
                   BoundaryStackLayer &layer, id<MTLBuffer> input,
                   id<MTLBuffer> output,
-                  id<MTLComputeCommandEncoder> encoder) {
+                  id<MTLComputeCommandEncoder> encoder,
+                  BoundaryExecutionReceiptV1 *receipt) {
+    ++receipt->gdn_core_seams;
+    observe_consistent_group_count(
+        &receipt->persistent_output_groups_per_row,
+        layer.gdn_params.output_groups_per_row);
     [encoder setComputePipelineState:handle->layer_rms_pipeline];
     [encoder setBuffer:input offset:0 atIndex:0];
     [encoder setBuffer:layer.input_rms_weight offset:0 atIndex:1];
@@ -632,7 +827,8 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     [encoder setBytes:&layer.layer_params length:sizeof(layer.layer_params) atIndex:3];
     [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
-    buffer_barrier(encoder);
+    record_dispatch(receipt, false, 0, 0);
+    buffer_barrier(encoder, receipt, false);
 
     [encoder setComputePipelineState:handle->gdn_input_pipeline];
     [encoder setBuffer:layer.gdn_input_weights offset:0 atIndex:0];
@@ -645,54 +841,104 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
                     kRowsPerThreadgroup,
                 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
-    buffer_barrier(encoder);
+    record_dispatch(receipt, false, 0, 0);
+    buffer_barrier(encoder, receipt, false);
 
-    [encoder setComputePipelineState:handle->gdn_depthwise_pipeline];
-    [encoder setBuffer:handle->projected offset:0 atIndex:0];
-    [encoder setBuffer:layer.conv_weight offset:0 atIndex:1];
-    [encoder setBuffer:layer.query_state offset:0 atIndex:2];
-    [encoder setBuffer:layer.key_state offset:0 atIndex:3];
-    [encoder setBuffer:layer.value_state offset:0 atIndex:4];
-    [encoder setBuffer:layer.query_scratch offset:0 atIndex:5];
-    [encoder setBuffer:layer.key_scratch offset:0 atIndex:6];
-    [encoder setBuffer:layer.value_scratch offset:0 atIndex:7];
-    [encoder setBuffer:handle->processed offset:0 atIndex:8];
-    [encoder setBytes:&layer.gdn_params length:sizeof(layer.gdn_params) atIndex:9];
-    [encoder dispatchThreads:MTLSizeMake(layer.gdn_params.qkv_width, 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
-    buffer_barrier(encoder);
+    if (handle->gdn_core_profile == kFusedProfile) {
+        [encoder setComputePipelineState:handle->gdn_core_fused_pipeline];
+        [encoder setBuffer:handle->projected offset:0 atIndex:0];
+        [encoder setBuffer:layer.conv_weight offset:0 atIndex:1];
+        [encoder setBuffer:layer.query_state offset:0 atIndex:2];
+        [encoder setBuffer:layer.key_state offset:0 atIndex:3];
+        [encoder setBuffer:layer.value_state offset:0 atIndex:4];
+        [encoder setBuffer:layer.query_scratch offset:0 atIndex:5];
+        [encoder setBuffer:layer.key_scratch offset:0 atIndex:6];
+        [encoder setBuffer:layer.value_scratch offset:0 atIndex:7];
+        [encoder setBuffer:layer.a_log offset:0 atIndex:8];
+        [encoder setBuffer:layer.dt_bias offset:0 atIndex:9];
+        [encoder setBuffer:layer.recurrent_state offset:0 atIndex:10];
+        [encoder setBuffer:layer.recurrent_scratch offset:0 atIndex:11];
+        [encoder setBuffer:layer.gdn_norm_weight offset:0 atIndex:12];
+        [encoder setBuffer:handle->gated offset:0 atIndex:13];
+        // The accepted fused primitive's fixed-shape guard requires the
+        // core-local accepted guard count (32), derived from its legacy G64
+        // packing contract. The core never indexes output scales, so custody
+        // uses a by-value core-only parameter copy while the production G32
+        // output projection retains the persistent value-width-derived count
+        // in layer.gdn_params (64 groups).
+        GdnParams fused_core_params = layer.gdn_params;
+        fused_core_params.output_groups_per_row = 32;
+        observe_consistent_group_count(
+            &receipt->core_kernel_output_groups_per_row,
+            fused_core_params.output_groups_per_row);
+        [encoder setBytes:&fused_core_params
+                    length:sizeof(fused_core_params)
+                   atIndex:14];
+        [encoder dispatchThreadgroups:MTLSizeMake(layer.gdn_params.value_heads, 1, 1)
+                 threadsPerThreadgroup:MTLSizeMake(kFusedThreads, 1, 1)];
+        record_dispatch(receipt, true, layer.gdn_params.value_heads,
+                        layer.gdn_params.value_heads * kFusedThreads);
+        buffer_barrier(encoder, receipt, true);
+    } else {
+        observe_consistent_group_count(
+            &receipt->core_kernel_output_groups_per_row,
+            layer.gdn_params.output_groups_per_row);
+        [encoder setComputePipelineState:handle->gdn_depthwise_pipeline];
+        [encoder setBuffer:handle->projected offset:0 atIndex:0];
+        [encoder setBuffer:layer.conv_weight offset:0 atIndex:1];
+        [encoder setBuffer:layer.query_state offset:0 atIndex:2];
+        [encoder setBuffer:layer.key_state offset:0 atIndex:3];
+        [encoder setBuffer:layer.value_state offset:0 atIndex:4];
+        [encoder setBuffer:layer.query_scratch offset:0 atIndex:5];
+        [encoder setBuffer:layer.key_scratch offset:0 atIndex:6];
+        [encoder setBuffer:layer.value_scratch offset:0 atIndex:7];
+        [encoder setBuffer:handle->processed offset:0 atIndex:8];
+        [encoder setBytes:&layer.gdn_params length:sizeof(layer.gdn_params) atIndex:9];
+        [encoder dispatchThreads:MTLSizeMake(layer.gdn_params.qkv_width, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
+        record_dispatch(receipt, true,
+                        (layer.gdn_params.qkv_width + kElementThreads - 1) /
+                            kElementThreads,
+                        layer.gdn_params.qkv_width);
+        buffer_barrier(encoder, receipt, true);
 
-    [encoder setComputePipelineState:handle->gdn_normalize_pipeline];
-    [encoder setBuffer:handle->processed offset:0 atIndex:0];
-    [encoder setBytes:&layer.gdn_params length:sizeof(layer.gdn_params) atIndex:1];
-    [encoder dispatchThreads:MTLSizeMake(2 * layer.gdn_params.key_heads, 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(
-              std::min(kElementThreads, 2 * layer.gdn_params.key_heads), 1, 1)];
-    buffer_barrier(encoder);
+        [encoder setComputePipelineState:handle->gdn_normalize_pipeline];
+        [encoder setBuffer:handle->processed offset:0 atIndex:0];
+        [encoder setBytes:&layer.gdn_params length:sizeof(layer.gdn_params) atIndex:1];
+        const uint32_t normalize_threads = 2 * layer.gdn_params.key_heads;
+        [encoder dispatchThreads:MTLSizeMake(normalize_threads, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(
+                  std::min(kElementThreads, normalize_threads), 1, 1)];
+        record_dispatch(receipt, true, 1, normalize_threads);
+        buffer_barrier(encoder, receipt, true);
 
-    [encoder setComputePipelineState:handle->gdn_recurrent_pipeline];
-    [encoder setBuffer:handle->processed offset:0 atIndex:0];
-    [encoder setBuffer:handle->projected offset:0 atIndex:1];
-    [encoder setBuffer:layer.a_log offset:0 atIndex:2];
-    [encoder setBuffer:layer.dt_bias offset:0 atIndex:3];
-    [encoder setBuffer:layer.recurrent_state offset:0 atIndex:4];
-    [encoder setBuffer:layer.recurrent_scratch offset:0 atIndex:5];
-    [encoder setBuffer:handle->core offset:0 atIndex:6];
-    [encoder setBytes:&layer.gdn_params length:sizeof(layer.gdn_params) atIndex:7];
-    [encoder dispatchThreadgroups:MTLSizeMake(layer.gdn_params.value_heads, 1, 1)
-             threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
-    buffer_barrier(encoder);
+        [encoder setComputePipelineState:handle->gdn_recurrent_pipeline];
+        [encoder setBuffer:handle->processed offset:0 atIndex:0];
+        [encoder setBuffer:handle->projected offset:0 atIndex:1];
+        [encoder setBuffer:layer.a_log offset:0 atIndex:2];
+        [encoder setBuffer:layer.dt_bias offset:0 atIndex:3];
+        [encoder setBuffer:layer.recurrent_state offset:0 atIndex:4];
+        [encoder setBuffer:layer.recurrent_scratch offset:0 atIndex:5];
+        [encoder setBuffer:handle->core offset:0 atIndex:6];
+        [encoder setBytes:&layer.gdn_params length:sizeof(layer.gdn_params) atIndex:7];
+        [encoder dispatchThreadgroups:MTLSizeMake(layer.gdn_params.value_heads, 1, 1)
+                 threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
+        record_dispatch(receipt, true, layer.gdn_params.value_heads,
+                        layer.gdn_params.value_heads * kElementThreads);
+        buffer_barrier(encoder, receipt, true);
 
-    [encoder setComputePipelineState:handle->gdn_norm_gate_pipeline];
-    [encoder setBuffer:handle->core offset:0 atIndex:0];
-    [encoder setBuffer:handle->projected offset:0 atIndex:1];
-    [encoder setBuffer:layer.gdn_norm_weight offset:0 atIndex:2];
-    [encoder setBuffer:handle->gated offset:0 atIndex:3];
-    [encoder setBytes:&layer.gdn_params length:sizeof(layer.gdn_params) atIndex:4];
-    [encoder dispatchThreads:MTLSizeMake(layer.gdn_params.value_heads, 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(
-              std::min(kElementThreads, layer.gdn_params.value_heads), 1, 1)];
-    buffer_barrier(encoder);
+        [encoder setComputePipelineState:handle->gdn_norm_gate_pipeline];
+        [encoder setBuffer:handle->core offset:0 atIndex:0];
+        [encoder setBuffer:handle->projected offset:0 atIndex:1];
+        [encoder setBuffer:layer.gdn_norm_weight offset:0 atIndex:2];
+        [encoder setBuffer:handle->gated offset:0 atIndex:3];
+        [encoder setBytes:&layer.gdn_params length:sizeof(layer.gdn_params) atIndex:4];
+        [encoder dispatchThreads:MTLSizeMake(layer.gdn_params.value_heads, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(
+                  std::min(kElementThreads, layer.gdn_params.value_heads), 1, 1)];
+        record_dispatch(receipt, true, 1, layer.gdn_params.value_heads);
+        buffer_barrier(encoder, receipt, true);
+    }
 
     [encoder setComputePipelineState:handle->gdn_output_pipeline];
     [encoder setBuffer:layer.gdn_output_weights offset:0 atIndex:0];
@@ -705,7 +951,8 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
                     kRowsPerThreadgroup,
                 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
-    buffer_barrier(encoder);
+    record_dispatch(receipt, false, 0, 0);
+    buffer_barrier(encoder, receipt, false);
 
     [encoder setComputePipelineState:handle->residual_pipeline];
     [encoder setBuffer:input offset:0 atIndex:0];
@@ -714,7 +961,8 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     [encoder setBytes:&layer.layer_params length:sizeof(layer.layer_params) atIndex:3];
     [encoder dispatchThreads:MTLSizeMake(layer.layer_params.hidden_size, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
-    buffer_barrier(encoder);
+    record_dispatch(receipt, false, 0, 0);
+    buffer_barrier(encoder, receipt, false);
 
     [encoder setComputePipelineState:handle->layer_rms_pipeline];
     [encoder setBuffer:output offset:0 atIndex:0];
@@ -723,7 +971,8 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     [encoder setBytes:&layer.layer_params length:sizeof(layer.layer_params) atIndex:3];
     [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
-    buffer_barrier(encoder);
+    record_dispatch(receipt, false, 0, 0);
+    buffer_barrier(encoder, receipt, false);
 
     [encoder setComputePipelineState:handle->mlp_gate_up_pipeline];
     [encoder setBuffer:layer.mlp_gate_up_weights offset:0 atIndex:0];
@@ -735,7 +984,8 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     [encoder dispatchThreadgroups:MTLSizeMake(
                 (gate_up_rows + kRowsPerThreadgroup - 1) / kRowsPerThreadgroup, 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
-    buffer_barrier(encoder);
+    record_dispatch(receipt, false, 0, 0);
+    buffer_barrier(encoder, receipt, false);
 
     [encoder setComputePipelineState:handle->mlp_activation_pipeline];
     [encoder setBuffer:handle->mlp_gate_up offset:0 atIndex:0];
@@ -743,7 +993,8 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     [encoder setBytes:&layer.mlp_params length:sizeof(layer.mlp_params) atIndex:2];
     [encoder dispatchThreads:MTLSizeMake(layer.mlp_params.intermediate_size, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
-    buffer_barrier(encoder);
+    record_dispatch(receipt, false, 0, 0);
+    buffer_barrier(encoder, receipt, false);
 
     [encoder setComputePipelineState:handle->mlp_down_pipeline];
     [encoder setBuffer:layer.mlp_down_weights offset:0 atIndex:0];
@@ -756,7 +1007,8 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
                     kRowsPerThreadgroup,
                 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
-    buffer_barrier(encoder);
+    record_dispatch(receipt, false, 0, 0);
+    buffer_barrier(encoder, receipt, false);
 
     [encoder setComputePipelineState:handle->residual_pipeline];
     [encoder setBuffer:output offset:0 atIndex:0];
@@ -765,6 +1017,7 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     [encoder setBytes:&layer.layer_params length:sizeof(layer.layer_params) atIndex:3];
     [encoder dispatchThreads:MTLSizeMake(layer.layer_params.hidden_size, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
+    record_dispatch(receipt, false, 0, 0);
 }
 
 }  // namespace
@@ -772,7 +1025,8 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
 extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
     const BoundaryMlpDescriptorV1 *boundary,
     const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
-    void **output, char *error_output, size_t error_capacity) {
+    uint32_t gdn_core_profile, uint8_t require_fixed_shape, void **output,
+    char *error_output, size_t error_capacity) {
     @autoreleasepool {
         if (output == nullptr) {
             write_error(error_output, error_capacity,
@@ -781,9 +1035,12 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
         }
         *output = nullptr;
         if (boundary == nullptr || layers == nullptr ||
-            layer_count != kStackDepth) {
+            layer_count != kStackDepth ||
+            !valid_production_profile(gdn_core_profile) ||
+            require_fixed_shape > 1 ||
+            (gdn_core_profile == kFusedProfile && require_fixed_shape != 1)) {
             write_error(error_output, error_capacity,
-                        "Metal W8 MLP-to-Stack3 boundary v1 requires exactly three layer descriptors");
+                        "Metal W8 MLP-to-Stack3 boundary v1 requires three layers and production profile 0 or 2; fused requires the strict fixed-shape contract");
             return 1;
         }
         BoundaryStackShape shape{};
@@ -799,6 +1056,15 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
                 write_error(error_output, error_capacity,
                             "Metal W8 MLP-to-Stack3 boundary v1 layer shapes or RMS epsilons differ");
                 return 1;
+            }
+        }
+        if (require_fixed_shape != 0) {
+            for (uint32_t index = 0; index < kStackDepth; ++index) {
+                if (!fixed_fused_shape(layers[index])) {
+                    write_error(error_output, error_capacity,
+                                "Metal W8 MLP-to-Stack3 production profile requires H=1024, KH=VH=16, KD=VD=128, conv=4, persistent output_groups=64, a fused core-local guard value of 32, and rms_norm_eps bits equal to 1e-6f32");
+                    return 1;
+                }
             }
         }
         BoundaryMlpShape boundary_shape{};
@@ -838,14 +1104,29 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
             make_pipeline(handle->device, library, @"linear_layer_residual_add", &error);
         handle->gdn_input_pipeline =
             make_pipeline(handle->device, library, @"gdn_w8_input_projection", &error);
-        handle->gdn_depthwise_pipeline =
-            make_pipeline(handle->device, library, @"gdn_depthwise_preprocess", &error);
-        handle->gdn_normalize_pipeline =
-            make_pipeline(handle->device, library, @"gdn_normalize_qk", &error);
-        handle->gdn_recurrent_pipeline =
-            make_pipeline(handle->device, library, @"gdn_recurrent_update", &error);
-        handle->gdn_norm_gate_pipeline =
-            make_pipeline(handle->device, library, @"gdn_norm_gate", &error);
+        if (gdn_core_profile == kLegacyProfile) {
+            handle->gdn_depthwise_function =
+                [library newFunctionWithName:@"gdn_depthwise_preprocess"];
+            handle->gdn_normalize_function =
+                [library newFunctionWithName:@"gdn_normalize_qk"];
+            handle->gdn_recurrent_function =
+                [library newFunctionWithName:@"gdn_recurrent_update"];
+            handle->gdn_norm_gate_function =
+                [library newFunctionWithName:@"gdn_norm_gate"];
+            handle->gdn_depthwise_pipeline = make_pipeline(
+                handle->device, handle->gdn_depthwise_function, &error);
+            handle->gdn_normalize_pipeline = make_pipeline(
+                handle->device, handle->gdn_normalize_function, &error);
+            handle->gdn_recurrent_pipeline = make_pipeline(
+                handle->device, handle->gdn_recurrent_function, &error);
+            handle->gdn_norm_gate_pipeline = make_pipeline(
+                handle->device, handle->gdn_norm_gate_function, &error);
+        } else {
+            handle->gdn_core_fused_function =
+                [library newFunctionWithName:@"gdn_core_fused_v1"];
+            handle->gdn_core_fused_pipeline = make_pipeline(
+                handle->device, handle->gdn_core_fused_function, &error);
+        }
         handle->gdn_output_pipeline =
             make_pipeline(handle->device, library, @"gdn_w8_output_projection_g32", &error);
         handle->mlp_gate_up_pipeline =
@@ -854,12 +1135,10 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
             make_pipeline(handle->device, library, @"w8_mlp_silu_mul", &error);
         handle->mlp_down_pipeline =
             make_pipeline(handle->device, library, @"w8_mlp_down", &error);
+        handle->gdn_core_profile = gdn_core_profile;
+        handle->production_receipt_enabled = require_fixed_shape != 0;
         if (handle->layer_rms_pipeline == nil || handle->residual_pipeline == nil ||
-            handle->gdn_input_pipeline == nil ||
-            handle->gdn_depthwise_pipeline == nil ||
-            handle->gdn_normalize_pipeline == nil ||
-            handle->gdn_recurrent_pipeline == nil ||
-            handle->gdn_norm_gate_pipeline == nil ||
+            handle->gdn_input_pipeline == nil || !live_profile_matches(handle) ||
             handle->gdn_output_pipeline == nil ||
             handle->mlp_gate_up_pipeline == nil ||
             handle->mlp_activation_pipeline == nil ||
@@ -1027,6 +1306,20 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_decode_v1(
                         "invalid Metal W8 MLP-to-Stack3 boundary v1 input or output");
             return 1;
         }
+        if (!live_profile_matches(handle)) {
+            write_error(error_output, error_capacity,
+                        "Metal W8 MLP-to-Stack3 boundary live GDN profile identity changed");
+            return 1;
+        }
+        if (handle->production_receipt_enabled) {
+            for (const BoundaryStackLayer &layer : handle->layers) {
+                if (!live_fixed_shape(layer.gdn_params)) {
+                    write_error(error_output, error_capacity,
+                                "Metal W8 MLP-to-Stack3 production fixed-shape contract changed before dispatch");
+                    return 1;
+                }
+            }
+        }
         if (handle->terminal_error) {
             write_error(error_output, error_capacity,
                         "Metal W8 MLP-to-Stack3 boundary v1 is terminal until reset");
@@ -1046,6 +1339,7 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_decode_v1(
             static_cast<size_t>(input_count) * sizeof(float);
         std::memcpy(handle->hidden_a.contents, input, hidden_bytes);
         receipt->host_to_device_bytes = hidden_bytes;
+        receipt->requested_profile = handle->gdn_core_profile;
 
         id<MTLCommandBuffer> command = [handle->queue commandBuffer];
         if (command == nil) {
@@ -1065,7 +1359,7 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_decode_v1(
         }
         receipt->compute_encoders = 1;
         encode_boundary_mlp(handle, handle->hidden_a, handle->hidden_b,
-                            boundary_encoder);
+                            boundary_encoder, receipt);
         [boundary_encoder endEncoding];
         for (uint32_t slot = 0; slot < kStackDepth; ++slot) {
             id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
@@ -1081,8 +1375,30 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_decode_v1(
             id<MTLBuffer> layer_output =
                 slot % 2 == 0 ? handle->hidden_a : handle->hidden_b;
             encode_layer(handle, handle->layers[slot], layer_input, layer_output,
-                         encoder);
+                         encoder, receipt);
             [encoder endEncoding];
+        }
+        if (receipt->kernel_dispatches !=
+                expected_transaction_dispatches(handle->gdn_core_profile) ||
+            receipt->explicit_buffer_barriers !=
+                expected_transaction_barriers(handle->gdn_core_profile) ||
+            receipt->gdn_core_kernel_dispatches !=
+                expected_gdn_core_dispatches(handle->gdn_core_profile) ||
+            receipt->gdn_core_explicit_buffer_barriers !=
+                expected_gdn_core_dispatches(handle->gdn_core_profile) ||
+            receipt->gdn_core_seams != kStackDepth ||
+            (handle->production_receipt_enabled &&
+             (receipt->gdn_core_threadgroups !=
+                  expected_gdn_core_threadgroups(handle->gdn_core_profile) ||
+              receipt->gdn_core_launched_threads !=
+                  expected_gdn_core_launched_threads(handle->gdn_core_profile) ||
+              receipt->persistent_output_groups_per_row != 64 ||
+              receipt->core_kernel_output_groups_per_row !=
+                  (handle->gdn_core_profile == kFusedProfile ? 32 : 64)))) {
+            handle->terminal_error = true;
+            write_error(error_output, error_capacity,
+                        "Metal W8 MLP-to-Stack3 boundary pre-commit topology mismatch");
+            return 1;
         }
         [command commit];
         receipt->commits = 1;
@@ -1120,6 +1436,27 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_decode_v1(
         receipt->state_commit_mask = kAllSeededMask;
         std::memcpy(output, final_values, hidden_bytes);
         receipt->device_to_host_bytes = hidden_bytes;
+        receipt->observed_profile = handle->gdn_core_profile;
+        receipt->threads_per_threadgroup =
+            handle->gdn_core_profile == kFusedProfile ? kFusedThreads
+                                                      : kElementThreads;
+        id<MTLComputePipelineState> selected_pipeline =
+            selected_gdn_core_pipeline(handle);
+        receipt->pipeline_thread_execution_width =
+            static_cast<uint32_t>(selected_pipeline.threadExecutionWidth);
+        receipt->source_declared_threadgroup_memory_bytes =
+            handle->gdn_core_profile == kFusedProfile
+                ? kFusedSourceThreadgroupBytes
+                : 0;
+        receipt->pipeline_static_threadgroup_memory_bytes =
+            static_cast<uint32_t>(selected_pipeline.staticThreadgroupMemoryLength);
+        receipt->internal_threadgroup_barrier_sites_per_threadgroup =
+            handle->gdn_core_profile == kFusedProfile ? 4 : 0;
+        receipt->fixed_shape_validated =
+            handle->production_receipt_enabled ? 1 : 0;
+        receipt->rms_norm_eps_bits =
+            f32_bits(handle->layers[0].gdn_params.rms_norm_eps);
+        write_observed_function_chain(handle, receipt);
         return 0;
     }
 }

@@ -230,9 +230,14 @@ struct Qwen35MetalW8AllLinearLayersPrecisionV2 {
 pub struct Qwen35MetalW8LinearLayerStack3V1Stats {
     pub layer_indices: [usize; 3],
     pub mechanism: &'static str,
+    pub gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+    pub gdn_function_chain: &'static str,
     pub quantization: [apxinf_metal::LinearLayerQuantizationLedger; 3],
     pub prefill_seed_calls: [usize; 3],
     pub execution: apxinf_metal::LinearLayerStack3MetalStats,
+    pub last_gdn_core_receipt: Option<apxinf_metal::GdnCoreProductionReceiptV1>,
+    pub kernel_dispatches_per_decode: usize,
+    pub explicit_buffer_barriers_per_decode: usize,
     pub intermediate_host_finite_checks_per_decode: usize,
     pub final_output_finite_checks_per_decode: usize,
     pub terminal_error: bool,
@@ -307,6 +312,7 @@ pub struct Qwen35MetalW8Stack3LmHeadV2AggregateLedger {
 #[cfg(feature = "metal-w8")]
 struct Qwen35MetalW8LinearLayerStack3V1 {
     layer_indices: [usize; 3],
+    gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
     dimensions: apxinf_metal::GdnDimensions,
     block: apxinf_metal::MetalW8LinearLayerStack3,
     quantization: [apxinf_metal::LinearLayerQuantizationLedger; 3],
@@ -343,14 +349,146 @@ const QWEN35_MLP_STACK3_BOUNDARY_REGIONS_V1: [(usize, [usize; 3]); 5] = [
 const QWEN35_MLP_STACK3_BOUNDARY_FINAL_MLP_V1: usize = 23;
 
 #[cfg(feature = "metal-w8")]
+const fn qwen35_gdn_core_profile_v1_label(profile: apxinf_metal::GdnCoreProfileV1) -> &'static str {
+    match profile {
+        apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch => "legacy-four-dispatch",
+        apxinf_metal::GdnCoreProfileV1::QkStagedFourDispatch => "qk-staged-four-dispatch-control",
+        apxinf_metal::GdnCoreProfileV1::Fused128 => "gdn-core-fused-v1",
+    }
+}
+
+#[cfg(feature = "metal-w8")]
+fn qwen35_gdn_core_production_receipt_v1_json(
+    receipt: Option<apxinf_metal::GdnCoreProductionReceiptV1>,
+) -> serde_json::Value {
+    let Some(receipt) = receipt else {
+        return serde_json::Value::Null;
+    };
+    serde_json::json!({
+        "profile": qwen35_gdn_core_profile_v1_label(receipt.profile),
+        "function_chain": receipt.function_chain,
+        "gdn_core_seams": receipt.gdn_core_seams,
+        "kernel_dispatches": receipt.kernel_dispatches,
+        "explicit_buffer_barriers": receipt.explicit_buffer_barriers,
+        "recurrent_or_fused_threads_per_threadgroup": receipt.recurrent_or_fused_threads_per_threadgroup,
+        "threadgroups": receipt.threadgroups,
+        "launched_threads": receipt.launched_threads,
+        "pipeline_thread_execution_width": receipt.pipeline_thread_execution_width,
+        "source_declared_threadgroup_memory_bytes": receipt.source_declared_threadgroup_memory_bytes,
+        "pipeline_static_threadgroup_memory_bytes": receipt.pipeline_static_threadgroup_memory_bytes,
+        "internal_threadgroup_barrier_sites_per_threadgroup": receipt.internal_threadgroup_barrier_sites_per_threadgroup,
+        "fixed_shape_validated": receipt.fixed_shape_validated,
+        "rms_norm_eps_bits": receipt.rms_norm_eps_bits,
+        "persistent_output_groups_per_row": receipt.persistent_output_groups_per_row,
+        "core_kernel_output_groups_per_row": receipt.core_kernel_output_groups_per_row,
+    })
+}
+
+#[cfg(feature = "metal-w8")]
+const fn qwen35_stack3_mechanism_for_gdn_core_profile_v1(
+    profile: apxinf_metal::GdnCoreProfileV1,
+) -> &'static str {
+    match profile {
+        apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch => "metal-w8-linear-layer-stack3-v1",
+        apxinf_metal::GdnCoreProfileV1::Fused128 => {
+            "metal-w8-linear-layer-stack3-gdn-core-fused-v1"
+        }
+        apxinf_metal::GdnCoreProfileV1::QkStagedFourDispatch => {
+            "invalid-production-qk-staged-control"
+        }
+    }
+}
+
+#[cfg(feature = "metal-w8")]
+const fn qwen35_boundary_mechanism_for_gdn_core_profile_v1(
+    profile: apxinf_metal::GdnCoreProfileV1,
+) -> &'static str {
+    match profile {
+        apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch => "metal-w8-mlp-stack3-boundary-v1",
+        apxinf_metal::GdnCoreProfileV1::Fused128 => {
+            "metal-w8-mlp-stack3-boundary-gdn-core-fused-v1"
+        }
+        apxinf_metal::GdnCoreProfileV1::QkStagedFourDispatch => {
+            "invalid-production-qk-staged-control"
+        }
+    }
+}
+
+#[cfg(feature = "metal-w8")]
+const fn qwen35_boundary_tail_head_mechanism_for_gdn_core_profile_v1(
+    profile: apxinf_metal::GdnCoreProfileV1,
+) -> &'static str {
+    match profile {
+        apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch => {
+            "metal-w8-mlp-stack3-boundary-tail-head-v1"
+        }
+        apxinf_metal::GdnCoreProfileV1::Fused128 => {
+            "metal-w8-mlp-stack3-boundary-tail-head-gdn-core-fused-v1"
+        }
+        apxinf_metal::GdnCoreProfileV1::QkStagedFourDispatch => {
+            "invalid-production-qk-staged-control"
+        }
+    }
+}
+
+#[cfg(feature = "metal-w8")]
+fn validate_qwen35_production_gdn_core_profile_v1(
+    profile: apxinf_metal::GdnCoreProfileV1,
+) -> Result<()> {
+    match profile {
+        apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch
+        | apxinf_metal::GdnCoreProfileV1::Fused128 => Ok(()),
+        apxinf_metal::GdnCoreProfileV1::QkStagedFourDispatch => Err(Error::Other(
+            "qwen3.5 Metal W8 production route rejects the diagnostic-only qk-staged GDN core control"
+                .into(),
+        )),
+    }
+}
+
+#[cfg(feature = "metal-w8")]
+fn qwen35_matches_gdn_core_fused_v1_shape(config: &Qwen35TextConfig) -> bool {
+    (
+        config.hidden_size,
+        config.linear_num_key_heads,
+        config.linear_num_value_heads,
+        config.linear_key_head_dim,
+        config.linear_value_head_dim,
+        config.linear_conv_kernel_dim,
+        config.rms_norm_eps.to_bits(),
+    ) == (1_024, 16, 16, 128, 128, 4, 1.0e-6_f32.to_bits())
+}
+
+#[cfg(feature = "metal-w8")]
+fn validate_qwen35_gdn_core_fused_v1_shape(config: &Qwen35TextConfig) -> Result<()> {
+    if !qwen35_matches_gdn_core_fused_v1_shape(config) {
+        return Err(Error::Other(format!(
+            "qwen3.5 Metal W8 gdn-core-fused-v1 production route is fixed to H=1024/KH=16/VH=16/KD=128/VD=128/conv=4/eps=1e-6, got H={}/KH={}/VH={}/KD={}/VD={}/conv={}/eps_bits=0x{:08x}",
+            config.hidden_size,
+            config.linear_num_key_heads,
+            config.linear_num_value_heads,
+            config.linear_key_head_dim,
+            config.linear_value_head_dim,
+            config.linear_conv_kernel_dim,
+            config.rms_norm_eps.to_bits(),
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "metal-w8")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Qwen35MetalW8MlpStack3BoundaryRegionV1Stats {
     pub boundary_mlp_layer_index: usize,
     pub stack_layer_indices: [usize; 3],
     pub mechanism: &'static str,
+    pub gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+    pub gdn_function_chain: &'static str,
     pub quantization: [apxinf_metal::LinearLayerQuantizationLedger; 3],
     pub prefill_seed_calls: [usize; 3],
     pub execution: apxinf_metal::MlpStack3BoundaryMetalStatsV1,
+    pub last_gdn_core_receipt: Option<apxinf_metal::GdnCoreProductionReceiptV1>,
+    pub kernel_dispatches_per_decode: usize,
+    pub explicit_buffer_barriers_per_decode: usize,
     pub terminal_error: bool,
     pub block_elapsed_ns: u128,
 }
@@ -404,6 +542,8 @@ pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
     pub scope: &'static str,
     pub exclusions: &'static str,
     pub includes_lm_head: bool,
+    pub gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+    pub gdn_function_chain: &'static str,
     pub initial_stack: Qwen35MetalW8LinearLayerStack3BufferLedger,
     pub boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionBufferLedgerV1>,
     pub tail_layer_index: usize,
@@ -418,6 +558,7 @@ pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
     pub command_buffers_per_decode: usize,
     pub compute_encoders_per_decode: usize,
     pub kernel_dispatches_per_decode: usize,
+    pub explicit_buffer_barriers_per_decode: usize,
     pub commits_per_decode: usize,
     pub waits_per_decode: usize,
 }
@@ -426,6 +567,7 @@ pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
 struct Qwen35MetalW8MlpStack3BoundaryRegionV1 {
     boundary_mlp_layer_index: usize,
     stack_layer_indices: [usize; 3],
+    gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
     dimensions: apxinf_metal::GdnDimensions,
     block: apxinf_metal::MetalW8MlpStack3BoundaryV1,
     quantization: [apxinf_metal::LinearLayerQuantizationLedger; 3],
@@ -452,6 +594,8 @@ struct Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
     pub mechanism: &'static str,
+    pub gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+    pub gdn_function_chain: &'static str,
     pub initial_stack: Qwen35MetalW8LinearLayerStack3V1Stats,
     pub boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionV1Stats>,
     pub tail_layer_index: usize,
@@ -466,6 +610,7 @@ pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
 
 #[cfg(feature = "metal-w8")]
 struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
+    gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
     initial_stack: Qwen35MetalW8LinearLayerStack3V1,
     boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionV1>,
     tail_layer_index: usize,
@@ -915,6 +1060,49 @@ impl GeneralQwen35 {
         device: Device,
         max_context: usize,
     ) -> Result<Self> {
+        Self::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_profile_v1(
+            config,
+            tensors,
+            device,
+            max_context,
+            apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch,
+        )
+    }
+
+    /// Explicit-only production-topology continuation of boundary + tail-head
+    /// v1. Only the 18 GDN cores inside the initial Stack3 and five boundary
+    /// Stack3 transactions select `gdn_core_fused_v1`; prefill, full
+    /// attention, MLPs, tail/head, state publication, and submission topology
+    /// remain unchanged. No default, AutoModel, registry, or CLI path calls
+    /// this constructor.
+    #[cfg(feature = "metal-w8")]
+    pub fn from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_fused_v1(
+        config: Qwen35Config,
+        tensors: HashMap<String, Tensor>,
+        device: Device,
+        max_context: usize,
+    ) -> Result<Self> {
+        Self::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_profile_v1(
+            config,
+            tensors,
+            device,
+            max_context,
+            apxinf_metal::GdnCoreProfileV1::Fused128,
+        )
+    }
+
+    #[cfg(feature = "metal-w8")]
+    fn from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_profile_v1(
+        config: Qwen35Config,
+        tensors: HashMap<String, Tensor>,
+        device: Device,
+        max_context: usize,
+        gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+    ) -> Result<Self> {
+        validate_qwen35_production_gdn_core_profile_v1(gdn_core_profile)?;
+        if gdn_core_profile == apxinf_metal::GdnCoreProfileV1::Fused128 {
+            validate_qwen35_gdn_core_fused_v1_shape(&config.text)?;
+        }
         if !config.text.tie_word_embeddings {
             return Err(Error::Other(
                 "qwen3.5 Metal W8 boundary + tail-head v1 requires tied word embeddings".into(),
@@ -923,7 +1111,11 @@ impl GeneralQwen35 {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(&config.text)?;
         let backend = create_backend(device)?;
         let weights = Qwen35TextWeights::from_map(&config, tensors)?;
-        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack(&weights, &config.text)?;
+        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack_with_gdn_core_profile_v1(
+            &weights,
+            &config.text,
+            gdn_core_profile,
+        )?;
         let mut model =
             Self::new_with_metal_options(config, weights, backend, max_context, false, None, None)?;
         model.metal_w8_mlp_stack3_boundary_tail_head_v1 = Some(lane);
@@ -3079,6 +3271,11 @@ impl LlmTrait for GeneralQwen35 {
                             "boundary_mlp_layer_index": region.boundary_mlp_layer_index,
                             "stack_layer_indices": region.stack_layer_indices,
                             "mechanism": region.mechanism,
+                            "gdn_core_profile": qwen35_gdn_core_profile_v1_label(region.gdn_core_profile),
+                            "gdn_function_chain": region.gdn_function_chain,
+                            "last_gdn_core_receipt": qwen35_gdn_core_production_receipt_v1_json(region.last_gdn_core_receipt),
+                            "kernel_dispatches_per_decode": region.kernel_dispatches_per_decode,
+                            "explicit_buffer_barriers_per_decode": region.explicit_buffer_barriers_per_decode,
                             "prefill_seed_calls": region.prefill_seed_calls,
                             "decode_calls": execution.decode_calls,
                             "successful_decodes": execution.successful_decodes,
@@ -3100,6 +3297,8 @@ impl LlmTrait for GeneralQwen35 {
                 return Some(serde_json::json!({
                     "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
                     "mechanism": lane.mechanism,
+                    "gdn_core_profile": qwen35_gdn_core_profile_v1_label(lane.gdn_core_profile),
+                    "gdn_function_chain": lane.gdn_function_chain,
                     "cpu_full_attention_and_kv": true,
                     "cpu_prefill_all_24_layers": true,
                     "metal_w8_initial_complete_linear_layer_stack3": true,
@@ -3111,6 +3310,11 @@ impl LlmTrait for GeneralQwen35 {
                     "initial_stack": {
                         "layer_indices": lane.initial_stack.layer_indices,
                         "mechanism": lane.initial_stack.mechanism,
+                        "gdn_core_profile": qwen35_gdn_core_profile_v1_label(lane.initial_stack.gdn_core_profile),
+                        "gdn_function_chain": lane.initial_stack.gdn_function_chain,
+                        "last_gdn_core_receipt": qwen35_gdn_core_production_receipt_v1_json(lane.initial_stack.last_gdn_core_receipt),
+                        "kernel_dispatches_per_decode": lane.initial_stack.kernel_dispatches_per_decode,
+                        "explicit_buffer_barriers_per_decode": lane.initial_stack.explicit_buffer_barriers_per_decode,
                         "prefill_seed_calls": lane.initial_stack.prefill_seed_calls,
                         "decode_calls": initial_execution.decode_calls,
                         "successful_decodes": initial_execution.successful_decodes,
@@ -3167,6 +3371,9 @@ impl LlmTrait for GeneralQwen35 {
                         "command_buffers_per_decode": aggregate.command_buffers_per_decode,
                         "compute_encoders_per_decode": aggregate.compute_encoders_per_decode,
                         "kernel_dispatches_per_decode": aggregate.kernel_dispatches_per_decode,
+                        "explicit_buffer_barriers_per_decode": aggregate.explicit_buffer_barriers_per_decode,
+                        "gdn_core_profile": qwen35_gdn_core_profile_v1_label(aggregate.gdn_core_profile),
+                        "gdn_function_chain": aggregate.gdn_function_chain,
                         "commits_per_decode": aggregate.commits_per_decode,
                         "waits_per_decode": aggregate.waits_per_decode,
                     },
@@ -4355,6 +4562,32 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         config: &Qwen35TextConfig,
         layer_indices: [usize; 3],
     ) -> Result<Self> {
+        Self::pack_impl(
+            weights,
+            config,
+            layer_indices,
+            apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch,
+            false,
+        )
+    }
+
+    fn pack_with_gdn_core_profile_v1(
+        weights: &Qwen35TextWeights,
+        config: &Qwen35TextConfig,
+        layer_indices: [usize; 3],
+        gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+    ) -> Result<Self> {
+        validate_qwen35_production_gdn_core_profile_v1(gdn_core_profile)?;
+        Self::pack_impl(weights, config, layer_indices, gdn_core_profile, true)
+    }
+
+    fn pack_impl(
+        weights: &Qwen35TextWeights,
+        config: &Qwen35TextConfig,
+        layer_indices: [usize; 3],
+        gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+        use_production_profile_api: bool,
+    ) -> Result<Self> {
         let packed = layer_indices
             .into_iter()
             .map(|layer_index| {
@@ -4384,18 +4617,30 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         })?
         .try_into()
         .map_err(|_| Error::Other("qwen3.5 Metal W8 stack3-v1 ledger depth changed".into()))?;
-        let block = apxinf_metal::MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1([
-            &packed[0].packed,
-            &packed[1].packed,
-            &packed[2].packed,
-        ])
+        let packed_refs = [&packed[0].packed, &packed[1].packed, &packed[2].packed];
+        let block = match (use_production_profile_api, gdn_core_profile) {
+            (false, apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch) => {
+                apxinf_metal::MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1(packed_refs)
+            }
+            (
+                true,
+                apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch
+                | apxinf_metal::GdnCoreProfileV1::Fused128,
+            ) => apxinf_metal::MetalW8LinearLayerStack3::from_packed_gdn_out_g32_with_gdn_core_profile_v1(
+                packed_refs,
+                gdn_core_profile,
+            ),
+            _ => unreachable!("invalid Stack3 production-profile construction state"),
+        }
         .map_err(|error| {
             Error::Other(format!(
-                "qwen3.5 Metal W8 stack3-v1 layers {layer_indices:?} construction failed: {error}"
+                "qwen3.5 Metal W8 stack3-v1 layers {layer_indices:?} profile {} construction failed: {error}",
+                qwen35_gdn_core_profile_v1_label(gdn_core_profile),
             ))
         })?;
         Ok(Self {
             layer_indices,
+            gdn_core_profile,
             dimensions,
             block,
             quantization,
@@ -4452,10 +4697,15 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         let ledger = self.block.buffer_ledger();
         Qwen35MetalW8LinearLayerStack3V1Stats {
             layer_indices: self.layer_indices,
-            mechanism: "metal-w8-linear-layer-stack3-v1",
+            mechanism: qwen35_stack3_mechanism_for_gdn_core_profile_v1(self.gdn_core_profile),
+            gdn_core_profile: self.gdn_core_profile,
+            gdn_function_chain: self.gdn_core_profile.expected_function_chain(),
             quantization: self.quantization,
             prefill_seed_calls: self.prefill_seed_calls,
             execution: self.block.stats(),
+            last_gdn_core_receipt: self.block.last_gdn_core_receipt(),
+            kernel_dispatches_per_decode: ledger.kernel_dispatches_per_decode,
+            explicit_buffer_barriers_per_decode: ledger.explicit_buffer_barriers_per_decode,
             intermediate_host_finite_checks_per_decode: ledger
                 .intermediate_host_finite_checks_per_decode,
             final_output_finite_checks_per_decode: ledger.final_output_finite_checks_per_decode,
@@ -4743,6 +4993,42 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
         boundary_mlp_layer_index: usize,
         stack_layer_indices: [usize; 3],
     ) -> Result<Self> {
+        Self::pack_impl(
+            weights,
+            config,
+            boundary_mlp_layer_index,
+            stack_layer_indices,
+            apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch,
+            false,
+        )
+    }
+
+    fn pack_with_gdn_core_profile_v1(
+        weights: &Qwen35TextWeights,
+        config: &Qwen35TextConfig,
+        boundary_mlp_layer_index: usize,
+        stack_layer_indices: [usize; 3],
+        gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+    ) -> Result<Self> {
+        validate_qwen35_production_gdn_core_profile_v1(gdn_core_profile)?;
+        Self::pack_impl(
+            weights,
+            config,
+            boundary_mlp_layer_index,
+            stack_layer_indices,
+            gdn_core_profile,
+            true,
+        )
+    }
+
+    fn pack_impl(
+        weights: &Qwen35TextWeights,
+        config: &Qwen35TextConfig,
+        boundary_mlp_layer_index: usize,
+        stack_layer_indices: [usize; 3],
+        gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+        use_production_profile_api: bool,
+    ) -> Result<Self> {
         if config.layer_types.get(boundary_mlp_layer_index) != Some(&Qwen35LayerType::FullAttention)
             || !matches!(
                 weights
@@ -4823,16 +5109,32 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
                 "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} assembly failed: {error}"
             ))
         })?;
-        let block = apxinf_metal::MetalW8MlpStack3BoundaryV1::from_packed(&packed).map_err(
-            |error| {
+        let block = match (use_production_profile_api, gdn_core_profile) {
+            (false, apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch) => {
+                apxinf_metal::MetalW8MlpStack3BoundaryV1::from_packed(&packed)
+            }
+            (
+                true,
+                apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch
+                | apxinf_metal::GdnCoreProfileV1::Fused128,
+            ) => {
+                apxinf_metal::MetalW8MlpStack3BoundaryV1::from_packed_with_gdn_core_profile_v1(
+                    &packed,
+                    gdn_core_profile,
+                )
+            }
+            _ => unreachable!("invalid boundary production-profile construction state"),
+        }
+        .map_err(|error| {
                 Error::Other(format!(
-                    "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} construction failed: {error}"
+                    "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} profile {} construction failed: {error}",
+                    qwen35_gdn_core_profile_v1_label(gdn_core_profile),
                 ))
-            },
-        )?;
+            })?;
         Ok(Self {
             boundary_mlp_layer_index,
             stack_layer_indices,
+            gdn_core_profile,
             dimensions,
             block,
             quantization,
@@ -4847,13 +5149,19 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
     }
 
     fn stats(&self) -> Qwen35MetalW8MlpStack3BoundaryRegionV1Stats {
+        let ledger = self.block.buffer_ledger();
         Qwen35MetalW8MlpStack3BoundaryRegionV1Stats {
             boundary_mlp_layer_index: self.boundary_mlp_layer_index,
             stack_layer_indices: self.stack_layer_indices,
-            mechanism: "metal-w8-mlp-stack3-boundary-v1",
+            mechanism: qwen35_boundary_mechanism_for_gdn_core_profile_v1(self.gdn_core_profile),
+            gdn_core_profile: self.gdn_core_profile,
+            gdn_function_chain: self.gdn_core_profile.expected_function_chain(),
             quantization: self.quantization,
             prefill_seed_calls: self.prefill_seed_calls,
             execution: self.block.stats(),
+            last_gdn_core_receipt: self.block.last_gdn_core_receipt(),
+            kernel_dispatches_per_decode: ledger.kernel_dispatches_per_decode,
+            explicit_buffer_barriers_per_decode: ledger.explicit_buffer_barriers_per_decode,
             terminal_error: self.terminal_error,
             block_elapsed_ns: self.block_elapsed_ns,
         }
@@ -5185,7 +5493,15 @@ impl Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 
 #[cfg(feature = "metal-w8")]
 impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
-    fn pack(weights: &Qwen35TextWeights, config: &Qwen35TextConfig) -> Result<Self> {
+    fn pack_with_gdn_core_profile_v1(
+        weights: &Qwen35TextWeights,
+        config: &Qwen35TextConfig,
+        gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+    ) -> Result<Self> {
+        validate_qwen35_production_gdn_core_profile_v1(gdn_core_profile)?;
+        if gdn_core_profile == apxinf_metal::GdnCoreProfileV1::Fused128 {
+            validate_qwen35_gdn_core_fused_v1_shape(config)?;
+        }
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(config)?;
         if weights.layers.len() != 24 || weights.lm_head_weight.is_some() {
             return Err(Error::Other(
@@ -5193,20 +5509,44 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                     .into(),
             ));
         }
-        let initial_stack = Qwen35MetalW8LinearLayerStack3V1::pack(
-            weights,
-            config,
-            QWEN35_MLP_STACK3_BOUNDARY_INITIAL_STACK_V1,
-        )?;
+        // Preserve the existing generic-shape Legacy test/diagnostic lane.
+        // At the frozen Qwen3.5-0.8B shape, A and C both use the receipt-
+        // bearing production profile API so the campaign observes the same
+        // bridge contract in both arms.
+        let use_production_profile_api = qwen35_matches_gdn_core_fused_v1_shape(config);
+        let initial_stack = if use_production_profile_api {
+            Qwen35MetalW8LinearLayerStack3V1::pack_with_gdn_core_profile_v1(
+                weights,
+                config,
+                QWEN35_MLP_STACK3_BOUNDARY_INITIAL_STACK_V1,
+                gdn_core_profile,
+            )?
+        } else {
+            Qwen35MetalW8LinearLayerStack3V1::pack(
+                weights,
+                config,
+                QWEN35_MLP_STACK3_BOUNDARY_INITIAL_STACK_V1,
+            )?
+        };
         let boundaries = QWEN35_MLP_STACK3_BOUNDARY_REGIONS_V1
             .into_iter()
             .map(|(boundary_mlp_layer_index, stack_layer_indices)| {
-                Qwen35MetalW8MlpStack3BoundaryRegionV1::pack(
-                    weights,
-                    config,
-                    boundary_mlp_layer_index,
-                    stack_layer_indices,
-                )
+                if use_production_profile_api {
+                    Qwen35MetalW8MlpStack3BoundaryRegionV1::pack_with_gdn_core_profile_v1(
+                        weights,
+                        config,
+                        boundary_mlp_layer_index,
+                        stack_layer_indices,
+                        gdn_core_profile,
+                    )
+                } else {
+                    Qwen35MetalW8MlpStack3BoundaryRegionV1::pack(
+                        weights,
+                        config,
+                        boundary_mlp_layer_index,
+                        stack_layer_indices,
+                    )
+                }
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -5267,6 +5607,7 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
             ))
         })?;
         Ok(Self {
+            gdn_core_profile,
             initial_stack,
             boundaries,
             tail_layer_index: QWEN35_MLP_STACK3_BOUNDARY_FINAL_MLP_V1,
@@ -5282,7 +5623,11 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
 
     fn stats(&self) -> Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
         Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
-            mechanism: "metal-w8-mlp-stack3-boundary-tail-head-v1",
+            mechanism: qwen35_boundary_tail_head_mechanism_for_gdn_core_profile_v1(
+                self.gdn_core_profile,
+            ),
+            gdn_core_profile: self.gdn_core_profile,
+            gdn_function_chain: self.gdn_core_profile.expected_function_chain(),
             initial_stack: self.initial_stack.stats(),
             boundaries: self
                 .boundaries
@@ -5431,25 +5776,69 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
                 add(sum, tail.$tail_field, stringify!($field))?
             }};
         }
-        let mut kernel_dispatches_per_decode = 3usize.checked_mul(13).ok_or_else(|| {
-            Error::Other("qwen3.5 Metal W8 boundary + tail-head v1 dispatch count overflow".into())
-        })?;
-        for boundary in &boundaries {
-            kernel_dispatches_per_decode = add(
-                kernel_dispatches_per_decode,
-                boundary.ledger.kernel_dispatches_per_decode,
-                "dispatch count",
-            )?;
+        validate_qwen35_production_gdn_core_profile_v1(initial_stack.ledger.gdn_core_profile)?;
+        let gdn_core_profile = initial_stack.ledger.gdn_core_profile;
+        let gdn_function_chain = gdn_core_profile.expected_function_chain();
+        if initial_stack.ledger.gdn_function_chain != gdn_function_chain
+            || boundaries.len() != QWEN35_MLP_STACK3_BOUNDARY_REGIONS_V1.len()
+            || boundaries.iter().any(|boundary| {
+                boundary.ledger.gdn_core_profile != gdn_core_profile
+                    || boundary.ledger.gdn_function_chain != gdn_function_chain
+            })
+        {
+            return Err(Error::Other(
+                "qwen3.5 Metal W8 boundary + tail-head v1 requires one consistent production GDN core profile across the initial stack and all five boundaries"
+                    .into(),
+            ));
         }
-        kernel_dispatches_per_decode = add(
+        let kernel_dispatches_per_decode =
+            total!(kernel_dispatches_per_decode, kernel_dispatches_per_decode);
+        let explicit_buffer_barriers_per_decode = total!(
+            explicit_buffer_barriers_per_decode,
+            buffer_barriers_per_decode
+        );
+        let expected_topology = match gdn_core_profile {
+            apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch => (267, 243),
+            apxinf_metal::GdnCoreProfileV1::Fused128 => (213, 189),
+            apxinf_metal::GdnCoreProfileV1::QkStagedFourDispatch => unreachable!(
+                "qk-staged production profile was rejected before aggregate construction"
+            ),
+        };
+        if (
             kernel_dispatches_per_decode,
-            tail.kernel_dispatches_per_decode,
-            "dispatch count",
-        )?;
+            explicit_buffer_barriers_per_decode,
+        ) != expected_topology
+        {
+            return Err(Error::Other(format!(
+                "qwen3.5 Metal W8 boundary + tail-head v1 profile {} topology is {kernel_dispatches_per_decode} dispatches/{explicit_buffer_barriers_per_decode} barriers, expected {}/{}",
+                qwen35_gdn_core_profile_v1_label(gdn_core_profile),
+                expected_topology.0,
+                expected_topology.1,
+            )));
+        }
+        let command_buffers_per_decode =
+            total!(command_buffers_per_decode, command_buffers_per_decode);
+        let compute_encoders_per_decode =
+            total!(compute_encoders_per_decode, compute_encoders_per_decode);
+        let commits_per_decode = total!(commits_per_decode, commits_per_decode);
+        let waits_per_decode = total!(waits_per_decode, waits_per_decode);
+        if (
+            command_buffers_per_decode,
+            compute_encoders_per_decode,
+            commits_per_decode,
+            waits_per_decode,
+        ) != (7, 24, 7, 7)
+        {
+            return Err(Error::Other(format!(
+                "qwen3.5 Metal W8 boundary + tail-head v1 submission topology is {command_buffers_per_decode} command buffers/{compute_encoders_per_decode} encoders/{commits_per_decode} commits/{waits_per_decode} waits, expected 7/24/7/7"
+            )));
+        }
         Ok(Self {
             scope: "resident-mtlbuffer-only",
             exclusions: "CPU F32 weights, host F32 tied embedding and exact four-candidate rerank, host allocations, Metal pipelines/libraries/queues, command objects, driver allocations, full attention/KV, model loader, and prefill CPU head",
             includes_lm_head: true,
+            gdn_core_profile,
+            gdn_function_chain,
             total_persistent_mtlbuffer_bytes: total!(total_persistent_bytes, total_persistent_bytes),
             allocated_buffers: total!(allocated_buffers, allocated_buffers),
             shared_buffers: total!(shared_buffers, shared_buffers),
@@ -5466,17 +5855,12 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
                 state_host_transfer_bytes_per_decode,
                 state_host_transfer_bytes_per_decode
             ),
-            command_buffers_per_decode: total!(
-                command_buffers_per_decode,
-                command_buffers_per_decode
-            ),
-            compute_encoders_per_decode: total!(
-                compute_encoders_per_decode,
-                compute_encoders_per_decode
-            ),
+            command_buffers_per_decode,
+            compute_encoders_per_decode,
             kernel_dispatches_per_decode,
-            commits_per_decode: total!(commits_per_decode, commits_per_decode),
-            waits_per_decode: total!(waits_per_decode, waits_per_decode),
+            explicit_buffer_barriers_per_decode,
+            commits_per_decode,
+            waits_per_decode,
             initial_stack,
             boundaries,
             tail_layer_index,
@@ -5508,14 +5892,7 @@ impl Qwen35MetalW8MlpStack3BoundaryBodyV1AggregateLedger {
                 add(sum, final_mlp.ledger.$field, stringify!($field))?
             }};
         }
-        // The legacy Stack3 ledger predates the explicit dispatch field: its
-        // fixed ABI dispatches 13 kernels for each of three complete layers.
-        let mut kernel_dispatches_per_decode = 3usize.checked_mul(13).ok_or_else(|| {
-            Error::Other(
-                "qwen3.5 Metal W8 MLP→Stack3 boundary body v1 kernel dispatch count overflow"
-                    .into(),
-            )
-        })?;
+        let mut kernel_dispatches_per_decode = initial_stack.ledger.kernel_dispatches_per_decode;
         let mut intermediate_host_finite_checks_per_decode = initial_stack
             .ledger
             .intermediate_host_finite_checks_per_decode;
@@ -7605,6 +7982,26 @@ mod tests {
             .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
             .unwrap();
         assert_eq!(stats.mechanism, "metal-w8-mlp-stack3-boundary-tail-head-v1");
+        assert_eq!(
+            stats.gdn_core_profile,
+            apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch
+        );
+        assert_eq!(
+            stats.gdn_function_chain,
+            apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch.expected_function_chain()
+        );
+        assert_eq!(
+            stats.initial_stack.mechanism,
+            "metal-w8-linear-layer-stack3-v1"
+        );
+        assert_eq!(stats.initial_stack.kernel_dispatches_per_decode, 39);
+        assert_eq!(stats.initial_stack.explicit_buffer_barriers_per_decode, 36);
+        assert!(stats.boundaries.iter().all(|region| {
+            region.mechanism == "metal-w8-mlp-stack3-boundary-v1"
+                && region.gdn_core_profile == apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch
+                && region.kernel_dispatches_per_decode == 44
+                && region.explicit_buffer_barriers_per_decode == 40
+        }));
         assert_eq!(stats.initial_stack.layer_indices, [0, 1, 2]);
         assert_eq!(stats.boundaries.len(), 5);
         assert_eq!(stats.tail_layer_index, 23);
@@ -7782,6 +8179,11 @@ mod tests {
         assert_eq!(aggregate.command_buffers_per_decode, 7);
         assert_eq!(aggregate.compute_encoders_per_decode, 24);
         assert_eq!(aggregate.kernel_dispatches_per_decode, 267);
+        assert_eq!(aggregate.explicit_buffer_barriers_per_decode, 243);
+        assert_eq!(
+            aggregate.gdn_core_profile,
+            apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch
+        );
         assert_eq!(aggregate.commits_per_decode, 7);
         assert_eq!(aggregate.waits_per_decode, 7);
 
@@ -7794,6 +8196,11 @@ mod tests {
             receipt["mechanism"],
             "metal-w8-mlp-stack3-boundary-tail-head-v1"
         );
+        assert_eq!(receipt["gdn_core_profile"], "legacy-four-dispatch");
+        assert_eq!(
+            receipt["gdn_function_chain"],
+            apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch.expected_function_chain()
+        );
         assert_eq!(receipt["cpu_prefill_all_24_layers"], true);
         assert_eq!(receipt["prefill_head"]["mechanism"], "cpu-f32-tied");
         assert_eq!(receipt["decode_head"]["mechanism"], "metal-w8-tail-v1");
@@ -7801,6 +8208,10 @@ mod tests {
         assert_eq!(receipt["aggregate"]["allocated_buffers"], 494);
         assert_eq!(receipt["aggregate"]["compute_encoders_per_decode"], 24);
         assert_eq!(receipt["aggregate"]["kernel_dispatches_per_decode"], 267);
+        assert_eq!(
+            receipt["aggregate"]["explicit_buffer_barriers_per_decode"],
+            243
+        );
         assert_eq!(receipt["terminal_error"], false);
     }
 
@@ -9049,6 +9460,9 @@ mod tests {
     #[test]
     fn metal_stack3_v1_qwen35_08b_static_ledger_closes_to_the_frozen_target() {
         let stack_ledger = apxinf_metal::LinearLayerStack3BufferLedger {
+            gdn_core_profile: apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch,
+            gdn_function_chain: apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch
+                .expected_function_chain(),
             allocated_buffers: 76,
             shared_buffers: 68,
             private_buffers: 8,
@@ -9064,6 +9478,17 @@ mod tests {
             state_host_transfer_bytes_per_decode: 0,
             command_buffers_per_decode: 1,
             compute_encoders_per_decode: 3,
+            kernel_dispatches_per_decode: 39,
+            explicit_buffer_barriers_per_decode: 36,
+            gdn_core_seams_per_decode: 3,
+            gdn_core_kernel_dispatches_per_decode: 12,
+            gdn_core_explicit_buffer_barriers_per_decode: 12,
+            gdn_core_recurrent_or_fused_threads_per_threadgroup: 256,
+            gdn_core_threadgroups_per_decode: 126,
+            gdn_core_launched_threads_per_decode: 30_864,
+            gdn_core_source_declared_threadgroup_memory_bytes: 0,
+            gdn_core_expected_pipeline_static_threadgroup_memory_bytes: 0,
+            gdn_core_internal_threadgroup_barrier_sites_per_threadgroup: 0,
             commits_per_decode: 1,
             waits_per_decode: 1,
             intermediate_host_finite_checks_per_decode: 0,
@@ -9130,6 +9555,9 @@ mod tests {
         let initial_stack = Qwen35MetalW8LinearLayerStack3BufferLedger {
             layer_indices: [0, 1, 2],
             ledger: apxinf_metal::LinearLayerStack3BufferLedger {
+                gdn_core_profile: apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch,
+                gdn_function_chain: apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch
+                    .expected_function_chain(),
                 allocated_buffers: 76,
                 shared_buffers: 68,
                 private_buffers: 8,
@@ -9145,6 +9573,17 @@ mod tests {
                 state_host_transfer_bytes_per_decode: 0,
                 command_buffers_per_decode: 1,
                 compute_encoders_per_decode: 3,
+                kernel_dispatches_per_decode: 39,
+                explicit_buffer_barriers_per_decode: 36,
+                gdn_core_seams_per_decode: 3,
+                gdn_core_kernel_dispatches_per_decode: 12,
+                gdn_core_explicit_buffer_barriers_per_decode: 12,
+                gdn_core_recurrent_or_fused_threads_per_threadgroup: 256,
+                gdn_core_threadgroups_per_decode: 126,
+                gdn_core_launched_threads_per_decode: 30_864,
+                gdn_core_source_declared_threadgroup_memory_bytes: 0,
+                gdn_core_expected_pipeline_static_threadgroup_memory_bytes: 0,
+                gdn_core_internal_threadgroup_barrier_sites_per_threadgroup: 0,
                 commits_per_decode: 1,
                 waits_per_decode: 1,
                 intermediate_host_finite_checks_per_decode: 0,
@@ -9152,6 +9591,9 @@ mod tests {
             },
         };
         let boundary_ledger = apxinf_metal::MlpStack3BoundaryBufferLedgerV1 {
+            gdn_core_profile: apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch,
+            gdn_function_chain: apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch
+                .expected_function_chain(),
             scope: "resident-mtlbuffer-only",
             exclusions: "boundary exclusions",
             abi_version: 1,
@@ -9172,6 +9614,16 @@ mod tests {
             command_buffers_per_decode: 1,
             compute_encoders_per_decode: 4,
             kernel_dispatches_per_decode: 44,
+            explicit_buffer_barriers_per_decode: 40,
+            gdn_core_seams_per_decode: 3,
+            gdn_core_kernel_dispatches_per_decode: 12,
+            gdn_core_explicit_buffer_barriers_per_decode: 12,
+            gdn_core_recurrent_or_fused_threads_per_threadgroup: 256,
+            gdn_core_threadgroups_per_decode: 126,
+            gdn_core_launched_threads_per_decode: 30_864,
+            gdn_core_source_declared_threadgroup_memory_bytes: 0,
+            gdn_core_expected_pipeline_static_threadgroup_memory_bytes: 0,
+            gdn_core_internal_threadgroup_barrier_sites_per_threadgroup: 0,
             commits_per_decode: 1,
             waits_per_decode: 1,
             intermediate_host_finite_checks_per_decode: 0,
@@ -9232,90 +9684,252 @@ mod tests {
 
     #[cfg(feature = "metal-w8")]
     #[test]
-    fn metal_boundary_tail_head_v1_qwen35_08b_static_ledger_is_exact() {
-        let initial_stack = Qwen35MetalW8LinearLayerStack3BufferLedger {
-            layer_indices: [0, 1, 2],
-            ledger: apxinf_metal::LinearLayerStack3BufferLedger {
-                allocated_buffers: 76,
-                shared_buffers: 68,
+    fn metal_boundary_tail_head_gdn_core_fused_v1_is_explicit_fixed_shape_and_qk_closed() {
+        let (config, tensors) = fixture();
+        let ordinary =
+            GeneralQwen35::from_weights(config.clone(), tensors, Device::Cpu, 16).unwrap();
+        assert!(ordinary
+            .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
+            .is_none());
+        assert!(ordinary
+            .metal_w8_mlp_stack3_boundary_tail_head_v1_aggregate_ledger()
+            .is_none());
+        let ordinary_receipt = ordinary.generation_path_receipt().unwrap();
+        assert_eq!(
+            ordinary_receipt["format"],
+            "apxinf-qwen35-generation-path-v1"
+        );
+        assert_eq!(ordinary_receipt["metal_w8_mlp_block"], false);
+        assert_eq!(ordinary_receipt["metal_w8_lm_head"], false);
+        assert!(ordinary_receipt.get("gdn_core_profile").is_none());
+
+        let shape_error =
+            GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_fused_v1(
+                config.clone(),
+                HashMap::new(),
+                Device::Cpu,
+                16,
+            )
+            .err()
+            .expect("small-shape fused production route must fail closed");
+        assert!(shape_error
+            .to_string()
+            .contains("fixed to H=1024/KH=16/VH=16/KD=128/VD=128/conv=4/eps=1e-6"));
+
+        let qk_error = GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_profile_v1(
+            config,
+            HashMap::new(),
+            Device::Cpu,
+            16,
+            apxinf_metal::GdnCoreProfileV1::QkStagedFourDispatch,
+        )
+        .err()
+        .expect("diagnostic-only qk-staged control must not enter the production route");
+        assert!(qk_error.to_string().contains("diagnostic-only qk-staged"));
+
+        assert_eq!(
+            qwen35_boundary_tail_head_mechanism_for_gdn_core_profile_v1(
+                apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch,
+            ),
+            "metal-w8-mlp-stack3-boundary-tail-head-v1"
+        );
+        assert_eq!(
+            qwen35_boundary_tail_head_mechanism_for_gdn_core_profile_v1(
+                apxinf_metal::GdnCoreProfileV1::Fused128,
+            ),
+            "metal-w8-mlp-stack3-boundary-tail-head-gdn-core-fused-v1"
+        );
+        assert_eq!(
+            qwen35_stack3_mechanism_for_gdn_core_profile_v1(
+                apxinf_metal::GdnCoreProfileV1::Fused128,
+            ),
+            "metal-w8-linear-layer-stack3-gdn-core-fused-v1"
+        );
+        assert_eq!(
+            qwen35_boundary_mechanism_for_gdn_core_profile_v1(
+                apxinf_metal::GdnCoreProfileV1::Fused128,
+            ),
+            "metal-w8-mlp-stack3-boundary-gdn-core-fused-v1"
+        );
+    }
+
+    #[cfg(feature = "metal-w8")]
+    #[test]
+    fn metal_boundary_tail_head_v1_qwen35_08b_profile_ledgers_are_exact() {
+        for (
+            profile,
+            initial_dispatches,
+            initial_barriers,
+            boundary_dispatches,
+            boundary_barriers,
+            expected_dispatches,
+            expected_barriers,
+        ) in [
+            (
+                apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch,
+                39,
+                36,
+                44,
+                40,
+                267,
+                243,
+            ),
+            (
+                apxinf_metal::GdnCoreProfileV1::Fused128,
+                30,
+                27,
+                35,
+                31,
+                213,
+                189,
+            ),
+        ] {
+            let initial_stack = Qwen35MetalW8LinearLayerStack3BufferLedger {
+                layer_indices: [0, 1, 2],
+                ledger: apxinf_metal::LinearLayerStack3BufferLedger {
+                    gdn_core_profile: profile,
+                    gdn_function_chain: profile.expected_function_chain(),
+                    allocated_buffers: 76,
+                    shared_buffers: 68,
+                    private_buffers: 8,
+                    packed_weight_bytes: 64_585_728,
+                    packed_scale_bytes: 4_429_824,
+                    f32_parameter_bytes: 321_408,
+                    active_state_bytes: 3_440_640,
+                    scratch_state_bytes: 3_440_640,
+                    activation_bytes: 133_248,
+                    total_persistent_bytes: 76_351_488,
+                    host_input_bytes_per_decode: 4_096,
+                    host_output_bytes_per_decode: 4_096,
+                    state_host_transfer_bytes_per_decode: 0,
+                    command_buffers_per_decode: 1,
+                    compute_encoders_per_decode: 3,
+                    kernel_dispatches_per_decode: initial_dispatches,
+                    explicit_buffer_barriers_per_decode: initial_barriers,
+                    gdn_core_seams_per_decode: 3,
+                    gdn_core_kernel_dispatches_per_decode: profile.gdn_core_dispatches_for_seams(3)
+                        as usize,
+                    gdn_core_explicit_buffer_barriers_per_decode: profile
+                        .gdn_core_dispatches_for_seams(3)
+                        as usize,
+                    gdn_core_recurrent_or_fused_threads_per_threadgroup: profile
+                        .recurrent_threads_per_threadgroup()
+                        as usize,
+                    gdn_core_threadgroups_per_decode: profile.gdn_core_threadgroups_for_seams(3)
+                        as usize,
+                    gdn_core_launched_threads_per_decode: profile
+                        .gdn_core_launched_threads_for_seams(3)
+                        as usize,
+                    gdn_core_source_declared_threadgroup_memory_bytes: profile
+                        .source_declared_threadgroup_memory_bytes()
+                        as usize,
+                    gdn_core_expected_pipeline_static_threadgroup_memory_bytes: profile
+                        .expected_pipeline_static_threadgroup_memory_bytes()
+                        as usize,
+                    gdn_core_internal_threadgroup_barrier_sites_per_threadgroup: profile
+                        .internal_threadgroup_barrier_sites_per_threadgroup()
+                        as usize,
+                    commits_per_decode: 1,
+                    waits_per_decode: 1,
+                    intermediate_host_finite_checks_per_decode: 0,
+                    final_output_finite_checks_per_decode: 1,
+                },
+            };
+            let boundary_ledger = apxinf_metal::MlpStack3BoundaryBufferLedgerV1 {
+                gdn_core_profile: profile,
+                gdn_function_chain: profile.expected_function_chain(),
+                scope: "resident-mtlbuffer-only",
+                exclusions: "boundary exclusions",
+                abi_version: 1,
+                stack_depth: 3,
+                allocated_buffers: 81,
+                shared_buffers: 73,
                 private_buffers: 8,
-                packed_weight_bytes: 64_585_728,
-                packed_scale_bytes: 4_429_824,
-                f32_parameter_bytes: 321_408,
+                packed_weight_bytes: 75_595_776,
+                packed_scale_bytes: 5_117_952,
+                f32_parameter_bytes: 325_504,
                 active_state_bytes: 3_440_640,
                 scratch_state_bytes: 3_440_640,
                 activation_bytes: 133_248,
-                total_persistent_bytes: 76_351_488,
+                total_persistent_bytes: 88_053_760,
                 host_input_bytes_per_decode: 4_096,
                 host_output_bytes_per_decode: 4_096,
                 state_host_transfer_bytes_per_decode: 0,
                 command_buffers_per_decode: 1,
-                compute_encoders_per_decode: 3,
+                compute_encoders_per_decode: 4,
+                kernel_dispatches_per_decode: boundary_dispatches,
+                explicit_buffer_barriers_per_decode: boundary_barriers,
+                gdn_core_seams_per_decode: 3,
+                gdn_core_kernel_dispatches_per_decode: profile.gdn_core_dispatches_for_seams(3)
+                    as usize,
+                gdn_core_explicit_buffer_barriers_per_decode: profile
+                    .gdn_core_dispatches_for_seams(3)
+                    as usize,
+                gdn_core_recurrent_or_fused_threads_per_threadgroup: profile
+                    .recurrent_threads_per_threadgroup()
+                    as usize,
+                gdn_core_threadgroups_per_decode: profile.gdn_core_threadgroups_for_seams(3)
+                    as usize,
+                gdn_core_launched_threads_per_decode: profile.gdn_core_launched_threads_for_seams(3)
+                    as usize,
+                gdn_core_source_declared_threadgroup_memory_bytes: profile
+                    .source_declared_threadgroup_memory_bytes()
+                    as usize,
+                gdn_core_expected_pipeline_static_threadgroup_memory_bytes: profile
+                    .expected_pipeline_static_threadgroup_memory_bytes()
+                    as usize,
+                gdn_core_internal_threadgroup_barrier_sites_per_threadgroup: profile
+                    .internal_threadgroup_barrier_sites_per_threadgroup()
+                    as usize,
                 commits_per_decode: 1,
                 waits_per_decode: 1,
                 intermediate_host_finite_checks_per_decode: 0,
                 final_output_finite_checks_per_decode: 1,
-            },
-        };
-        let boundary_ledger = apxinf_metal::MlpStack3BoundaryBufferLedgerV1 {
-            scope: "resident-mtlbuffer-only",
-            exclusions: "boundary exclusions",
-            abi_version: 1,
-            stack_depth: 3,
-            allocated_buffers: 81,
-            shared_buffers: 73,
-            private_buffers: 8,
-            packed_weight_bytes: 75_595_776,
-            packed_scale_bytes: 5_117_952,
-            f32_parameter_bytes: 325_504,
-            active_state_bytes: 3_440_640,
-            scratch_state_bytes: 3_440_640,
-            activation_bytes: 133_248,
-            total_persistent_bytes: 88_053_760,
-            host_input_bytes_per_decode: 4_096,
-            host_output_bytes_per_decode: 4_096,
-            state_host_transfer_bytes_per_decode: 0,
-            command_buffers_per_decode: 1,
-            compute_encoders_per_decode: 4,
-            kernel_dispatches_per_decode: 44,
-            commits_per_decode: 1,
-            waits_per_decode: 1,
-            intermediate_host_finite_checks_per_decode: 0,
-            final_output_finite_checks_per_decode: 1,
-        };
-        let boundaries = QWEN35_MLP_STACK3_BOUNDARY_REGIONS_V1
-            .map(|(boundary_mlp_layer_index, stack_layer_indices)| {
-                Qwen35MetalW8MlpStack3BoundaryRegionBufferLedgerV1 {
-                    boundary_mlp_layer_index,
-                    stack_layer_indices,
-                    ledger: boundary_ledger,
-                }
-            })
-            .to_vec();
-        let tail = apxinf_metal::TailMlpHeadBufferLedgerV1::from_dimensions(1_024, 3_584, 248_320)
+            };
+            let boundaries = QWEN35_MLP_STACK3_BOUNDARY_REGIONS_V1
+                .map(|(boundary_mlp_layer_index, stack_layer_indices)| {
+                    Qwen35MetalW8MlpStack3BoundaryRegionBufferLedgerV1 {
+                        boundary_mlp_layer_index,
+                        stack_layer_indices,
+                        ledger: boundary_ledger,
+                    }
+                })
+                .to_vec();
+            let tail =
+                apxinf_metal::TailMlpHeadBufferLedgerV1::from_dimensions(1_024, 3_584, 248_320)
+                    .unwrap();
+            let aggregate = Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger::new(
+                initial_stack,
+                boundaries,
+                23,
+                tail,
+            )
             .unwrap();
-        let aggregate = Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger::new(
-            initial_stack,
-            boundaries,
-            23,
-            tail,
-        )
-        .unwrap();
 
-        assert_eq!(aggregate.total_persistent_mtlbuffer_bytes, 799_543_312);
-        assert_eq!(aggregate.allocated_buffers, 494);
-        assert_eq!(aggregate.shared_buffers, 443);
-        assert_eq!(aggregate.private_buffers, 51);
-        assert_eq!(aggregate.host_to_device_bytes_per_decode, 28_672);
-        assert_eq!(aggregate.device_to_host_bytes_per_decode, 28_688);
-        assert_eq!(aggregate.state_host_transfer_bytes_per_decode, 0);
-        assert_eq!(aggregate.command_buffers_per_decode, 7);
-        assert_eq!(aggregate.compute_encoders_per_decode, 24);
-        assert_eq!(aggregate.kernel_dispatches_per_decode, 267);
-        assert_eq!(aggregate.commits_per_decode, 7);
-        assert_eq!(aggregate.waits_per_decode, 7);
-        assert!(aggregate.exclusions.contains("F32 tied embedding"));
-        assert!(aggregate.exclusions.contains("four-candidate rerank"));
+            assert_eq!(aggregate.gdn_core_profile, profile);
+            assert_eq!(
+                aggregate.gdn_function_chain,
+                profile.expected_function_chain()
+            );
+            assert_eq!(aggregate.total_persistent_mtlbuffer_bytes, 799_543_312);
+            assert_eq!(aggregate.allocated_buffers, 494);
+            assert_eq!(aggregate.shared_buffers, 443);
+            assert_eq!(aggregate.private_buffers, 51);
+            assert_eq!(aggregate.host_to_device_bytes_per_decode, 28_672);
+            assert_eq!(aggregate.device_to_host_bytes_per_decode, 28_688);
+            assert_eq!(aggregate.state_host_transfer_bytes_per_decode, 0);
+            assert_eq!(aggregate.command_buffers_per_decode, 7);
+            assert_eq!(aggregate.compute_encoders_per_decode, 24);
+            assert_eq!(aggregate.kernel_dispatches_per_decode, expected_dispatches);
+            assert_eq!(
+                aggregate.explicit_buffer_barriers_per_decode,
+                expected_barriers
+            );
+            assert_eq!(aggregate.commits_per_decode, 7);
+            assert_eq!(aggregate.waits_per_decode, 7);
+            assert!(aggregate.exclusions.contains("F32 tied embedding"));
+            assert!(aggregate.exclusions.contains("four-candidate rerank"));
+        }
     }
 
     #[cfg(feature = "metal-w8")]

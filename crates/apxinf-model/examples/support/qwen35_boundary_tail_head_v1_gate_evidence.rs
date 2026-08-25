@@ -18,7 +18,7 @@ const PROFILE_BYTES: &[u8] =
     include_bytes!("../../../../configs/hf-onboarding/qwen35-0.8b-macos-cpu.json");
 const GENERAL_SOURCE_BYTES: &[u8] = include_bytes!("../../src/qwen35/general.rs");
 const FROZEN_GENERAL_SOURCE_SHA256: &str =
-    "2c58b87df49cc483915f87ad7607c5b537f34516cfc264552b989fe976bb6f7a";
+    "90056da35e3a9a2b96b6dce2d4cee4138a19a8e8fbf6f8d28b63ed8da604fb0e";
 const LLM_TRAIT_SOURCE_BYTES: &[u8] = include_bytes!("../../src/llm_trait.rs");
 const APXINF_MODEL_LIB_SOURCE_BYTES: &[u8] = include_bytes!("../../src/lib.rs");
 const APXINF_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!("../../Cargo.toml");
@@ -53,7 +53,13 @@ const APXINF_CORE_TENSOR_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-c
 const GATE_EVIDENCE_SOURCE_BYTES: &[u8] =
     include_bytes!("qwen35_boundary_tail_head_v1_gate_evidence.rs");
 const PRODUCTION_AC_PREDECLARATION_BYTES: &[u8] = include_bytes!(
-    "../../../apxinf-metal/evidence/next-hotspot/qwen35-gdn-recurrent-qk-staged-production-ac-v1-predeclared-gate-v1-20260825.json"
+    "../../../apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-production-ac-v1-predeclared-gate-v1-20260826.json"
+);
+const GDN_CORE_FUSED_PRIMITIVE_RAW_BYTES: &[u8] = include_bytes!(
+    "../../../apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-primitive-abc-raw-v1-20260825.json"
+);
+const GDN_CORE_FUSED_PRIMITIVE_ACCEPTED_SUMMARY_BYTES: &[u8] = include_bytes!(
+    "../../../apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-accepted-diagnostic-summary-v1-20260825.json"
 );
 const APXINF_METAL_LIB_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-metal/src/lib.rs");
 const GDN_RUST_SOURCE_BYTES: &[u8] = include_bytes!("../../../apxinf-metal/src/gdn.rs");
@@ -101,7 +107,7 @@ const METAL_W8_LINEAR_LAYER_SOURCE_BYTES: &[u8] =
 const METAL_W8_GDN_OUT_G32_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_gdn_out_g32.metal");
 const MAX_CACHE_ENTRIES: usize = 4096;
-const SOURCE_SET_ID: &str = "boundary-tail-head-v1-explicit-audited-source-set-v5";
+const SOURCE_SET_ID: &str = "boundary-tail-head-gdn-core-fused-v1-explicit-audited-source-set-v6";
 const SOURCE_SET_COVERAGE: &str = "explicit-non-transitive-source-set-v1";
 
 #[derive(Clone, Copy)]
@@ -113,7 +119,7 @@ struct BuildSourceSpec {
     metal_shader: bool,
 }
 
-fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 52] {
+fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 54] {
     [
         BuildSourceSpec {
             receipt_name: "gate_evidence",
@@ -125,9 +131,23 @@ fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 52] {
         },
         BuildSourceSpec {
             receipt_name: "production_ac_predeclaration",
-            label: "GDN qk-staged production A/C predeclaration",
-            manifest_relative_path: "../apxinf-metal/evidence/next-hotspot/qwen35-gdn-recurrent-qk-staged-production-ac-v1-predeclared-gate-v1-20260825.json",
+            label: "GDN core-fused production A/C predeclaration",
+            manifest_relative_path: "../apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-production-ac-v1-predeclared-gate-v1-20260826.json",
             embedded_bytes: PRODUCTION_AC_PREDECLARATION_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "gdn_core_fused_primitive_raw",
+            label: "accepted GDN core-fused primitive raw receipt",
+            manifest_relative_path: "../apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-primitive-abc-raw-v1-20260825.json",
+            embedded_bytes: GDN_CORE_FUSED_PRIMITIVE_RAW_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "gdn_core_fused_primitive_accepted_summary",
+            label: "accepted GDN core-fused primitive diagnostic summary",
+            manifest_relative_path: "../apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-accepted-diagnostic-summary-v1-20260825.json",
+            embedded_bytes: GDN_CORE_FUSED_PRIMITIVE_ACCEPTED_SUMMARY_BYTES,
             metal_shader: false,
         },
         BuildSourceSpec {
@@ -497,9 +517,11 @@ fn source_specs_for_set(source_set_id: &str) -> Result<Vec<BuildSourceSpec>, Box
 }
 
 fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>> {
-    const EXPECTED_NAMES: [&str; 52] = [
+    const EXPECTED_NAMES: [&str; 54] = [
         "gate_evidence",
         "production_ac_predeclaration",
+        "gdn_core_fused_primitive_raw",
+        "gdn_core_fused_primitive_accepted_summary",
         "apxinf_model_lib",
         "apxinf_model_manifest",
         "accelerator",
@@ -1541,7 +1563,7 @@ mod tests {
             .iter()
             .map(|spec| spec.receipt_name)
             .collect::<Vec<_>>();
-        assert_eq!(names.len(), 52);
+        assert_eq!(names.len(), 54);
         assert_eq!(
             names.iter().copied().collect::<BTreeSet<_>>().len(),
             names.len()
@@ -1549,6 +1571,8 @@ mod tests {
         for required in [
             "gate_evidence",
             "production_ac_predeclaration",
+            "gdn_core_fused_primitive_raw",
+            "gdn_core_fused_primitive_accepted_summary",
             "apxinf_model_lib",
             "apxinf_model_manifest",
             "accelerator",

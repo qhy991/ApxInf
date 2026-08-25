@@ -1,0 +1,241 @@
+{
+  "format": "apxinf-qwen35-gdn-core-fused-v1-production-ac-v1-predeclared-gate-v1",
+  "created_at_local_date": "2026-08-26",
+  "status": "PREDECLARED_BEFORE_PRODUCTION_TOPOLOGY_PERFORMANCE_SAMPLING",
+  "baseline_parent_commit": "ac9f72885bb9f31c5a85bf7d30269b1a59aba382",
+  "candidate_source_binding": "the explicit fused production-path plumbing, single-process campaign gate, source-set custody closure, runtime topology receipts, tests, and this predeclaration must be one non-merge commit directly above the baseline and pushed before the first fixed-campaign candidate call or production-topology performance sample",
+  "precommit_correctness_verification": "non-timed compile, unit, integration, and explicit real-Metal bit-exact correctness tests are allowed before the campaign commit; their elapsed test-harness time is not read, recorded, selected, or used as performance evidence",
+  "primitive_authorization": {
+    "accepted_summary_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-accepted-diagnostic-summary-v1-20260825.json",
+    "accepted_summary_sha256": "d4b9a70bc2e1b7348db7217414d25905f3f6b82b7ef318933c2ce901b8e1d814",
+    "accepted_summary_size_bytes": 9742,
+    "raw_receipt_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-primitive-abc-raw-v1-20260825.json",
+    "raw_receipt_sha256": "fb02154e436e9a39e43c7aed3d9d47a355bc4b6cb6a824ec3d05c4e479ed1a67",
+    "raw_receipt_size_bytes": 59250,
+    "selected_arm": "C gdn-core-fused-v1",
+    "primitive_pooled_C_over_A_improvement_percent": 27.968438692248682,
+    "primitive_pooled_C_over_B_improvement_percent": 25.515574383013057,
+    "primitive_absolute_C_reduction_vs_A_ns": 597167.0,
+    "scope": "independent count-18 primitive only; authorizes this separate explicit full-path continuation gate, not an end-to-end or TPS claim and not default activation"
+  },
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "target": "Apple M4 Metal",
+    "prompt": "Hello",
+    "prompt_token_ids": [
+      248045,
+      846,
+      198,
+      9419,
+      248046,
+      198,
+      248045,
+      74455,
+      198,
+      248068,
+      271,
+      248069,
+      271
+    ],
+    "prompt_tokens": 13,
+    "output_tokens": 128,
+    "decoding": "greedy argmax, EOS stopping disabled",
+    "runtime_path": "explicit Metal W8 MLP-to-Stack3 boundary plus fused tail-head v1",
+    "release_features": ["accelerate", "metal-w8"],
+    "single_release_binary_for_entire_campaign": true,
+    "default_registry_cli_auto_and_ordinary_constructors_unchanged": true
+  },
+  "arms": {
+    "A": {
+      "profile": "legacy-four-dispatch",
+      "gdn_function_chain": "gdn_depthwise_preprocess|gdn_normalize_qk|gdn_recurrent_update|gdn_norm_gate",
+      "recurrent_threads_per_threadgroup": 256,
+      "persistent_output_groups_per_row": 64,
+      "core_kernel_output_groups_per_row": 64,
+      "constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1"
+    },
+    "C": {
+      "profile": "gdn-core-fused-v1",
+      "gdn_function_chain": "gdn_core_fused_v1",
+      "threads_per_threadgroup": 128,
+      "threadgroups_per_seam": 16,
+      "internal_threadgroup_barrier_sites": 4,
+      "pipeline_static_threadgroup_memory_bytes": 2064,
+      "persistent_output_groups_per_row": 64,
+      "core_kernel_output_groups_per_row": 32,
+      "constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_fused_v1"
+    }
+  },
+  "production_mapping": {
+    "initial_stack_linear_layers": [0, 1, 2],
+    "five_boundary_stack_linear_layers": [
+      [4, 5, 6],
+      [8, 9, 10],
+      [12, 13, 14],
+      [16, 17, 18],
+      [20, 21, 22]
+    ],
+    "gdn_core_seams_per_decode": 18,
+    "changed_transactions_per_decode": 6,
+    "changed_scope": "only the depthwise, Q/K normalization, recurrent update, and norm-gate core inside the initial Stack3 and each of five MLP-to-Stack3 boundary transactions",
+    "unchanged_scope": "input/output projections, MLPs, residuals, full attention and KV, prefill, tail MLP/head, exact F32 rerank, state publication, host transfers, encoders, command buffers, commits and waits",
+    "standalone_gdn_and_single_linear_layer_bridges_remain_A": true,
+    "fixed_shape_lock": "H=1024/KH=16/VH=16/KD=128/VD=128/conv=4/input_rows=8224/input_groups=16/persistent_G32_output_groups=64/fused_core_local_shape_guard_output_groups=32/gdn_eps_f32_bits=1e-6",
+    "retain_unused_processed_and_core_allocations_in_C": "required for the first continuation screen so the persistent allocation ledger is not another experimental variable"
+  },
+  "precommitted_runtime_topology_per_decode": {
+    "A": {
+      "initial_stack": {"kernel_dispatches": 39, "explicit_broad_buffer_barriers": 36},
+      "each_boundary": {"kernel_dispatches": 44, "explicit_broad_buffer_barriers": 40},
+      "five_boundaries": {"kernel_dispatches": 220, "explicit_broad_buffer_barriers": 200},
+      "tail": {"kernel_dispatches": 8, "explicit_broad_buffer_barriers": 7},
+      "full_path": {"kernel_dispatches": 267, "explicit_broad_buffer_barriers": 243}
+    },
+    "C": {
+      "initial_stack": {"kernel_dispatches": 30, "explicit_broad_buffer_barriers": 27},
+      "each_boundary": {"kernel_dispatches": 35, "explicit_broad_buffer_barriers": 31},
+      "five_boundaries": {"kernel_dispatches": 175, "explicit_broad_buffer_barriers": 155},
+      "tail": {"kernel_dispatches": 8, "explicit_broad_buffer_barriers": 7},
+      "full_path": {"kernel_dispatches": 213, "explicit_broad_buffer_barriers": 189},
+      "removed_vs_A": {"kernel_dispatches": 54, "explicit_broad_buffer_barriers": 54}
+    },
+    "common_full_path": {
+      "compute_encoders": 24,
+      "command_buffers": 7,
+      "commits": 7,
+      "waits": 7,
+      "host_to_device_bytes": 28672,
+      "device_to_host_bytes": 28688
+    },
+    "admission": "live bridge receipts, model mechanism receipts, and recomputed aggregate ledgers must all match these exact counts; internal threadgroup barriers are separately attested and never counted as broad encoder barriers"
+  },
+  "single_process_fixed_campaign": {
+    "cpu_teacher_oracles": 1,
+    "teacher_order": ["C", "A", "A", "C"],
+    "teacher_order_rationale": "C conservatively occupies the first system-wide Metal decode position so any residual driver cold-start cost works against, never in favor of, the candidate",
+    "cpu_free_oracles": 1,
+    "free_block_1_order": ["A", "C", "C", "A"],
+    "free_block_2_order": ["C", "A", "A", "C"],
+    "candidate_teacher_slots": 4,
+    "candidate_free_slots": 8,
+    "total_slots_including_cpu_oracles": 14,
+    "fresh_model_per_slot": true,
+    "arbitrary_arm_or_order_cli_exposed": false,
+    "retry": false,
+    "resampling": false,
+    "replacement_after_failure": false,
+    "outlier_removal": false,
+    "cell_median_substitution": false,
+    "schedule_reordering": false,
+    "APXINF_PERF_must_be_unset_before_sentinel": true,
+    "failure_policy": "after start admission and create-new campaign sentinel publication, stop at the first failed slot, publish a create-new partial raw receipt after end-custody attempt, reject, and never rerun this v1 campaign"
+  },
+  "exactness_and_path_admission": {
+    "logic": "AND",
+    "all_four_teacher_slots_must_pass": true,
+    "teacher_steps_per_slot": 128,
+    "teacher_body_token_mismatches_must_be_zero": true,
+    "teacher_top4_must_be_unique_in_range_and_contain_f32_winner": true,
+    "teacher_direct_f32_rerank_mismatches_must_be_zero": true,
+    "teacher_end_to_end_mismatches_must_be_zero": true,
+    "all_four_teacher_token_top4_and_rerank_arrays_must_be_identical": true,
+    "all_eight_free_slots_must_pass": true,
+    "all_free_128_token_trajectories_must_equal_the_cpu_oracle": true,
+    "all_prefill_and_final_path_checks_must_pass": true,
+    "all_state_commit_masks_and_aggregate_ledgers_must_be_exact": true,
+    "A_mechanisms_must_be_legacy_in_initial_and_all_five_boundaries": true,
+    "C_mechanisms_must_be_core_fused_in_initial_and_all_five_boundaries": true,
+    "all_A_live_receipts_must_report_persistent_and_core_output_groups_64_64": true,
+    "all_C_live_receipts_must_report_persistent_and_core_output_groups_64_32": true,
+    "all_terminal_errors_must_remain_clear": true,
+    "continuous_state_evolution_is_exercised_by_all_128_decode_steps": true,
+    "hidden_tensor_exactness_claimed_by_this_gate": false,
+    "primitive_bit_exactness_is_separate_bound_evidence": true
+  },
+  "precommitted_performance_admission": {
+    "logic": "AND",
+    "improvement_definition": "I(C over A)=100*(A-C)/A",
+    "changed_body_metric": {
+      "per_slot_value": "(final_generation_path_receipt.initial_stack.block_elapsed_ns + sum(final_generation_path_receipt.boundaries[*].block_elapsed_ns)) / body_call_count",
+      "teacher_body_call_count": 128,
+      "per_arm_statistic": "even median of the two A or two C teacher slot values",
+      "C_over_A_improvement_percent_at_least": 3.0,
+      "tail_transaction_excluded_because_unchanged": true
+    },
+    "end_to_end_metric": {
+      "field": "profile.tpot_ms from the eight free candidate slots",
+      "per_block_statistic": "even median of two A values and even median of two C values",
+      "pooled_statistic": "even median of all four A values and even median of all four C values",
+      "pooled_C_over_A_improvement_percent_at_least": 1.5,
+      "both_counterbalanced_blocks_must_be_strictly_positive": true
+    },
+    "effect_budget_not_a_claim": {
+      "primitive_absolute_saving_ns": 597167.0,
+      "old_qk_campaign_A_body_median_ns": 10429923.2265625,
+      "old_qk_campaign_A_pooled_tpot_ms": 15.372526078740158,
+      "first_order_body_improvement_percent": 5.725516737066287,
+      "first_order_tpot_improvement_percent": 3.884638067557862,
+      "threshold_rationale": "3.0 percent body and 1.5 percent TPOT retain roughly half the first-order effect while staying materially above the old qk drift; these values are admission thresholds, not expected results"
+    },
+    "diagnostic_only_fields": ["generation_tps", "generation_total_latency_ms", "harness_elapsed_ms", "ttft_ms"],
+    "sampled_attempt_failures_must_be_zero": true
+  },
+  "custody": {
+    "candidate_changed_path_whitelist": [
+      "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-production-ac-v1-predeclared-gate-v1-20260826.json",
+      "crates/apxinf-metal/src/gdn_core_fused_profile_v1.rs",
+      "crates/apxinf-metal/src/linear_layer/mlp_stack3_boundary.rs",
+      "crates/apxinf-metal/src/linear_layer/stack3.rs",
+      "crates/apxinf-metal/src/metal_w8_linear_layer_stack3_bridge.mm",
+      "crates/apxinf-metal/src/metal_w8_mlp_stack3_boundary_v1_bridge.mm",
+      "crates/apxinf-metal/tests/linear_layer_stack3.rs",
+      "crates/apxinf-metal/tests/mlp_stack3_boundary_v1.rs",
+      "crates/apxinf-model/examples/qwen35_metal_w8_boundary_tail_head_v1_gate.rs",
+      "crates/apxinf-model/examples/qwen35_metal_w8_linear_layer_gate.rs",
+      "crates/apxinf-model/examples/support/qwen35_boundary_tail_head_v1_gate_evidence.rs",
+      "crates/apxinf-model/src/qwen35/general.rs"
+    ],
+    "candidate_must_be_one_non_merge_commit_directly_above_baseline_parent": true,
+    "candidate_commit_must_be_on_clean_main_origin_main_and_live_github_main_before_campaign": true,
+    "embedded_candidate_commit_must_match_cli_candidate_commit": true,
+    "binary_exact_source_set_gate_predeclaration_primitive_evidence_model_artifacts_source_lock_and_deployment_profile_rehashed_at_start_and_end": true,
+    "campaign_start_sentinel": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-production-ac-v1-campaign-start-v1-20260826.json",
+      "create_new_before_first_candidate_call": true,
+      "binds_candidate_predeclaration_schedule_binary_and_raw_output_path": true,
+      "existing_sentinel_fails_closed": true,
+      "interrupted_campaign_is_consumed_and_must_not_be_rerun": true
+    },
+    "raw_receipt": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-production-ac-v1-raw-campaign-v1-20260826.json",
+      "create_new": true,
+      "published_only_after_end_custody_attempt": true,
+      "chains_campaign_start_sha256": true,
+      "complete_or_partial_schedule_is_explicit": true
+    },
+    "limitation": "without an external monotonic authority, the sentinel cannot prove that it was never deleted and restored or that the binary/worktree was never copied and executed elsewhere; this limitation must remain explicit"
+  },
+  "classification_and_disposition": {
+    "strict_quiet_host_preflight_required_for_formal_promotion": true,
+    "if_quiet_host_fails": "execute the fixed campaign once only as non-formal diagnostic evidence; a pass may retain the explicit C route but cannot authorize default activation",
+    "explicit_continuation_acceptance": "exactness, path, live topology receipts, custody, complete fixed schedule, body threshold, pooled TPOT threshold, and both positive free blocks all pass",
+    "formal_promotion_acceptance": "explicit continuation acceptance plus strict quiet-host preflight; still requires a separate default-activation decision",
+    "failure_or_interruption_action": "archive campaign start, raw or partial raw, and rejection summary, then bounded-revert the production C plumbing and campaign-only harness while preserving the primitive implementation/evidence, this production predeclaration/evidence, and baseline v5 custody repair"
+  },
+  "cross_runtime_rule": {
+    "frozen_comparison_is_unchanged_until_explicit_full_path_continuation_acceptance": true,
+    "current_apxinf_metal_W8_tps": 66.33672849846097,
+    "current_llama_cpp_metal_Q8_0_tps": 70.66394293407429,
+    "current_llama_cpp_advantage_percent": 6.52310497300709,
+    "llama_cpp_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+    "first_order_if_full_primitive_absolute_saving_transfers": {
+      "projected_apxinf_tpot_ms": 14.47743831496063,
+      "projected_apxinf_tps": 69.0729933186194,
+      "projected_llama_cpp_advantage_percent": 2.303287491995849,
+      "classification": "optimistic arithmetic projection only, never a measured result"
+    },
+    "after_acceptance": "refresh same-host same-prompt same-128-token greedy comparisons for llama.cpp, Ollama, and omnimind-ai/OmniInfer; OmniInfer reporting must separate llama.cpp core timing from gateway/orchestration wall time",
+    "ascend_omni_ai_npu_project": "cross-hardware service metrics only, never a same-hardware engine claim"
+  }
+}

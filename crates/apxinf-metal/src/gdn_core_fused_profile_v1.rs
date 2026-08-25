@@ -1,4 +1,4 @@
-use crate::MetalW8Error;
+use crate::{GdnDimensions, MetalW8Error};
 use std::ffi::c_char;
 
 pub const QWEN35_GDN_CORE_SEAMS_PER_DECODE_V1: usize = 18;
@@ -49,6 +49,9 @@ pub const QWEN35_GDN_CORE_NORM_WEIGHT_TRACE_ELEMENTS_V1: usize =
     QWEN35_GDN_CORE_SEAMS_PER_DECODE_V1 * QWEN35_GDN_CORE_NORM_WEIGHT_ELEMENTS_PER_SEAM_V1;
 pub const QWEN35_GDN_CORE_GATED_TRACE_ELEMENTS_V1: usize =
     QWEN35_GDN_CORE_SEAMS_PER_DECODE_V1 * QWEN35_GDN_CORE_GATED_ELEMENTS_PER_SEAM_V1;
+pub const QWEN35_GDN_CORE_RMS_NORM_EPS_BITS_V1: u32 = 1.0e-6f32.to_bits();
+pub const QWEN35_GDN_CORE_PIPELINE_THREAD_EXECUTION_WIDTH_V1: u32 = 32;
+pub const QWEN35_GDN_CORE_FUSED_PIPELINE_STATIC_THREADGROUP_MEMORY_BYTES_V1: u32 = 2_064;
 
 // Stable aggregate aliases used by the public crate surface. The `_V2`
 // suffixes distinguish the wider core-fusion fixture from the earlier
@@ -70,8 +73,9 @@ pub const QWEN35_GDN_GATED_ELEMENTS_PER_SEAM_V1: usize = QWEN35_GDN_CORE_GATED_E
 const FUNCTION_CHAIN_CAPACITY: usize = 256;
 const RAW_RUNTIME_RECEIPT_SIZE: usize = 368;
 
-/// Explicit selector for the fixed-shape count-18 GDN core fusion screen.
-/// No ordinary or production constructor selects this diagnostic profile.
+/// Explicit selector shared by the fixed-shape count-18 screen and the
+/// opt-in production continuation. Ordinary constructors remain legacy;
+/// production constructors reject the Q/K-staged diagnostic arm.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GdnCoreProfileV1 {
@@ -154,6 +158,39 @@ impl GdnCoreProfileV1 {
         }
     }
 
+    pub const fn is_production_profile(self) -> bool {
+        matches!(self, Self::LegacyFourDispatch | Self::Fused128)
+    }
+
+    pub const fn expected_pipeline_static_threadgroup_memory_bytes(self) -> u32 {
+        match self {
+            Self::LegacyFourDispatch => 0,
+            Self::QkStagedFourDispatch => 1_040,
+            Self::Fused128 => QWEN35_GDN_CORE_FUSED_PIPELINE_STATIC_THREADGROUP_MEMORY_BYTES_V1,
+        }
+    }
+
+    pub const fn gdn_core_dispatches_for_seams(self, seams: u32) -> u32 {
+        seams * if matches!(self, Self::Fused128) { 1 } else { 4 }
+    }
+
+    pub const fn gdn_core_launched_threads_for_seams(self, seams: u32) -> u32 {
+        let per_seam = match self {
+            Self::LegacyFourDispatch => 10_288,
+            Self::QkStagedFourDispatch => 8_240,
+            Self::Fused128 => 2_048,
+        };
+        seams * per_seam
+    }
+
+    pub const fn gdn_core_threadgroups_for_seams(self, seams: u32) -> u32 {
+        seams
+            * match self {
+                Self::LegacyFourDispatch | Self::QkStagedFourDispatch => 42,
+                Self::Fused128 => 16,
+            }
+    }
+
     fn from_selector(selector: u32) -> Option<Self> {
         match selector {
             0 => Some(Self::LegacyFourDispatch),
@@ -162,6 +199,159 @@ impl GdnCoreProfileV1 {
             _ => None,
         }
     }
+}
+
+/// Live production-path identity and topology for the three GDN cores inside
+/// one Stack3 or MLP-to-Stack3 transaction. The dispatch/barrier/thread counts
+/// intentionally exclude the surrounding projections, residuals, and MLPs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GdnCoreProductionReceiptV1 {
+    pub profile: GdnCoreProfileV1,
+    pub function_chain: &'static str,
+    pub gdn_core_seams: u32,
+    pub kernel_dispatches: u32,
+    pub explicit_buffer_barriers: u32,
+    /// Threads in the selected recurrent kernel for A, or fused core kernel
+    /// for C. Other dispatches in the legacy four-function chain differ.
+    pub recurrent_or_fused_threads_per_threadgroup: u32,
+    pub threadgroups: u32,
+    pub launched_threads: u32,
+    pub pipeline_thread_execution_width: u32,
+    pub source_declared_threadgroup_memory_bytes: u32,
+    pub pipeline_static_threadgroup_memory_bytes: u32,
+    pub internal_threadgroup_barrier_sites_per_threadgroup: u32,
+    pub fixed_shape_validated: bool,
+    pub rms_norm_eps_bits: u32,
+    /// Group count retained by the following G32 output projection.
+    pub persistent_output_groups_per_row: u32,
+    /// Group count passed to the selected core kernel. The fused kernel's
+    /// accepted shape guard is 32; it never indexes output weights or scales.
+    pub core_kernel_output_groups_per_row: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GdnCoreProductionObservedV1 {
+    pub requested_profile: u32,
+    pub observed_profile: u32,
+    pub gdn_core_seams: u32,
+    pub kernel_dispatches: u32,
+    pub explicit_buffer_barriers: u32,
+    pub recurrent_or_fused_threads_per_threadgroup: u32,
+    pub threadgroups: u32,
+    pub launched_threads: u32,
+    pub pipeline_thread_execution_width: u32,
+    pub source_declared_threadgroup_memory_bytes: u32,
+    pub pipeline_static_threadgroup_memory_bytes: u32,
+    pub internal_threadgroup_barrier_sites_per_threadgroup: u32,
+    pub fixed_shape_validated: u32,
+    pub rms_norm_eps_bits: u32,
+    pub persistent_output_groups_per_row: u32,
+    pub core_kernel_output_groups_per_row: u32,
+}
+
+pub(crate) fn validate_production_profile_v1(
+    profile: GdnCoreProfileV1,
+    dims: GdnDimensions,
+) -> Result<(), MetalW8Error> {
+    if !profile.is_production_profile() {
+        return Err(MetalW8Error::new(
+            "the Q/K-staged GDN core profile is diagnostic-only and cannot be selected by a production bridge",
+        ));
+    }
+    if dims.hidden_size != QWEN35_GDN_CORE_HIDDEN_SIZE_V1
+        || dims.key_heads != QWEN35_GDN_CORE_KEY_HEADS_V1
+        || dims.value_heads != QWEN35_GDN_CORE_VALUE_HEADS_V1
+        || dims.value_heads != dims.key_heads
+        || dims.key_dim != QWEN35_GDN_CORE_KEY_DIM_V1
+        || dims.value_dim != QWEN35_GDN_CORE_VALUE_DIM_V1
+        || dims.conv_kernel_size != QWEN35_GDN_CORE_CONV_KERNEL_SIZE_V1
+        || dims.key_width() != QWEN35_GDN_CORE_KEY_WIDTH_V1
+        || dims.value_width() != QWEN35_GDN_CORE_VALUE_WIDTH_V1
+        || dims.qkv_width() != QWEN35_GDN_CORE_QKV_WIDTH_V1
+        || dims.input_projection_rows() != QWEN35_GDN_CORE_PROJECTED_ELEMENTS_PER_SEAM_V1
+        || dims.rms_norm_eps.to_bits() != QWEN35_GDN_CORE_RMS_NORM_EPS_BITS_V1
+    {
+        return Err(MetalW8Error::new(
+            "the fixed-shape production GDN core requires H=1024, KH=VH=16, KD=VD=128, conv=4, input_rows=8224, input_groups=16, and rms_norm_eps bits equal to 1e-6f32; production G32 output projection params retain 64 output groups, while the fused core-local shape-guard copy uses 32 and is verified by its live receipt",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_production_receipt_v1(
+    expected_profile: GdnCoreProfileV1,
+    observed: GdnCoreProductionObservedV1,
+    observed_function_chain: &str,
+) -> Result<GdnCoreProductionReceiptV1, MetalW8Error> {
+    if !expected_profile.is_production_profile()
+        || GdnCoreProfileV1::try_from(observed.requested_profile)? != expected_profile
+        || GdnCoreProfileV1::try_from(observed.observed_profile)? != expected_profile
+    {
+        return Err(MetalW8Error::new(
+            "production GDN core receipt profile identity mismatch",
+        ));
+    }
+    if observed.gdn_core_seams != 3 {
+        return Err(MetalW8Error::new(
+            "production GDN core receipt must contain exactly three seams",
+        ));
+    }
+    let expected_function_chain = expected_profile.expected_function_chain();
+    let expected_dispatches =
+        expected_profile.gdn_core_dispatches_for_seams(observed.gdn_core_seams);
+    let expected_threadgroups =
+        expected_profile.gdn_core_threadgroups_for_seams(observed.gdn_core_seams);
+    let expected_launched =
+        expected_profile.gdn_core_launched_threads_for_seams(observed.gdn_core_seams);
+    if observed_function_chain != expected_function_chain
+        || observed.kernel_dispatches != expected_dispatches
+        || observed.explicit_buffer_barriers != expected_dispatches
+        || observed.recurrent_or_fused_threads_per_threadgroup
+            != expected_profile.recurrent_threads_per_threadgroup()
+        || observed.threadgroups != expected_threadgroups
+        || observed.launched_threads != expected_launched
+        || observed.pipeline_thread_execution_width
+            != QWEN35_GDN_CORE_PIPELINE_THREAD_EXECUTION_WIDTH_V1
+        || observed.source_declared_threadgroup_memory_bytes
+            != expected_profile.source_declared_threadgroup_memory_bytes()
+        || observed.pipeline_static_threadgroup_memory_bytes
+            != expected_profile.expected_pipeline_static_threadgroup_memory_bytes()
+        || observed.internal_threadgroup_barrier_sites_per_threadgroup
+            != expected_profile.internal_threadgroup_barrier_sites_per_threadgroup()
+        || observed.fixed_shape_validated != 1
+        || observed.rms_norm_eps_bits != QWEN35_GDN_CORE_RMS_NORM_EPS_BITS_V1
+        || observed.persistent_output_groups_per_row != 64
+        || observed.core_kernel_output_groups_per_row
+            != if expected_profile == GdnCoreProfileV1::Fused128 {
+                32
+            } else {
+                64
+            }
+    {
+        return Err(MetalW8Error::new(format!(
+            "invalid live production GDN core receipt for {expected_profile:?}"
+        )));
+    }
+    Ok(GdnCoreProductionReceiptV1 {
+        profile: expected_profile,
+        function_chain: expected_function_chain,
+        gdn_core_seams: observed.gdn_core_seams,
+        kernel_dispatches: observed.kernel_dispatches,
+        explicit_buffer_barriers: observed.explicit_buffer_barriers,
+        recurrent_or_fused_threads_per_threadgroup: observed
+            .recurrent_or_fused_threads_per_threadgroup,
+        threadgroups: observed.threadgroups,
+        launched_threads: observed.launched_threads,
+        pipeline_thread_execution_width: observed.pipeline_thread_execution_width,
+        source_declared_threadgroup_memory_bytes: observed.source_declared_threadgroup_memory_bytes,
+        pipeline_static_threadgroup_memory_bytes: observed.pipeline_static_threadgroup_memory_bytes,
+        internal_threadgroup_barrier_sites_per_threadgroup: observed
+            .internal_threadgroup_barrier_sites_per_threadgroup,
+        fixed_shape_validated: true,
+        rms_norm_eps_bits: observed.rms_norm_eps_bits,
+        persistent_output_groups_per_row: observed.persistent_output_groups_per_row,
+        core_kernel_output_groups_per_row: observed.core_kernel_output_groups_per_row,
+    })
 }
 
 impl TryFrom<u32> for GdnCoreProfileV1 {
@@ -1108,6 +1298,69 @@ mod tests {
             GdnCoreProfileV1::Fused128.expected_function_chain(),
             "gdn_core_fused_v1"
         );
+    }
+
+    #[test]
+    fn production_profiles_lock_shape_epsilon_and_live_topology() {
+        let dims = GdnDimensions {
+            hidden_size: 1024,
+            key_heads: 16,
+            value_heads: 16,
+            key_dim: 128,
+            value_dim: 128,
+            conv_kernel_size: 4,
+            rms_norm_eps: 1.0e-6,
+        };
+        for profile in [
+            GdnCoreProfileV1::LegacyFourDispatch,
+            GdnCoreProfileV1::Fused128,
+        ] {
+            validate_production_profile_v1(profile, dims).unwrap();
+            let seams = 3;
+            let receipt = validate_production_receipt_v1(
+                profile,
+                GdnCoreProductionObservedV1 {
+                    requested_profile: profile.selector(),
+                    observed_profile: profile.selector(),
+                    gdn_core_seams: seams,
+                    kernel_dispatches: profile.gdn_core_dispatches_for_seams(seams),
+                    explicit_buffer_barriers: profile.gdn_core_dispatches_for_seams(seams),
+                    recurrent_or_fused_threads_per_threadgroup: profile
+                        .recurrent_threads_per_threadgroup(),
+                    threadgroups: profile.gdn_core_threadgroups_for_seams(seams),
+                    launched_threads: profile.gdn_core_launched_threads_for_seams(seams),
+                    pipeline_thread_execution_width:
+                        QWEN35_GDN_CORE_PIPELINE_THREAD_EXECUTION_WIDTH_V1,
+                    source_declared_threadgroup_memory_bytes: profile
+                        .source_declared_threadgroup_memory_bytes(),
+                    pipeline_static_threadgroup_memory_bytes: profile
+                        .expected_pipeline_static_threadgroup_memory_bytes(),
+                    internal_threadgroup_barrier_sites_per_threadgroup: profile
+                        .internal_threadgroup_barrier_sites_per_threadgroup(),
+                    fixed_shape_validated: 1,
+                    rms_norm_eps_bits: QWEN35_GDN_CORE_RMS_NORM_EPS_BITS_V1,
+                    persistent_output_groups_per_row: 64,
+                    core_kernel_output_groups_per_row: if profile == GdnCoreProfileV1::Fused128 {
+                        32
+                    } else {
+                        64
+                    },
+                },
+                profile.expected_function_chain(),
+            )
+            .unwrap();
+            assert_eq!(receipt.profile, profile);
+            assert_eq!(receipt.gdn_core_seams, 3);
+        }
+
+        assert!(
+            validate_production_profile_v1(GdnCoreProfileV1::QkStagedFourDispatch, dims).is_err()
+        );
+        let wrong_eps = GdnDimensions {
+            rms_norm_eps: f32::from_bits(QWEN35_GDN_CORE_RMS_NORM_EPS_BITS_V1 + 1),
+            ..dims
+        };
+        assert!(validate_production_profile_v1(GdnCoreProfileV1::Fused128, wrong_eps).is_err());
     }
 
     #[test]

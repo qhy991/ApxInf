@@ -2800,6 +2800,9 @@ mod tests {
             total_packed_scale_bytes: 1_476_608,
         };
         let stack_ledger = apxinf_metal::LinearLayerStack3BufferLedger {
+            gdn_core_profile: apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch,
+            gdn_function_chain: apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch
+                .expected_function_chain(),
             allocated_buffers: 76,
             shared_buffers: 68,
             private_buffers: 8,
@@ -2815,6 +2818,17 @@ mod tests {
             state_host_transfer_bytes_per_decode: 0,
             command_buffers_per_decode: 1,
             compute_encoders_per_decode: 3,
+            kernel_dispatches_per_decode: 39,
+            explicit_buffer_barriers_per_decode: 36,
+            gdn_core_seams_per_decode: 3,
+            gdn_core_kernel_dispatches_per_decode: 12,
+            gdn_core_explicit_buffer_barriers_per_decode: 12,
+            gdn_core_recurrent_or_fused_threads_per_threadgroup: 256,
+            gdn_core_threadgroups_per_decode: 126,
+            gdn_core_launched_threads_per_decode: 30_864,
+            gdn_core_source_declared_threadgroup_memory_bytes: 0,
+            gdn_core_expected_pipeline_static_threadgroup_memory_bytes: 0,
+            gdn_core_internal_threadgroup_barrier_sites_per_threadgroup: 0,
             commits_per_decode: 1,
             waits_per_decode: 1,
             intermediate_host_finite_checks_per_decode: 0,
@@ -2842,6 +2856,9 @@ mod tests {
             .map(|&layer_indices| Qwen35MetalW8LinearLayerStack3V1Stats {
                 layer_indices,
                 mechanism: "metal-w8-linear-layer-stack3-v1",
+                gdn_core_profile: apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch,
+                gdn_function_chain: apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch
+                    .expected_function_chain(),
                 quantization: [quantization; 3],
                 prefill_seed_calls: [1, 1, 1],
                 execution: apxinf_metal::LinearLayerStack3MetalStats {
@@ -2857,8 +2874,12 @@ mod tests {
                     state_commits: 3 * decode_calls,
                     last_state_commit_mask: 0b111,
                     committed_stack_version: decode_calls as u64,
+                    last_gdn_core_receipt: None,
                     terminal_error: false,
                 },
+                last_gdn_core_receipt: None,
+                kernel_dispatches_per_decode: 39,
+                explicit_buffer_barriers_per_decode: 36,
                 intermediate_host_finite_checks_per_decode: 0,
                 final_output_finite_checks_per_decode: 1,
                 terminal_error: false,

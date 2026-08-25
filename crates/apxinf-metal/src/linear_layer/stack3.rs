@@ -2,6 +2,10 @@ use super::{
     checked_sum, f32_bytes, GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock,
     W8GroupSize,
 };
+use crate::gdn_core_fused_profile_v1::{
+    validate_production_profile_v1, validate_production_receipt_v1, GdnCoreProductionObservedV1,
+};
+use crate::{GdnCoreProductionReceiptV1, GdnCoreProfileV1};
 
 const STACK_DEPTH: usize = 3;
 
@@ -9,6 +13,8 @@ const STACK_DEPTH: usize = 3;
 /// three-layer diagnostic stack.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinearLayerStack3BufferLedger {
+    pub gdn_core_profile: GdnCoreProfileV1,
+    pub gdn_function_chain: &'static str,
     pub allocated_buffers: usize,
     pub shared_buffers: usize,
     pub private_buffers: usize,
@@ -24,6 +30,17 @@ pub struct LinearLayerStack3BufferLedger {
     pub state_host_transfer_bytes_per_decode: usize,
     pub command_buffers_per_decode: usize,
     pub compute_encoders_per_decode: usize,
+    pub kernel_dispatches_per_decode: usize,
+    pub explicit_buffer_barriers_per_decode: usize,
+    pub gdn_core_seams_per_decode: usize,
+    pub gdn_core_kernel_dispatches_per_decode: usize,
+    pub gdn_core_explicit_buffer_barriers_per_decode: usize,
+    pub gdn_core_recurrent_or_fused_threads_per_threadgroup: usize,
+    pub gdn_core_threadgroups_per_decode: usize,
+    pub gdn_core_launched_threads_per_decode: usize,
+    pub gdn_core_source_declared_threadgroup_memory_bytes: usize,
+    pub gdn_core_expected_pipeline_static_threadgroup_memory_bytes: usize,
+    pub gdn_core_internal_threadgroup_barrier_sites_per_threadgroup: usize,
     pub commits_per_decode: usize,
     pub waits_per_decode: usize,
     /// The v1 stack keeps intermediate rows on device. Only the final row is
@@ -46,6 +63,7 @@ pub struct LinearLayerStack3MetalStats {
     pub state_commits: usize,
     pub last_state_commit_mask: u32,
     pub committed_stack_version: u64,
+    pub last_gdn_core_receipt: Option<GdnCoreProductionReceiptV1>,
     pub terminal_error: bool,
 }
 
@@ -62,6 +80,9 @@ pub struct MetalW8LinearLayerStack3 {
     terminal_error: bool,
     stats: LinearLayerStack3MetalStats,
     buffer_ledger: LinearLayerStack3BufferLedger,
+    gdn_core_profile: GdnCoreProfileV1,
+    production_receipt_enabled: bool,
+    last_gdn_core_receipt: Option<GdnCoreProductionReceiptV1>,
 }
 
 impl MetalW8LinearLayerStack3 {
@@ -69,6 +90,27 @@ impl MetalW8LinearLayerStack3 {
     /// All three layers must have exactly equal dimensions and RMS epsilons.
     pub fn from_packed_gdn_out_g32_v1(
         weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+    ) -> Result<Self, MetalW8Error> {
+        Self::from_packed_gdn_out_g32_with_profile_impl(
+            weights,
+            GdnCoreProfileV1::LegacyFourDispatch,
+            false,
+        )
+    }
+
+    /// Explicit fixed-shape production continuation. The legacy arm is used
+    /// for same-binary A/C custody; the Q/K-staged diagnostic arm is rejected.
+    pub fn from_packed_gdn_out_g32_with_gdn_core_profile_v1(
+        weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+        profile: GdnCoreProfileV1,
+    ) -> Result<Self, MetalW8Error> {
+        Self::from_packed_gdn_out_g32_with_profile_impl(weights, profile, true)
+    }
+
+    fn from_packed_gdn_out_g32_with_profile_impl(
+        weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+        profile: GdnCoreProfileV1,
+        production_receipt_enabled: bool,
     ) -> Result<Self, MetalW8Error> {
         for (index, weights) in weights.iter().enumerate() {
             validate_precision_v1(index, weights)?;
@@ -103,15 +145,29 @@ impl MetalW8LinearLayerStack3 {
             }
         }
         validate_stack3_state_abi(dims)?;
-        let buffer_ledger = stack_buffer_ledger(weights)?;
+        if production_receipt_enabled {
+            validate_production_profile_v1(profile, dims)?;
+        } else if profile != GdnCoreProfileV1::LegacyFourDispatch {
+            return Err(MetalW8Error::new(
+                "ordinary Metal W8 stack3 constructors must use the legacy GDN core profile",
+            ));
+        }
+        let buffer_ledger = stack_buffer_ledger(weights, profile)?;
         Ok(Self {
             dims,
-            inner: platform::LinearLayerStack3Handle::new(weights)?,
+            inner: platform::LinearLayerStack3Handle::new(
+                weights,
+                profile,
+                production_receipt_enabled,
+            )?,
             output: vec![0.0; dims.hidden_size],
             seeded: false,
             terminal_error: false,
             stats: LinearLayerStack3MetalStats::default(),
             buffer_ledger,
+            gdn_core_profile: profile,
+            production_receipt_enabled,
+            last_gdn_core_receipt: None,
         })
     }
 
@@ -128,6 +184,7 @@ impl MetalW8LinearLayerStack3 {
         self.inner.seed(states)?;
         self.seeded = true;
         self.stats = LinearLayerStack3MetalStats::default();
+        self.last_gdn_core_receipt = None;
         Ok(())
     }
 
@@ -138,17 +195,37 @@ impl MetalW8LinearLayerStack3 {
         self.seeded = false;
         self.terminal_error = false;
         self.stats = LinearLayerStack3MetalStats::default();
+        self.last_gdn_core_receipt = None;
         Ok(())
     }
 
     pub fn decode(&mut self, hidden: &[f32]) -> Result<&[f32], MetalW8Error> {
         self.validate_decode_input(hidden)?;
+        self.last_gdn_core_receipt = None;
+        self.stats.last_gdn_core_receipt = None;
         let execution = self.inner.decode(hidden, &mut self.output, false);
         self.record_execution(&execution);
         if let Err(error) = execution.result {
             self.terminal_error = true;
             self.stats.terminal_error = true;
             return Err(error);
+        }
+        if self.production_receipt_enabled {
+            let receipt = match platform::validate_execution_receipt(
+                &execution.receipt,
+                self.gdn_core_profile,
+            ) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    self.terminal_error = true;
+                    self.stats.terminal_error = true;
+                    self.stats.successful_decodes -= 1;
+                    self.stats.failed_decodes += 1;
+                    return Err(error);
+                }
+            };
+            self.last_gdn_core_receipt = Some(receipt);
+            self.stats.last_gdn_core_receipt = Some(receipt);
         }
         Ok(&self.output)
     }
@@ -173,6 +250,10 @@ impl MetalW8LinearLayerStack3 {
 
     pub fn buffer_ledger(&self) -> LinearLayerStack3BufferLedger {
         self.buffer_ledger
+    }
+
+    pub fn last_gdn_core_receipt(&self) -> Option<GdnCoreProductionReceiptV1> {
+        self.last_gdn_core_receipt
     }
 
     fn validate_decode_input(&self, hidden: &[f32]) -> Result<(), MetalW8Error> {
@@ -232,6 +313,8 @@ impl MetalW8LinearLayerStack3 {
         hidden: &[f32],
     ) -> Result<(), MetalW8Error> {
         self.validate_decode_input(hidden)?;
+        self.last_gdn_core_receipt = None;
+        self.stats.last_gdn_core_receipt = None;
         let execution = self.inner.decode(hidden, &mut self.output, true);
         self.record_execution(&execution);
         if execution.result.is_err() {
@@ -352,6 +435,7 @@ fn validate_stack3_state_abi(dims: GdnDimensions) -> Result<(), MetalW8Error> {
 
 fn stack_buffer_ledger(
     weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+    profile: GdnCoreProfileV1,
 ) -> Result<LinearLayerStack3BufferLedger, MetalW8Error> {
     let layer_ledgers = weights
         .iter()
@@ -410,7 +494,28 @@ fn stack_buffer_ledger(
         weights[0].hidden_size(),
         "stack3 hidden transfer byte ledger",
     )?;
+    let gdn_core_seams = STACK_DEPTH as u32;
+    let gdn_core_dispatches = profile.gdn_core_dispatches_for_seams(gdn_core_seams);
+    let dims = weights[0].gdn.dimensions();
+    let (gdn_core_threadgroups, gdn_core_launched_threads) =
+        if profile == GdnCoreProfileV1::Fused128 {
+            (
+                profile.gdn_core_threadgroups_for_seams(gdn_core_seams) as usize,
+                profile.gdn_core_launched_threads_for_seams(gdn_core_seams) as usize,
+            )
+        } else {
+            let depthwise_threadgroups = dims.qkv_width().div_ceil(256);
+            let per_seam_threadgroups = depthwise_threadgroups + 1 + dims.value_heads + 1;
+            let per_seam_launched_threads =
+                dims.qkv_width() + 2 * dims.key_heads + dims.value_heads * 256 + dims.value_heads;
+            (
+                STACK_DEPTH * per_seam_threadgroups,
+                STACK_DEPTH * per_seam_launched_threads,
+            )
+        };
     Ok(LinearLayerStack3BufferLedger {
+        gdn_core_profile: profile,
+        gdn_function_chain: profile.expected_function_chain(),
         allocated_buffers: 76,
         shared_buffers: 68,
         private_buffers: 8,
@@ -426,6 +531,33 @@ fn stack_buffer_ledger(
         state_host_transfer_bytes_per_decode: 0,
         command_buffers_per_decode: 1,
         compute_encoders_per_decode: 3,
+        kernel_dispatches_per_decode: if profile == GdnCoreProfileV1::Fused128 {
+            30
+        } else {
+            39
+        },
+        explicit_buffer_barriers_per_decode: if profile == GdnCoreProfileV1::Fused128 {
+            27
+        } else {
+            36
+        },
+        gdn_core_seams_per_decode: gdn_core_seams as usize,
+        gdn_core_kernel_dispatches_per_decode: gdn_core_dispatches as usize,
+        gdn_core_explicit_buffer_barriers_per_decode: gdn_core_dispatches as usize,
+        gdn_core_recurrent_or_fused_threads_per_threadgroup: profile
+            .recurrent_threads_per_threadgroup()
+            as usize,
+        gdn_core_threadgroups_per_decode: gdn_core_threadgroups,
+        gdn_core_launched_threads_per_decode: gdn_core_launched_threads,
+        gdn_core_source_declared_threadgroup_memory_bytes: profile
+            .source_declared_threadgroup_memory_bytes()
+            as usize,
+        gdn_core_expected_pipeline_static_threadgroup_memory_bytes: profile
+            .expected_pipeline_static_threadgroup_memory_bytes()
+            as usize,
+        gdn_core_internal_threadgroup_barrier_sites_per_threadgroup: profile
+            .internal_threadgroup_barrier_sites_per_threadgroup()
+            as usize,
         commits_per_decode: 1,
         waits_per_decode: 1,
         intermediate_host_finite_checks_per_decode: 0,
@@ -473,6 +605,26 @@ mod tests {
         assert!(bridge.contains("receipt->state_commits = kStackDepth;"));
         assert!(bridge.contains("receipt->state_commit_mask = kAllSeededMask;"));
         assert!(bridge.contains("Only the final hidden_b row is checked"));
+        let layer_encoder = bridge
+            .split("void encode_layer(")
+            .nth(1)
+            .unwrap()
+            .split("}  // namespace")
+            .next()
+            .unwrap();
+        assert_eq!(
+            layer_encoder.matches("dispatchThread").count(),
+            14,
+            "source contains thirteen legacy dispatches plus one mutually exclusive fused dispatch"
+        );
+        assert!(layer_encoder.contains("if (handle->gdn_core_profile == kFusedProfile)"));
+        assert!(layer_encoder.contains("handle->gdn_core_fused_pipeline"));
+        assert!(layer_encoder.contains("GdnParams fused_core_params = layer.gdn_params;"));
+        assert!(layer_encoder.contains("fused_core_params.output_groups_per_row = 32;"));
+        assert!(bridge.contains("params.output_groups_per_row == 64"));
+        assert!(bridge.contains("return profile == kFusedProfile ? 30 : 39;"));
+        assert!(bridge.contains("return profile == kFusedProfile ? 27 : 36;"));
+        assert!(bridge.contains("gdn_core_profile == kFusedProfile && require_fixed_shape != 1"));
     }
 
     #[test]
@@ -493,12 +645,23 @@ mod tests {
         assert!(error.to_string().contains("query state element count"));
         assert!(error.to_string().contains("u32 ABI"));
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stack3_production_execution_receipt_abi_is_exact() {
+        assert_eq!(
+            std::mem::size_of::<super::platform::Stack3ExecutionReceipt>(),
+            368
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock, STACK_DEPTH,
+        validate_production_receipt_v1, GdnCoreProductionObservedV1, GdnCoreProductionReceiptV1,
+        GdnCoreProfileV1, GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock,
+        STACK_DEPTH,
     };
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
@@ -588,7 +751,7 @@ mod platform {
     }
 
     #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug)]
     pub(super) struct Stack3ExecutionReceipt {
         pub(super) host_to_device_bytes: u64,
         pub(super) device_to_host_bytes: u64,
@@ -598,6 +761,59 @@ mod platform {
         pub(super) waits: u32,
         pub(super) state_commits: u32,
         pub(super) state_commit_mask: u32,
+        requested_profile: u32,
+        observed_profile: u32,
+        kernel_dispatches: u32,
+        explicit_buffer_barriers: u32,
+        gdn_core_seams: u32,
+        gdn_core_kernel_dispatches: u32,
+        gdn_core_explicit_buffer_barriers: u32,
+        threads_per_threadgroup: u32,
+        gdn_core_threadgroups: u32,
+        gdn_core_launched_threads: u32,
+        pipeline_thread_execution_width: u32,
+        source_declared_threadgroup_memory_bytes: u32,
+        pipeline_static_threadgroup_memory_bytes: u32,
+        internal_threadgroup_barrier_sites_per_threadgroup: u32,
+        fixed_shape_validated: u32,
+        rms_norm_eps_bits: u32,
+        persistent_output_groups_per_row: u32,
+        core_kernel_output_groups_per_row: u32,
+        observed_function_chain: [c_char; 256],
+    }
+
+    impl Default for Stack3ExecutionReceipt {
+        fn default() -> Self {
+            Self {
+                host_to_device_bytes: 0,
+                device_to_host_bytes: 0,
+                command_buffers: 0,
+                compute_encoders: 0,
+                commits: 0,
+                waits: 0,
+                state_commits: 0,
+                state_commit_mask: 0,
+                requested_profile: u32::MAX,
+                observed_profile: u32::MAX,
+                kernel_dispatches: 0,
+                explicit_buffer_barriers: 0,
+                gdn_core_seams: 0,
+                gdn_core_kernel_dispatches: 0,
+                gdn_core_explicit_buffer_barriers: 0,
+                threads_per_threadgroup: 0,
+                gdn_core_threadgroups: 0,
+                gdn_core_launched_threads: 0,
+                pipeline_thread_execution_width: 0,
+                source_declared_threadgroup_memory_bytes: 0,
+                pipeline_static_threadgroup_memory_bytes: 0,
+                internal_threadgroup_barrier_sites_per_threadgroup: 0,
+                fixed_shape_validated: 0,
+                rms_norm_eps_bits: 0,
+                persistent_output_groups_per_row: 0,
+                core_kernel_output_groups_per_row: 0,
+                observed_function_chain: [0; 256],
+            }
+        }
     }
 
     pub(super) struct Stack3Execution {
@@ -609,6 +825,8 @@ mod platform {
         fn apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1(
             layers: *const Stack3LayerDescriptorV1,
             layer_count: u32,
+            gdn_core_profile: u32,
+            require_fixed_shape: u8,
             output: *mut *mut c_void,
             error: *mut c_char,
             error_capacity: usize,
@@ -646,6 +864,8 @@ mod platform {
     impl LinearLayerStack3Handle {
         pub(super) fn new(
             weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+            profile: GdnCoreProfileV1,
+            require_fixed_shape: bool,
         ) -> Result<Self, MetalW8Error> {
             let descriptors = weights.map(Stack3LayerDescriptorV1::from_packed);
             let mut output = std::ptr::null_mut();
@@ -654,6 +874,8 @@ mod platform {
                 apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1(
                     descriptors.as_ptr(),
                     descriptors.len() as u32,
+                    profile.selector(),
+                    u8::from(require_fixed_shape),
                     &mut output,
                     error.as_mut_ptr(),
                     error.len(),
@@ -763,6 +985,76 @@ mod platform {
         }
     }
 
+    pub(super) fn validate_execution_receipt(
+        raw: &Stack3ExecutionReceipt,
+        profile: GdnCoreProfileV1,
+    ) -> Result<GdnCoreProductionReceiptV1, MetalW8Error> {
+        let expected_dispatches = if profile == GdnCoreProfileV1::Fused128 {
+            30
+        } else {
+            39
+        };
+        let expected_barriers = if profile == GdnCoreProfileV1::Fused128 {
+            27
+        } else {
+            36
+        };
+        if raw.host_to_device_bytes != 4096
+            || raw.device_to_host_bytes != 4096
+            || raw.command_buffers != 1
+            || raw.compute_encoders != 3
+            || raw.kernel_dispatches != expected_dispatches
+            || raw.explicit_buffer_barriers != expected_barriers
+            || raw.commits != 1
+            || raw.waits != 1
+            || raw.state_commits != STACK_DEPTH as u32
+            || raw.state_commit_mask != 0b111
+        {
+            return Err(MetalW8Error::new(
+                "invalid live Metal W8 stack3 production transaction receipt",
+            ));
+        }
+        let nul = raw
+            .observed_function_chain
+            .iter()
+            .position(|&value| value == 0)
+            .ok_or_else(|| {
+                MetalW8Error::new("Metal W8 stack3 production function chain is not NUL-terminated")
+            })?;
+        let bytes = raw.observed_function_chain[..nul]
+            .iter()
+            .map(|&value| value as u8)
+            .collect::<Vec<_>>();
+        let function_chain = std::str::from_utf8(&bytes).map_err(|_| {
+            MetalW8Error::new("Metal W8 stack3 production function chain is not valid UTF-8")
+        })?;
+        validate_production_receipt_v1(
+            profile,
+            GdnCoreProductionObservedV1 {
+                requested_profile: raw.requested_profile,
+                observed_profile: raw.observed_profile,
+                gdn_core_seams: raw.gdn_core_seams,
+                kernel_dispatches: raw.gdn_core_kernel_dispatches,
+                explicit_buffer_barriers: raw.gdn_core_explicit_buffer_barriers,
+                recurrent_or_fused_threads_per_threadgroup: raw.threads_per_threadgroup,
+                threadgroups: raw.gdn_core_threadgroups,
+                launched_threads: raw.gdn_core_launched_threads,
+                pipeline_thread_execution_width: raw.pipeline_thread_execution_width,
+                source_declared_threadgroup_memory_bytes: raw
+                    .source_declared_threadgroup_memory_bytes,
+                pipeline_static_threadgroup_memory_bytes: raw
+                    .pipeline_static_threadgroup_memory_bytes,
+                internal_threadgroup_barrier_sites_per_threadgroup: raw
+                    .internal_threadgroup_barrier_sites_per_threadgroup,
+                fixed_shape_validated: raw.fixed_shape_validated,
+                rms_norm_eps_bits: raw.rms_norm_eps_bits,
+                persistent_output_groups_per_row: raw.persistent_output_groups_per_row,
+                core_kernel_output_groups_per_row: raw.core_kernel_output_groups_per_row,
+            },
+            function_chain,
+        )
+    }
+
     impl Drop for LinearLayerStack3Handle {
         fn drop(&mut self) {
             unsafe { apxinf_metal_w8_linear_layer_stack3_destroy_v1(self.0.as_ptr()) };
@@ -784,7 +1076,8 @@ mod platform {
 #[cfg(not(target_os = "macos"))]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock, STACK_DEPTH,
+        GdnCoreProductionReceiptV1, GdnCoreProfileV1, GdnDecodeState, GdnDimensions, MetalW8Error,
+        PackedW8LinearLayerBlock, STACK_DEPTH,
     };
 
     #[derive(Clone, Copy, Debug, Default)]
@@ -809,6 +1102,8 @@ mod platform {
     impl LinearLayerStack3Handle {
         pub(super) fn new(
             _weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+            _profile: GdnCoreProfileV1,
+            _require_fixed_shape: bool,
         ) -> Result<Self, MetalW8Error> {
             Err(MetalW8Error::new("Metal W8 stack3 v1 requires macOS"))
         }
@@ -839,5 +1134,12 @@ mod platform {
         ) -> Result<GdnDecodeState, MetalW8Error> {
             Err(MetalW8Error::new("Metal W8 stack3 v1 requires macOS"))
         }
+    }
+
+    pub(super) fn validate_execution_receipt(
+        _raw: &Stack3ExecutionReceipt,
+        _profile: GdnCoreProfileV1,
+    ) -> Result<GdnCoreProductionReceiptV1, MetalW8Error> {
+        Err(MetalW8Error::new("Metal W8 stack3 v1 requires macOS"))
     }
 }
