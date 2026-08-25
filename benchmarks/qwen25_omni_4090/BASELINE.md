@@ -20,9 +20,9 @@ keeps only the aggregate evidence listed below.
 ## Accepted artifact
 
 - Binary SHA-256:
-  `af0330a74746e36972a2fd24187d7b73f9d7cf491d644b657590e0ffae39a7f1`
+  `f77d1cea2ba62a048405e45221c133ebf0a837d24c79345fbc935b45e6158ac0`
 - Immediate rollback SHA-256:
-  `c322a8bb97635f5efaeb79bbbcab88505d53f273b24531d994f55bd7ab4e20be`
+  `679ff6e9889cf8cf3fe22f410df52451691fdeabbbdffbfb09546f0cbd9e1cb0`
 - Service owner: runit plus `agent-gpu-broker`
 - Desired state after validation: stopped
 
@@ -48,12 +48,18 @@ The accepted implementation combines:
 - an SM89-only long-decode split-CTA attention path and dedicated graph for
   positions 32,760 through 32,767;
 - a graph-only M=1 packed Gate/Up projection and bit-exact fused SiLU/multiply;
+- exact SM89 cuBLASLt tactics for the one-token WO and Down projections;
 - grouped variable-length FA2 for windowed vision attention and FA2 for the
   four full-attention vision blocks.
 
 The latest packed-MLP refinement removes 72 graph nodes per generated token.
 Eager decode and prefill retain their previous projection ownership and GEMM
 tactics. Unsupported shapes do not silently select an unqualified path.
+
+The latest M1 GEMV refinement lowers the frozen 128-token decode wall median
+from 1.03749 s to 1.01698 s across five alternating pairs. All five pairs win,
+the paired wall speedup median is `1.0203x`, and the slowest pair is `1.0188x`.
+The 12K guard remains within 0.22% in every pair; the 32K wall cell wins 5/5.
 
 ## Accepted measurements
 
@@ -95,6 +101,8 @@ being admitted to OOM.
 
 - `results/promotion-m1-packed-mlp.json`: current 32K text promotion,
   correctness, graph attribution, binaries, and rollback identity;
+- `results/promotion-m1-gemv-tactics.json`: current 128-token decode promotion,
+  guard cells, operator gate, paired wall timing, and profile attribution;
 - `results/promotion-grouped-varlen-fa2.json`: current real-image promotion and
   complete multimodal controls;
 - `results/omni-packed-mlp-acceptance-summary.json`: final endpoint acceptance

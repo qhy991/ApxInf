@@ -1,0 +1,166 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "candidate": "m1_wo_down_cublaslt_tactics",
+  "completed_on": "2026-08-25",
+  "contract": {
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "hardware": "NVIDIA GeForce RTX 4090",
+    "sm": 89,
+    "cuda": "12.3",
+    "cublas": "12.3.2",
+    "precision": "bf16",
+    "concurrency": 1,
+    "sampling": "greedy",
+    "primary_request": {
+      "prompt_tokens": 128,
+      "output_tokens": 128
+    },
+    "guard_requests": [
+      {
+        "prompt_tokens": 12288,
+        "output_tokens": 8
+      },
+      {
+        "prompt_tokens": 32760,
+        "output_tokens": 8
+      }
+    ],
+    "timing_authority": "no-profiler service wall time and service-emitted TTFT/TPOT"
+  },
+  "implementation": {
+    "base_commit": "c06fd1cf50feb0fe94881078c2705c1f0ba6a956",
+    "selector": "APXINF_QWEN25_M1_GEMV_TACTICS=1",
+    "default_enabled_in_runtime": false,
+    "deployment_enabled": true,
+    "tactics": [
+      {
+        "projection": "wo",
+        "shape": [1, 2048, 2048],
+        "heuristic_rank": 1
+      },
+      {
+        "projection": "down",
+        "shape": [1, 11008, 2048],
+        "heuristic_rank": 3
+      }
+    ],
+    "candidate_binary_sha256": "f77d1cea2ba62a048405e45221c133ebf0a837d24c79345fbc935b45e6158ac0",
+    "rollback_binary_sha256": "679ff6e9889cf8cf3fe22f410df52451691fdeabbbdffbfb09546f0cbd9e1cb0"
+  },
+  "operator_screen": {
+    "cache_state": "cold_l2",
+    "warmups": 5,
+    "iterations": 20,
+    "wo": {
+      "vendor_ms": 0.020924799609929323,
+      "candidate_ms": 0.01777760125696659,
+      "speedup": 1.1770316651538928,
+      "max_abs": 0.0,
+      "rmse": 0.0,
+      "cosine": 1.0000000000000002
+    },
+    "down": {
+      "vendor_ms": 0.0670752003788948,
+      "candidate_ms": 0.06169920042157173,
+      "speedup": 1.0871324088576597,
+      "max_abs": 0.000732421875,
+      "rmse": 0.00023798712792545595,
+      "cosine": 0.9999851497358276
+    }
+  },
+  "no_profiler": {
+    "binary_control": "one immutable SM89 binary with only APXINF_QWEN25_M1_GEMV_TACTICS changed from 0 to 1",
+    "order": ["A", "B", "B", "A", "A", "B", "B", "A", "A", "B"],
+    "pairs": 5,
+    "decode_128": {
+      "paired_wall_wins": 5,
+      "baseline_wall_median_seconds": 1.0374870896339417,
+      "candidate_wall_median_seconds": 1.0169819295406342,
+      "wall_reduction_pct": 1.9764255669477593,
+      "paired_wall_speedup_median": 1.0202777764017636,
+      "paired_wall_speedup_min": 1.0188424729505385,
+      "baseline_tpot_median_seconds": 0.00801716127559055,
+      "candidate_tpot_median_seconds": 0.007857987118110237,
+      "tpot_reduction_pct": 1.9854179304705122,
+      "paired_tpot_wins": 5,
+      "trajectory_sha256": "a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039"
+    },
+    "context_12288": {
+      "baseline_wall_median_seconds": 0.7520390748977661,
+      "candidate_wall_median_seconds": 0.7512698918581009,
+      "candidate_wall_change_pct": -0.10227966409455114,
+      "paired_wall_wins": 3,
+      "worst_pair_speedup": 0.9977958430308576,
+      "trajectory_sha256": "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832"
+    },
+    "context_32760": {
+      "baseline_wall_median_seconds": 2.6906705647706985,
+      "candidate_wall_median_seconds": 2.6856721341609955,
+      "wall_reduction_pct": 0.1857689557074771,
+      "paired_wall_wins": 5,
+      "paired_wall_speedup_min": 1.001003757035289,
+      "baseline_tpot_median_seconds": 0.011728743428571428,
+      "candidate_tpot_median_seconds": 0.011431579857142856,
+      "trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9"
+    }
+  },
+  "systems_profile": {
+    "workload": "128 prompt + 128 output after one unprofiled warmup",
+    "baseline": {
+      "mean_decode_envelope_ms": 8.58697,
+      "mean_decode_gpu_busy_ms": 8.099732166666667,
+      "kernel_instances_per_six_steps": 3054,
+      "raw_sha256": "e432331b6532dda0b4e667dd630a43870cb6a8650c265aa08ccdbc160a7affb5"
+    },
+    "candidate": {
+      "mean_decode_envelope_ms": 8.464891666666666,
+      "mean_decode_gpu_busy_ms": 7.960454,
+      "kernel_instances_per_six_steps": 3054,
+      "raw_sha256": "b39dc6db0e124f9167accb60da7c8a5324273138bcd1d850d6be220e0f5b70b1"
+    },
+    "mean_envelope_saved_ms": 0.1220783333333344,
+    "mean_gpu_busy_saved_ms": 0.13927816666666715,
+    "attribution": "Kernel count is unchanged. Exact-shape cuBLASLt selection shortens the WO/Down GEMV boundary; the measured GPU-busy saving agrees with the no-profiler TPOT reduction.",
+    "raw_trace_deleted_after_derivation": true,
+    "retained": [
+      "omni-m1-gemv-A-node-windows.json",
+      "omni-m1-gemv-B-node-windows.json",
+      "profile-A-kernels_cuda_gpu_kern_sum.csv",
+      "profile-B-kernels_cuda_gpu_kern_sum.csv",
+      "profile-A.sha256",
+      "profile-B.sha256"
+    ]
+  },
+  "correctness": {
+    "all_screen_trajectories_exact": true,
+    "screen_cases": 30,
+    "acceptance": {
+      "quick": true,
+      "decode_128": true,
+      "context_4096_8192_12288_32760": true,
+      "http_contract": true,
+      "real_png": true,
+      "real_wav": true,
+      "malformed_media_recovery": true
+    }
+  },
+  "external_comparison": {
+    "vllm_omni_version": "0.26.0",
+    "vllm_decode_128_tpot_seconds": 0.022681,
+    "apxinf_candidate_tpot_seconds": 0.007857987118110237,
+    "apxinf_tpot_speedup": 2.8863625835841966
+  },
+  "decision": {
+    "status": "promote",
+    "scope": "single-request BF16 one-token decode on one RTX 4090 for the pinned Qwen2.5-Omni-3B Thinker",
+    "reason": "The exact-shape operator gate passes, all five 128-token decode wall pairs win by at least 1.0188x, both context guards stay within the preregistered limit, complete text and media trajectories pass, and Systems attributes the saving to the intended GEMV boundary.",
+    "non_claims": [
+      "multi-request throughput",
+      "continuous batching",
+      "non-SM89 hardware",
+      "video input",
+      "speech generation"
+    ]
+  }
+}
