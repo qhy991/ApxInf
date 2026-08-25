@@ -1,0 +1,136 @@
+{
+  "format": "apxinf-qwen35-rms-simd-tail-exact-v1-predeclared-primitive-gate-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "PREDECLARED_BEFORE_CANDIDATE_PERFORMANCE_SAMPLING",
+  "baseline_parent_commit": "b2e71b529c5bdf5b27b8db4c8672b5e293a432a9",
+  "candidate_source_binding": "the additive kernel, count-43 same-binary primitive, runtime receipts, tests, custody inputs, and this predeclaration must be committed and pushed together before the first candidate performance sample",
+  "scope": {
+    "stage": "count-matched primitive screen only; a pass authorizes opt-in production plumbing but is not an end-to-end acceptance",
+    "model_shape": "Qwen/Qwen3.5-0.8B decode RMSNorm",
+    "hidden_size": 1024,
+    "rms_calls_per_current_decode": 43,
+    "target": "Apple M4 Metal with a runtime-attested 32-lane SIMD width",
+    "same_binary_ab": true,
+    "default_runtime_path_unchanged": true
+  },
+  "production_call_mapping": {
+    "linear_attention_layers": 18,
+    "rms_calls_per_linear_attention_layer": 2,
+    "body_full_attention_to_stack_boundaries": 5,
+    "rms_calls_per_body_boundary": 1,
+    "tail_post_attention_and_final_rms_calls": 2,
+    "total": "18 * 2 + 5 + 2 = 43",
+    "qualification": "source-derived mapping of the accepted boundary/tail decode lane; not a performance counter"
+  },
+  "hypothesis": {
+    "id": "qwen35-rms-simd-tail-exact-v1",
+    "arms": {
+      "A": "legacy 256-lane threadgroup-memory reduction with strides 128,64,32,16,8,4,2,1",
+      "B": "unchanged local accumulation and shared strides 128,64,32, followed by a redundant exact shuffle tail 16,8,4,2,1 in every 32-lane SIMDgroup"
+    },
+    "candidate_shape": {
+      "threads_per_threadgroup": 256,
+      "simdgroups_per_threadgroup": 8,
+      "required_pipeline_thread_execution_width": 32,
+      "local_sum_loop_unchanged": true,
+      "shared_reduction_strides": [
+        128,
+        64,
+        32
+      ],
+      "tail_shuffle_strides": [
+        16,
+        8,
+        4,
+        2,
+        1
+      ],
+      "tail_rule": "all SIMD lanes execute each shuffle; only lanes below the stride perform the addition; every SIMDgroup loads the same partial[simd_lane] values and broadcasts its locally identical lane-zero result",
+      "output_writer_count_unchanged": 256,
+      "static_threadgroup_memory_bytes_unchanged": 1024,
+      "dynamic_threadgroup_memory_bytes": 0
+    },
+    "internal_threadgroup_barrier_mapping": {
+      "A_per_rms": 9,
+      "B_per_rms": 4,
+      "A_per_count43_run": 387,
+      "B_per_count43_run": 172,
+      "reduction_per_count43_run": 215,
+      "reduction_percent": 55.55555555555556,
+      "legacy_tail_adds_per_dispatch": 31,
+      "candidate_redundant_tail_adds_per_dispatch": 248,
+      "candidate_extra_tail_adds_per_dispatch": 217,
+      "candidate_extra_tail_adds_per_count43_run": 9331
+    },
+    "unchanged_count43_aggregate_primitive_topology": {
+      "command_buffers": 1,
+      "compute_encoders": 1,
+      "kernel_dispatches": 43,
+      "explicit_buffer_barriers": 43,
+      "commits": 1,
+      "waits": 1,
+      "explicit_bridge_host_to_device_memcpy_bytes_inside_timed_run": 0,
+      "explicit_bridge_device_to_host_memcpy_bytes_inside_timed_run": 0,
+      "zero_timed_copy_qualification": "zero explicit bridge memcpy inside the timed run, not zero GPU or shared-memory traffic",
+      "one_time_weight_upload_bytes": 4096,
+      "input_staging_bytes_per_stage_outside_timing": 4096,
+      "input_stage_count": 9,
+      "input_staging_bytes_total": 36864,
+      "correctness_snapshot_bytes_per_snapshot_outside_timing": 176128,
+      "correctness_snapshot_count": 32,
+      "correctness_snapshot_bytes_total": 5636096,
+      "qualification": "count-matched aggregate mechanism screen, not the production submission topology; the accepted path distributes the 43 RMS calls over seven command buffers and 24 encoders"
+    },
+    "exactness_qualification": "the source operand tree is intended to match exactly, but default Metal fast-math compilation does not make source-tree identity a language-level bitwise guarantee; target-binary to_bits evidence is mandatory"
+  },
+  "admission": {
+    "primitive_harness_classification": "always a non-formal diagnostic mechanism screen; it cannot promote or default a runtime path",
+    "quiet_host_preflight_required_for_formal_classification": true,
+    "if_quiet_host_fails": "complete the fixed schedule once only as explicitly non-formal diagnostic evidence",
+    "correctness": {
+      "both_functions_must_be_present_in_one_live_library": true,
+      "requested_and_observed_runtime_profile_must_match": true,
+      "runtime_function_name_must_be_attested_before_each_run": true,
+      "pipeline_thread_execution_width_must_equal": 32,
+      "pipeline_max_threads_must_be_at_least": 256,
+      "all_43_intermediate_rows_must_be_finite": true,
+      "all_43_intermediate_rows_must_match_to_bits": true,
+      "correctness_must_hold_for_two_calls_per_arm_per_input": true,
+      "invalid_raw_selector_must_fail_closed": true
+    },
+    "performance_continue_threshold": {
+      "logic": "AND",
+      "pooled_candidate_latency_ratio_of_medians_improvement_percent_at_least": 5.0,
+      "both_counterbalanced_blocks_must_be_positive": true,
+      "clearly_negative_block_definition": "reject if either block has candidate latency improvement at or below -0.5 percent",
+      "result_if_passed": "authorize additive opt-in production-profile plumbing and a separate predeclared end-to-end gate",
+      "result_if_failed": "archive the fixed receipt and summary, then revert candidate implementation while retaining this predeclaration and the rejection evidence"
+    }
+  },
+  "fixed_fixture_and_schedule": {
+    "weight_vectors": 1,
+    "correctness_inputs": 8,
+    "generator": "distinct deterministic xorshift64 streams encoded and hashed as little-endian f32 bits",
+    "rms_epsilon": 0.000001,
+    "correctness_order_per_input": "ABBA",
+    "correctness_rows_per_call": 43,
+    "correctness_compared_elements_if_passed": 1056768,
+    "warmup_block_1": "ABBA with 64 consecutive count-43 calls per cell",
+    "warmup_block_2": "BAAB with 64 consecutive count-43 calls per cell",
+    "timed_block_1": "ABBA with 64 consecutive count-43 calls per cell",
+    "timed_block_2": "BAAB with 64 consecutive count-43 calls per cell",
+    "timed_calls_per_arm_total": 256,
+    "timed_rms_dispatches_per_arm_total": 11008,
+    "timing": "host monotonic elapsed time around one complete synchronous count-43 GPU call; fixture staging and full-chain correctness snapshots are outside the timed region",
+    "primary_statistic": "even median of raw call latencies per arm within each block and pooled per arm",
+    "no_resampling_after_a_predeclared_failure": true
+  },
+  "cross_runtime_rule": {
+    "candidate_is_apxinf_specific_not_llama_equivalent": true,
+    "frozen_llama_cpp_comparison_is_unchanged_until_a_full_path_candidate_is_accepted": true,
+    "current_apxinf_tps": 66.33672849846097,
+    "current_llama_cpp_tps": 70.66394293407429,
+    "current_llama_cpp_advantage_percent": 6.52310497300709,
+    "llama_cpp_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0"
+  }
+}

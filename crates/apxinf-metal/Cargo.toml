@@ -8,4 +8,5 @@ build = "build.rs"
 cc = "1"
 
 [dev-dependencies]
+serde_json = "1"
 sha2 = "=0.10.9"
