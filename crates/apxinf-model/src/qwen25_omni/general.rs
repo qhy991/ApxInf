@@ -8,9 +8,7 @@ use std::sync::OnceLock;
 use apxinf_core::{Backend, Device, Error, KvCache, Result, Tensor};
 
 #[cfg(feature = "cuda")]
-use crate::accelerator::cuda::{
-    downcast as cuda_backend, kernels as cuda_kernels, DeviceBuffer,
-};
+use crate::accelerator::cuda::{downcast as cuda_backend, kernels as cuda_kernels, DeviceBuffer};
 use crate::llm_trait::{LlmCapabilities, LlmInput, LlmTrait};
 
 use super::audio::{self, Qwen25OmniAudioWeights};
@@ -174,8 +172,7 @@ fn fa2_chunk1024_enabled() -> Result<bool> {
             let enabled = parse_binary_env("APXINF_QWEN25_FA2_CHUNK1024")?;
             if enabled && !parse_binary_env("APXINF_FA2_GQA_PREFILL")? {
                 return Err(
-                    "APXINF_QWEN25_FA2_CHUNK1024=1 requires APXINF_FA2_GQA_PREFILL=1"
-                        .into(),
+                    "APXINF_QWEN25_FA2_CHUNK1024=1 requires APXINF_FA2_GQA_PREFILL=1".into(),
                 );
             }
             Ok(enabled)
@@ -192,8 +189,7 @@ fn all_chunk_fa2_enabled() -> Result<bool> {
             let enabled = parse_binary_env("APXINF_QWEN25_FA2_ALL_CHUNKS")?;
             if enabled && !fa2_chunk1024_enabled().map_err(|error| error.to_string())? {
                 return Err(
-                    "APXINF_QWEN25_FA2_ALL_CHUNKS=1 requires APXINF_QWEN25_FA2_CHUNK1024=1"
-                        .into(),
+                    "APXINF_QWEN25_FA2_ALL_CHUNKS=1 requires APXINF_QWEN25_FA2_CHUNK1024=1".into(),
                 );
             }
             Ok(enabled)
@@ -299,8 +295,7 @@ impl GeneralQwen25Omni {
             let _all_chunk_fa2 = all_chunk_fa2_enabled()?;
             if fa2_chunk1024 && !chunked_prefill_enabled()? {
                 return Err(Error::Other(
-                    "APXINF_QWEN25_FA2_CHUNK1024=1 requires APXINF_QWEN25_CHUNKED_PREFILL=1"
-                        .into(),
+                    "APXINF_QWEN25_FA2_CHUNK1024=1 requires APXINF_QWEN25_CHUNKED_PREFILL=1".into(),
                 ));
             }
             let graph_enabled = decode_graph_enabled()?;
@@ -316,8 +311,7 @@ impl GeneralQwen25Omni {
             }
             if eager_select_token && (!select_token || !gpu_last_row_enabled()?) {
                 return Err(Error::Other(
-                    "APXINF_QWEN25_EAGER_GPU_ARGMAX requires GPU_ARGMAX and GPU_LAST_ROW"
-                        .into(),
+                    "APXINF_QWEN25_EAGER_GPU_ARGMAX requires GPU_ARGMAX and GPU_LAST_ROW".into(),
                 ));
             }
             if packed_qkv && !graph_enabled {
@@ -729,8 +723,7 @@ impl GeneralQwen25Omni {
         let all_chunk_fa2 = use_all_chunk_fa2(token_ids.len(), all_chunk_fa2_enabled()?);
         let chunk_size = text_prefill_chunk_size(token_ids.len(), fa2_chunk1024);
         if fa2_chunk1024
-            && (CHUNKED_PREFILL_FA2_LARGE_MIN_PROMPT
-                ..=CHUNKED_PREFILL_FA2_LARGE_MAX_PROMPT)
+            && (CHUNKED_PREFILL_FA2_LARGE_MIN_PROMPT..=CHUNKED_PREFILL_FA2_LARGE_MAX_PROMPT)
                 .contains(&token_ids.len())
         {
             static PATH_LOGGED: OnceLock<()> = OnceLock::new();
@@ -757,11 +750,7 @@ impl GeneralQwen25Omni {
             if index + 1 == chunks {
                 return self.forward_inner_with_fa2_policy(chunk, start, all_chunk_fa2);
             }
-            self.forward_text_hidden_validated_with_fa2_policy(
-                chunk,
-                start,
-                all_chunk_fa2,
-            )?;
+            self.forward_text_hidden_validated_with_fa2_policy(chunk, start, all_chunk_fa2)?;
         }
         Err(Error::Other("chunked prefill received no tokens".into()))
     }
@@ -1045,11 +1034,9 @@ impl GeneralQwen25Omni {
                 apxinf_core::Shape::new(vec![1, width]),
                 apxinf_core::DType::BF16,
             );
-        let row = self.backend.rms_norm(
-            &row,
-            &self.text.output_norm,
-            self.config.text.rms_norm_eps,
-        )?;
+        let row =
+            self.backend
+                .rms_norm(&row, &self.text.output_norm, self.config.text.rms_norm_eps)?;
         self.backend.matmul(&row, &self.text.lm_head)
     }
 
@@ -1070,8 +1057,8 @@ impl GeneralQwen25Omni {
         let positions = linear_positions(1, pos, self.rope_delta)?;
         let coordinates = [positions[0], positions[1], positions[2]];
         let weights = Self::decode_graph_weights(&self.text);
-        let cuda = cuda_backend(&*self.backend)
-            .expect("Qwen2.5-Omni decode graph owns a CudaBackend");
+        let cuda =
+            cuda_backend(&*self.backend).expect("Qwen2.5-Omni decode graph owns a CudaBackend");
         let graph = if long {
             static PATH_LOGGED: OnceLock<()> = OnceLock::new();
             if PATH_LOGGED.set(()).is_ok() {
@@ -1087,14 +1074,8 @@ impl GeneralQwen25Omni {
                 .as_mut()
                 .ok_or_else(|| Error::Other("Qwen2.5-Omni decode graph is unavailable".into()))?
         };
-        let selected = graph.decode_token(
-            cuda,
-            &weights,
-            &mut *self.kv,
-            token,
-            coordinates,
-            pos,
-        )?;
+        let selected =
+            graph.decode_token(cuda, &weights, &mut *self.kv, token, coordinates, pos)?;
         self.kv.advance(1);
         Ok(selected)
     }

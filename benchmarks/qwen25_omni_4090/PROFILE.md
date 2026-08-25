@@ -3639,3 +3639,57 @@ read sharing, so no model smoke, paired timing or profiler budget is spent.
 Raw authority is `omni-32767-decode-gqa8-screen.json`; the experimental source
 remains isolated on `codex/omni-long-decode-gqa8-probe` and does not enter the
 serving branch.
+
+### Promoted post-32K decode CUDA Graph
+
+The next control-path rewrite keeps the accepted grouped4 split-64 attention,
+weights, cache ownership and complete request unchanged. A second prewarmed
+decode graph captures the exact position-32,760--32,767 path and replays it
+only when `APXINF_QWEN25_LONG_DECODE_GRAPH=1`. Model load fails closed unless
+the ordinary decode graph, GPU argmax, packed QKV, fused TMRoPE/KV publication
+and long split-CTA selectors are all active. Shorter decode, prefill and every
+multimodal request retain their accepted paths.
+
+The first real 32,760+8 smoke preserves trajectory
+`f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9`
+and logs `long-decode CUDA Graph: pos=32760, query_heads_per_cta=4,
+splits=64`. Five alternating same-binary A/B pairs then pass all ten exact
+requests and win 5/5. Raw median TPOT moves from 10.817 to 10.410 ms; paired
+median speedup is 1.0397x and the slowest pair is 1.0384x. Candidate TPOT CV
+is 0.218%, TTFT changes by -0.036%, and wall time improves by 1.0016x.
+The paired screen used immutable binary
+`e912f3bdf15c40afb508ac27d294b6ef6a6bdc5aa82586553b3ce32a3a1ba87a`;
+the only subsequent source change was rustfmt, followed by a full acceptance
+rerun on the final deployed binary.
+
+Graph-node Systems traces bound six complete decode steps between GPU argmax
+commits. The selector-off path issues 12,846 runtime calls: 3,918 kernel
+launches, 3,480 allocations, 3,480 frees, 216 memsets, 216 event records and
+1,296 capture-state queries. The candidate issues exactly six
+`cudaGraphLaunch` calls in the same boundary and reduces observable kernel
+instances from 3,918 to 3,702. Node tracing perturbs graph execution, so those
+envelope durations are excluded from admission. Matched low-overhead
+graph-level traces retain the timing direction at 10.784 versus 10.374 ms
+TPOT and pin the reports by hash in `promotion-long-decode-graph.json`.
+
+Regression passes 66/66 model CPU tests, 15/15 benchmark-script tests, quick,
+128-token decode, 4K/8K/12K/32K text, real PNG/WAV, typed request errors and
+malformed-media recovery. CUDA is 94/96: every non-FP8 test passes, while the
+same two RTX 4090 FP8 cuBLAS status-15 controls fail. Relative to frozen
+vLLM-Omni 0.26.0, ApxInf wins the 32K TPOT cell by 1.688x and reaches a
+70.33% algorithmic minimum-BWU lower bound.
+
+The deployed binary SHA-256 is
+`c322a8bb97635f5efaeb79bbbcab88505d53f273b24531d994f55bd7ab4e20be`;
+the immediate rollback is
+`2db3d8ea5d3186a24849a651e3676da3acec3eb212889ee06f87313e311dce21`.
+A runit-owned final acceptance reproduces quick, 128-token decode,
+4K/8K/12K/32K, real PNG/WAV, typed failures and recovery with the formatted
+source build. Its one 32K observation is exact at 10.518 ms TPOT before the
+service returns down and the Broker reports the GPU idle.
+
+**Decision: promote the dedicated long decode graph only inside the already
+accepted single-request BF16 SM89 grouped4 split-64 selector at cached KV
+32,761--32,767.** Structured authority is
+`promotion-long-decode-graph.json`; no multi-request, continuous-batching,
+non-SM89 or other-context claim is introduced.

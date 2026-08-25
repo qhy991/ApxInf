@@ -1,0 +1,164 @@
+{
+  "schema": "apxinf.qwen25_omni.decode_window_analysis.v1",
+  "source": "/mnt/user_dir/hanjinchen/apxinf-omoe-runs/omni-long-graph-20260825-profile/omni-32760-long-graph-B.sqlite",
+  "boundary": "six complete intervals between the last seven GPU argmax token commits",
+  "windows": [
+    {
+      "step": 2,
+      "start_ns": 2714149297,
+      "end_ns": 2725338206,
+      "envelope_ns": 11188909,
+      "gpu_busy_ns": 10320282,
+      "gpu_gap_ns": 868627,
+      "kernel_instances": 617,
+      "runtime_calls": 1
+    },
+    {
+      "step": 3,
+      "start_ns": 2725338206,
+      "end_ns": 2736311211,
+      "envelope_ns": 10973005,
+      "gpu_busy_ns": 10312056,
+      "gpu_gap_ns": 660949,
+      "kernel_instances": 617,
+      "runtime_calls": 1
+    },
+    {
+      "step": 4,
+      "start_ns": 2736311211,
+      "end_ns": 2747252312,
+      "envelope_ns": 10941101,
+      "gpu_busy_ns": 10297922,
+      "gpu_gap_ns": 643179,
+      "kernel_instances": 617,
+      "runtime_calls": 1
+    },
+    {
+      "step": 5,
+      "start_ns": 2747252312,
+      "end_ns": 2758203652,
+      "envelope_ns": 10951340,
+      "gpu_busy_ns": 10304555,
+      "gpu_gap_ns": 646785,
+      "kernel_instances": 617,
+      "runtime_calls": 1
+    },
+    {
+      "step": 6,
+      "start_ns": 2758203652,
+      "end_ns": 2769182481,
+      "envelope_ns": 10978829,
+      "gpu_busy_ns": 10314219,
+      "gpu_gap_ns": 664610,
+      "kernel_instances": 617,
+      "runtime_calls": 1
+    },
+    {
+      "step": 7,
+      "start_ns": 2769182481,
+      "end_ns": 2780131613,
+      "envelope_ns": 10949132,
+      "gpu_busy_ns": 10305127,
+      "gpu_gap_ns": 644005,
+      "kernel_instances": 617,
+      "runtime_calls": 1
+    }
+  ],
+  "summary": {
+    "steps": 6,
+    "mean_envelope_ns": 10997052.666666666,
+    "mean_gpu_busy_ns": 10309026.833333334,
+    "mean_gpu_gap_ns": 688025.8333333334,
+    "kernel_instances": 3702,
+    "runtime_calls": 6
+  },
+  "top_kernels": [
+    {
+      "name": "kernel",
+      "total_ns": 27775186,
+      "count": 864
+    },
+    {
+      "name": "attention_flash_grouped_split_cta_bf16_kernel",
+      "total_ns": 13288139,
+      "count": 216
+    },
+    {
+      "name": "ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_32x6_nn",
+      "total_ns": 11349448,
+      "count": 216
+    },
+    {
+      "name": "Kernel",
+      "total_ns": 3988767,
+      "count": 6
+    },
+    {
+      "name": "rms_norm_bf16_kernel",
+      "total_ns": 1844094,
+      "count": 438
+    },
+    {
+      "name": "attention_flash_split_cta_reduce_bf16_kernel",
+      "total_ns": 889595,
+      "count": 216
+    },
+    {
+      "name": "rope_tmrope_bf16_kernel",
+      "total_ns": 835968,
+      "count": 216
+    },
+    {
+      "name": "rope_tmrope_kv_write_bf16_kernel",
+      "total_ns": 484645,
+      "count": 216
+    },
+    {
+      "name": "add_bf16_kernel",
+      "total_ns": 376081,
+      "count": 432
+    },
+    {
+      "name": "splitKreduce_kernel",
+      "total_ns": 357961,
+      "count": 216
+    },
+    {
+      "name": "add_bias_bf16_kernel",
+      "total_ns": 219969,
+      "count": 216
+    },
+    {
+      "name": "silu_bf16_kernel",
+      "total_ns": 202527,
+      "count": 216
+    },
+    {
+      "name": "mul_bf16_kernel",
+      "total_ns": 198043,
+      "count": 216
+    },
+    {
+      "name": "embedding_bf16_kernel",
+      "total_ns": 16608,
+      "count": 6
+    },
+    {
+      "name": "argmax_bf16_partials_kernel",
+      "total_ns": 14361,
+      "count": 6
+    },
+    {
+      "name": "argmax_pair_final_kernel",
+      "total_ns": 12769,
+      "count": 6
+    }
+  ],
+  "top_runtime_calls": [
+    {
+      "name": "cudaGraphLaunch_v10000",
+      "total_ns": 3703923,
+      "count": 6
+    }
+  ]
+}

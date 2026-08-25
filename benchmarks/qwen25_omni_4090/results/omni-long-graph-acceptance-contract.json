@@ -1,0 +1,101 @@
+{
+  "schema": "apxinf.qwen25_omni.contract_gate.v1",
+  "completed_at": "2026-08-25T04:19:44.243577+00:00",
+  "base_url": "http://127.0.0.1:8001",
+  "endpoint": "/v1/evaluations/generate",
+  "health": {
+    "context_contract": "prompt_tokens + requested_completion_tokens <= max_model_len",
+    "fallback_active": false,
+    "input_modalities": [
+      "text",
+      "image",
+      "audio"
+    ],
+    "max_model_len": 32768,
+    "max_output_tokens": 128,
+    "max_prompt_tokens": 32767,
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "output_modalities": [
+      "text"
+    ],
+    "parallel_requests": 1,
+    "precision": "bf16",
+    "processor_mode": "persistent",
+    "speech_output": false,
+    "status": "ok",
+    "talker_disabled": true,
+    "video": false
+  },
+  "probes": [
+    {
+      "case_id": "combined_context_over_limit",
+      "status": 400,
+      "elapsed_seconds": 0.001571662724018097,
+      "expected_error_fragment": "exceeds context 32768",
+      "error": {
+        "message": "generate_streaming: prompt 32768 + completion 1 exceeds context 32768",
+        "type": "invalid_request"
+      },
+      "passed": true
+    },
+    {
+      "case_id": "completion_over_limit",
+      "status": 400,
+      "elapsed_seconds": 0.0003978163003921509,
+      "expected_error_fragment": "max_new_tokens must be in 1..=128",
+      "error": {
+        "message": "max_new_tokens must be in 1..=128",
+        "type": "invalid_request"
+      },
+      "passed": true
+    },
+    {
+      "case_id": "non_greedy_temperature",
+      "status": 400,
+      "elapsed_seconds": 0.0003908798098564148,
+      "expected_error_fragment": "temperature supports only 0",
+      "error": {
+        "message": "temperature supports only 0",
+        "type": "invalid_request"
+      },
+      "passed": true
+    },
+    {
+      "case_id": "streaming_evaluation",
+      "status": 400,
+      "elapsed_seconds": 0.0005488842725753784,
+      "expected_error_fragment": "evaluation v1 requires stream=false",
+      "error": {
+        "message": "evaluation v1 requires stream=false",
+        "type": "invalid_request"
+      },
+      "passed": true
+    }
+  ],
+  "post_probe_health": {
+    "context_contract": "prompt_tokens + requested_completion_tokens <= max_model_len",
+    "fallback_active": false,
+    "input_modalities": [
+      "text",
+      "image",
+      "audio"
+    ],
+    "max_model_len": 32768,
+    "max_output_tokens": 128,
+    "max_prompt_tokens": 32767,
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "output_modalities": [
+      "text"
+    ],
+    "parallel_requests": 1,
+    "precision": "bf16",
+    "processor_mode": "persistent",
+    "speech_output": false,
+    "status": "ok",
+    "talker_disabled": true,
+    "video": false
+  },
+  "passed": true
+}

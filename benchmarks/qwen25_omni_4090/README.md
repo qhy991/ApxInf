@@ -104,6 +104,7 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_QWEN25_FA2_CHUNK1024=1`,
 `APXINF_QWEN25_FA2_ALL_CHUNKS=1`,
 `APXINF_QWEN25_LONG_DECODE_SPLIT_CTA=1`,
+`APXINF_QWEN25_LONG_DECODE_GRAPH=1`,
 `APXINF_STREAM_ORDERED_ALLOC=1` and
 `APXINF_TMROPE_POSITION_CACHE=1`,
 `APXINF_TMROPE_POSITION_CACHE_PREFILL=1`, `APXINF_SOFTMAX_EXP_CACHE=1`,
@@ -120,7 +121,11 @@ four-query-head split-64 online-softmax attention only for SM89 one-token decode
 at KV 32,761--32,767, QH/KVH/D=16/2/128 and max context 32,768. It requires the cached TMRoPE
 position owner; unsupported shapes or an invalid selector composition fail
 model load, while every shorter, prefill and multimodal call retains the
-ordinary path. Decode beyond the tested exp-cache range
+ordinary path. The long-decode graph selector additionally captures this exact
+post-32K path and submits one graph replay per token at positions
+32,760--32,767. It requires the ordinary decode graph, GPU argmax, packed QKV,
+fused TMRoPE/KV and long split-CTA selectors; invalid compositions fail model
+load instead of falling back. Decode beyond the tested exp-cache range
 uses the explicitly selected exact scalar softmax; without that selector it
 fails closed. `APXINF_QWEN25_PACKED_QKV=1` selects one
 packed QKV owner shared by both paths. `APXINF_QWEN25_FUSED_TMROPE_KV=1`

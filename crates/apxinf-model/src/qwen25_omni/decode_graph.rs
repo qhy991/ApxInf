@@ -575,11 +575,7 @@ impl Qwen25OmniDecodeGraph {
             ));
         }
         Ok(Self {
-            workspace: DecodeWorkspace::new(
-                backend.context(),
-                &config,
-                grouped_long_attention,
-            )?,
+            workspace: DecodeWorkspace::new(backend.context(), &config, grouped_long_attention)?,
             config,
             graph: None,
             select_token,
