@@ -1,0 +1,134 @@
+{
+  "format": "apxinf-qwen35-boundary-tail-encoder-coalesce-rejected-diagnostic-summary-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "STOP_REVERTED",
+  "classification": {
+    "formal_performance_result": false,
+    "promotion_evidence": false,
+    "use": "diagnostic hypothesis rejection only",
+    "limitations": [
+      "only three interleaved baseline/candidate pairs were collected",
+      "the host was not quiet and had active swap plus background processes",
+      "the formal six-block ABBA/BAAB and twelve-samples-per-version contract was not run"
+    ]
+  },
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "prompt": "Hello",
+    "prompt_tokens": 13,
+    "output_tokens": 128,
+    "decode_path": "ApxInf Metal W8 boundary-tail-v1 free run",
+    "quantization": "ApxInf native W8 group-64 with native-F32 top-4 rerank"
+  },
+  "hypothesis": {
+    "id": "boundary-tail-encoder-coalesce-v1",
+    "change": "reuse one MTLComputeCommandEncoder inside each initial stack or boundary transaction and add explicit buffer barriers between dependent segments",
+    "expected_mechanism": "remove compute-encoder creation and endEncoding overhead without changing command-buffer, dispatch, transfer, or arithmetic work",
+    "predeclared_keep_threshold": "at least 1 percent end-to-end improvement with no exactness regression"
+  },
+  "builds": {
+    "baseline": {
+      "code_commit": "3994dced2b3f4d9b17b6f8e17b513720654b734b",
+      "binary_sha256": "68f23957b5612b25797d800040ac3b62aa0942de661bf544502d4a44e9fc90a4",
+      "binary_size_bytes": 9542728
+    },
+    "candidate": {
+      "source_commit": null,
+      "source_disposition": "uncommitted diagnostic source; reverted after STOP",
+      "binary_sha256": "ae296b1418c262a3b98779cdd77b26f0a90dc0caa4224fb7cbb40ccb602dd2d2",
+      "binary_size_bytes": 9542728
+    }
+  },
+  "quality_gate": {
+    "teacher_forced_128_exact": true,
+    "free_run_128_exact": true,
+    "all_six_interleaved_receipts_passed": true,
+    "all_six_interleaved_mismatch_counts": 0,
+    "canonical_free128_token_ids_compact_json_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"
+  },
+  "structural_delta_per_decode": {
+    "compute_encoders": {"baseline": 24, "candidate": 7, "delta": -17},
+    "command_buffers": {"baseline": 7, "candidate": 7},
+    "commits": {"baseline": 7, "candidate": 7},
+    "waits": {"baseline": 7, "candidate": 7},
+    "kernel_dispatches": {"baseline": 267, "candidate": 267},
+    "host_to_device_bytes": {"baseline": 28672, "candidate": 28672},
+    "device_to_host_bytes": {"baseline": 28688, "candidate": 28688}
+  },
+  "paired_diagnostic": {
+    "order": ["A1", "B1", "A2", "B2", "A3", "B3"],
+    "A": "baseline",
+    "B": "encoder-coalesced candidate",
+    "pairs": [
+      {
+        "pair": 1,
+        "baseline": {"tps": 65.65033995697446, "tpot_ms": 15.232213582677165, "ttft_ms": 139.768792, "six_body_segments_ms_per_token": 8.68485046875},
+        "candidate": {"tps": 66.09165624714792, "tpot_ms": 15.130502952755906, "ttft_ms": 149.585375, "six_body_segments_ms_per_token": 8.6709958515625},
+        "candidate_tps_delta_percent": 0.6722223989436893,
+        "six_body_segments_improvement_percent": 0.1595262605539549
+      },
+      {
+        "pair": 2,
+        "baseline": {"tps": 66.77343114386848, "tpot_ms": 14.976016401574803, "ttft_ms": 141.879917, "six_body_segments_ms_per_token": 8.47845828125},
+        "candidate": {"tps": 66.83113968010775, "tpot_ms": 14.963084645669293, "ttft_ms": 137.906917, "six_body_segments_ms_per_token": 8.467503671875},
+        "candidate_tps_delta_percent": 0.08642439852302175,
+        "six_body_segments_improvement_percent": 0.1292052046682146
+      },
+      {
+        "pair": 3,
+        "baseline": {"tps": 66.32147730307368, "tpot_ms": 15.0780718503937, "ttft_ms": 128.410917, "six_body_segments_ms_per_token": 8.5334059296875},
+        "candidate": {"tps": 66.12606725305226, "tpot_ms": 15.122629267716535, "ttft_ms": 161.854416, "six_body_segments_ms_per_token": 8.539494859375},
+        "candidate_tps_delta_percent": -0.2946406774512078,
+        "six_body_segments_improvement_percent": -0.07135403773910198
+      }
+    ],
+    "reduction": {
+      "baseline_mean_tps": 66.24841613463887,
+      "candidate_mean_tps": 66.34962106010264,
+      "ratio_of_mean_tps_delta_percent": 0.15276580387686423,
+      "baseline_median_tps": 66.32147730307368,
+      "candidate_median_tps": 66.12606725305226,
+      "pooled_median_tps_delta_percent": -0.2946406774512078,
+      "median_paired_tps_delta_percent": 0.08642439852302175,
+      "median_paired_six_body_segments_improvement_percent": 0.1292052046682146
+    }
+  },
+  "receipt_integrity": {
+    "candidate_quality_and_smoke": [
+      {"path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-encoder-coalesce-v1-cpu-free-v2-20260825.json", "sha256": "90a0efca51d1b47b26dd7a7c2cdac79d1c98c51a618cf40cb922582ca3fea9e7", "size_bytes": 44071},
+      {"path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-encoder-coalesce-v1-cpu-teacher-v2-20260825.json", "sha256": "5627edeaa907f9db8e8edf00550e386b8b2f249f33e4f0d202dc4a30fbcdd431", "size_bytes": 44632},
+      {"path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-encoder-coalesce-v1-free-gate-v2-20260825.json", "sha256": "08dc56a6c7eb20079fffee3d9a00ac0a520ef799828bf8e89c209b7acb8f19d4", "size_bytes": 57046},
+      {"path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-encoder-coalesce-v1-teacher-gate-v2-20260825.json", "sha256": "46ea44a62e52b8b0c8e16e26695c64a376df96195188b66e294e4304bfd94e8f", "size_bytes": 67621}
+    ],
+    "paired_inputs_and_runs": [
+      {"path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-encoder-coalesce-v1-baseline-cpu-free-v2-20260825.json", "sha256": "221abd1a1f7a9c4efa86ab411c63b3e18db86a09f54175c9d7fea78ac3bf77ce", "size_bytes": 45471},
+      {"path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-encoder-coalesce-v1-baseline-free-a1-v2-20260825.json", "sha256": "cd3d94fe0f55912e9745a50b28e7ac8cee35518108411fcfb2cb462ee229d19a", "size_bytes": 58400},
+      {"path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-encoder-coalesce-v1-candidate-free-b1-v2-20260825.json", "sha256": "cbd3f44ff0c431a94447e82ce64388acff7138c3e9e2cb30276c3c7792123923", "size_bytes": 57047},
+      {"path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-encoder-coalesce-v1-baseline-free-a2-v2-20260825.json", "sha256": "c7c2634e02f134e1c8eaf2168263569f6b10605334e06a2f5bcc0d07cb5db008", "size_bytes": 58390},
+      {"path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-encoder-coalesce-v1-candidate-free-b2-v2-20260825.json", "sha256": "49f8446febea571dcbcf66d714d8be40627f7d09f00e0200e6e4c97124079500", "size_bytes": 57046},
+      {"path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-encoder-coalesce-v1-baseline-free-a3-v2-20260825.json", "sha256": "7f7f86a36c5d2758aef6ff0323b6cedaa56e9eb82a1f6500b46e93ae2b1aea27", "size_bytes": 58388},
+      {"path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-encoder-coalesce-v1-candidate-free-b3-v2-20260825.json", "sha256": "6dbf508c48544fa8131c7764153faca0515f64c34f71db4e11bde70583f7dc4b", "size_bytes": 57040}
+    ]
+  },
+  "host_observation": {
+    "quiet_gate_passed": false,
+    "observed_during_screen": [
+      "approximately 2.8 GB swap was in use",
+      "Logitech updater and voice background activity was present",
+      "Codex activity was present"
+    ]
+  },
+  "decision": {
+    "accepted": false,
+    "action": "revert candidate implementation and preserve receipts",
+    "reason": "the paired median gain was 0.086 percent, one pair regressed, and the result missed the predeclared 1 percent keep threshold",
+    "next_hypothesis": "tail-only w8_rows_topk4_r2_sg4 screen"
+  },
+  "llama_cpp_comparison_policy": {
+    "updates_published_comparison": false,
+    "reason": "a rejected uncontrolled intra-ApxInf screen is not a replacement benchmark",
+    "published_apxinf_tps_remains": 66.336728,
+    "published_llama_cpp_tps_remains": 70.663943
+  }
+}
