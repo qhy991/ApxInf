@@ -627,11 +627,13 @@ mod tests {
     }
 
     #[test]
-    fn precision_v2_is_additive_and_preserves_the_legacy_gdn_kernel_bytes_and_abi() {
-        let legacy_gdn = include_bytes!("metal_w8_gdn.metal");
+    fn precision_v2_and_recurrent_profiles_preserve_the_legacy_gdn_kernel_bytes_and_abi() {
+        let gdn = include_str!("metal_w8_gdn.metal");
+        let recurrent = &gdn[gdn.find("kernel void gdn_recurrent_update(").unwrap()..];
+        let recurrent = &recurrent[..recurrent.find("\n}\n").unwrap() + 2];
         assert_eq!(
-            format!("{:x}", Sha256::digest(legacy_gdn)),
-            "e79b20f0ee630c2876fda87b658714362b26d3f391d499087cf075351c74fa55"
+            format!("{:x}", Sha256::digest(recurrent.as_bytes())),
+            "d724f033f58410465da4f881bea40ed52880c45afeeaaa0a32aa9631670f3674"
         );
         let g32 = include_str!("metal_w8_gdn_out_g32.metal");
         for binding in 0..=4 {

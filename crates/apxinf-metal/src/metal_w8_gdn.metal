@@ -172,6 +172,132 @@ kernel void gdn_recurrent_update(
     }
 }
 
+// Additive diagnostic profiles for the fixed Qwen3.5-0.8B recurrent shape.
+// Existing production bridges intentionally continue to select only
+// gdn_recurrent_update.  These profiles preserve the per-value key loop and
+// state-update order while removing source-level work that is uniform across
+// a value-head threadgroup.
+kernel void gdn_recurrent_update_leader_broadcast_v1(
+    device const float *processed [[buffer(0)]],
+    device const float *projected [[buffer(1)]],
+    device const float *a_log [[buffer(2)]],
+    device const float *dt_bias [[buffer(3)]],
+    device const float *state [[buffer(4)]],
+    device float *next_state [[buffer(5)]],
+    device float *core [[buffer(6)]],
+    constant GdnParams& params [[buffer(7)]],
+    uint value_index [[thread_index_in_threadgroup]],
+    uint3 group_position [[threadgroup_position_in_grid]],
+    uint3 thread_count [[threads_per_threadgroup]]) {
+    threadgroup float shared_scalars[2];
+    const uint value_head = group_position.x;
+    if (value_head >= params.value_heads) {
+        return;
+    }
+    const uint repeat_factor = params.value_heads / params.key_heads;
+    const uint key_head = value_head / repeat_factor;
+    const uint query_base = key_head * params.key_dim;
+    const uint value_base = 2 * params.key_width + value_head * params.value_dim;
+    const uint a_base = params.qkv_width + params.value_width;
+    const uint b_base = a_base + params.value_heads;
+    if (value_index == 0) {
+        const float b = projected[b_base + value_head];
+        const float beta = b >= 0.0f ? 1.0f / (1.0f + exp(-b))
+                                     : exp(b) / (1.0f + exp(b));
+        const float gate = projected[a_base + value_head] + dt_bias[value_head];
+        const float softplus = gate > 20.0f ? gate
+                             : gate < -20.0f ? exp(gate)
+                                             : log(1.0f + exp(gate));
+        shared_scalars[0] = beta;
+        shared_scalars[1] = exp(-exp(a_log[value_head]) * softplus);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float beta = shared_scalars[0];
+    const float decay = shared_scalars[1];
+    const uint state_base = value_head * params.key_dim * params.value_dim;
+
+    for (uint v = value_index; v < params.value_dim; v += thread_count.x) {
+        float delta = 0.0f;
+        for (uint key = 0; key < params.key_dim; ++key) {
+            const uint index = state_base + key * params.value_dim + v;
+            delta += state[index] * decay * processed[params.key_width + query_base + key];
+        }
+        delta = (processed[value_base + v] - delta) * beta;
+        float output = 0.0f;
+        for (uint key = 0; key < params.key_dim; ++key) {
+            const uint index = state_base + key * params.value_dim + v;
+            const float updated = state[index] * decay +
+                                  processed[params.key_width + query_base + key] * delta;
+            next_state[index] = updated;
+            output += updated * processed[query_base + key];
+        }
+        core[value_head * params.value_dim + v] = output;
+    }
+}
+
+kernel void gdn_recurrent_update_qk_staged_v1(
+    device const float *processed [[buffer(0)]],
+    device const float *projected [[buffer(1)]],
+    device const float *a_log [[buffer(2)]],
+    device const float *dt_bias [[buffer(3)]],
+    device const float *state [[buffer(4)]],
+    device float *next_state [[buffer(5)]],
+    device float *core [[buffer(6)]],
+    constant GdnParams& params [[buffer(7)]],
+    uint value_index [[thread_index_in_threadgroup]],
+    uint3 group_position [[threadgroup_position_in_grid]],
+    uint3 thread_count [[threads_per_threadgroup]]) {
+    threadgroup float shared_scalars[2];
+    threadgroup float shared_query[128];
+    threadgroup float shared_key[128];
+    const uint value_head = group_position.x;
+    if (value_head >= params.value_heads) {
+        return;
+    }
+    const uint repeat_factor = params.value_heads / params.key_heads;
+    const uint key_head = value_head / repeat_factor;
+    const uint query_base = key_head * params.key_dim;
+    const uint value_base = 2 * params.key_width + value_head * params.value_dim;
+    const uint a_base = params.qkv_width + params.value_width;
+    const uint b_base = a_base + params.value_heads;
+    if (value_index == 0) {
+        const float b = projected[b_base + value_head];
+        const float beta = b >= 0.0f ? 1.0f / (1.0f + exp(-b))
+                                     : exp(b) / (1.0f + exp(b));
+        const float gate = projected[a_base + value_head] + dt_bias[value_head];
+        const float softplus = gate > 20.0f ? gate
+                             : gate < -20.0f ? exp(gate)
+                                             : log(1.0f + exp(gate));
+        shared_scalars[0] = beta;
+        shared_scalars[1] = exp(-exp(a_log[value_head]) * softplus);
+    }
+    if (value_index < 128) {
+        shared_query[value_index] = processed[query_base + value_index];
+        shared_key[value_index] = processed[params.key_width + query_base + value_index];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float beta = shared_scalars[0];
+    const float decay = shared_scalars[1];
+    const uint state_base = value_head * params.key_dim * params.value_dim;
+
+    for (uint v = value_index; v < params.value_dim; v += thread_count.x) {
+        float delta = 0.0f;
+        for (uint key = 0; key < params.key_dim; ++key) {
+            const uint index = state_base + key * params.value_dim + v;
+            delta += state[index] * decay * shared_key[key];
+        }
+        delta = (processed[value_base + v] - delta) * beta;
+        float output = 0.0f;
+        for (uint key = 0; key < params.key_dim; ++key) {
+            const uint index = state_base + key * params.value_dim + v;
+            const float updated = state[index] * decay + shared_key[key] * delta;
+            next_state[index] = updated;
+            output += updated * shared_query[key];
+        }
+        core[value_head * params.value_dim + v] = output;
+    }
+}
+
 kernel void gdn_norm_gate(
     device const float *core [[buffer(0)]],
     device const float *projected [[buffer(1)]],

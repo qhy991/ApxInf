@@ -1,0 +1,267 @@
+{
+  "format": "apxinf-qwen35-gdn-recurrent-local-reuse-v1-predeclared-primitive-gate-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "PREDECLARED_BEFORE_CANDIDATE_PERFORMANCE_SAMPLING",
+  "baseline_parent_commit": "2213e1977102cea53edffdaf4a4c10ea7ddf4666",
+  "candidate_source_binding": "the additive A/B/C kernels, fixed-shape count-18 bridge, Rust API and receipts, gate example, tests, custody inputs, and this predeclaration must be committed and pushed together before the first candidate performance sample",
+  "scope": {
+    "stage": "count-matched primitive mechanism screen only; a pass authorizes separate opt-in production plumbing and does not accept an end-to-end runtime",
+    "model_shape": "Qwen/Qwen3.5-0.8B recurrent GDN updates at the 18 production linear-attention layers",
+    "target": "Apple M4 Metal",
+    "hidden_size": 1024,
+    "key_heads": 16,
+    "value_heads": 16,
+    "key_dim": 128,
+    "value_dim": 128,
+    "seams_per_aggregate_call": 18,
+    "same_binary_and_same_diagnostic_live_library_for_all_arms": true,
+    "default_runtime_path_unchanged": true,
+    "production_submission_topology": false
+  },
+  "production_call_mapping": {
+    "initial_stack_linear_layer_indices": [0, 1, 2],
+    "five_boundary_stack_linear_layer_indices": [
+      [4, 5, 6],
+      [8, 9, 10],
+      [12, 13, 14],
+      [16, 17, 18],
+      [20, 21, 22]
+    ],
+    "total_recurrent_dispatches_per_decode": "3 + 5 * 3 = 18",
+    "production_consumers_that_must_remain_legacy_during_this_screen": [
+      "metal_w8_gdn_bridge.mm",
+      "metal_w8_linear_layer_bridge.mm",
+      "metal_w8_linear_layer_stack3_bridge.mm",
+      "metal_w8_mlp_stack3_boundary_v1_bridge.mm"
+    ],
+    "qualification": "source- and ledger-derived mapping; not a performance counter"
+  },
+  "hypothesis": {
+    "id": "qwen35-gdn-recurrent-local-reuse-v1",
+    "arms": {
+      "A": {
+        "profile": "legacy-256",
+        "function": "gdn_recurrent_update",
+        "threads_per_threadgroup": 256,
+        "source_declared_static_threadgroup_memory_bytes": 0,
+        "internal_threadgroup_barrier_sites": 0,
+        "change_from_production_source": "none"
+      },
+      "B": {
+        "profile": "leader-broadcast-128",
+        "function": "gdn_recurrent_update_leader_broadcast_v1",
+        "threads_per_threadgroup": 128,
+        "source_declared_static_threadgroup_memory_bytes": 8,
+        "internal_threadgroup_barrier_sites": 1,
+        "mechanism": "lane 0 computes beta and decay once and publishes two f32 values to the threadgroup"
+      },
+      "C": {
+        "profile": "qk-staged-128",
+        "function": "gdn_recurrent_update_qk_staged_v1",
+        "threads_per_threadgroup": 128,
+        "source_declared_static_threadgroup_memory_bytes": 1032,
+        "internal_threadgroup_barrier_sites": 1,
+        "mechanism": "B plus cooperative staging of the 128-element Q and K rows through the same single barrier"
+      }
+    },
+    "fixed_arithmetic_contract": {
+      "ascending_key_loop_order_preserved": true,
+      "state_times_decay_source_expression_not_materialized_or_reused": true,
+      "two_key_loops_not_combined": true,
+      "no_new_reduction_fma_or_vector_accumulation": true,
+      "state_next_state_and_core_ranges_non_overlapping": true,
+      "staged_state_is_immutable_across_repeated_calls": true,
+      "next_state_is_never_fed_back_during_this_screen": true
+    },
+    "pre_sampling_exactness_diagnosis": {
+      "diagnostic_only": true,
+      "performance_samples_taken": false,
+      "finding": "a redundant candidate-side fixed-shape guard changed Metal fast-math code generation and caused one one-ULP next-state mismatch; duplicate 256-thread, duplicate 128-thread, leader-broadcast, and Q/K-staged minimizations isolated the guard",
+      "resolution": "the redundant shader guard was removed; the no-argument host constructor and fixed constants enforce the shape before encoding; the existing uniform value-head range guard remains",
+      "candidate_admission_requirement": "the committed B and C functions must match A to_bits for all core and next-state elements in the fixed eight-fixture gate"
+    },
+    "pre_sampling_nonperformance_pipeline_observation": {
+      "classification": "debug exactness smoke metadata only; no latency or throughput was sampled",
+      "A_pipeline_static_threadgroup_memory_bytes": 0,
+      "B_pipeline_static_threadgroup_memory_bytes": 16,
+      "C_pipeline_static_threadgroup_memory_bytes": 1040,
+      "formal_gate_requirement": "the release gate must observe these same allocations while separately retaining the source-declared 0/8/1032 byte ledger"
+    }
+  },
+  "count18_aggregate_topology_per_successful_call": {
+    "common": {
+      "command_buffers": 1,
+      "compute_encoders": 1,
+      "kernel_dispatches": 18,
+      "threadgroups": 288,
+      "explicit_broad_buffer_barriers": 18,
+      "commits": 1,
+      "waits": 1,
+      "explicit_bridge_host_to_device_memcpy_bytes_inside_timed_call": 0,
+      "explicit_bridge_device_to_host_memcpy_bytes_inside_timed_call": 0
+    },
+    "A": {
+      "launched_threads": 73728,
+      "active_value_threads": 36864,
+      "idle_threads": 36864,
+      "source_derived_internal_threadgroup_barrier_executions": 0
+    },
+    "B": {
+      "launched_threads": 36864,
+      "active_value_threads": 36864,
+      "idle_threads": 0,
+      "source_derived_internal_threadgroup_barrier_executions": 288
+    },
+    "C": {
+      "launched_threads": 36864,
+      "active_value_threads": 36864,
+      "idle_threads": 0,
+      "source_derived_internal_threadgroup_barrier_executions": 288
+    },
+    "barrier_qualification": "B/C each contain one source barrier site executed by all 288 threadgroups per aggregate call; this is source-derived and is not a hardware performance counter",
+    "trailing_barrier_qualification": "17 broad barriers order adjacent dispatches and one final symmetric trailing barrier mirrors the production consumer convention",
+    "zero_copy_qualification": "zero explicit bridge memcpy inside run(), not zero GPU, cache, shared-memory, or unified-memory traffic"
+  },
+  "source_logical_traffic_per_aggregate_call": {
+    "A_uniform_prefix_reads_bytes": 1179648,
+    "B_uniform_prefix_reads_bytes": 4608,
+    "C_uniform_prefix_reads_bytes": 4608,
+    "A_Q_K_reads_bytes": 56623104,
+    "B_Q_K_reads_bytes": 56623104,
+    "C_staged_Q_K_device_reads_bytes": 294912,
+    "all_arms_state_reads_bytes": 37748736,
+    "all_arms_V_reads_bytes": 147456,
+    "all_arms_next_state_writes_bytes": 18874368,
+    "all_arms_core_writes_bytes": 147456,
+    "C_over_A_selected_device_read_reduction_bytes": 57503232,
+    "qualification": "counts source expressions only; no cache, system-memory, DRAM, bank-conflict, spill, or physical-traffic claim is made"
+  },
+  "fixed_fixture": {
+    "correctness_fixtures": 8,
+    "generator": "wrapping xorshift64 with x^=x<<13; x^=x>>7; x^=x<<17, all payloads hashed as little-endian f32 bits with domain and shape tags",
+    "processed_seed": "0x13198a2e03707344 XOR fixture_index",
+    "projected_seed": "0xa4093822299f31d0 XOR (fixture_index << 32)",
+    "state_seed": "0x082efa98ec4e6c89 XOR fixture_index*0x9e3779b97f4a7c15",
+    "dyadic_ranges": {
+      "Q_K": "integer [-64,64] / 2048",
+      "V": "integer [-128,128] / 1024",
+      "unused_projected": "integer [-64,64] / 1024",
+      "state": "integer [-64,64] / 2048"
+    },
+    "signed_zero_sentinels": "fixed +0.0 and -0.0 locations in every Q, K, V, and state row",
+    "a_log_table": [-4.0, -3.0, -2.5, -2.0, -1.5, -1.0, -0.75, -0.5],
+    "dt_bias_table": [-0.5, -0.25, -0.125, 0.0, 0.125, 0.25, 0.375, 0.5],
+    "b_table_f32_bits": [3238002688, 3221225472, 3204448256, 2147483648, 0, 1056964608, 1073741824, 1090519040],
+    "target_gate_table": [-24.0, -20.5, -20.0, -1.0, 0.0, 1.0, 20.0, 20.5, 24.0],
+    "coefficient_cycle": "a_log and dt_bias use j=seam*16+head and are identical across fixtures; projected b and target_gate use fixture_index+j; projected_a is f32(target_gate-dt_bias)",
+    "per_fixture_beta_branch_counts": {"b_less_than_zero": 108, "b_greater_than_or_equal_zero_including_negative_zero": 180},
+    "per_fixture_softplus_branch_counts": {"gate_less_than_negative_20": 64, "middle_inclusive_negative_20_to_20": 160, "gate_greater_than_20": 64},
+    "all_fixture_beta_branch_counts": {"negative": 864, "nonnegative": 1440},
+    "all_fixture_softplus_branch_counts": {"low": 512, "middle": 1280, "high": 512},
+    "gate_reconstruction_f32_mismatches": 0
+  },
+  "correctness_gate": {
+    "order_per_fixture": "ABCCBA",
+    "first_A_is_oracle": true,
+    "outputs_poisoned_with_nan_before_every_call": true,
+    "snapshots_compared_immediately": true,
+    "full_core_and_next_state_must_be_finite": true,
+    "full_core_and_next_state_must_match_oracle_to_bits": true,
+    "staged_inputs_verified_bitwise_unchanged_after_each_fixture": true,
+    "invalid_raw_selector_must_fail_before_encoding_without_mutating_receipts_or_snapshot": true,
+    "successful_calls_total": 48,
+    "successful_calls_per_arm": 16,
+    "core_elements_per_call": 36864,
+    "next_state_elements_per_call": 4718592,
+    "combined_elements_per_call": 4755456,
+    "finite_checks_if_passed": 228261888,
+    "explicit_A_oracle_to_bits_comparisons_if_passed": 190218240,
+    "explicit_A_oracle_core_to_bits_comparisons_if_passed": 1474560,
+    "explicit_A_oracle_next_state_to_bits_comparisons_if_passed": 188743680,
+    "invalid_selector_snapshot_to_bits_comparisons_if_passed": 4755456,
+    "all_to_bits_comparisons_if_passed": 194973696,
+    "all_core_to_bits_comparisons_if_passed": 1511424,
+    "all_next_state_to_bits_comparisons_if_passed": 193462272,
+    "combined_poison_call_count": 48,
+    "combined_poison_bytes_total": 913047552,
+    "explicit_comparison_snapshot_count": 48,
+    "explicit_comparison_snapshot_bytes": 913047552,
+    "invalid_selector_probe_successful_snapshot_materializations": 2,
+    "invalid_selector_probe_snapshot_bytes": 38043648,
+    "all_successful_snapshot_materializations": 50,
+    "all_successful_snapshot_materialization_bytes": 951091200,
+    "all_successful_snapshot_next_state_bytes": 943718400,
+    "all_successful_snapshot_core_bytes": 7372800,
+    "snapshot_qualification": "the first invalid-selector check has no snapshot and its two snapshot attempts materialize nothing; the final check materializes one before and one after snapshot to prove bitwise non-mutation"
+  },
+  "fixed_staging_ledger": {
+    "processed_bytes_per_stage": 442368,
+    "projected_bytes_per_stage": 592128,
+    "a_log_bytes_per_stage": 1152,
+    "dt_bias_bytes_per_stage": 1152,
+    "immutable_state_bytes_per_stage": 18874368,
+    "bytes_per_stage_for_current_api": 19911168,
+    "stage_count": 9,
+    "bytes_total": 179200512,
+    "qualification": "the fixed coefficient arrays are intentionally copied by the current stage_fixture API on every one of the eight correctness stages and the one performance restage",
+    "persistent_buffer_bytes_total": 38932992
+  },
+  "fixed_performance_schedule": {
+    "calls_per_cell": 64,
+    "warmup_blocks": ["ABCCBA", "BCAACB", "CABBAC"],
+    "timed_blocks": ["ABCCBA", "BCAACB", "CABBAC"],
+    "samples_per_arm_per_timed_block": 128,
+    "pooled_samples_per_arm": 384,
+    "timed_calls_total_all_arms": 1152,
+    "warmup_calls_per_arm": 384,
+    "timed_calls_per_arm": 384,
+    "successful_runs_per_arm_if_completed": 784,
+    "position_balance": "each arm occupies each position 1 through 6 exactly once across the three blocks",
+    "transition_balance": "each directed non-self pair occurs twice within blocks; cross-block edges AB and BC are explicitly outside this balance claim",
+    "timing": "host monotonic elapsed time around one complete synchronous aggregate GPU call; staging, poisoning, snapshots, custody checks, input verification, statistics, and JSON work are outside timing",
+    "primary_statistic": "even median of raw aggregate-call latency per arm in each block and pooled",
+    "percentiles": "diagnostic p10/p90 use sorted index floor((n-1)*q)",
+    "raw_samples_required": true,
+    "outlier_removal": false,
+    "cell_median_substitution": false,
+    "retries": false,
+    "resampling_after_failure": false
+  },
+  "expected_cumulative_receipt_if_schedule_completes": {
+    "per_arm": {
+      "successful_runs": 784,
+      "command_buffers": 784,
+      "compute_encoders": 784,
+      "kernel_dispatches": 14112,
+      "threadgroups": 225792,
+      "explicit_broad_buffer_barriers": 14112,
+      "commits": 784,
+      "waits": 784
+    },
+    "A": {"launched_threads": 57802752, "active_threads": 28901376, "idle_threads": 28901376, "source_derived_internal_barrier_executions": 0},
+    "B": {"launched_threads": 28901376, "active_threads": 28901376, "idle_threads": 0, "source_derived_internal_barrier_executions": 225792},
+    "C": {"launched_threads": 28901376, "active_threads": 28901376, "idle_threads": 0, "source_derived_internal_barrier_executions": 225792}
+  },
+  "precommitted_selection_and_admission": {
+    "improvement_definition": "I(X over Y)=100*(median(Y)-median(X))/median(Y)",
+    "step_1_provisional_selection": "select C iff pooled I(C over B) >= 0.5%; otherwise select B",
+    "step_2_no_fallback": "never fall back to the other candidate if the provisional candidate fails any later rule",
+    "step_3_pooled_keep_threshold": "selected-over-A pooled improvement must be >= 5.0%",
+    "step_4_block_consistency": "selected-over-A improvement must be strictly >0 in all three blocks",
+    "step_5_simplicity_guard": "selected-versus-unselected improvement must be strictly >-0.5% in every block",
+    "step_6_C_specific_consistency": "if C is selected, C-over-B must be strictly positive in at least two blocks",
+    "equality_behavior": ">=0.5 selects C; >=5.0 passes pooled; 0.0 is not positive; <=-0.5 rejects the simplicity guard",
+    "overall_pass": "exactness AND completed fixed schedule AND selection rules AND valid runtime receipts AND unchanged source/binary/git custody AND zero sampled failures",
+    "pass_authorizes": "separate opt-in production-path integration plus a new predeclared end-to-end gate",
+    "failure_action": "publish the create-new raw receipt and a rejection summary, then revert candidate implementation while retaining predeclaration and evidence"
+  },
+  "cross_runtime_rule": {
+    "candidate_is_apxinf_specific_not_llama_equivalent": true,
+    "frozen_llama_cpp_comparison_is_unchanged_until_a_full_path_candidate_is_accepted": true,
+    "current_apxinf_metal_W8_tps": 66.33672849846097,
+    "current_llama_cpp_metal_Q8_0_tps": 70.66394293407429,
+    "current_llama_cpp_advantage_percent": 6.52310497300709,
+    "llama_cpp_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+    "frozen_summary": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-vs-llamacpp-raw13-free128-diagnostic-summary-v2-20260825.json"
+  }
+}

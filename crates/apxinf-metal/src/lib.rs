@@ -9,12 +9,20 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 mod gdn;
+mod gdn_recurrent_profile_v1;
 mod linear_layer;
 mod tail_mlp_head_v1;
 
 pub use gdn::{
     GdnDecodeResult, GdnDecodeState, GdnDimensions, GdnF32Weights, GdnMetalStats, MetalW8GdnBlock,
     PackedW8GdnBlock,
+};
+pub use gdn_recurrent_profile_v1::{
+    GdnRecurrentCount18RuntimeReceiptV1, GdnRecurrentCount18SnapshotV1, GdnRecurrentProfileV1,
+    MetalGdnRecurrentCount18PrimitiveV1, QWEN35_GDN_CORE_ELEMENTS_PER_SEAM_V1,
+    QWEN35_GDN_KEY_DIM_V1, QWEN35_GDN_KEY_HEADS_V1, QWEN35_GDN_PROCESSED_ELEMENTS_PER_SEAM_V1,
+    QWEN35_GDN_PROJECTED_ELEMENTS_PER_SEAM_V1, QWEN35_GDN_RECURRENT_ELEMENTS_PER_SEAM_V1,
+    QWEN35_GDN_RECURRENT_SEAMS_PER_DECODE_V1, QWEN35_GDN_VALUE_DIM_V1, QWEN35_GDN_VALUE_HEADS_V1,
 };
 pub use linear_layer::{
     LinearLayerBufferLedger, LinearLayerDecodeResult, LinearLayerMetalStats,
