@@ -51,7 +51,8 @@
 - 测量 binary SHA-256：`59f0554f49a678d73f5ad1e0cc6b1cfc6d33f8d7732cce78627a1ccf62589933`
 - binary 大小：9,576,824 bytes
 - build：`cargo build --release -p apxinf-model --features accelerate,metal-w8 --example qwen35_metal_w8_boundary_tail_head_v1_gate --target-dir target/pair2-sg4-v1`
-- 验证：Metal tail 测试 13 passed；gate example 23 passed、1 ignored；release build、格式和 whitespace 检查通过。
+- 候选验证：Metal tail 测试 13 passed；gate example 23 passed、1 ignored；release build、格式和 whitespace 检查通过。
+- 撤回验证：八个源码/测试文件与基线父提交逐字节一致；Metal tail 测试 10 passed；gate example 23 passed、1 ignored；格式和 whitespace 检查通过。
 
 候选源码先独立提交，再由后续提交撤回，因此 Git 历史能重建实际被测实现，而最终主分支不携带被拒绝的 selector、kernel 或 API。十份原始回执及每份 SHA/大小列在机器可读摘要 `crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-sg4-v1-rejected-diagnostic-summary-v1-20260825.json`。
 

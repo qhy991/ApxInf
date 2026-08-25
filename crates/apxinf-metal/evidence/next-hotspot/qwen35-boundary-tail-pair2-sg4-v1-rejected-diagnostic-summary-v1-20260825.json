@@ -205,6 +205,12 @@
       "release build completed",
       "format and whitespace checks passed"
     ],
+    "restored_tree_results": [
+      "all eight candidate source and test files are byte-identical to baseline parent commit 3fde933ca78d1537bca9757f0363c13cb12f22f3",
+      "restored apxinf-metal tail_mlp_head_v1: 10 passed",
+      "restored boundary-tail gate example: 23 passed, 1 ignored",
+      "restored tree format and whitespace checks passed"
+    ],
     "independent_review": "clean for correctness, ABI compatibility, selector wiring, receipt binding, and target Apple M4 execution semantics"
   },
   "receipt_integrity": [
@@ -281,4 +287,3 @@
     "published_llama_cpp_metal_q8_0_tps_remains": 70.663943
   }
 }
-

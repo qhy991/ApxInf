@@ -17,7 +17,6 @@ use std::{error::Error, time::Instant};
 use serde_json::{json, Value};
 
 use apxinf_core::{Device, Tensor};
-use apxinf_metal::TailMlpHeadRowsKernelV1;
 #[cfg(test)]
 use apxinf_model::qwen35::general::{
     Qwen35MetalW8LinearLayerStack3BufferLedger, Qwen35MetalW8MlpStack3BoundaryRegionBufferLedgerV1,
@@ -112,32 +111,6 @@ impl Mode {
     const fn is_candidate(self) -> bool {
         self.requires_input_receipt()
     }
-}
-
-fn parse_tail_rows_kernel(value: &str) -> Result<TailMlpHeadRowsKernelV1, String> {
-    match value {
-        "legacy-r8-sg8" => Ok(TailMlpHeadRowsKernelV1::LegacyR8Sg8),
-        "pair2-sg4" => Ok(TailMlpHeadRowsKernelV1::Pair2Sg4),
-        other => Err(format!("invalid --tail-rows-kernel {other:?}")),
-    }
-}
-
-fn tail_rows_kernel_contract(kernel: TailMlpHeadRowsKernelV1) -> Value {
-    let (
-        rows_per_threadgroup,
-        rows_per_simdgroup,
-        simdgroups_per_threadgroup,
-        threads_per_threadgroup,
-        cooperative_across_simdgroups,
-    ) = kernel.execution_shape();
-    json!({
-        "kernel": kernel.receipt_label(),
-        "rows_per_threadgroup": rows_per_threadgroup,
-        "rows_per_simdgroup": rows_per_simdgroup,
-        "simdgroups_per_threadgroup": simdgroups_per_threadgroup,
-        "threads_per_threadgroup": threads_per_threadgroup,
-        "cooperative_across_simdgroups": cooperative_across_simdgroups,
-    })
 }
 
 const STEPS: usize = 128;
@@ -677,23 +650,7 @@ fn boundary_tail_generation_receipt_is_exact(
     let Some(tail) = receipt.get("decode_head") else {
         return false;
     };
-    let rows_kernel_valid = [
-        TailMlpHeadRowsKernelV1::LegacyR8Sg8,
-        TailMlpHeadRowsKernelV1::Pair2Sg4,
-    ]
-    .into_iter()
-    .map(tail_rows_kernel_contract)
-    .any(|contract| {
-        tail.get("topk_rows_kernel") == contract.get("kernel")
-            && tail.get("rows_per_threadgroup") == contract.get("rows_per_threadgroup")
-            && tail.get("rows_per_simdgroup") == contract.get("rows_per_simdgroup")
-            && tail.get("simdgroups_per_threadgroup") == contract.get("simdgroups_per_threadgroup")
-            && tail.get("threads_per_threadgroup") == contract.get("threads_per_threadgroup")
-            && tail.get("cooperative_across_simdgroups")
-                == contract.get("cooperative_across_simdgroups")
-    });
     let tail_valid = tail.get("mechanism").and_then(Value::as_str) == Some("metal-w8-tail-v1")
-        && rows_kernel_valid
         && tail.get("layer_index").and_then(Value::as_u64) == Some(23)
         && tail.get("calls").and_then(Value::as_u64) == Some(phase.decode as u64)
         && tail.get("teacher_calls").and_then(Value::as_u64) == Some(phase.teacher as u64)
@@ -852,21 +809,8 @@ fn boundary_tail_path_checks(
                 && !execution.terminal_error
                 && !region.terminal_error
         });
-    let expected_rows_kernel = tail_rows_kernel_contract(stats.tail_rows_kernel);
-    let rows_kernel_valid = generation_receipt.get("decode_head").is_some_and(|tail| {
-        tail.get("topk_rows_kernel") == expected_rows_kernel.get("kernel")
-            && tail.get("rows_per_threadgroup") == expected_rows_kernel.get("rows_per_threadgroup")
-            && tail.get("rows_per_simdgroup") == expected_rows_kernel.get("rows_per_simdgroup")
-            && tail.get("simdgroups_per_threadgroup")
-                == expected_rows_kernel.get("simdgroups_per_threadgroup")
-            && tail.get("threads_per_threadgroup")
-                == expected_rows_kernel.get("threads_per_threadgroup")
-            && tail.get("cooperative_across_simdgroups")
-                == expected_rows_kernel.get("cooperative_across_simdgroups")
-    });
     let tail = stats.tail;
-    let tail_valid = rows_kernel_valid
-        && h4.is_some()
+    let tail_valid = h4.is_some()
         && h4_top4.is_some()
         && stats.prefill_body_calls == 1
         && stats.prefill_cpu_head_calls == 1
@@ -1248,7 +1192,6 @@ struct Args {
     model_dir: PathBuf,
     source_lock: PathBuf,
     mode: Mode,
-    tail_rows_kernel: TailMlpHeadRowsKernelV1,
     input_receipt: Option<PathBuf>,
     output: PathBuf,
 }
@@ -1258,7 +1201,6 @@ fn usage() -> &'static str {
   --model-dir OFFICIAL_LOCAL_QWEN35_0_8B \
   --source-lock SOURCE_LOCK.json \
   --mode cpu-teacher|boundary-tail-v1-teacher|cpu-free|boundary-tail-v1-free \
-  [--tail-rows-kernel legacy-r8-sg8|pair2-sg4] \
   [--input-receipt CPU_RECEIPT.json] \
   --output NEW_RECEIPT.json"
 }
@@ -1271,7 +1213,6 @@ where
     let mut model_dir = None;
     let mut source_lock = None;
     let mut mode = None;
-    let mut tail_rows_kernel = None;
     let mut input_receipt = None;
     let mut output = None;
     let mut iter = args.into_iter().map(Into::into).skip(1);
@@ -1297,12 +1238,6 @@ where
                     return Err("duplicate --mode".into());
                 }
             }
-            "--tail-rows-kernel" => {
-                let parsed = parse_tail_rows_kernel(&value.to_string_lossy())?;
-                if tail_rows_kernel.replace(parsed).is_some() {
-                    return Err("duplicate --tail-rows-kernel".into());
-                }
-            }
             "--input-receipt" => {
                 if input_receipt.replace(PathBuf::from(value)).is_some() {
                     return Err("duplicate --input-receipt".into());
@@ -1321,7 +1256,6 @@ where
         source_lock: source_lock
             .ok_or_else(|| format!("--source-lock is required\n{}", usage()))?,
         mode: mode.ok_or_else(|| format!("--mode is required\n{}", usage()))?,
-        tail_rows_kernel: tail_rows_kernel.unwrap_or_default(),
         input_receipt,
         output: output.ok_or_else(|| format!("--output is required\n{}", usage()))?,
     };
@@ -1344,9 +1278,6 @@ where
         } else {
             "CPU modes reject --input-receipt".into()
         });
-    }
-    if !args.mode.is_candidate() && args.tail_rows_kernel != TailMlpHeadRowsKernelV1::LegacyR8Sg8 {
-        return Err("CPU modes reject a non-legacy --tail-rows-kernel".into());
     }
     Ok(args)
 }
@@ -1708,23 +1639,16 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
     let same_process_cpu_oracle_ms = same_process_oracle_started.elapsed().as_secs_f64() * 1_000.0;
     let construct_started = Instant::now();
     let mut model = if args.mode.is_candidate() {
-        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_rows_kernel_v1(
+        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
             config,
             tensors,
             Device::Cpu,
             max_context,
-            args.tail_rows_kernel,
         )?
     } else {
         GeneralQwen35::from_weights(config, tensors, Device::Cpu, max_context)?
     };
     let model_construct_ms = construct_started.elapsed().as_secs_f64() * 1_000.0;
-    let actual_tail_rows_kernel = model.metal_w8_mlp_stack3_boundary_tail_head_v1_rows_kernel();
-    if args.mode.is_candidate() && actual_tail_rows_kernel != Some(args.tail_rows_kernel) {
-        return Err(
-            "constructed boundary-tail lane did not retain the requested rows kernel".into(),
-        );
-    }
     let identity = json!({
         "repo_id": REPO_ID,
         "revision": LOCKED_REVISION,
@@ -1744,7 +1668,7 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
             "identity_fields": ["device", "inode", "size", "nlink", "ctime", "sha256"],
         },
         "cpu_reference_constructor": "GeneralQwen35::from_weights",
-        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_rows_kernel_v1",
+        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1",
         "custody": custody.receipt_json(),
     });
     let setup = json!({
@@ -1934,7 +1858,6 @@ fn run_teacher(
         receipt: json!({
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
-            "tail_rows_kernel": tail_rows_kernel_contract(args.tail_rows_kernel),
             "identity": identity,
             "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
@@ -1970,7 +1893,6 @@ fn run_teacher(
                 "tail_teacher_calls": STEPS,
                 "f32_rerank_input": "tail-normalized-hidden-direct",
                 "hidden_tensor_exactness_claimed": false,
-                "tail_rows_kernel": tail_rows_kernel_contract(args.tail_rows_kernel),
             },
             "aggregate_buffer_ledger": aggregate_ledger_json(&aggregate),
             "path_checks": {
@@ -2100,7 +2022,6 @@ fn run_free(
         receipt: json!({
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
-            "tail_rows_kernel": tail_rows_kernel_contract(args.tail_rows_kernel),
             "identity": identity,
             "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
@@ -2124,7 +2045,6 @@ fn run_free(
                 "tail_decode_calls": body_tail_calls,
                 "tail_teacher_calls": 0,
                 "f32_rerank_input": "tail-normalized-hidden-direct",
-                "tail_rows_kernel": tail_rows_kernel_contract(args.tail_rows_kernel),
             },
             "aggregate_buffer_ledger": aggregate_ledger_json(&aggregate),
             "path_checks": checks.receipt_json(),
@@ -2356,12 +2276,6 @@ mod tests {
             },
             "decode_head": {
                 "mechanism": "metal-w8-tail-v1",
-                "topk_rows_kernel": "w8_rows_topk4",
-                "rows_per_threadgroup": 8,
-                "rows_per_simdgroup": 1,
-                "simdgroups_per_threadgroup": 8,
-                "threads_per_threadgroup": 256,
-                "cooperative_across_simdgroups": false,
                 "layer_index": 23,
                 "calls": phase.decode,
                 "teacher_calls": phase.teacher,
@@ -2450,7 +2364,6 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(args.mode, Mode::BoundaryTailV1Free);
-        assert_eq!(args.tail_rows_kernel, TailMlpHeadRowsKernelV1::LegacyR8Sg8);
         assert_eq!(
             args.input_receipt.unwrap(),
             std::path::PathBuf::from("/cpu-free.json")
@@ -2467,24 +2380,6 @@ mod tests {
             "/new.json",
         ])
         .is_err());
-
-        let pair2 = parse_args_from([
-            "gate",
-            "--model-dir",
-            "/model",
-            "--source-lock",
-            "/source-lock.json",
-            "--mode",
-            "boundary-tail-v1-free",
-            "--tail-rows-kernel",
-            "pair2-sg4",
-            "--input-receipt",
-            "/cpu-free.json",
-            "--output",
-            "/pair2.json",
-        ])
-        .unwrap();
-        assert_eq!(pair2.tail_rows_kernel, TailMlpHeadRowsKernelV1::Pair2Sg4);
         assert!(parse_args_from([
             "gate",
             "--model-dir",

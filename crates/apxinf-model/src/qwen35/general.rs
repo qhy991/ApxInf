@@ -452,7 +452,6 @@ struct Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
     pub mechanism: &'static str,
-    pub tail_rows_kernel: apxinf_metal::TailMlpHeadRowsKernelV1,
     pub initial_stack: Qwen35MetalW8LinearLayerStack3V1Stats,
     pub boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionV1Stats>,
     pub tail_layer_index: usize,
@@ -916,26 +915,6 @@ impl GeneralQwen35 {
         device: Device,
         max_context: usize,
     ) -> Result<Self> {
-        Self::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_rows_kernel_v1(
-            config,
-            tensors,
-            device,
-            max_context,
-            apxinf_metal::TailMlpHeadRowsKernelV1::LegacyR8Sg8,
-        )
-    }
-
-    /// Diagnostic-only selector for comparing first-stage vocabulary-row
-    /// kernels inside the otherwise identical boundary + tail-head v1 lane.
-    /// The ordinary v1 constructor remains pinned to the legacy kernel.
-    #[cfg(feature = "metal-w8")]
-    pub fn from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_rows_kernel_v1(
-        config: Qwen35Config,
-        tensors: HashMap<String, Tensor>,
-        device: Device,
-        max_context: usize,
-        rows_kernel: apxinf_metal::TailMlpHeadRowsKernelV1,
-    ) -> Result<Self> {
         if !config.text.tie_word_embeddings {
             return Err(Error::Other(
                 "qwen3.5 Metal W8 boundary + tail-head v1 requires tied word embeddings".into(),
@@ -944,8 +923,7 @@ impl GeneralQwen35 {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(&config.text)?;
         let backend = create_backend(device)?;
         let weights = Qwen35TextWeights::from_map(&config, tensors)?;
-        let lane =
-            Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack(&weights, &config.text, rows_kernel)?;
+        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack(&weights, &config.text)?;
         let mut model =
             Self::new_with_metal_options(config, weights, backend, max_context, false, None, None)?;
         model.metal_w8_mlp_stack3_boundary_tail_head_v1 = Some(lane);
@@ -1476,15 +1454,6 @@ impl GeneralQwen35 {
         self.metal_w8_mlp_stack3_boundary_tail_head_v1
             .as_ref()
             .map(Qwen35MetalW8MlpStack3BoundaryTailHeadV1::stats)
-    }
-
-    #[cfg(feature = "metal-w8")]
-    pub fn metal_w8_mlp_stack3_boundary_tail_head_v1_rows_kernel(
-        &self,
-    ) -> Option<apxinf_metal::TailMlpHeadRowsKernelV1> {
-        self.metal_w8_mlp_stack3_boundary_tail_head_v1
-            .as_ref()
-            .map(|lane| lane.tail.rows_kernel())
     }
 
     #[cfg(feature = "metal-w8")]
@@ -3167,12 +3136,6 @@ impl LlmTrait for GeneralQwen35 {
                     },
                     "decode_head": {
                         "mechanism": "metal-w8-tail-v1",
-                        "topk_rows_kernel": lane.tail_rows_kernel.receipt_label(),
-                        "rows_per_threadgroup": lane.tail_rows_kernel.execution_shape().0,
-                        "rows_per_simdgroup": lane.tail_rows_kernel.execution_shape().1,
-                        "simdgroups_per_threadgroup": lane.tail_rows_kernel.execution_shape().2,
-                        "threads_per_threadgroup": lane.tail_rows_kernel.execution_shape().3,
-                        "cooperative_across_simdgroups": lane.tail_rows_kernel.execution_shape().4,
                         "layer_index": lane.tail_layer_index,
                         "calls": lane.decode_calls,
                         "teacher_calls": lane.teacher_calls,
@@ -5222,11 +5185,7 @@ impl Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 
 #[cfg(feature = "metal-w8")]
 impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
-    fn pack(
-        weights: &Qwen35TextWeights,
-        config: &Qwen35TextConfig,
-        rows_kernel: apxinf_metal::TailMlpHeadRowsKernelV1,
-    ) -> Result<Self> {
+    fn pack(weights: &Qwen35TextWeights, config: &Qwen35TextConfig) -> Result<Self> {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(config)?;
         if weights.layers.len() != 24 || weights.lm_head_weight.is_some() {
             return Err(Error::Other(
@@ -5302,13 +5261,11 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                 "qwen3.5 Metal W8 tail-head v1 assembly failed: {error}"
             ))
         })?;
-        let tail =
-            apxinf_metal::MetalW8TailMlpHeadV1::from_packed_with_rows_kernel(&packed, rows_kernel)
-                .map_err(|error| {
-                    Error::Other(format!(
-                        "qwen3.5 Metal W8 tail-head v1 construction failed: {error}"
-                    ))
-                })?;
+        let tail = apxinf_metal::MetalW8TailMlpHeadV1::from_packed(&packed).map_err(|error| {
+            Error::Other(format!(
+                "qwen3.5 Metal W8 tail-head v1 construction failed: {error}"
+            ))
+        })?;
         Ok(Self {
             initial_stack,
             boundaries,
@@ -5326,7 +5283,6 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
     fn stats(&self) -> Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
         Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
             mechanism: "metal-w8-mlp-stack3-boundary-tail-head-v1",
-            tail_rows_kernel: self.tail.rows_kernel(),
             initial_stack: self.initial_stack.stats(),
             boundaries: self
                 .boundaries
@@ -7649,10 +7605,6 @@ mod tests {
             .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
             .unwrap();
         assert_eq!(stats.mechanism, "metal-w8-mlp-stack3-boundary-tail-head-v1");
-        assert_eq!(
-            stats.tail_rows_kernel,
-            apxinf_metal::TailMlpHeadRowsKernelV1::LegacyR8Sg8
-        );
         assert_eq!(stats.initial_stack.layer_indices, [0, 1, 2]);
         assert_eq!(stats.boundaries.len(), 5);
         assert_eq!(stats.tail_layer_index, 23);
@@ -7663,20 +7615,6 @@ mod tests {
         assert!(diagnostic.metal_w8_linear_layer_stacks_v1_stats().is_none());
         assert!(diagnostic.metal_w8_mlp_block_layer_stats().is_empty());
         assert!(diagnostic.metal_w8_lm_head_stats().is_none());
-
-        let pair2 =
-            GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_rows_kernel_v1(
-                config.clone(),
-                tensors.clone(),
-                Device::Cpu,
-                16,
-                apxinf_metal::TailMlpHeadRowsKernelV1::Pair2Sg4,
-            )
-            .unwrap();
-        assert_eq!(
-            pair2.metal_w8_mlp_stack3_boundary_tail_head_v1_rows_kernel(),
-            Some(apxinf_metal::TailMlpHeadRowsKernelV1::Pair2Sg4)
-        );
 
         let mut untied_config = config;
         untied_config.text.tie_word_embeddings = false;
