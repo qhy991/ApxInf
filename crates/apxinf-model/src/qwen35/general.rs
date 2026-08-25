@@ -452,10 +452,6 @@ struct Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
     pub mechanism: &'static str,
-    pub tail_rows_kernel: apxinf_metal::TailMlpHeadRowsKernelV1,
-    pub tail_rows_kernel_receipt: apxinf_metal::TailMlpHeadRowsKernelReceiptV1,
-    pub tail_final_kernel: apxinf_metal::TailMlpHeadFinalKernelV1,
-    pub tail_final_kernel_receipt: apxinf_metal::TailMlpHeadFinalKernelReceiptV1,
     pub initial_stack: Qwen35MetalW8LinearLayerStack3V1Stats,
     pub boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionV1Stats>,
     pub tail_layer_index: usize,
@@ -919,48 +915,6 @@ impl GeneralQwen35 {
         device: Device,
         max_context: usize,
     ) -> Result<Self> {
-        Self::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_rows_kernel_v1(
-            config,
-            tensors,
-            device,
-            max_context,
-            apxinf_metal::TailMlpHeadRowsKernelV1::LegacyR8Sg8,
-        )
-    }
-
-    /// Diagnostic-only selector for comparing first-stage vocabulary-row
-    /// kernels inside the otherwise identical boundary + tail-head v1 lane.
-    /// The ordinary v1 constructor remains pinned to the legacy kernel.
-    #[cfg(feature = "metal-w8")]
-    pub fn from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_rows_kernel_v1(
-        config: Qwen35Config,
-        tensors: HashMap<String, Tensor>,
-        device: Device,
-        max_context: usize,
-        rows_kernel: apxinf_metal::TailMlpHeadRowsKernelV1,
-    ) -> Result<Self> {
-        Self::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_kernels_v1(
-            config,
-            tensors,
-            device,
-            max_context,
-            rows_kernel,
-            apxinf_metal::TailMlpHeadFinalKernelV1::LegacyThreadgroupSerial,
-        )
-    }
-
-    /// Diagnostic-only combined selector. Existing constructors remain pinned
-    /// to the legacy final reduction; this is the sole model-level opt-in for
-    /// an alternative rows + final top-4 kernel pair.
-    #[cfg(feature = "metal-w8")]
-    pub fn from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_kernels_v1(
-        config: Qwen35Config,
-        tensors: HashMap<String, Tensor>,
-        device: Device,
-        max_context: usize,
-        rows_kernel: apxinf_metal::TailMlpHeadRowsKernelV1,
-        final_kernel: apxinf_metal::TailMlpHeadFinalKernelV1,
-    ) -> Result<Self> {
         if !config.text.tie_word_embeddings {
             return Err(Error::Other(
                 "qwen3.5 Metal W8 boundary + tail-head v1 requires tied word embeddings".into(),
@@ -969,12 +923,7 @@ impl GeneralQwen35 {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(&config.text)?;
         let backend = create_backend(device)?;
         let weights = Qwen35TextWeights::from_map(&config, tensors)?;
-        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack(
-            &weights,
-            &config.text,
-            rows_kernel,
-            final_kernel,
-        )?;
+        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack(&weights, &config.text)?;
         let mut model =
             Self::new_with_metal_options(config, weights, backend, max_context, false, None, None)?;
         model.metal_w8_mlp_stack3_boundary_tail_head_v1 = Some(lane);
@@ -1505,24 +1454,6 @@ impl GeneralQwen35 {
         self.metal_w8_mlp_stack3_boundary_tail_head_v1
             .as_ref()
             .map(Qwen35MetalW8MlpStack3BoundaryTailHeadV1::stats)
-    }
-
-    #[cfg(feature = "metal-w8")]
-    pub fn metal_w8_mlp_stack3_boundary_tail_head_v1_rows_kernel(
-        &self,
-    ) -> Option<apxinf_metal::TailMlpHeadRowsKernelV1> {
-        self.metal_w8_mlp_stack3_boundary_tail_head_v1
-            .as_ref()
-            .map(|lane| lane.tail.rows_kernel())
-    }
-
-    #[cfg(feature = "metal-w8")]
-    pub fn metal_w8_mlp_stack3_boundary_tail_head_v1_final_kernel(
-        &self,
-    ) -> Option<apxinf_metal::TailMlpHeadFinalKernelV1> {
-        self.metal_w8_mlp_stack3_boundary_tail_head_v1
-            .as_ref()
-            .map(|lane| lane.tail.final_kernel())
     }
 
     #[cfg(feature = "metal-w8")]
@@ -3166,62 +3097,6 @@ impl LlmTrait for GeneralQwen35 {
                         })
                     })
                     .collect::<Vec<_>>();
-                let decode_head = serde_json::json!({
-                    "mechanism": "metal-w8-tail-v1",
-                    "topk_rows_kernel": lane.tail_rows_kernel.receipt_label(),
-                    "rows_per_threadgroup": lane.tail_rows_kernel_receipt.rows_per_threadgroup,
-                    "rows_per_simdgroup": lane.tail_rows_kernel_receipt.rows_per_simdgroup,
-                    "simdgroups_per_threadgroup": lane.tail_rows_kernel_receipt.simdgroups_per_threadgroup,
-                    "threads_per_threadgroup": lane.tail_rows_kernel_receipt.threads_per_threadgroup,
-                    "partial_count": lane.tail_rows_kernel_receipt.partial_count,
-                    "partial_topk_bytes": lane.tail_rows_kernel_receipt.partial_topk_bytes,
-                    "pipeline_max_total_threads_per_threadgroup": lane.tail_rows_kernel_receipt.pipeline_max_total_threads_per_threadgroup,
-                    "pipeline_thread_execution_width": lane.tail_rows_kernel_receipt.pipeline_thread_execution_width,
-                    "topk_final_kernel": lane.tail_final_kernel.receipt_label(),
-                    "final_threads_per_threadgroup": lane.tail_final_kernel_receipt.threads_per_threadgroup,
-                    "final_simdgroups_per_threadgroup": lane.tail_final_kernel_receipt.simdgroups_per_threadgroup,
-                    "final_stage_one_leader_count": lane.tail_final_kernel_receipt.stage_one_leader_count,
-                    "final_stage_one_candidate_slots": lane.tail_final_kernel_receipt.stage_one_candidate_slots,
-                    "final_threadgroup_barriers": lane.tail_final_kernel_receipt.threadgroup_barriers,
-                    "final_pipeline_max_total_threads_per_threadgroup": lane.tail_final_kernel_receipt.pipeline_max_total_threads_per_threadgroup,
-                    "final_pipeline_thread_execution_width": lane.tail_final_kernel_receipt.pipeline_thread_execution_width,
-                    "final_pipeline_static_threadgroup_memory_length": lane.tail_final_kernel_receipt.pipeline_static_threadgroup_memory_length,
-                    "runtime_observed": true,
-                    "cooperative_across_simdgroups": false,
-                    "layer_index": lane.tail_layer_index,
-                    "calls": lane.decode_calls,
-                    "teacher_calls": lane.teacher_calls,
-                    "tail_transactions": lane.tail.decode_calls,
-                    "successful_transactions": lane.tail.successful_decodes,
-                    "failed_transactions": lane.tail.failed_decodes,
-                    "command_buffers": lane.tail.command_buffers,
-                    "compute_encoders": lane.tail.compute_encoders,
-                    "kernel_dispatches": lane.tail.kernel_dispatches,
-                    "commits": lane.tail.commits,
-                    "waits": lane.tail.waits,
-                    "host_to_device_bytes": lane.tail.host_to_device_bytes,
-                    "device_to_host_bytes": lane.tail.device_to_host_bytes,
-                    "output_commits": lane.tail.output_commits,
-                    "last_output_commit_mask": lane.tail.last_output_commit_mask,
-                    "rerank_elapsed_ns": lane.rerank_elapsed_ns,
-                    "terminal_error": lane.tail.terminal_error,
-                });
-                let aggregate_receipt = serde_json::json!({
-                    "scope": aggregate.scope,
-                    "includes_lm_head": aggregate.includes_lm_head,
-                    "persistent_mtlbuffer_bytes": aggregate.total_persistent_mtlbuffer_bytes,
-                    "allocated_buffers": aggregate.allocated_buffers,
-                    "shared_buffers": aggregate.shared_buffers,
-                    "private_buffers": aggregate.private_buffers,
-                    "host_to_device_bytes_per_decode": aggregate.host_to_device_bytes_per_decode,
-                    "device_to_host_bytes_per_decode": aggregate.device_to_host_bytes_per_decode,
-                    "state_host_transfer_bytes_per_decode": aggregate.state_host_transfer_bytes_per_decode,
-                    "command_buffers_per_decode": aggregate.command_buffers_per_decode,
-                    "compute_encoders_per_decode": aggregate.compute_encoders_per_decode,
-                    "kernel_dispatches_per_decode": aggregate.kernel_dispatches_per_decode,
-                    "commits_per_decode": aggregate.commits_per_decode,
-                    "waits_per_decode": aggregate.waits_per_decode,
-                });
                 return Some(serde_json::json!({
                     "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
                     "mechanism": lane.mechanism,
@@ -3259,8 +3134,42 @@ impl LlmTrait for GeneralQwen35 {
                         "calls": lane.prefill_cpu_head_calls,
                         "tail_transactions": 0,
                     },
-                    "decode_head": decode_head,
-                    "aggregate": aggregate_receipt,
+                    "decode_head": {
+                        "mechanism": "metal-w8-tail-v1",
+                        "layer_index": lane.tail_layer_index,
+                        "calls": lane.decode_calls,
+                        "teacher_calls": lane.teacher_calls,
+                        "tail_transactions": lane.tail.decode_calls,
+                        "successful_transactions": lane.tail.successful_decodes,
+                        "failed_transactions": lane.tail.failed_decodes,
+                        "command_buffers": lane.tail.command_buffers,
+                        "compute_encoders": lane.tail.compute_encoders,
+                        "kernel_dispatches": lane.tail.kernel_dispatches,
+                        "commits": lane.tail.commits,
+                        "waits": lane.tail.waits,
+                        "host_to_device_bytes": lane.tail.host_to_device_bytes,
+                        "device_to_host_bytes": lane.tail.device_to_host_bytes,
+                        "output_commits": lane.tail.output_commits,
+                        "last_output_commit_mask": lane.tail.last_output_commit_mask,
+                        "rerank_elapsed_ns": lane.rerank_elapsed_ns,
+                        "terminal_error": lane.tail.terminal_error,
+                    },
+                    "aggregate": {
+                        "scope": aggregate.scope,
+                        "includes_lm_head": aggregate.includes_lm_head,
+                        "persistent_mtlbuffer_bytes": aggregate.total_persistent_mtlbuffer_bytes,
+                        "allocated_buffers": aggregate.allocated_buffers,
+                        "shared_buffers": aggregate.shared_buffers,
+                        "private_buffers": aggregate.private_buffers,
+                        "host_to_device_bytes_per_decode": aggregate.host_to_device_bytes_per_decode,
+                        "device_to_host_bytes_per_decode": aggregate.device_to_host_bytes_per_decode,
+                        "state_host_transfer_bytes_per_decode": aggregate.state_host_transfer_bytes_per_decode,
+                        "command_buffers_per_decode": aggregate.command_buffers_per_decode,
+                        "compute_encoders_per_decode": aggregate.compute_encoders_per_decode,
+                        "kernel_dispatches_per_decode": aggregate.kernel_dispatches_per_decode,
+                        "commits_per_decode": aggregate.commits_per_decode,
+                        "waits_per_decode": aggregate.waits_per_decode,
+                    },
                     "terminal_error": lane.terminal_error,
                 }));
             }
@@ -5276,12 +5185,7 @@ impl Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 
 #[cfg(feature = "metal-w8")]
 impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
-    fn pack(
-        weights: &Qwen35TextWeights,
-        config: &Qwen35TextConfig,
-        rows_kernel: apxinf_metal::TailMlpHeadRowsKernelV1,
-        final_kernel: apxinf_metal::TailMlpHeadFinalKernelV1,
-    ) -> Result<Self> {
+    fn pack(weights: &Qwen35TextWeights, config: &Qwen35TextConfig) -> Result<Self> {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(config)?;
         if weights.layers.len() != 24 || weights.lm_head_weight.is_some() {
             return Err(Error::Other(
@@ -5357,12 +5261,7 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                 "qwen3.5 Metal W8 tail-head v1 assembly failed: {error}"
             ))
         })?;
-        let tail = apxinf_metal::MetalW8TailMlpHeadV1::from_packed_with_kernels(
-            &packed,
-            rows_kernel,
-            final_kernel,
-        )
-        .map_err(|error| {
+        let tail = apxinf_metal::MetalW8TailMlpHeadV1::from_packed(&packed).map_err(|error| {
             Error::Other(format!(
                 "qwen3.5 Metal W8 tail-head v1 construction failed: {error}"
             ))
@@ -5382,14 +5281,8 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
     }
 
     fn stats(&self) -> Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
-        let tail_rows_kernel_receipt = self.tail.rows_kernel_receipt();
-        let tail_final_kernel_receipt = self.tail.final_kernel_receipt();
         Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
             mechanism: "metal-w8-mlp-stack3-boundary-tail-head-v1",
-            tail_rows_kernel: tail_rows_kernel_receipt.kernel,
-            tail_rows_kernel_receipt,
-            tail_final_kernel: tail_final_kernel_receipt.kernel,
-            tail_final_kernel_receipt,
             initial_stack: self.initial_stack.stats(),
             boundaries: self
                 .boundaries
@@ -7712,14 +7605,6 @@ mod tests {
             .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
             .unwrap();
         assert_eq!(stats.mechanism, "metal-w8-mlp-stack3-boundary-tail-head-v1");
-        assert_eq!(
-            stats.tail_rows_kernel,
-            apxinf_metal::TailMlpHeadRowsKernelV1::LegacyR8Sg8
-        );
-        assert_eq!(
-            stats.tail_final_kernel,
-            apxinf_metal::TailMlpHeadFinalKernelV1::LegacyThreadgroupSerial
-        );
         assert_eq!(stats.initial_stack.layer_indices, [0, 1, 2]);
         assert_eq!(stats.boundaries.len(), 5);
         assert_eq!(stats.tail_layer_index, 23);
@@ -7731,59 +7616,6 @@ mod tests {
         assert!(diagnostic.metal_w8_mlp_block_layer_stats().is_empty());
         assert!(diagnostic.metal_w8_lm_head_stats().is_none());
 
-        let pair2_r32_sg16 =
-            GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_rows_kernel_v1(
-                config.clone(),
-                tensors.clone(),
-                Device::Cpu,
-                16,
-                apxinf_metal::TailMlpHeadRowsKernelV1::Pair2R32Sg16,
-            )
-            .unwrap();
-        assert_eq!(
-            pair2_r32_sg16.metal_w8_mlp_stack3_boundary_tail_head_v1_rows_kernel(),
-            Some(apxinf_metal::TailMlpHeadRowsKernelV1::Pair2R32Sg16)
-        );
-        assert_eq!(
-            pair2_r32_sg16.metal_w8_mlp_stack3_boundary_tail_head_v1_final_kernel(),
-            Some(apxinf_metal::TailMlpHeadFinalKernelV1::LegacyThreadgroupSerial)
-        );
-        let combined =
-            GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_kernels_v1(
-                config.clone(),
-                tensors.clone(),
-                Device::Cpu,
-                16,
-                apxinf_metal::TailMlpHeadRowsKernelV1::Pair2R32Sg16,
-                apxinf_metal::TailMlpHeadFinalKernelV1::SimdHierarchicalSg8,
-            )
-            .unwrap();
-        assert_eq!(
-            combined.metal_w8_mlp_stack3_boundary_tail_head_v1_rows_kernel(),
-            Some(apxinf_metal::TailMlpHeadRowsKernelV1::Pair2R32Sg16)
-        );
-        assert_eq!(
-            combined.metal_w8_mlp_stack3_boundary_tail_head_v1_final_kernel(),
-            Some(apxinf_metal::TailMlpHeadFinalKernelV1::SimdHierarchicalSg8)
-        );
-        let combined_receipt = combined.generation_path_receipt().unwrap();
-        assert_eq!(
-            combined_receipt["decode_head"]["topk_rows_kernel"],
-            "w8_rows_topk4_pair2_r32_sg16"
-        );
-        assert_eq!(
-            combined_receipt["decode_head"]["topk_final_kernel"],
-            "w8_final_topk4_simd_hierarchical"
-        );
-        assert_eq!(
-            combined_receipt["decode_head"]["final_stage_one_candidate_slots"],
-            32
-        );
-        assert!(
-            combined_receipt["decode_head"]["final_pipeline_static_threadgroup_memory_length"]
-                .as_u64()
-                .is_some_and(|bytes| bytes >= 256)
-        );
         let mut untied_config = config;
         untied_config.text.tie_word_embeddings = false;
         let mut untied_tensors = tensors;

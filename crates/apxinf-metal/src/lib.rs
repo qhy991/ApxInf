@@ -25,9 +25,7 @@ pub use linear_layer::{
 };
 pub use tail_mlp_head_v1::{
     MetalW8TailMlpHeadV1, PackedW8TailMlpHeadV1, TailMlpHeadBufferLedgerV1,
-    TailMlpHeadDecodeResultV1, TailMlpHeadDecodeViewV1, TailMlpHeadFinalKernelReceiptV1,
-    TailMlpHeadFinalKernelV1, TailMlpHeadMetalStatsV1, TailMlpHeadRowsKernelReceiptV1,
-    TailMlpHeadRowsKernelV1,
+    TailMlpHeadDecodeResultV1, TailMlpHeadDecodeViewV1, TailMlpHeadMetalStatsV1,
 };
 
 pub const W8_GROUP_SIZE: usize = 64;
@@ -1377,9 +1375,7 @@ mod tests {
         assert!(matvec_shader.contains("kernel void w8_rows_matvec("));
         assert!(!shader.contains("kernel void w8_rows_matvec("));
         assert!(shader.contains("kernel void w8_rows_topk4("));
-        assert!(shader.contains("kernel void w8_rows_topk4_pair2_r32_sg16("));
         assert!(shader.contains("kernel void w8_final_topk4("));
-        assert!(shader.contains("kernel void w8_final_topk4_simd_hierarchical("));
         assert!(mlp_shader.contains("kernel void w8_mlp_gate_up("));
         assert!(mlp_shader.contains("kernel void w8_mlp_silu_mul("));
         assert!(mlp_shader.contains("kernel void w8_mlp_down("));

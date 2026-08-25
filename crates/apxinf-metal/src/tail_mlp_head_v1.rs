@@ -1,125 +1,5 @@
 use crate::{MetalW8Error, PackedW8MlpBlock, PackedW8Rows, W8GroupSize, W8_TOP_K};
 
-/// Explicit first-stage vocabulary-row kernel for the diagnostic tail lane.
-/// The legacy selector remains the default; alternatives require opt-in.
-#[repr(u32)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TailMlpHeadRowsKernelV1 {
-    #[default]
-    LegacyR8Sg8 = 0,
-    Pair2R32Sg16 = 1,
-}
-
-impl TailMlpHeadRowsKernelV1 {
-    pub const fn receipt_label(self) -> &'static str {
-        match self {
-            Self::LegacyR8Sg8 => "w8_rows_topk4",
-            Self::Pair2R32Sg16 => "w8_rows_topk4_pair2_r32_sg16",
-        }
-    }
-
-    /// `(rows/TG, rows/SIMD-group, SIMD-groups/TG, threads/TG, cooperative)`.
-    pub const fn execution_shape(self) -> (u32, u32, u32, u32, bool) {
-        match self {
-            Self::LegacyR8Sg8 => (8, 1, 8, 256, false),
-            Self::Pair2R32Sg16 => (32, 2, 16, 512, false),
-        }
-    }
-
-    const fn abi_value(self) -> u32 {
-        self as u32
-    }
-
-    fn from_abi_value(value: u32) -> Option<Self> {
-        match value {
-            0 => Some(Self::LegacyR8Sg8),
-            1 => Some(Self::Pair2R32Sg16),
-            _ => None,
-        }
-    }
-}
-
-/// Explicit second-stage top-4 kernel for the diagnostic tail lane.
-/// Existing constructors and the rows-only selector remain pinned to the
-/// serial legacy final reduction; the hierarchical kernel requires combined
-/// opt-in through both selectors.
-#[repr(u32)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TailMlpHeadFinalKernelV1 {
-    #[default]
-    LegacyThreadgroupSerial = 0,
-    SimdHierarchicalSg8 = 1,
-}
-
-impl TailMlpHeadFinalKernelV1 {
-    pub const fn receipt_label(self) -> &'static str {
-        match self {
-            Self::LegacyThreadgroupSerial => "w8_final_topk4",
-            Self::SimdHierarchicalSg8 => "w8_final_topk4_simd_hierarchical",
-        }
-    }
-
-    /// `(threads/TG, SIMD-groups/TG, stage-one lists, TG barriers)`.
-    pub const fn execution_shape(self) -> (u32, u32, u32, u32) {
-        match self {
-            Self::LegacyThreadgroupSerial => (256, 8, 256, 1),
-            Self::SimdHierarchicalSg8 => (256, 8, 8, 1),
-        }
-    }
-
-    pub const fn static_threadgroup_bytes(self) -> usize {
-        match self {
-            Self::LegacyThreadgroupSerial => 256 * W8_TOP_K * 8,
-            Self::SimdHierarchicalSg8 => 8 * W8_TOP_K * 8,
-        }
-    }
-
-    pub const fn stage_one_candidate_slots(self) -> u32 {
-        self.execution_shape().2 * W8_TOP_K as u32
-    }
-
-    const fn abi_value(self) -> u32 {
-        self as u32
-    }
-
-    fn from_abi_value(value: u32) -> Option<Self> {
-        match value {
-            0 => Some(Self::LegacyThreadgroupSerial),
-            1 => Some(Self::SimdHierarchicalSg8),
-            _ => None,
-        }
-    }
-}
-
-/// Runtime-observed Metal pipeline, dispatch, and scratch allocation identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TailMlpHeadRowsKernelReceiptV1 {
-    pub kernel: TailMlpHeadRowsKernelV1,
-    pub rows_per_threadgroup: u32,
-    pub rows_per_simdgroup: u32,
-    pub simdgroups_per_threadgroup: u32,
-    pub threads_per_threadgroup: u32,
-    pub partial_count: u32,
-    pub partial_topk_bytes: usize,
-    pub pipeline_max_total_threads_per_threadgroup: u32,
-    pub pipeline_thread_execution_width: u32,
-}
-
-/// Runtime-observed second-stage pipeline identity and reduction geometry.
-/// This is a separate ABI receipt so the existing rows receipt stays stable.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TailMlpHeadFinalKernelReceiptV1 {
-    pub kernel: TailMlpHeadFinalKernelV1,
-    pub threads_per_threadgroup: u32,
-    pub simdgroups_per_threadgroup: u32,
-    pub stage_one_leader_count: u32,
-    pub stage_one_candidate_slots: u32,
-    pub threadgroup_barriers: u32,
-    pub pipeline_max_total_threads_per_threadgroup: u32,
-    pub pipeline_thread_execution_width: u32,
-    pub pipeline_static_threadgroup_memory_length: usize,
-}
-
 /// Exact resident-buffer and per-decode transaction contract for tail v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TailMlpHeadBufferLedgerV1 {
@@ -153,20 +33,6 @@ impl TailMlpHeadBufferLedgerV1 {
         hidden_size: usize,
         intermediate_size: usize,
         vocab_size: usize,
-    ) -> Result<Self, MetalW8Error> {
-        Self::from_dimensions_with_rows_kernel(
-            hidden_size,
-            intermediate_size,
-            vocab_size,
-            TailMlpHeadRowsKernelV1::default(),
-        )
-    }
-
-    pub fn from_dimensions_with_rows_kernel(
-        hidden_size: usize,
-        intermediate_size: usize,
-        vocab_size: usize,
-        rows_kernel: TailMlpHeadRowsKernelV1,
     ) -> Result<Self, MetalW8Error> {
         if hidden_size == 0
             || intermediate_size == 0
@@ -210,10 +76,9 @@ impl TailMlpHeadBufferLedgerV1 {
             .ok_or_else(|| {
                 MetalW8Error::new("Metal W8 tail MLP+head v1 activation ledger overflow")
             })?;
-        let rows_per_threadgroup = rows_kernel.execution_shape().0 as usize;
         let partial_topk_bytes = vocab_size
-            .checked_add(rows_per_threadgroup - 1)
-            .map(|rows| rows / rows_per_threadgroup)
+            .checked_add(7)
+            .map(|rows| rows / 8)
             .and_then(|count| count.checked_mul(W8_TOP_K))
             .and_then(|count| count.checked_mul(8))
             .ok_or_else(|| MetalW8Error::new("Metal W8 tail MLP+head v1 top-4 ledger overflow"))?;
@@ -315,8 +180,6 @@ pub struct TailMlpHeadDecodeViewV1<'a> {
 /// transaction. No model loader or default runtime constructs this type.
 pub struct MetalW8TailMlpHeadV1 {
     inner: platform::TailHandleV1,
-    rows_kernel_receipt: TailMlpHeadRowsKernelReceiptV1,
-    final_kernel_receipt: TailMlpHeadFinalKernelReceiptV1,
     normalized_hidden: Vec<f32>,
     candidate_token_ids: [u32; W8_TOP_K],
     terminal_error: bool,
@@ -462,44 +325,9 @@ fn require_finite(values: &[f32], label: &str) -> Result<(), MetalW8Error> {
 
 impl MetalW8TailMlpHeadV1 {
     pub fn from_packed(weights: &PackedW8TailMlpHeadV1) -> Result<Self, MetalW8Error> {
-        Self::from_packed_with_kernels(
-            weights,
-            TailMlpHeadRowsKernelV1::default(),
-            TailMlpHeadFinalKernelV1::default(),
-        )
-    }
-
-    pub fn from_packed_with_rows_kernel(
-        weights: &PackedW8TailMlpHeadV1,
-        rows_kernel: TailMlpHeadRowsKernelV1,
-    ) -> Result<Self, MetalW8Error> {
-        Self::from_packed_with_kernels(
-            weights,
-            rows_kernel,
-            TailMlpHeadFinalKernelV1::LegacyThreadgroupSerial,
-        )
-    }
-
-    /// Explicit combined rows + final selector. This is the only Rust entry
-    /// point that can opt into a non-legacy final reduction.
-    pub fn from_packed_with_kernels(
-        weights: &PackedW8TailMlpHeadV1,
-        rows_kernel: TailMlpHeadRowsKernelV1,
-        final_kernel: TailMlpHeadFinalKernelV1,
-    ) -> Result<Self, MetalW8Error> {
-        let buffer_ledger = TailMlpHeadBufferLedgerV1::from_dimensions_with_rows_kernel(
-            weights.hidden_size(),
-            weights.intermediate_size(),
-            weights.vocab_size(),
-            rows_kernel,
-        )?;
-        let inner = platform::TailHandleV1::new(weights, rows_kernel, final_kernel, buffer_ledger)?;
-        let rows_kernel_receipt = inner.rows_kernel_receipt();
-        let final_kernel_receipt = inner.final_kernel_receipt();
+        let buffer_ledger = weights.buffer_ledger()?;
         Ok(Self {
-            inner,
-            rows_kernel_receipt,
-            final_kernel_receipt,
+            inner: platform::TailHandleV1::new(weights)?,
             normalized_hidden: vec![0.0; weights.hidden_size()],
             candidate_token_ids: [u32::MAX; W8_TOP_K],
             terminal_error: false,
@@ -547,22 +375,6 @@ impl MetalW8TailMlpHeadV1 {
 
     pub fn buffer_ledger(&self) -> TailMlpHeadBufferLedgerV1 {
         self.buffer_ledger
-    }
-
-    pub fn rows_kernel(&self) -> TailMlpHeadRowsKernelV1 {
-        self.rows_kernel_receipt.kernel
-    }
-
-    pub fn rows_kernel_receipt(&self) -> TailMlpHeadRowsKernelReceiptV1 {
-        self.rows_kernel_receipt
-    }
-
-    pub fn final_kernel(&self) -> TailMlpHeadFinalKernelV1 {
-        self.final_kernel_receipt.kernel
-    }
-
-    pub fn final_kernel_receipt(&self) -> TailMlpHeadFinalKernelReceiptV1 {
-        self.final_kernel_receipt
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -786,11 +598,7 @@ fn rms_norm(input: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{
-        MetalW8Error, PackedW8TailMlpHeadV1, TailMlpHeadBufferLedgerV1,
-        TailMlpHeadFinalKernelReceiptV1, TailMlpHeadFinalKernelV1, TailMlpHeadRowsKernelReceiptV1,
-        TailMlpHeadRowsKernelV1, W8_TOP_K,
-    };
+    use super::{MetalW8Error, PackedW8TailMlpHeadV1, W8_TOP_K};
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
 
@@ -827,34 +635,6 @@ mod platform {
         pub(super) output_commit_mask: u32,
     }
 
-    #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default)]
-    struct RawTailRowsKernelReceiptV1 {
-        rows_kernel: u32,
-        rows_per_threadgroup: u32,
-        rows_per_simdgroup: u32,
-        simdgroups_per_threadgroup: u32,
-        threads_per_threadgroup: u32,
-        partial_count: u32,
-        partial_topk_bytes: u64,
-        pipeline_max_total_threads_per_threadgroup: u32,
-        pipeline_thread_execution_width: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default)]
-    struct RawTailFinalKernelReceiptV1 {
-        final_kernel: u32,
-        threads_per_threadgroup: u32,
-        simdgroups_per_threadgroup: u32,
-        stage_one_leader_count: u32,
-        stage_one_candidate_slots: u32,
-        threadgroup_barriers: u32,
-        pipeline_max_total_threads_per_threadgroup: u32,
-        pipeline_thread_execution_width: u32,
-        pipeline_static_threadgroup_memory_length: u64,
-    }
-
     pub(super) struct TailExecutionV1 {
         pub(super) receipt: TailExecutionReceiptV1,
         pub(super) result: Result<(), MetalW8Error>,
@@ -864,33 +644,6 @@ mod platform {
         fn apxinf_metal_w8_tail_mlp_head_create_v1(
             descriptor: *const TailDescriptorV1,
             output: *mut *mut c_void,
-            error: *mut c_char,
-            error_capacity: usize,
-        ) -> c_int;
-        fn apxinf_metal_w8_tail_mlp_head_create_with_rows_kernel_v1(
-            descriptor: *const TailDescriptorV1,
-            rows_kernel: u32,
-            output: *mut *mut c_void,
-            error: *mut c_char,
-            error_capacity: usize,
-        ) -> c_int;
-        fn apxinf_metal_w8_tail_mlp_head_create_with_kernels_v1(
-            descriptor: *const TailDescriptorV1,
-            rows_kernel: u32,
-            final_kernel: u32,
-            output: *mut *mut c_void,
-            error: *mut c_char,
-            error_capacity: usize,
-        ) -> c_int;
-        fn apxinf_metal_w8_tail_mlp_head_rows_kernel_receipt_v1(
-            handle: *mut c_void,
-            receipt: *mut RawTailRowsKernelReceiptV1,
-            error: *mut c_char,
-            error_capacity: usize,
-        ) -> c_int;
-        fn apxinf_metal_w8_tail_mlp_head_final_kernel_receipt_v1(
-            handle: *mut c_void,
-            receipt: *mut RawTailFinalKernelReceiptV1,
             error: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
@@ -918,17 +671,10 @@ mod platform {
     pub(super) struct TailHandleV1 {
         handle: NonNull<c_void>,
         vocab_size: usize,
-        rows_kernel_receipt: TailMlpHeadRowsKernelReceiptV1,
-        final_kernel_receipt: TailMlpHeadFinalKernelReceiptV1,
     }
 
     impl TailHandleV1 {
-        pub(super) fn new(
-            weights: &PackedW8TailMlpHeadV1,
-            rows_kernel: TailMlpHeadRowsKernelV1,
-            final_kernel: TailMlpHeadFinalKernelV1,
-            buffer_ledger: TailMlpHeadBufferLedgerV1,
-        ) -> Result<Self, MetalW8Error> {
+        pub(super) fn new(weights: &PackedW8TailMlpHeadV1) -> Result<Self, MetalW8Error> {
             let descriptor = TailDescriptorV1 {
                 gate_up_weights: weights.mlp.gate_up.values().as_ptr(),
                 gate_up_scales: weights.mlp.gate_up.scales().as_ptr(),
@@ -946,36 +692,12 @@ mod platform {
             let mut output = std::ptr::null_mut();
             let mut error = [0 as c_char; ERROR_CAPACITY];
             let status = unsafe {
-                match (rows_kernel, final_kernel) {
-                    (
-                        TailMlpHeadRowsKernelV1::LegacyR8Sg8,
-                        TailMlpHeadFinalKernelV1::LegacyThreadgroupSerial,
-                    ) => apxinf_metal_w8_tail_mlp_head_create_v1(
-                        &descriptor,
-                        &mut output,
-                        error.as_mut_ptr(),
-                        error.len(),
-                    ),
-                    (_, TailMlpHeadFinalKernelV1::LegacyThreadgroupSerial) => {
-                        apxinf_metal_w8_tail_mlp_head_create_with_rows_kernel_v1(
-                            &descriptor,
-                            rows_kernel.abi_value(),
-                            &mut output,
-                            error.as_mut_ptr(),
-                            error.len(),
-                        )
-                    }
-                    (_, TailMlpHeadFinalKernelV1::SimdHierarchicalSg8) => {
-                        apxinf_metal_w8_tail_mlp_head_create_with_kernels_v1(
-                            &descriptor,
-                            rows_kernel.abi_value(),
-                            final_kernel.abi_value(),
-                            &mut output,
-                            error.as_mut_ptr(),
-                            error.len(),
-                        )
-                    }
-                }
+                apxinf_metal_w8_tail_mlp_head_create_v1(
+                    &descriptor,
+                    &mut output,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
             };
             if status != 0 {
                 return Err(bridge_error("create Metal W8 tail MLP+head v1", &error));
@@ -983,150 +705,10 @@ mod platform {
             let handle = NonNull::new(output).ok_or_else(|| {
                 MetalW8Error::new("create Metal W8 tail MLP+head v1 returned a null handle")
             })?;
-            let mut raw_receipt = RawTailRowsKernelReceiptV1::default();
-            error.fill(0);
-            let receipt_status = unsafe {
-                apxinf_metal_w8_tail_mlp_head_rows_kernel_receipt_v1(
-                    handle.as_ptr(),
-                    &mut raw_receipt,
-                    error.as_mut_ptr(),
-                    error.len(),
-                )
-            };
-            if receipt_status != 0 {
-                unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                return Err(bridge_error(
-                    "read Metal W8 tail MLP+head v1 rows-kernel receipt",
-                    &error,
-                ));
-            }
-            let observed_kernel = TailMlpHeadRowsKernelV1::from_abi_value(raw_receipt.rows_kernel)
-                .ok_or_else(|| {
-                    unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                    MetalW8Error::new(
-                        "Metal W8 tail MLP+head v1 returned an unknown rows-kernel selector",
-                    )
-                })?;
-            let expected_shape = rows_kernel.execution_shape();
-            let expected_partial_count =
-                weights.vocab_size().div_ceil(expected_shape.0 as usize) as u32;
-            let observed_partial_topk_bytes = usize::try_from(raw_receipt.partial_topk_bytes)
-                .map_err(|_| {
-                    unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                    MetalW8Error::new("Metal W8 tail MLP+head v1 rows-kernel receipt exceeds usize")
-                })?;
-            let receipt_matches = observed_kernel == rows_kernel
-                && raw_receipt.rows_per_threadgroup == expected_shape.0
-                && raw_receipt.rows_per_simdgroup == expected_shape.1
-                && raw_receipt.simdgroups_per_threadgroup == expected_shape.2
-                && raw_receipt.threads_per_threadgroup == expected_shape.3
-                && raw_receipt.partial_count == expected_partial_count
-                && observed_partial_topk_bytes == buffer_ledger.partial_topk_bytes
-                && raw_receipt.pipeline_max_total_threads_per_threadgroup >= expected_shape.3
-                && raw_receipt.pipeline_thread_execution_width == 32
-                && raw_receipt
-                    .pipeline_thread_execution_width
-                    .checked_mul(raw_receipt.simdgroups_per_threadgroup)
-                    == Some(raw_receipt.threads_per_threadgroup);
-            if !receipt_matches {
-                unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                return Err(MetalW8Error::new(
-                    "Metal W8 tail MLP+head v1 rows-kernel runtime receipt drifted from the requested selector and ledger",
-                ));
-            }
-            let rows_kernel_receipt = TailMlpHeadRowsKernelReceiptV1 {
-                kernel: observed_kernel,
-                rows_per_threadgroup: raw_receipt.rows_per_threadgroup,
-                rows_per_simdgroup: raw_receipt.rows_per_simdgroup,
-                simdgroups_per_threadgroup: raw_receipt.simdgroups_per_threadgroup,
-                threads_per_threadgroup: raw_receipt.threads_per_threadgroup,
-                partial_count: raw_receipt.partial_count,
-                partial_topk_bytes: observed_partial_topk_bytes,
-                pipeline_max_total_threads_per_threadgroup: raw_receipt
-                    .pipeline_max_total_threads_per_threadgroup,
-                pipeline_thread_execution_width: raw_receipt.pipeline_thread_execution_width,
-            };
-            let mut raw_final_receipt = RawTailFinalKernelReceiptV1::default();
-            error.fill(0);
-            let final_receipt_status = unsafe {
-                apxinf_metal_w8_tail_mlp_head_final_kernel_receipt_v1(
-                    handle.as_ptr(),
-                    &mut raw_final_receipt,
-                    error.as_mut_ptr(),
-                    error.len(),
-                )
-            };
-            if final_receipt_status != 0 {
-                unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                return Err(bridge_error(
-                    "read Metal W8 tail MLP+head v1 final-kernel receipt",
-                    &error,
-                ));
-            }
-            let observed_final_kernel =
-                TailMlpHeadFinalKernelV1::from_abi_value(raw_final_receipt.final_kernel)
-                    .ok_or_else(|| {
-                        unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                        MetalW8Error::new(
-                            "Metal W8 tail MLP+head v1 returned an unknown final-kernel selector",
-                        )
-                    })?;
-            let expected_final_shape = final_kernel.execution_shape();
-            let observed_static_threadgroup_bytes =
-                usize::try_from(raw_final_receipt.pipeline_static_threadgroup_memory_length)
-                    .map_err(|_| {
-                        unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                        MetalW8Error::new(
-                            "Metal W8 tail MLP+head v1 final-kernel static memory exceeds usize",
-                        )
-                    })?;
-            let final_receipt_matches = observed_final_kernel == final_kernel
-                && raw_final_receipt.threads_per_threadgroup == expected_final_shape.0
-                && raw_final_receipt.simdgroups_per_threadgroup == expected_final_shape.1
-                && raw_final_receipt.stage_one_leader_count == expected_final_shape.2
-                && raw_final_receipt.stage_one_candidate_slots
-                    == final_kernel.stage_one_candidate_slots()
-                && raw_final_receipt.threadgroup_barriers == expected_final_shape.3
-                && raw_final_receipt.pipeline_max_total_threads_per_threadgroup
-                    >= expected_final_shape.0
-                && raw_final_receipt.pipeline_thread_execution_width == 32
-                && observed_static_threadgroup_bytes >= final_kernel.static_threadgroup_bytes()
-                && raw_final_receipt
-                    .pipeline_thread_execution_width
-                    .checked_mul(raw_final_receipt.simdgroups_per_threadgroup)
-                    == Some(raw_final_receipt.threads_per_threadgroup);
-            if !final_receipt_matches {
-                unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                return Err(MetalW8Error::new(
-                    "Metal W8 tail MLP+head v1 final-kernel runtime receipt drifted from the requested selector",
-                ));
-            }
-            let final_kernel_receipt = TailMlpHeadFinalKernelReceiptV1 {
-                kernel: observed_final_kernel,
-                threads_per_threadgroup: raw_final_receipt.threads_per_threadgroup,
-                simdgroups_per_threadgroup: raw_final_receipt.simdgroups_per_threadgroup,
-                stage_one_leader_count: raw_final_receipt.stage_one_leader_count,
-                stage_one_candidate_slots: raw_final_receipt.stage_one_candidate_slots,
-                threadgroup_barriers: raw_final_receipt.threadgroup_barriers,
-                pipeline_max_total_threads_per_threadgroup: raw_final_receipt
-                    .pipeline_max_total_threads_per_threadgroup,
-                pipeline_thread_execution_width: raw_final_receipt.pipeline_thread_execution_width,
-                pipeline_static_threadgroup_memory_length: observed_static_threadgroup_bytes,
-            };
             Ok(Self {
                 handle,
                 vocab_size: weights.vocab_size(),
-                rows_kernel_receipt,
-                final_kernel_receipt,
             })
-        }
-
-        pub(super) fn rows_kernel_receipt(&self) -> TailMlpHeadRowsKernelReceiptV1 {
-            self.rows_kernel_receipt
-        }
-
-        pub(super) fn final_kernel_receipt(&self) -> TailMlpHeadFinalKernelReceiptV1 {
-            self.final_kernel_receipt
         }
 
         pub(super) fn decode(
@@ -1202,11 +784,7 @@ mod platform {
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
-    use super::{
-        MetalW8Error, PackedW8TailMlpHeadV1, TailMlpHeadBufferLedgerV1,
-        TailMlpHeadFinalKernelReceiptV1, TailMlpHeadFinalKernelV1, TailMlpHeadRowsKernelReceiptV1,
-        TailMlpHeadRowsKernelV1, W8_TOP_K,
-    };
+    use super::{MetalW8Error, PackedW8TailMlpHeadV1, W8_TOP_K};
 
     #[derive(Clone, Copy, Debug, Default)]
     pub(super) struct TailExecutionReceiptV1 {
@@ -1230,23 +808,10 @@ mod platform {
     pub(super) struct TailHandleV1;
 
     impl TailHandleV1 {
-        pub(super) fn new(
-            _weights: &PackedW8TailMlpHeadV1,
-            _rows_kernel: TailMlpHeadRowsKernelV1,
-            _final_kernel: TailMlpHeadFinalKernelV1,
-            _buffer_ledger: TailMlpHeadBufferLedgerV1,
-        ) -> Result<Self, MetalW8Error> {
+        pub(super) fn new(_weights: &PackedW8TailMlpHeadV1) -> Result<Self, MetalW8Error> {
             Err(MetalW8Error::new(
                 "Metal W8 tail MLP+head v1 requires macOS",
             ))
-        }
-
-        pub(super) fn rows_kernel_receipt(&self) -> TailMlpHeadRowsKernelReceiptV1 {
-            unreachable!("non-macOS tail handle cannot be constructed")
-        }
-
-        pub(super) fn final_kernel_receipt(&self) -> TailMlpHeadFinalKernelReceiptV1 {
-            unreachable!("non-macOS tail handle cannot be constructed")
         }
 
         pub(super) fn decode(
