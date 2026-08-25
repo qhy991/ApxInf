@@ -31,6 +31,181 @@ pub use tail_mlp_head_v1::{
 pub const W8_GROUP_SIZE: usize = 64;
 pub const W8_TOP_K: usize = 4;
 
+/// Explicit scale-load selector for the diagnostic complete-body and fused
+/// tail libraries. Existing constructors remain fixed to
+/// [`Self::LegacyPerLane`].
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum W8ScaleLoadProfileV1 {
+    #[default]
+    LegacyPerLane = 0,
+    SimdBroadcast = 1,
+}
+
+impl W8ScaleLoadProfileV1 {
+    pub const fn selector(self) -> u32 {
+        self as u32
+    }
+
+    pub const fn expected_gdn_input_function_name(self) -> &'static str {
+        match self {
+            Self::LegacyPerLane => "gdn_w8_input_projection",
+            Self::SimdBroadcast => "gdn_w8_input_projection_scale_broadcast",
+        }
+    }
+
+    pub const fn expected_gdn_output_function_name(self) -> &'static str {
+        match self {
+            Self::LegacyPerLane => "gdn_w8_output_projection_g32",
+            Self::SimdBroadcast => "gdn_w8_output_projection_g32_scale_broadcast",
+        }
+    }
+
+    pub const fn expected_mlp_gate_up_function_name(self) -> &'static str {
+        match self {
+            Self::LegacyPerLane => "w8_mlp_gate_up",
+            Self::SimdBroadcast => "w8_mlp_gate_up_scale_broadcast",
+        }
+    }
+
+    pub const fn expected_mlp_down_function_name(self) -> &'static str {
+        match self {
+            Self::LegacyPerLane => "w8_mlp_down",
+            Self::SimdBroadcast => "w8_mlp_down_scale_broadcast",
+        }
+    }
+
+    pub const fn expected_vocab_rows_function_name(self) -> &'static str {
+        match self {
+            Self::LegacyPerLane => "w8_rows_topk4",
+            Self::SimdBroadcast => "w8_rows_topk4_scale_broadcast",
+        }
+    }
+
+    pub const fn g64_scale_loader_lanes_per_full_simd(self) -> usize {
+        match self {
+            Self::LegacyPerLane => 32,
+            Self::SimdBroadcast => 2,
+        }
+    }
+
+    pub const fn g32_scale_loader_lanes_per_full_simd(self) -> usize {
+        match self {
+            Self::LegacyPerLane => 32,
+            Self::SimdBroadcast => 4,
+        }
+    }
+
+    pub const fn g64_broadcasts_per_full_simd(self) -> usize {
+        match self {
+            Self::LegacyPerLane => 0,
+            Self::SimdBroadcast => 2,
+        }
+    }
+
+    pub const fn g32_broadcasts_per_full_simd(self) -> usize {
+        match self {
+            Self::LegacyPerLane => 0,
+            Self::SimdBroadcast => 4,
+        }
+    }
+}
+
+impl TryFrom<u32> for W8ScaleLoadProfileV1 {
+    type Error = MetalW8Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::LegacyPerLane),
+            1 => Ok(Self::SimdBroadcast),
+            _ => Err(MetalW8Error::new(format!(
+                "Metal W8 scale-load profile {value} is invalid; expected 0 or 1"
+            ))),
+        }
+    }
+}
+
+/// Fail-closed runtime proof for the four selected body W8 functions. The
+/// observed profile is derived from the live `MTLFunction.name` values kept by
+/// the bridge, not echoed from the request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W8BodyScaleLoadRuntimeReceiptV1 {
+    pub requested_profile: W8ScaleLoadProfileV1,
+    pub observed_profile: W8ScaleLoadProfileV1,
+    pub threads_per_threadgroup: usize,
+    pub pipeline_thread_execution_width: usize,
+    pub dynamic_threadgroup_memory_bytes: usize,
+    pub threadgroup_barriers_per_projection: usize,
+    pub g64_scale_loader_lanes_per_full_simd: usize,
+    pub g32_scale_loader_lanes_per_full_simd: usize,
+    pub g64_broadcasts_per_full_simd: usize,
+    pub g32_broadcasts_per_full_simd: usize,
+    pub gdn_input_function_name: &'static str,
+    pub gdn_output_function_name: &'static str,
+    pub mlp_gate_up_function_name: &'static str,
+    pub mlp_down_function_name: &'static str,
+}
+
+/// Fail-closed runtime proof for the three selected tail W8 functions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W8TailScaleLoadRuntimeReceiptV1 {
+    pub requested_profile: W8ScaleLoadProfileV1,
+    pub observed_profile: W8ScaleLoadProfileV1,
+    pub threads_per_threadgroup: usize,
+    pub pipeline_thread_execution_width: usize,
+    pub dynamic_threadgroup_memory_bytes: usize,
+    pub added_threadgroup_barriers_per_transaction: usize,
+    pub g64_scale_loader_lanes_per_full_simd: usize,
+    pub g64_broadcasts_per_full_simd: usize,
+    pub mlp_gate_up_function_name: &'static str,
+    pub mlp_down_function_name: &'static str,
+    pub vocab_rows_function_name: &'static str,
+}
+
+pub(crate) const fn body_scale_load_receipt(
+    requested_profile: W8ScaleLoadProfileV1,
+    observed_profile: W8ScaleLoadProfileV1,
+) -> W8BodyScaleLoadRuntimeReceiptV1 {
+    W8BodyScaleLoadRuntimeReceiptV1 {
+        requested_profile,
+        observed_profile,
+        threads_per_threadgroup: 256,
+        pipeline_thread_execution_width: 32,
+        dynamic_threadgroup_memory_bytes: 0,
+        threadgroup_barriers_per_projection: 0,
+        g64_scale_loader_lanes_per_full_simd: observed_profile
+            .g64_scale_loader_lanes_per_full_simd(),
+        g32_scale_loader_lanes_per_full_simd: observed_profile
+            .g32_scale_loader_lanes_per_full_simd(),
+        g64_broadcasts_per_full_simd: observed_profile.g64_broadcasts_per_full_simd(),
+        g32_broadcasts_per_full_simd: observed_profile.g32_broadcasts_per_full_simd(),
+        gdn_input_function_name: observed_profile.expected_gdn_input_function_name(),
+        gdn_output_function_name: observed_profile.expected_gdn_output_function_name(),
+        mlp_gate_up_function_name: observed_profile.expected_mlp_gate_up_function_name(),
+        mlp_down_function_name: observed_profile.expected_mlp_down_function_name(),
+    }
+}
+
+pub(crate) const fn tail_scale_load_receipt(
+    requested_profile: W8ScaleLoadProfileV1,
+    observed_profile: W8ScaleLoadProfileV1,
+) -> W8TailScaleLoadRuntimeReceiptV1 {
+    W8TailScaleLoadRuntimeReceiptV1 {
+        requested_profile,
+        observed_profile,
+        threads_per_threadgroup: 256,
+        pipeline_thread_execution_width: 32,
+        dynamic_threadgroup_memory_bytes: 0,
+        added_threadgroup_barriers_per_transaction: 0,
+        g64_scale_loader_lanes_per_full_simd: observed_profile
+            .g64_scale_loader_lanes_per_full_simd(),
+        g64_broadcasts_per_full_simd: observed_profile.g64_broadcasts_per_full_simd(),
+        mlp_gate_up_function_name: observed_profile.expected_mlp_gate_up_function_name(),
+        mlp_down_function_name: observed_profile.expected_mlp_down_function_name(),
+        vocab_rows_function_name: observed_profile.expected_vocab_rows_function_name(),
+    }
+}
+
 /// Quantization group sizes supported by the CPU packed-weight oracle.
 ///
 /// Legacy Metal entry points remain ABI-locked to [`Self::G64`]. [`Self::G32`]

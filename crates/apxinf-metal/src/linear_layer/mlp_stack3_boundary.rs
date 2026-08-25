@@ -2,6 +2,7 @@ use super::{
     checked_sum, f32_bytes, rms_norm, GdnDecodeState, GdnDimensions, MetalW8Error,
     PackedW8LinearLayerBlock,
 };
+use crate::{body_scale_load_receipt, W8BodyScaleLoadRuntimeReceiptV1, W8ScaleLoadProfileV1};
 use crate::{PackedW8MlpBlock, W8GroupSize};
 
 const STACK_DEPTH: usize = 3;
@@ -80,6 +81,7 @@ pub struct MetalW8MlpStack3BoundaryV1 {
     terminal_error: bool,
     stats: MlpStack3BoundaryMetalStatsV1,
     buffer_ledger: MlpStack3BoundaryBufferLedgerV1,
+    scale_load_receipt: W8BodyScaleLoadRuntimeReceiptV1,
 }
 
 impl PackedW8MlpStack3BoundaryV1 {
@@ -324,16 +326,34 @@ impl PackedW8MlpStack3BoundaryV1 {
 
 impl MetalW8MlpStack3BoundaryV1 {
     pub fn from_packed(weights: &PackedW8MlpStack3BoundaryV1) -> Result<Self, MetalW8Error> {
+        Self::from_packed_with_scale_load_profile_v1(weights, W8ScaleLoadProfileV1::LegacyPerLane)
+    }
+
+    /// Additive diagnostic selector for broadcasting identical per-group W8
+    /// scales within each SIMD group. The legacy constructor above remains
+    /// permanently fixed to per-lane loads.
+    pub fn from_packed_with_scale_load_profile_v1(
+        weights: &PackedW8MlpStack3BoundaryV1,
+        scale_load_profile: W8ScaleLoadProfileV1,
+    ) -> Result<Self, MetalW8Error> {
         validate_u32_contract(weights)?;
         let buffer_ledger = weights.buffer_ledger()?;
+        let inner = platform::BoundaryHandleV1::new(weights, scale_load_profile)?;
+        let observed_profile = inner.observed_scale_load_profile()?;
+        if observed_profile != scale_load_profile {
+            return Err(MetalW8Error::new(
+                "Metal W8 MLP→Stack3 boundary v1 observed scale-load profile differs from its request",
+            ));
+        }
         Ok(Self {
             dims: weights.dims,
-            inner: platform::BoundaryHandleV1::new(weights)?,
+            inner,
             output: vec![0.0; weights.hidden_size()],
             seeded: false,
             terminal_error: false,
             stats: MlpStack3BoundaryMetalStatsV1::default(),
             buffer_ledger,
+            scale_load_receipt: body_scale_load_receipt(scale_load_profile, observed_profile),
         })
     }
 
@@ -395,6 +415,10 @@ impl MetalW8MlpStack3BoundaryV1 {
 
     pub fn buffer_ledger(&self) -> MlpStack3BoundaryBufferLedgerV1 {
         self.buffer_ledger
+    }
+
+    pub fn scale_load_runtime_receipt_v1(&self) -> W8BodyScaleLoadRuntimeReceiptV1 {
+        self.scale_load_receipt
     }
 
     fn validate_decode_input(&self, hidden: &[f32]) -> Result<(), MetalW8Error> {
@@ -685,6 +709,8 @@ mod tests {
         let bridge = include_str!("../metal_w8_mlp_stack3_boundary_v1_bridge.mm");
         for symbol in [
             "apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(",
+            "apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_with_scale_load_profile_v1(",
+            "apxinf_metal_w8_mlp_stack3_boundary_observed_scale_load_profile_v1(",
             "apxinf_metal_w8_mlp_stack3_boundary_seed_states_v1(",
             "apxinf_metal_w8_mlp_stack3_boundary_decode_v1(",
             "apxinf_metal_w8_mlp_stack3_boundary_snapshot_state_v1(",
@@ -774,7 +800,7 @@ mod tests {
 mod platform {
     use super::{
         GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock,
-        PackedW8MlpStack3BoundaryV1, STACK_DEPTH,
+        PackedW8MlpStack3BoundaryV1, W8ScaleLoadProfileV1, STACK_DEPTH,
     };
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
@@ -894,6 +920,21 @@ mod platform {
     }
 
     extern "C" {
+        fn apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_with_scale_load_profile_v1(
+            boundary: *const BoundaryMlpDescriptorV1,
+            layers: *const BoundaryStackLayerDescriptorV1,
+            layer_count: u32,
+            scale_load_profile: u32,
+            output: *mut *mut c_void,
+            error: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn apxinf_metal_w8_mlp_stack3_boundary_observed_scale_load_profile_v1(
+            handle: *mut c_void,
+            profile: *mut u32,
+            error: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
             boundary: *const BoundaryMlpDescriptorV1,
             layers: *const BoundaryStackLayerDescriptorV1,
@@ -933,7 +974,10 @@ mod platform {
     pub(super) struct BoundaryHandleV1(NonNull<c_void>);
 
     impl BoundaryHandleV1 {
-        pub(super) fn new(weights: &PackedW8MlpStack3BoundaryV1) -> Result<Self, MetalW8Error> {
+        pub(super) fn new(
+            weights: &PackedW8MlpStack3BoundaryV1,
+            scale_load_profile: W8ScaleLoadProfileV1,
+        ) -> Result<Self, MetalW8Error> {
             let boundary = BoundaryMlpDescriptorV1 {
                 gate_up_weights: weights.boundary_mlp.gate_up.values().as_ptr(),
                 gate_up_scales: weights.boundary_mlp.gate_up.scales().as_ptr(),
@@ -951,14 +995,29 @@ mod platform {
             let mut output = std::ptr::null_mut();
             let mut error = [0 as c_char; ERROR_CAPACITY];
             let status = unsafe {
-                apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
-                    &boundary,
-                    layers.as_ptr(),
-                    layers.len() as u32,
-                    &mut output,
-                    error.as_mut_ptr(),
-                    error.len(),
-                )
+                match scale_load_profile {
+                    W8ScaleLoadProfileV1::LegacyPerLane => {
+                        apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
+                            &boundary,
+                            layers.as_ptr(),
+                            layers.len() as u32,
+                            &mut output,
+                            error.as_mut_ptr(),
+                            error.len(),
+                        )
+                    }
+                    W8ScaleLoadProfileV1::SimdBroadcast => {
+                        apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_with_scale_load_profile_v1(
+                            &boundary,
+                            layers.as_ptr(),
+                            layers.len() as u32,
+                            scale_load_profile.selector(),
+                            &mut output,
+                            error.as_mut_ptr(),
+                            error.len(),
+                        )
+                    }
+                }
             };
             if status != 0 {
                 return Err(bridge_error(
@@ -969,6 +1028,28 @@ mod platform {
             NonNull::new(output).map(Self).ok_or_else(|| {
                 MetalW8Error::new("create Metal W8 MLP→Stack3 boundary v1 returned a null handle")
             })
+        }
+
+        pub(super) fn observed_scale_load_profile(
+            &self,
+        ) -> Result<W8ScaleLoadProfileV1, MetalW8Error> {
+            let mut profile = u32::MAX;
+            let mut error = [0 as c_char; ERROR_CAPACITY];
+            let status = unsafe {
+                apxinf_metal_w8_mlp_stack3_boundary_observed_scale_load_profile_v1(
+                    self.0.as_ptr(),
+                    &mut profile,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                return Err(bridge_error(
+                    "read Metal W8 MLP→Stack3 boundary v1 scale-load profile",
+                    &error,
+                ));
+            }
+            W8ScaleLoadProfileV1::try_from(profile)
         }
 
         pub(super) fn seed(
@@ -1097,7 +1178,8 @@ mod platform {
 #[cfg(not(target_os = "macos"))]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8MlpStack3BoundaryV1, STACK_DEPTH,
+        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8MlpStack3BoundaryV1,
+        W8ScaleLoadProfileV1, STACK_DEPTH,
     };
 
     #[derive(Clone, Copy, Debug, Default)]
@@ -1120,7 +1202,18 @@ mod platform {
     pub(super) struct BoundaryHandleV1;
 
     impl BoundaryHandleV1 {
-        pub(super) fn new(_weights: &PackedW8MlpStack3BoundaryV1) -> Result<Self, MetalW8Error> {
+        pub(super) fn new(
+            _weights: &PackedW8MlpStack3BoundaryV1,
+            _scale_load_profile: W8ScaleLoadProfileV1,
+        ) -> Result<Self, MetalW8Error> {
+            Err(MetalW8Error::new(
+                "Metal W8 MLP→Stack3 boundary v1 requires macOS",
+            ))
+        }
+
+        pub(super) fn observed_scale_load_profile(
+            &self,
+        ) -> Result<W8ScaleLoadProfileV1, MetalW8Error> {
             Err(MetalW8Error::new(
                 "Metal W8 MLP→Stack3 boundary v1 requires macOS",
             ))

@@ -12,6 +12,8 @@ fn main() {
     println!("cargo:rerun-if-changed=src/metal_w8_gdn.metal");
     println!("cargo:rerun-if-changed=src/metal_w8_gdn_out_g32.metal");
     println!("cargo:rerun-if-changed=src/metal_w8_linear_layer.metal");
+    println!("cargo:rerun-if-changed=src/metal_w8_body_scale_broadcast.metal");
+    println!("cargo:rerun-if-changed=src/metal_w8_tail_scale_broadcast.metal");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
@@ -78,12 +80,20 @@ fn main() {
         .expect("read the Metal W8 linear-layer shader source");
     let gdn_out_g32_shader = std::fs::read_to_string("src/metal_w8_gdn_out_g32.metal")
         .expect("read the Metal W8 GDN-output-G32 shader source");
+    let body_scale_broadcast_shader =
+        std::fs::read_to_string("src/metal_w8_body_scale_broadcast.metal")
+            .expect("read the Metal W8 body scale-broadcast shader source");
     assert!(
         !linear_layer_shader.contains(&format!("){}\"", DELIMITER)),
         "Metal linear-layer shader contains the generated C++ raw-string delimiter"
     );
-    let combined_linear_layer_shader =
-        format!("{gdn_shader}\n{mlp_shader}\n{linear_layer_shader}\n{gdn_out_g32_shader}");
+    assert!(
+        !body_scale_broadcast_shader.contains(&format!("){}\"", DELIMITER)),
+        "Metal body scale-broadcast shader contains the generated C++ raw-string delimiter"
+    );
+    let combined_linear_layer_shader = format!(
+        "{gdn_shader}\n{mlp_shader}\n{linear_layer_shader}\n{gdn_out_g32_shader}\n{body_scale_broadcast_shader}"
+    );
     std::fs::write(
         output_dir.join("metal_w8_linear_layer_source.inc"),
         format!(
@@ -92,9 +102,17 @@ fn main() {
     )
     .expect("write the generated Metal linear-layer shader include");
 
-    // Tail v1 composes the existing RMS/residual, MLP, and top-4 kernels in
-    // one library. The kernel files above remain the only shader source.
-    let combined_tail_mlp_head_shader = format!("{mlp_shader}\n{linear_layer_shader}\n{shader}");
+    // Tail v1 composes the existing RMS/residual, MLP, and top-4 kernels plus
+    // additive scale-broadcast variants in one diagnostic library.
+    let tail_scale_broadcast_shader =
+        std::fs::read_to_string("src/metal_w8_tail_scale_broadcast.metal")
+            .expect("read the Metal W8 tail scale-broadcast shader source");
+    assert!(
+        !tail_scale_broadcast_shader.contains(&format!("){}\"", DELIMITER)),
+        "Metal tail scale-broadcast shader contains the generated C++ raw-string delimiter"
+    );
+    let combined_tail_mlp_head_shader =
+        format!("{mlp_shader}\n{linear_layer_shader}\n{shader}\n{tail_scale_broadcast_shader}");
     std::fs::write(
         output_dir.join("metal_w8_tail_mlp_head_v1_source.inc"),
         format!(

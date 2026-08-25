@@ -1,6 +1,6 @@
 use apxinf_metal::{
     GdnDecodeState, GdnDimensions, GdnF32Weights, MetalW8LinearLayerStack3, PackedW8GdnBlock,
-    PackedW8LinearLayerBlock, PackedW8MlpBlock, W8GroupSize,
+    PackedW8LinearLayerBlock, PackedW8MlpBlock, W8GroupSize, W8ScaleLoadProfileV1,
 };
 
 fn values(elements: usize, multiplier: usize, modulus: usize, scale: f32) -> Vec<f32> {
@@ -14,12 +14,21 @@ fn values(elements: usize, multiplier: usize, modulus: usize, scale: f32) -> Vec
 }
 
 fn fixture(seed: usize) -> (GdnDimensions, PackedW8LinearLayerBlock) {
+    fixture_with_widths(seed, 64, 32, 64)
+}
+
+fn fixture_with_widths(
+    seed: usize,
+    hidden_size: usize,
+    value_dim: usize,
+    intermediate_size: usize,
+) -> (GdnDimensions, PackedW8LinearLayerBlock) {
     let dims = GdnDimensions {
-        hidden_size: 64,
+        hidden_size,
         key_heads: 2,
         value_heads: 2,
         key_dim: 32,
-        value_dim: 32,
+        value_dim,
         conv_kernel_size: 4,
         rms_norm_eps: 1.0e-6,
     };
@@ -51,7 +60,6 @@ fn fixture(seed: usize) -> (GdnDimensions, PackedW8LinearLayerBlock) {
         W8GroupSize::G32,
     )
     .unwrap();
-    let intermediate_size = 64;
     let elements = dims.hidden_size * intermediate_size;
     let mlp = PackedW8MlpBlock::pack_f32(
         &values(elements, 41 + seed * 2, 233, 0.04),
@@ -169,6 +177,79 @@ fn stack3_v1_matches_three_sequential_packed_cpu_layers_in_one_transaction() {
     assert_eq!(stats.committed_stack_version, 1);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn stack3_scale_broadcast_is_two_step_bitwise_identical_to_legacy() {
+    let (dims, layer0) = fixture_with_widths(0, 192, 96, 192);
+    let (_, layer1) = fixture_with_widths(1, 192, 96, 192);
+    let (_, layer2) = fixture_with_widths(2, 192, 96, 192);
+    let layers = [&layer0, &layer1, &layer2];
+    let initial = std::array::from_fn(|slot| nonzero_state(dims, slot));
+    let mut legacy = MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1(layers).unwrap();
+    let mut broadcast =
+        MetalW8LinearLayerStack3::from_packed_gdn_out_g32_with_scale_load_profile_v1(
+            layers,
+            W8ScaleLoadProfileV1::SimdBroadcast,
+        )
+        .unwrap();
+    legacy.seed_decode_states(&initial).unwrap();
+    broadcast.seed_decode_states(&initial).unwrap();
+
+    for hidden in [
+        values(dims.hidden_size, 53, 211, 0.8),
+        values(dims.hidden_size, 57, 207, 0.7),
+    ] {
+        let legacy_output = legacy.decode(&hidden).unwrap().to_vec();
+        let broadcast_output = broadcast.decode(&hidden).unwrap().to_vec();
+        assert_bits_equal(&broadcast_output, &legacy_output, "stack output");
+        let legacy_states = legacy.state_snapshots().unwrap();
+        let broadcast_states = broadcast.state_snapshots().unwrap();
+        for slot in 0..3 {
+            assert_bits_equal(
+                broadcast_states[slot].query_conv(),
+                legacy_states[slot].query_conv(),
+                "query state",
+            );
+            assert_bits_equal(
+                broadcast_states[slot].key_conv(),
+                legacy_states[slot].key_conv(),
+                "key state",
+            );
+            assert_bits_equal(
+                broadcast_states[slot].value_conv(),
+                legacy_states[slot].value_conv(),
+                "value state",
+            );
+            assert_bits_equal(
+                broadcast_states[slot].recurrent(),
+                legacy_states[slot].recurrent(),
+                "recurrent state",
+            );
+        }
+    }
+
+    assert_eq!(broadcast.stats(), legacy.stats());
+    let legacy_receipt = legacy.scale_load_runtime_receipt_v1();
+    let broadcast_receipt = broadcast.scale_load_runtime_receipt_v1();
+    assert_eq!(
+        legacy_receipt.observed_profile,
+        W8ScaleLoadProfileV1::LegacyPerLane
+    );
+    assert_eq!(legacy_receipt.g64_scale_loader_lanes_per_full_simd, 32);
+    assert_eq!(legacy_receipt.g32_scale_loader_lanes_per_full_simd, 32);
+    assert_eq!(legacy_receipt.g64_broadcasts_per_full_simd, 0);
+    assert_eq!(
+        broadcast_receipt.observed_profile,
+        W8ScaleLoadProfileV1::SimdBroadcast
+    );
+    assert_eq!(broadcast_receipt.g64_scale_loader_lanes_per_full_simd, 2);
+    assert_eq!(broadcast_receipt.g32_scale_loader_lanes_per_full_simd, 4);
+    assert_eq!(broadcast_receipt.g64_broadcasts_per_full_simd, 2);
+    assert_eq!(broadcast_receipt.g32_broadcasts_per_full_simd, 4);
+    assert_eq!(broadcast_receipt.dynamic_threadgroup_memory_bytes, 0);
+    assert_eq!(broadcast_receipt.threadgroup_barriers_per_projection, 0);
+}
+
 #[cfg(all(target_os = "macos", debug_assertions))]
 #[test]
 fn stack3_v1_fault_is_atomic_and_terminal_until_clear() {
@@ -178,42 +259,51 @@ fn stack3_v1_fault_is_atomic_and_terminal_until_clear() {
     let layers = [&layer0, &layer1, &layer2];
     let initial = std::array::from_fn(|_| GdnDecodeState::zeroed(dims).unwrap());
     let hidden = values(dims.hidden_size, 53, 211, 0.8);
-    let mut stack = MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1(layers).unwrap();
-    stack.seed_decode_states(&initial).unwrap();
+    for profile in [
+        W8ScaleLoadProfileV1::LegacyPerLane,
+        W8ScaleLoadProfileV1::SimdBroadcast,
+    ] {
+        let mut stack =
+            MetalW8LinearLayerStack3::from_packed_gdn_out_g32_with_scale_load_profile_v1(
+                layers, profile,
+            )
+            .unwrap();
+        stack.seed_decode_states(&initial).unwrap();
 
-    let error = stack
-        .inject_failure_after_scratch_execution_for_testing(&hidden)
-        .unwrap_err();
+        let error = stack
+            .inject_failure_after_scratch_execution_for_testing(&hidden)
+            .unwrap_err();
 
-    assert!(error.to_string().contains("injected"));
-    assert_eq!(stack.state_snapshots().unwrap(), initial);
-    let failed = stack.stats();
-    assert_eq!(failed.decode_calls, 1);
-    assert_eq!(failed.successful_decodes, 0);
-    assert_eq!(failed.failed_decodes, 1);
-    assert_eq!(failed.command_buffers, 1);
-    assert_eq!(failed.compute_encoders, 3);
-    assert_eq!(failed.commits, 1);
-    assert_eq!(failed.waits, 1);
-    assert_eq!(failed.state_commits, 0);
-    assert_eq!(failed.last_state_commit_mask, 0);
-    assert_eq!(failed.committed_stack_version, 0);
-    assert!(failed.terminal_error);
+        assert!(error.to_string().contains("injected"));
+        assert_eq!(stack.state_snapshots().unwrap(), initial);
+        let failed = stack.stats();
+        assert_eq!(failed.decode_calls, 1);
+        assert_eq!(failed.successful_decodes, 0);
+        assert_eq!(failed.failed_decodes, 1);
+        assert_eq!(failed.command_buffers, 1);
+        assert_eq!(failed.compute_encoders, 3);
+        assert_eq!(failed.commits, 1);
+        assert_eq!(failed.waits, 1);
+        assert_eq!(failed.state_commits, 0);
+        assert_eq!(failed.last_state_commit_mask, 0);
+        assert_eq!(failed.committed_stack_version, 0);
+        assert!(failed.terminal_error);
 
-    let retry = stack.decode(&hidden).unwrap_err();
-    assert!(retry.to_string().contains("terminal"));
-    assert_eq!(stack.stats(), failed, "terminal retry must submit no work");
-    stack.clear_decode_states().unwrap();
-    assert_eq!(stack.stats(), Default::default());
-    assert!(stack
-        .decode(&hidden)
-        .unwrap_err()
-        .to_string()
-        .contains("seeded"));
-    stack.seed_decode_states(&initial).unwrap();
-    stack.decode(&hidden).unwrap();
-    assert_eq!(stack.stats().state_commits, 3);
-    assert_eq!(stack.stats().last_state_commit_mask, 0b111);
+        let retry = stack.decode(&hidden).unwrap_err();
+        assert!(retry.to_string().contains("terminal"));
+        assert_eq!(stack.stats(), failed, "terminal retry must submit no work");
+        stack.clear_decode_states().unwrap();
+        assert_eq!(stack.stats(), Default::default());
+        assert!(stack
+            .decode(&hidden)
+            .unwrap_err()
+            .to_string()
+            .contains("seeded"));
+        stack.seed_decode_states(&initial).unwrap();
+        stack.decode(&hidden).unwrap();
+        assert_eq!(stack.stats().state_commits, 3);
+        assert_eq!(stack.stats().last_state_commit_mask, 0b111);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -278,6 +368,18 @@ fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32, label: &str) {
         assert!(
             (actual - expected).abs() <= tolerance,
             "{label}[{index}] Metal={actual} CPU={expected} tolerance={tolerance}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn assert_bits_equal(actual: &[f32], expected: &[f32], label: &str) {
+    assert_eq!(actual.len(), expected.len(), "{label} length");
+    for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+        assert_eq!(
+            actual.to_bits(),
+            expected.to_bits(),
+            "{label}[{index}] actual={actual} expected={expected}"
         );
     }
 }

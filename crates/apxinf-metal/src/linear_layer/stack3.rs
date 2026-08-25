@@ -2,6 +2,7 @@ use super::{
     checked_sum, f32_bytes, GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock,
     W8GroupSize,
 };
+use crate::{body_scale_load_receipt, W8BodyScaleLoadRuntimeReceiptV1, W8ScaleLoadProfileV1};
 
 const STACK_DEPTH: usize = 3;
 
@@ -62,6 +63,7 @@ pub struct MetalW8LinearLayerStack3 {
     terminal_error: bool,
     stats: LinearLayerStack3MetalStats,
     buffer_ledger: LinearLayerStack3BufferLedger,
+    scale_load_receipt: W8BodyScaleLoadRuntimeReceiptV1,
 }
 
 impl MetalW8LinearLayerStack3 {
@@ -69,6 +71,19 @@ impl MetalW8LinearLayerStack3 {
     /// All three layers must have exactly equal dimensions and RMS epsilons.
     pub fn from_packed_gdn_out_g32_v1(
         weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+    ) -> Result<Self, MetalW8Error> {
+        Self::from_packed_gdn_out_g32_with_scale_load_profile_v1(
+            weights,
+            W8ScaleLoadProfileV1::LegacyPerLane,
+        )
+    }
+
+    /// Additive diagnostic selector for broadcasting identical per-group W8
+    /// scales within a SIMD group. The legacy constructor above always keeps
+    /// the original per-lane scale loads.
+    pub fn from_packed_gdn_out_g32_with_scale_load_profile_v1(
+        weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+        scale_load_profile: W8ScaleLoadProfileV1,
     ) -> Result<Self, MetalW8Error> {
         for (index, weights) in weights.iter().enumerate() {
             validate_precision_v1(index, weights)?;
@@ -104,14 +119,22 @@ impl MetalW8LinearLayerStack3 {
         }
         validate_stack3_state_abi(dims)?;
         let buffer_ledger = stack_buffer_ledger(weights)?;
+        let inner = platform::LinearLayerStack3Handle::new(weights, scale_load_profile)?;
+        let observed_profile = inner.observed_scale_load_profile()?;
+        if observed_profile != scale_load_profile {
+            return Err(MetalW8Error::new(
+                "Metal W8 stack3 v1 observed scale-load profile differs from its request",
+            ));
+        }
         Ok(Self {
             dims,
-            inner: platform::LinearLayerStack3Handle::new(weights)?,
+            inner,
             output: vec![0.0; dims.hidden_size],
             seeded: false,
             terminal_error: false,
             stats: LinearLayerStack3MetalStats::default(),
             buffer_ledger,
+            scale_load_receipt: body_scale_load_receipt(scale_load_profile, observed_profile),
         })
     }
 
@@ -173,6 +196,10 @@ impl MetalW8LinearLayerStack3 {
 
     pub fn buffer_ledger(&self) -> LinearLayerStack3BufferLedger {
         self.buffer_ledger
+    }
+
+    pub fn scale_load_runtime_receipt_v1(&self) -> W8BodyScaleLoadRuntimeReceiptV1 {
+        self.scale_load_receipt
     }
 
     fn validate_decode_input(&self, hidden: &[f32]) -> Result<(), MetalW8Error> {
@@ -441,6 +468,12 @@ mod tests {
     fn stack3_v1_bridge_source_matches_the_versioned_transaction_and_buffer_ledger() {
         let bridge = include_str!("../metal_w8_linear_layer_stack3_bridge.mm");
         assert!(bridge.contains("apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1("));
+        assert!(bridge.contains(
+            "apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_with_scale_load_profile_v1("
+        ));
+        assert!(
+            bridge.contains("apxinf_metal_w8_linear_layer_stack3_observed_scale_load_profile_v1(")
+        );
         assert!(bridge.contains("apxinf_metal_w8_linear_layer_stack3_seed_states_v1("));
         assert!(bridge.contains("apxinf_metal_w8_linear_layer_stack3_decode_v1("));
         assert!(bridge.contains("apxinf_metal_w8_linear_layer_stack3_snapshot_state_v1("));
@@ -473,6 +506,31 @@ mod tests {
         assert!(bridge.contains("receipt->state_commits = kStackDepth;"));
         assert!(bridge.contains("receipt->state_commit_mask = kAllSeededMask;"));
         assert!(bridge.contains("Only the final hidden_b row is checked"));
+
+        let candidate = include_str!("../metal_w8_body_scale_broadcast.metal");
+        for function in [
+            "kernel void gdn_w8_input_projection_scale_broadcast(",
+            "kernel void gdn_w8_output_projection_g32_scale_broadcast(",
+            "kernel void w8_mlp_gate_up_scale_broadcast(",
+            "kernel void w8_mlp_down_scale_broadcast(",
+        ] {
+            assert!(
+                candidate.contains(function),
+                "missing candidate function {function}"
+            );
+        }
+        for legacy in [
+            include_str!("../metal_w8_gdn.metal"),
+            include_str!("../metal_w8_gdn_out_g32.metal"),
+            include_str!("../metal_w8_mlp.metal"),
+            include_str!("../metal_w8_linear_layer.metal"),
+        ] {
+            assert!(!legacy.contains("scale_broadcast"));
+        }
+        let build = include_str!("../../build.rs");
+        assert!(build.contains(
+            "{gdn_shader}\\n{mlp_shader}\\n{linear_layer_shader}\\n{gdn_out_g32_shader}\\n{body_scale_broadcast_shader}"
+        ));
     }
 
     #[test]
@@ -498,7 +556,8 @@ mod tests {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock, STACK_DEPTH,
+        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock,
+        W8ScaleLoadProfileV1, STACK_DEPTH,
     };
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
@@ -606,6 +665,20 @@ mod platform {
     }
 
     extern "C" {
+        fn apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_with_scale_load_profile_v1(
+            layers: *const Stack3LayerDescriptorV1,
+            layer_count: u32,
+            scale_load_profile: u32,
+            output: *mut *mut c_void,
+            error: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn apxinf_metal_w8_linear_layer_stack3_observed_scale_load_profile_v1(
+            handle: *mut c_void,
+            profile: *mut u32,
+            error: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1(
             layers: *const Stack3LayerDescriptorV1,
             layer_count: u32,
@@ -646,18 +719,33 @@ mod platform {
     impl LinearLayerStack3Handle {
         pub(super) fn new(
             weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+            scale_load_profile: W8ScaleLoadProfileV1,
         ) -> Result<Self, MetalW8Error> {
             let descriptors = weights.map(Stack3LayerDescriptorV1::from_packed);
             let mut output = std::ptr::null_mut();
             let mut error = [0 as c_char; ERROR_CAPACITY];
             let status = unsafe {
-                apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1(
-                    descriptors.as_ptr(),
-                    descriptors.len() as u32,
-                    &mut output,
-                    error.as_mut_ptr(),
-                    error.len(),
-                )
+                match scale_load_profile {
+                    W8ScaleLoadProfileV1::LegacyPerLane => {
+                        apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1(
+                            descriptors.as_ptr(),
+                            descriptors.len() as u32,
+                            &mut output,
+                            error.as_mut_ptr(),
+                            error.len(),
+                        )
+                    }
+                    W8ScaleLoadProfileV1::SimdBroadcast => {
+                        apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_with_scale_load_profile_v1(
+                            descriptors.as_ptr(),
+                            descriptors.len() as u32,
+                            scale_load_profile.selector(),
+                            &mut output,
+                            error.as_mut_ptr(),
+                            error.len(),
+                        )
+                    }
+                }
             };
             if status != 0 {
                 return Err(bridge_error("create Metal W8 stack3 v1", &error));
@@ -665,6 +753,28 @@ mod platform {
             NonNull::new(output).map(Self).ok_or_else(|| {
                 MetalW8Error::new("create Metal W8 stack3 v1 returned a null handle")
             })
+        }
+
+        pub(super) fn observed_scale_load_profile(
+            &self,
+        ) -> Result<W8ScaleLoadProfileV1, MetalW8Error> {
+            let mut profile = u32::MAX;
+            let mut error = [0 as c_char; ERROR_CAPACITY];
+            let status = unsafe {
+                apxinf_metal_w8_linear_layer_stack3_observed_scale_load_profile_v1(
+                    self.0.as_ptr(),
+                    &mut profile,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                return Err(bridge_error(
+                    "read Metal W8 stack3 v1 scale-load profile",
+                    &error,
+                ));
+            }
+            W8ScaleLoadProfileV1::try_from(profile)
         }
 
         pub(super) fn seed(
@@ -784,7 +894,8 @@ mod platform {
 #[cfg(not(target_os = "macos"))]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock, STACK_DEPTH,
+        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock,
+        W8ScaleLoadProfileV1, STACK_DEPTH,
     };
 
     #[derive(Clone, Copy, Debug, Default)]
@@ -809,7 +920,14 @@ mod platform {
     impl LinearLayerStack3Handle {
         pub(super) fn new(
             _weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+            _scale_load_profile: W8ScaleLoadProfileV1,
         ) -> Result<Self, MetalW8Error> {
+            Err(MetalW8Error::new("Metal W8 stack3 v1 requires macOS"))
+        }
+
+        pub(super) fn observed_scale_load_profile(
+            &self,
+        ) -> Result<W8ScaleLoadProfileV1, MetalW8Error> {
             Err(MetalW8Error::new("Metal W8 stack3 v1 requires macOS"))
         }
 

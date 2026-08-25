@@ -17,6 +17,10 @@ constexpr uint32_t kElementThreads = 256;
 constexpr uint32_t kTopK = 4;
 constexpr uint32_t kTopKThreads = 256;
 constexpr uint32_t kAllOutputsMask = 0b11;
+constexpr uint32_t kScaleLoadLegacyPerLane = 0;
+constexpr uint32_t kScaleLoadSimdBroadcast = 1;
+constexpr uint32_t kUnknownScaleLoadProfile = UINT32_MAX;
+constexpr uint32_t kExpectedThreadExecutionWidth = 32;
 
 struct LinearLayerParams {
     uint32_t hidden_size;
@@ -75,6 +79,9 @@ struct ApxinfMetalW8TailMlpHeadHandleV1 {
     id<MTLComputePipelineState> residual_pipeline;
     id<MTLComputePipelineState> rows_topk_pipeline;
     id<MTLComputePipelineState> final_topk_pipeline;
+    id<MTLFunction> gate_up_function;
+    id<MTLFunction> down_function;
+    id<MTLFunction> rows_topk_function;
     id<MTLBuffer> rms_weights;
     id<MTLBuffer> gate_up_weights;
     id<MTLBuffer> gate_up_scales;
@@ -91,6 +98,7 @@ struct ApxinfMetalW8TailMlpHeadHandleV1 {
     LinearLayerParams layer_params;
     MlpParams mlp_params;
     KernelParams head_params;
+    uint32_t requested_scale_load_profile;
     bool terminal_error;
 };
 
@@ -168,6 +176,54 @@ id<MTLComputePipelineState> make_pipeline(
         return nil;
     }
     return [device newComputePipelineStateWithFunction:function error:error];
+}
+
+bool valid_scale_load_profile(uint32_t profile) {
+    return profile == kScaleLoadLegacyPerLane ||
+           profile == kScaleLoadSimdBroadcast;
+}
+
+bool function_has_name(id<MTLFunction> function, NSString *name) {
+    return function != nil && function.name != nil &&
+           [function.name isEqualToString:name];
+}
+
+uint32_t observed_scale_load_profile(
+    const ApxinfMetalW8TailMlpHeadHandleV1 *handle) {
+    if (handle == nullptr) {
+        return kUnknownScaleLoadProfile;
+    }
+    if (function_has_name(handle->gate_up_function, @"w8_mlp_gate_up") &&
+        function_has_name(handle->down_function, @"w8_mlp_down") &&
+        function_has_name(handle->rows_topk_function, @"w8_rows_topk4")) {
+        return kScaleLoadLegacyPerLane;
+    }
+    if (function_has_name(handle->gate_up_function,
+                          @"w8_mlp_gate_up_scale_broadcast") &&
+        function_has_name(handle->down_function,
+                          @"w8_mlp_down_scale_broadcast") &&
+        function_has_name(handle->rows_topk_function,
+                          @"w8_rows_topk4_scale_broadcast")) {
+        return kScaleLoadSimdBroadcast;
+    }
+    return kUnknownScaleLoadProfile;
+}
+
+bool selected_pipeline_geometry_is_valid(
+    id<MTLComputePipelineState> pipeline) {
+    return pipeline != nil &&
+           pipeline.threadExecutionWidth == kExpectedThreadExecutionWidth &&
+           pipeline.maxTotalThreadsPerThreadgroup >= kMatVecThreads;
+}
+
+bool live_scale_load_profile_matches(
+    const ApxinfMetalW8TailMlpHeadHandleV1 *handle) {
+    return handle != nullptr &&
+           observed_scale_load_profile(handle) ==
+               handle->requested_scale_load_profile &&
+           selected_pipeline_geometry_is_valid(handle->gate_up_pipeline) &&
+           selected_pipeline_geometry_is_valid(handle->down_pipeline) &&
+           selected_pipeline_geometry_is_valid(handle->rows_topk_pipeline);
 }
 
 void buffer_barrier(id<MTLComputeCommandEncoder> encoder) {
@@ -288,9 +344,9 @@ void encode_tail(ApxinfMetalW8TailMlpHeadHandleV1 *handle,
 
 }  // namespace
 
-extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
-    const TailDescriptorV1 *descriptor, void **output, char *error_output,
-    size_t error_capacity) {
+int create_tail_mlp_head_impl(
+    const TailDescriptorV1 *descriptor, uint32_t scale_load_profile,
+    void **output, char *error_output, size_t error_capacity) {
     @autoreleasepool {
         if (output == nullptr) {
             write_error(error_output, error_capacity,
@@ -298,6 +354,11 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
             return 1;
         }
         *output = nullptr;
+        if (!valid_scale_load_profile(scale_load_profile)) {
+            write_error(error_output, error_capacity,
+                        "invalid Metal W8 tail MLP+head v1 scale-load profile");
+            return 1;
+        }
         if (descriptor == nullptr || descriptor->gate_up_weights == nullptr ||
             descriptor->gate_up_scales == nullptr ||
             descriptor->down_weights == nullptr ||
@@ -378,16 +439,40 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
         }
         handle->rms_pipeline = make_pipeline(
             handle->device, library, @"linear_layer_rms_norm", &error);
-        handle->gate_up_pipeline = make_pipeline(
-            handle->device, library, @"w8_mlp_gate_up", &error);
+        NSString *gate_up_name =
+            scale_load_profile == kScaleLoadSimdBroadcast
+                ? @"w8_mlp_gate_up_scale_broadcast"
+                : @"w8_mlp_gate_up";
+        NSString *down_name =
+            scale_load_profile == kScaleLoadSimdBroadcast
+                ? @"w8_mlp_down_scale_broadcast"
+                : @"w8_mlp_down";
+        NSString *rows_topk_name =
+            scale_load_profile == kScaleLoadSimdBroadcast
+                ? @"w8_rows_topk4_scale_broadcast"
+                : @"w8_rows_topk4";
+        handle->gate_up_function = [library newFunctionWithName:gate_up_name];
+        handle->gate_up_pipeline = handle->gate_up_function == nil
+            ? nil
+            : [handle->device
+                  newComputePipelineStateWithFunction:handle->gate_up_function
+                                                error:&error];
         handle->activation_pipeline = make_pipeline(
             handle->device, library, @"w8_mlp_silu_mul", &error);
-        handle->down_pipeline = make_pipeline(
-            handle->device, library, @"w8_mlp_down", &error);
+        handle->down_function = [library newFunctionWithName:down_name];
+        handle->down_pipeline = handle->down_function == nil
+            ? nil
+            : [handle->device
+                  newComputePipelineStateWithFunction:handle->down_function
+                                                error:&error];
         handle->residual_pipeline = make_pipeline(
             handle->device, library, @"linear_layer_residual_add", &error);
-        handle->rows_topk_pipeline = make_pipeline(
-            handle->device, library, @"w8_rows_topk4", &error);
+        handle->rows_topk_function = [library newFunctionWithName:rows_topk_name];
+        handle->rows_topk_pipeline = handle->rows_topk_function == nil
+            ? nil
+            : [handle->device
+                  newComputePipelineStateWithFunction:handle->rows_topk_function
+                                                error:&error];
         handle->final_topk_pipeline = make_pipeline(
             handle->device, library, @"w8_final_topk4", &error);
         if (handle->rms_pipeline == nil || handle->gate_up_pipeline == nil ||
@@ -397,6 +482,13 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
             handle->final_topk_pipeline == nil) {
             delete handle;
             write_nserror(error_output, error_capacity, error);
+            return 1;
+        }
+        handle->requested_scale_load_profile = scale_load_profile;
+        if (!live_scale_load_profile_matches(handle)) {
+            delete handle;
+            write_error(error_output, error_capacity,
+                        "Metal W8 tail MLP+head v1 live scale-load profile or pipeline geometry differs from the request");
             return 1;
         }
         handle->queue = [handle->device newCommandQueue];
@@ -481,6 +573,39 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
     }
 }
 
+extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
+    const TailDescriptorV1 *descriptor, void **output, char *error_output,
+    size_t error_capacity) {
+    return create_tail_mlp_head_impl(descriptor, kScaleLoadLegacyPerLane,
+                                     output, error_output, error_capacity);
+}
+
+extern "C" int
+apxinf_metal_w8_tail_mlp_head_create_with_scale_load_profile_v1(
+    const TailDescriptorV1 *descriptor, uint32_t scale_load_profile,
+    void **output, char *error_output, size_t error_capacity) {
+    return create_tail_mlp_head_impl(descriptor, scale_load_profile, output,
+                                     error_output, error_capacity);
+}
+
+extern "C" int
+apxinf_metal_w8_tail_mlp_head_observed_scale_load_profile_v1(
+    void *opaque_handle, uint32_t *profile, char *error_output,
+    size_t error_capacity) {
+    @autoreleasepool {
+        auto handle =
+            static_cast<ApxinfMetalW8TailMlpHeadHandleV1 *>(opaque_handle);
+        if (handle == nullptr || profile == nullptr ||
+            !live_scale_load_profile_matches(handle)) {
+            write_error(error_output, error_capacity,
+                        "invalid Metal W8 tail MLP+head v1 live scale-load profile");
+            return 1;
+        }
+        *profile = observed_scale_load_profile(handle);
+        return 0;
+    }
+}
+
 extern "C" int apxinf_metal_w8_tail_mlp_head_decode_v1(
     void *opaque_handle, const float *input, uint32_t input_count,
     float *normalized_hidden, uint32_t normalized_hidden_count,
@@ -503,6 +628,12 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_decode_v1(
             normalized_hidden_count != input_count || candidate_count != kTopK) {
             write_error(error_output, error_capacity,
                         "invalid Metal W8 tail MLP+head v1 decode input or output");
+            return 1;
+        }
+        if (!live_scale_load_profile_matches(handle)) {
+            handle->terminal_error = true;
+            write_error(error_output, error_capacity,
+                        "Metal W8 tail MLP+head v1 live scale-load profile changed before decode");
             return 1;
         }
         if (handle->terminal_error) {

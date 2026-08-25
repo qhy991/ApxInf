@@ -17,6 +17,10 @@ constexpr uint32_t kRowsPerThreadgroup = 8;
 constexpr uint32_t kMatVecThreads = kRowsPerThreadgroup * 32;
 constexpr uint32_t kElementThreads = 256;
 constexpr uint32_t kAllSeededMask = (1u << kStackDepth) - 1;
+constexpr uint32_t kScaleLoadLegacyPerLane = 0;
+constexpr uint32_t kScaleLoadSimdBroadcast = 1;
+constexpr uint32_t kUnknownScaleLoadProfile = UINT32_MAX;
+constexpr uint32_t kExpectedThreadExecutionWidth = 32;
 
 struct GdnParams {
     uint32_t hidden_size;
@@ -216,6 +220,10 @@ struct ApxinfMetalW8MlpStack3BoundaryHandleV1 {
     id<MTLComputePipelineState> mlp_gate_up_pipeline;
     id<MTLComputePipelineState> mlp_activation_pipeline;
     id<MTLComputePipelineState> mlp_down_pipeline;
+    id<MTLFunction> gdn_input_function;
+    id<MTLFunction> gdn_output_function;
+    id<MTLFunction> mlp_gate_up_function;
+    id<MTLFunction> mlp_down_function;
 
     // Five immutable full-attention boundary MLP/RMS buffers. They extend the
     // Stack3 resident set without allocating another hidden or scratch row.
@@ -243,6 +251,7 @@ struct ApxinfMetalW8MlpStack3BoundaryHandleV1 {
     id<MTLBuffer> mlp_gate_up;
     id<MTLBuffer> mlp_activated;
 
+    uint32_t requested_scale_load_profile;
     uint32_t seeded_mask;
     bool terminal_error;
 };
@@ -275,6 +284,63 @@ id<MTLComputePipelineState> make_pipeline(
     id<MTLFunction> function = [library newFunctionWithName:name];
     return function == nil ? nil
                            : [device newComputePipelineStateWithFunction:function error:error];
+}
+
+bool valid_scale_load_profile(uint32_t profile) {
+    return profile == kScaleLoadLegacyPerLane ||
+           profile == kScaleLoadSimdBroadcast;
+}
+
+bool function_has_name(id<MTLFunction> function, NSString *name) {
+    return function != nil && function.name != nil &&
+           [function.name isEqualToString:name];
+}
+
+uint32_t observed_scale_load_profile(
+    const ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle) {
+    if (handle == nullptr) {
+        return kUnknownScaleLoadProfile;
+    }
+    if (function_has_name(handle->gdn_input_function,
+                          @"gdn_w8_input_projection") &&
+        function_has_name(handle->gdn_output_function,
+                          @"gdn_w8_output_projection_g32") &&
+        function_has_name(handle->mlp_gate_up_function,
+                          @"w8_mlp_gate_up") &&
+        function_has_name(handle->mlp_down_function, @"w8_mlp_down")) {
+        return kScaleLoadLegacyPerLane;
+    }
+    if (function_has_name(handle->gdn_input_function,
+                          @"gdn_w8_input_projection_scale_broadcast") &&
+        function_has_name(
+            handle->gdn_output_function,
+            @"gdn_w8_output_projection_g32_scale_broadcast") &&
+        function_has_name(handle->mlp_gate_up_function,
+                          @"w8_mlp_gate_up_scale_broadcast") &&
+        function_has_name(handle->mlp_down_function,
+                          @"w8_mlp_down_scale_broadcast")) {
+        return kScaleLoadSimdBroadcast;
+    }
+    return kUnknownScaleLoadProfile;
+}
+
+bool selected_pipeline_geometry_is_valid(
+    id<MTLComputePipelineState> pipeline) {
+    return pipeline != nil &&
+           pipeline.threadExecutionWidth == kExpectedThreadExecutionWidth &&
+           pipeline.maxTotalThreadsPerThreadgroup >= kMatVecThreads &&
+           pipeline.staticThreadgroupMemoryLength == 0;
+}
+
+bool live_scale_load_profile_matches(
+    const ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle) {
+    return handle != nullptr &&
+           observed_scale_load_profile(handle) ==
+               handle->requested_scale_load_profile &&
+           selected_pipeline_geometry_is_valid(handle->gdn_input_pipeline) &&
+           selected_pipeline_geometry_is_valid(handle->gdn_output_pipeline) &&
+           selected_pipeline_geometry_is_valid(handle->mlp_gate_up_pipeline) &&
+           selected_pipeline_geometry_is_valid(handle->mlp_down_pipeline);
 }
 
 id<MTLBuffer> make_shared_f32(id<MTLDevice> device, size_t count) {
@@ -769,10 +835,11 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
 
 }  // namespace
 
-extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
+int create_mlp_stack3_boundary_gdn_out_g32_impl(
     const BoundaryMlpDescriptorV1 *boundary,
     const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
-    void **output, char *error_output, size_t error_capacity) {
+    uint32_t scale_load_profile, void **output, char *error_output,
+    size_t error_capacity) {
     @autoreleasepool {
         if (output == nullptr) {
             write_error(error_output, error_capacity,
@@ -780,6 +847,11 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
             return 1;
         }
         *output = nullptr;
+        if (!valid_scale_load_profile(scale_load_profile)) {
+            write_error(error_output, error_capacity,
+                        "invalid Metal W8 MLP-to-Stack3 boundary v1 scale-load profile");
+            return 1;
+        }
         if (boundary == nullptr || layers == nullptr ||
             layer_count != kStackDepth) {
             write_error(error_output, error_capacity,
@@ -836,8 +908,28 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
             make_pipeline(handle->device, library, @"linear_layer_rms_norm", &error);
         handle->residual_pipeline =
             make_pipeline(handle->device, library, @"linear_layer_residual_add", &error);
-        handle->gdn_input_pipeline =
-            make_pipeline(handle->device, library, @"gdn_w8_input_projection", &error);
+        NSString *gdn_input_name =
+            scale_load_profile == kScaleLoadSimdBroadcast
+                ? @"gdn_w8_input_projection_scale_broadcast"
+                : @"gdn_w8_input_projection";
+        NSString *gdn_output_name =
+            scale_load_profile == kScaleLoadSimdBroadcast
+                ? @"gdn_w8_output_projection_g32_scale_broadcast"
+                : @"gdn_w8_output_projection_g32";
+        NSString *mlp_gate_up_name =
+            scale_load_profile == kScaleLoadSimdBroadcast
+                ? @"w8_mlp_gate_up_scale_broadcast"
+                : @"w8_mlp_gate_up";
+        NSString *mlp_down_name =
+            scale_load_profile == kScaleLoadSimdBroadcast
+                ? @"w8_mlp_down_scale_broadcast"
+                : @"w8_mlp_down";
+        handle->gdn_input_function = [library newFunctionWithName:gdn_input_name];
+        handle->gdn_input_pipeline = handle->gdn_input_function == nil
+            ? nil
+            : [handle->device
+                  newComputePipelineStateWithFunction:handle->gdn_input_function
+                                                error:&error];
         handle->gdn_depthwise_pipeline =
             make_pipeline(handle->device, library, @"gdn_depthwise_preprocess", &error);
         handle->gdn_normalize_pipeline =
@@ -846,14 +938,26 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
             make_pipeline(handle->device, library, @"gdn_recurrent_update", &error);
         handle->gdn_norm_gate_pipeline =
             make_pipeline(handle->device, library, @"gdn_norm_gate", &error);
-        handle->gdn_output_pipeline =
-            make_pipeline(handle->device, library, @"gdn_w8_output_projection_g32", &error);
-        handle->mlp_gate_up_pipeline =
-            make_pipeline(handle->device, library, @"w8_mlp_gate_up", &error);
+        handle->gdn_output_function = [library newFunctionWithName:gdn_output_name];
+        handle->gdn_output_pipeline = handle->gdn_output_function == nil
+            ? nil
+            : [handle->device
+                  newComputePipelineStateWithFunction:handle->gdn_output_function
+                                                error:&error];
+        handle->mlp_gate_up_function = [library newFunctionWithName:mlp_gate_up_name];
+        handle->mlp_gate_up_pipeline = handle->mlp_gate_up_function == nil
+            ? nil
+            : [handle->device
+                  newComputePipelineStateWithFunction:handle->mlp_gate_up_function
+                                                error:&error];
         handle->mlp_activation_pipeline =
             make_pipeline(handle->device, library, @"w8_mlp_silu_mul", &error);
-        handle->mlp_down_pipeline =
-            make_pipeline(handle->device, library, @"w8_mlp_down", &error);
+        handle->mlp_down_function = [library newFunctionWithName:mlp_down_name];
+        handle->mlp_down_pipeline = handle->mlp_down_function == nil
+            ? nil
+            : [handle->device
+                  newComputePipelineStateWithFunction:handle->mlp_down_function
+                                                error:&error];
         if (handle->layer_rms_pipeline == nil || handle->residual_pipeline == nil ||
             handle->gdn_input_pipeline == nil ||
             handle->gdn_depthwise_pipeline == nil ||
@@ -866,6 +970,13 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
             handle->mlp_down_pipeline == nil) {
             delete handle;
             write_nserror(error_output, error_capacity, error);
+            return 1;
+        }
+        handle->requested_scale_load_profile = scale_load_profile;
+        if (!live_scale_load_profile_matches(handle)) {
+            delete handle;
+            write_error(error_output, error_capacity,
+                        "Metal W8 MLP-to-Stack3 boundary v1 live scale-load profile or pipeline geometry differs from the request");
             return 1;
         }
         handle->queue = [handle->device newCommandQueue];
@@ -950,6 +1061,44 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
     }
 }
 
+extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
+    const BoundaryMlpDescriptorV1 *boundary,
+    const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
+    void **output, char *error_output, size_t error_capacity) {
+    return create_mlp_stack3_boundary_gdn_out_g32_impl(
+        boundary, layers, layer_count, kScaleLoadLegacyPerLane, output,
+        error_output, error_capacity);
+}
+
+extern "C" int
+apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_with_scale_load_profile_v1(
+    const BoundaryMlpDescriptorV1 *boundary,
+    const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
+    uint32_t scale_load_profile, void **output, char *error_output,
+    size_t error_capacity) {
+    return create_mlp_stack3_boundary_gdn_out_g32_impl(
+        boundary, layers, layer_count, scale_load_profile, output, error_output,
+        error_capacity);
+}
+
+extern "C" int
+apxinf_metal_w8_mlp_stack3_boundary_observed_scale_load_profile_v1(
+    void *opaque_handle, uint32_t *profile, char *error_output,
+    size_t error_capacity) {
+    @autoreleasepool {
+        auto handle =
+            static_cast<ApxinfMetalW8MlpStack3BoundaryHandleV1 *>(opaque_handle);
+        if (handle == nullptr || profile == nullptr ||
+            !live_scale_load_profile_matches(handle)) {
+            write_error(error_output, error_capacity,
+                        "invalid Metal W8 MLP-to-Stack3 boundary v1 live scale-load profile");
+            return 1;
+        }
+        *profile = observed_scale_load_profile(handle);
+        return 0;
+    }
+}
+
 extern "C" int apxinf_metal_w8_mlp_stack3_boundary_seed_states_v1(
     void *opaque_handle, const BoundaryStateDescriptorV1 *states,
     uint32_t state_count, char *error_output, size_t error_capacity) {
@@ -1025,6 +1174,12 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_decode_v1(
              input_count != handle->layers[0].gdn_params.hidden_size)) {
             write_error(error_output, error_capacity,
                         "invalid Metal W8 MLP-to-Stack3 boundary v1 input or output");
+            return 1;
+        }
+        if (!live_scale_load_profile_matches(handle)) {
+            handle->terminal_error = true;
+            write_error(error_output, error_capacity,
+                        "Metal W8 MLP-to-Stack3 boundary v1 live scale-load profile changed before decode");
             return 1;
         }
         if (handle->terminal_error) {

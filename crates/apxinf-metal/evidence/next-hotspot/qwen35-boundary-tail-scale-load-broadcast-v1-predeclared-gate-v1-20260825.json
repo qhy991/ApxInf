@@ -1,0 +1,92 @@
+{
+  "format": "apxinf-qwen35-boundary-tail-scale-load-broadcast-v1-predeclared-gate-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "PREDECLARED_BEFORE_PERFORMANCE_SAMPLING",
+  "baseline_parent_commit": "a85bd54fd17837cb0a6ae6a135665bbe64846915",
+  "candidate_source_binding": "the implementation, gate, custody manifest, and this predeclaration are committed together before any candidate performance sample",
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "prompt": "Hello",
+    "prompt_tokens": 13,
+    "output_tokens": 128,
+    "decode_path": "ApxInf Metal W8 boundary-tail-v1",
+    "target": "Apple M4 Metal"
+  },
+  "hypothesis": {
+    "id": "boundary-tail-scale-load-broadcast-v1",
+    "arms": {
+      "A": "legacy-per-lane scale loads",
+      "B": "fixed-owner SIMD scale loads followed by simd_broadcast"
+    },
+    "change": "replace identical per-lane G64/G32 scale loads with fixed owner lanes and uniform SIMD broadcasts while preserving each active lane's index, dot, multiply, accumulation, reduction, dispatch, barrier, encoder, command-buffer, commit, wait, state, and output-publication order",
+    "w8_kernel_invocations_per_decode": {
+      "body": 82,
+      "tail": 3,
+      "total": 85,
+      "count_unit": "w8-matvec-kernel-invocation-per-decode"
+    },
+    "source_derived_logical_mapping": {
+      "legacy_scalar_scale_loads_per_decode": 176963584,
+      "simd_broadcast_scalar_scale_loads_per_decode": 11650048,
+      "logical_scalar_scale_load_reduction_per_decode": 165313536,
+      "legacy_logical_scale_read_bytes_per_decode": 707854336,
+      "simd_broadcast_logical_scale_read_bytes_per_decode": 46600192,
+      "logical_scale_read_reduction_bytes_per_decode": 661254144,
+      "measured_dram_traffic": false,
+      "interpretation": "source-derived logical F32 load mapping, not measured DRAM traffic"
+    }
+  },
+  "admission": {
+    "quiet_host_preflight_required_for_formal_classification": true,
+    "if_quiet_host_fails": "the fixed schedule may be completed only as explicitly non-formal diagnostic evidence",
+    "exactness": {
+      "cpu_teacher_receipt_required": true,
+      "all_four_teacher_candidate_receipts_must_pass": true,
+      "teacher_top4_and_f32_rerank_chains_must_be_exact": true,
+      "cpu_free_receipt_required": true,
+      "all_eight_free_candidate_receipts_must_pass": true,
+      "all_free_token_trajectories_must_be_exact": true
+    },
+    "performance_keep_threshold": {
+      "logic": "AND",
+      "teacher_affected_transaction_ratio_of_medians_improvement_percent_at_least": 2.0,
+      "teacher_affected_transaction_definition": "initial Stack3 block_elapsed_ns plus all five boundary block_elapsed_ns plus the fused tail transaction elapsed_ns, divided by 128 calls",
+      "pooled_end_to_end_free_tpot_improvement_percent_at_least": 1.5,
+      "both_counterbalanced_free_blocks_must_be_positive": true,
+      "clearly_negative_block_definition": "reject if either free block has candidate TPOT improvement at or below -0.5 percent"
+    }
+  },
+  "fixed_schedule": {
+    "cpu_receipts": [
+      "one teacher legacy-per-lane CPU reference",
+      "one free legacy-per-lane CPU reference"
+    ],
+    "teacher_order": [
+      "A legacy-per-lane",
+      "B simd-broadcast",
+      "B simd-broadcast",
+      "A legacy-per-lane"
+    ],
+    "free_block_1_order": [
+      "A legacy-per-lane",
+      "B simd-broadcast",
+      "B simd-broadcast",
+      "A legacy-per-lane"
+    ],
+    "free_block_2_order": [
+      "B simd-broadcast",
+      "A legacy-per-lane",
+      "A legacy-per-lane",
+      "B simd-broadcast"
+    ],
+    "no_resampling_after_a_predeclared_failure": true
+  },
+  "cross_runtime_rule": {
+    "frozen_llama_cpp_comparison_is_unchanged_until_formal_acceptance": true,
+    "current_apxinf_tps": 66.33672849846097,
+    "current_llama_cpp_tps": 70.66394293407429,
+    "current_llama_cpp_advantage_percent": 6.52310497300709,
+    "llama_cpp_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0"
+  }
+}
