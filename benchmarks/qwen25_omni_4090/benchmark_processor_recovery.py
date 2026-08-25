@@ -29,14 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--image", type=Path, default=Path("scripts/roofline_decode_throughput.png")
     )
-    parser.add_argument(
-        "--reference",
-        type=Path,
-        default=Path(
-            "benchmarks/qwen25_omni_4090/results/"
-            "deployed-vision-full-fa2-final-multimodal.json"
-        ),
-    )
+    parser.add_argument("--reference", type=Path, required=True)
     parser.add_argument("--binary-path", type=Path)
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--output", type=Path, required=True)

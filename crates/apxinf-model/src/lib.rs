@@ -1,17 +1,16 @@
 //! LLM model architectures and abstractions.
 
 mod accelerator;
-pub mod auto;
 pub mod builtin;
 pub mod debug;
 pub mod llama;
 pub mod llm_trait;
-pub mod pi05;
-pub mod profiling;
-pub mod qwen35;
 pub mod qwen25_omni;
-pub mod qwen3vl;
 pub mod registry;
+pub mod auto;
+pub mod profiling;
+pub mod pi05;
+pub mod qwen3vl;
 pub mod vla;
 
 pub use auto::{AutoModel, LoadOptions, LoadedModel, ModelPrecision, SyntheticWeights};
@@ -25,10 +24,9 @@ pub use llm_trait::{
 };
 pub use pi05::{Pi05Config, Pi05PerformanceProfile};
 pub use profiling::GenerationProfile;
-pub use qwen35::{Qwen35CheckpointReport, Qwen35Config, Qwen35LayerType};
 pub use qwen25_omni::{Qwen25OmniCheckpointReport, Qwen25OmniConfig};
-pub use qwen3vl::{GeneralQwen3VL, Qwen3VLConfig, Qwen3VLTextWeights};
 pub use registry::{get, list, register};
+pub use qwen3vl::{GeneralQwen3VL, Qwen3VLConfig, Qwen3VLTextWeights};
 pub use vla::{
     Action, ImageLayout, InferenceSpec, Observation, PreparedInference, VisionObservation,
     VlaRuntime,

@@ -36,7 +36,7 @@ Usage:
     python scripts/hf_reference_dump.py --only qwen3vl_text
     python scripts/hf_reference_dump.py --only qwen3vl_image
     python scripts/hf_reference_dump.py --only qwen25_omni_text \
-        --qwen25-omni-model-dir /local/pinned/Qwen2.5-Omni-3B
+        --qwen25-omni-model-dir "$APXINF_QWEN25_OMNI_MODEL_DIR"
 
 Not part of the Rust build. Run locally to produce reference files, commit
 them (or ignore, see comment in tests/qwen3vl_reference/README.md), then

@@ -311,38 +311,6 @@ fn inspect_file_header(
 /// Read a small I64 metadata tensor previously validated by `inspect_path`.
 /// Large payloads are deliberately rejected so this helper cannot become an
 /// accidental full-checkpoint loader.
-pub fn read_small_i64(entry: &TensorManifestEntry) -> Result<Vec<i64>, String> {
-    if entry.dtype != DType::I64 {
-        return Err(format!(
-            "tensor `{}` is {}, expected i64",
-            entry.name, entry.dtype
-        ));
-    }
-    if entry.byte_len > 1024 {
-        return Err(format!(
-            "tensor `{}` is {} bytes; small metadata reads are limited to 1024 bytes",
-            entry.name, entry.byte_len
-        ));
-    }
-    let byte_len = usize::try_from(entry.byte_len)
-        .map_err(|_| format!("tensor `{}` is too large for this host", entry.name))?;
-    let mut bytes = vec![0_u8; byte_len];
-    let mut file = File::open(&entry.file)
-        .map_err(|e| format!("failed to open {}: {e}", entry.file.display()))?;
-    file.seek(SeekFrom::Start(entry.file_offset))
-        .map_err(|e| format!("failed to seek {}: {e}", entry.file.display()))?;
-    file.read_exact(&mut bytes)
-        .map_err(|e| format!("failed to read tensor `{}`: {e}", entry.name))?;
-    Ok(bytes
-        .chunks_exact(8)
-        .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
-        .collect())
-}
-
-/// Load exactly one tensor selected from a previously validated manifest while
-/// preserving its on-disk dtype. This is the bounded bridge from header-only
-/// inspection to layer/operator bring-up; callers do not need to materialize a
-/// complete multi-gigabyte checkpoint.
 pub fn load_manifest_tensor(entry: &TensorManifestEntry) -> Result<Tensor, String> {
     let byte_len = usize::try_from(entry.byte_len)
         .map_err(|_| format!("tensor `{}` is too large for this host", entry.name))?;
@@ -365,55 +333,6 @@ pub fn load_manifest_tensor(entry: &TensorManifestEntry) -> Result<Tensor, Strin
 /// Load a contiguous row range from a validated rank-2 tensor without
 /// materializing the full tensor. Large embedding and LM-head matrices use
 /// this path for bounded row-wise preparation.
-pub fn load_manifest_tensor_rows(
-    entry: &TensorManifestEntry,
-    first_row: usize,
-    row_count: usize,
-) -> Result<Tensor, String> {
-    if entry.shape.len() != 2 {
-        return Err(format!(
-            "tensor `{}` has rank {}, row loading requires rank 2",
-            entry.name,
-            entry.shape.len()
-        ));
-    }
-    if row_count == 0 || first_row > entry.shape[0] || row_count > entry.shape[0] - first_row {
-        return Err(format!(
-            "tensor `{}` row range [{first_row}..{}) exceeds {} rows",
-            entry.name,
-            first_row.saturating_add(row_count),
-            entry.shape[0]
-        ));
-    }
-    let row_bytes = entry.shape[1]
-        .checked_mul(entry.dtype.size_in_bytes())
-        .ok_or_else(|| format!("tensor `{}` row byte size overflow", entry.name))?;
-    let byte_offset = first_row
-        .checked_mul(row_bytes)
-        .ok_or_else(|| format!("tensor `{}` row offset overflow", entry.name))?;
-    let byte_len = row_count
-        .checked_mul(row_bytes)
-        .ok_or_else(|| format!("tensor `{}` row range byte size overflow", entry.name))?;
-    let file_offset = entry
-        .file_offset
-        .checked_add(byte_offset as u64)
-        .ok_or_else(|| format!("tensor `{}` file offset overflow", entry.name))?;
-    let mut bytes = vec![0_u8; byte_len];
-    let mut file = File::open(&entry.file)
-        .map_err(|e| format!("failed to open {}: {e}", entry.file.display()))?;
-    file.seek(SeekFrom::Start(file_offset))
-        .map_err(|e| format!("failed to seek {}: {e}", entry.file.display()))?;
-    file.read_exact(&mut bytes)
-        .map_err(|e| format!("failed to read rows from tensor `{}`: {e}", entry.name))?;
-    Tensor::from_raw(
-        Shape::from(vec![row_count, entry.shape[1]]),
-        entry.dtype,
-        Device::Cpu,
-        bytes,
-    )
-    .map_err(|e| format!("construct row slice for tensor `{}`: {e}", entry.name))
-}
-
 fn read_index(index_path: &Path) -> Result<SafetensorsIndex, String> {
     let raw = std::fs::read_to_string(index_path)
         .map_err(|e| format!("failed to read {}: {e}", index_path.display()))?;
@@ -731,8 +650,6 @@ fn parse_dtype(s: &str) -> Option<DType> {
         "F16" => Some(DType::F16),
         "BF16" => Some(DType::BF16),
         "F8_E4M3" => Some(DType::F8E4M3),
-        "I32" => Some(DType::I32),
-        "I64" => Some(DType::I64),
         _ => None,
     }
 }
@@ -755,8 +672,6 @@ mod tests {
                 DType::F16 => "F16",
                 DType::BF16 => "BF16",
                 DType::F8E4M3 => "F8_E4M3",
-                DType::I32 => "I32",
-                DType::I64 => "I64",
             };
             let shape_json: Vec<String> = shape.iter().map(|d| d.to_string()).collect();
             let end = data_offset + data.len();
@@ -866,6 +781,25 @@ mod tests {
     }
 
     #[test]
+    fn test_manifest_inspection_and_selective_bf16_load() {
+        let values = [half::bf16::from_f32(1.5), half::bf16::from_f32(-2.0)];
+        let bytes = bytemuck::cast_slice(&values).to_vec();
+        let file_bytes = make_safetensors(&[("weight", DType::BF16, &[1, 2], &bytes)]);
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(&file_bytes).unwrap();
+
+        let manifest = inspect_path(file.path()).unwrap();
+        assert_eq!(manifest.shards.len(), 1);
+        assert_eq!(manifest.tensor_bytes, 4);
+        assert_eq!(manifest.dtype_counts()[&DType::BF16], 1);
+        let entry = manifest.tensor("weight").unwrap();
+        assert_eq!(entry.shape, [1, 2]);
+        let tensor = load_manifest_tensor(entry).unwrap();
+        assert_eq!(tensor.dtype(), DType::BF16);
+        assert_eq!(tensor.as_bf16().unwrap(), values);
+    }
+
+    #[test]
     fn test_unsupported_dtype_skipped() {
         // Build a header with an INT8 tensor — should fail gracefully
         let header_json = r#"{"x": {"dtype": "I8", "shape": [4], "data_offsets": [0, 4]}}"#;
@@ -913,124 +847,5 @@ mod tests {
         assert_eq!(tensors.len(), 2);
         assert_eq!(tensors["a"].dtype(), DType::F16);
         assert_eq!(tensors["b"].as_f16().unwrap()[0].to_f32(), -2.0);
-    }
-
-    #[test]
-    fn test_load_native_integer_tensor_storage() {
-        let packed = [-1_i32, 0x7654_3210_i32];
-        let shape = [5120_i64, 17408_i64];
-        let packed_bytes = packed
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect::<Vec<_>>();
-        let shape_bytes = shape
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect::<Vec<_>>();
-        let file_bytes = make_safetensors(&[
-            ("linear.weight_packed", DType::I32, &[2], &packed_bytes),
-            ("linear.weight_shape", DType::I64, &[2], &shape_bytes),
-        ]);
-
-        let mut tmp = NamedTempFile::new().unwrap();
-        tmp.write_all(&file_bytes).unwrap();
-        let (tensors, _) = load_native(tmp.path()).unwrap();
-
-        assert_eq!(tensors["linear.weight_packed"].as_i32().unwrap(), packed);
-        assert_eq!(tensors["linear.weight_shape"].as_i64().unwrap(), shape);
-    }
-
-    #[test]
-    fn test_inspect_sharded_reads_headers_and_small_shape_only() {
-        let directory = tempfile::tempdir().unwrap();
-        let packed = [0x7654_3210_i32, -1_i32]
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect::<Vec<_>>();
-        let shape = [1_i64, 16_i64]
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect::<Vec<_>>();
-        std::fs::write(
-            directory.path().join("model-00001-of-00001.safetensors"),
-            make_safetensors(&[
-                ("linear.weight_packed", DType::I32, &[1, 2], &packed),
-                ("linear.weight_shape", DType::I64, &[2], &shape),
-            ]),
-        )
-        .unwrap();
-        std::fs::write(
-            directory.path().join("model.safetensors.index.json"),
-            r#"{"metadata":{"total_size":24},"weight_map":{"linear.weight_packed":"model-00001-of-00001.safetensors","linear.weight_shape":"model-00001-of-00001.safetensors"}}"#,
-        )
-        .unwrap();
-
-        let manifest = inspect_path(directory.path()).unwrap();
-        assert_eq!(manifest.tensors.len(), 2);
-        assert_eq!(manifest.shards, ["model-00001-of-00001.safetensors"]);
-        assert_eq!(manifest.tensor_bytes, 24);
-        assert_eq!(manifest.indexed_total_size, Some(24));
-        assert_eq!(manifest.dtype_counts()[&DType::I32], 1);
-        let shape_entry = manifest.tensor("linear.weight_shape").unwrap();
-        assert_eq!(read_small_i64(shape_entry).unwrap(), [1, 16]);
-    }
-
-    #[test]
-    fn test_inspect_rejects_shape_byte_mismatch() {
-        let header_json = r#"{"x":{"dtype":"I32","shape":[2],"data_offsets":[0,4]}}"#;
-        let header_len = header_json.len() as u64;
-        let mut file_bytes = header_len.to_le_bytes().to_vec();
-        file_bytes.extend_from_slice(header_json.as_bytes());
-        file_bytes.extend_from_slice(&[0_u8; 4]);
-        let mut tmp = NamedTempFile::new().unwrap();
-        tmp.write_all(&file_bytes).unwrap();
-
-        let error = inspect_path(tmp.path()).unwrap_err();
-        assert!(error.contains("require 8"), "{error}");
-    }
-
-    #[test]
-    fn test_load_one_manifest_tensor_without_loading_siblings() {
-        let first = [11_i32, -7_i32]
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect::<Vec<_>>();
-        let second = [99_i64]
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect::<Vec<_>>();
-        let file_bytes = make_safetensors(&[
-            ("first", DType::I32, &[2], &first),
-            ("second", DType::I64, &[1], &second),
-        ]);
-        let mut tmp = NamedTempFile::new().unwrap();
-        tmp.write_all(&file_bytes).unwrap();
-
-        let manifest = inspect_path(tmp.path()).unwrap();
-        let tensor = load_manifest_tensor(manifest.tensor("first").unwrap()).unwrap();
-        assert_eq!(tensor.dtype(), DType::I32);
-        assert_eq!(tensor.as_i32().unwrap(), [11, -7]);
-    }
-
-    #[test]
-    fn test_load_manifest_tensor_rows_reads_only_requested_range() {
-        let values = (0..12)
-            .map(|value| value as f32)
-            .flat_map(f32::to_le_bytes)
-            .collect::<Vec<_>>();
-        let file_bytes = make_safetensors(&[("matrix", DType::F32, &[3, 4], &values)]);
-        let mut tmp = NamedTempFile::new().unwrap();
-        tmp.write_all(&file_bytes).unwrap();
-
-        let manifest = inspect_path(tmp.path()).unwrap();
-        let entry = manifest.tensor("matrix").unwrap();
-        let rows = load_manifest_tensor_rows(entry, 1, 2).unwrap();
-        assert_eq!(rows.shape().dims(), [2, 4]);
-        assert_eq!(
-            rows.as_f32().unwrap(),
-            [4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0]
-        );
-        assert!(load_manifest_tensor_rows(entry, 3, 1).is_err());
-        assert!(load_manifest_tensor_rows(entry, 0, 0).is_err());
     }
 }

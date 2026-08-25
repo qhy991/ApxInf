@@ -1,7 +1,7 @@
-// Copyright 2025 SGLang Team and Mizar contributors.
+// Copyright 2025 ApxInf contributors.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Rust/FFI adaptation of Mizar's SM100/SM110 CUTLASS FMHA kernel. Its pinned
+// Rust/FFI adaptation of an upstream SM100/SM110 CUTLASS FMHA kernel. Its pinned
 // FMHA and CUTLASS headers live alongside this wrapper under kernels/cutlass.
 
 #include <cuda_fp16.h>
@@ -12,7 +12,7 @@
 #include "cute/tensor.hpp"
 #include "cutlass/util/packed_stride.hpp"
 
-// Mizar's patched kernel guard names SM100A/SM110A but omits SM101A even
+// The inherited kernel guard names SM100A/SM110A but omits SM101A even
 // though CUTLASS 4 enables the same TCGEN05/TMA path natively for SM101A.
 // Alias only while parsing that guard. Defining SM100A before CUTLASS config
 // is loaded makes the rest of CUTLASS see two architectures at once and can

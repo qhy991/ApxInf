@@ -15,7 +15,7 @@ resolves a remote model:
 ```text
 python3 scripts/hf_reference_dump.py \
   --only qwen25_omni_text \
-  --qwen25-omni-model-dir /local/pinned/Qwen2.5-Omni-3B
+  --qwen25-omni-model-dir "$APXINF_QWEN25_OMNI_MODEL_DIR"
 ```
 
 Repeat with `qwen25_omni_image` and `qwen25_omni_audio`. Each artifact stores
@@ -29,7 +29,7 @@ inference:
 
 ```text
 cargo run -p apxinf-model --example qwen25_omni_check --features cuda -- \
-  /local/pinned/Qwen2.5-Omni-3B \
+  "$APXINF_QWEN25_OMNI_MODEL_DIR" \
   tests/qwen25_omni_reference/qwen25_omni_text.npz
 ```
 

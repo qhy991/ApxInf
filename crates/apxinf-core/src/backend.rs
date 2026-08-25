@@ -209,7 +209,7 @@ pub trait Backend {
 /// `OneD` is the standard Llama / Qwen2 / TinyLlama scalar-position RoPE.
 /// `MRope3D` is the Qwen3-VL multimodal RoPE with a 3-vector (t, h, w) per
 /// position and interleaved axis assignment across the 64 frequency pairs
-/// according to `sections` (see `doc/20260619-qwen3vl/notes.md`).
+/// according to `sections`.
 ///
 /// The enum is `Copy` (`sections` is a fixed `[usize;3]`) so it can flow
 /// into the backend by value like the rest of the config primitives.

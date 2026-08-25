@@ -1,30 +1,36 @@
 #!/bin/sh
 # Reproduce the frozen SGLang compatibility probe. On SGLang 0.5.18 this
-# currently fails closed before weight loading because its Transformers model
-# wrapper calls AutoModel.from_config(Qwen2_5OmniConfig), which Transformers
-# 5.12.1 does not register.
+# fails closed before weight loading because the Transformers wrapper cannot
+# construct the checkpoint's full Qwen2_5OmniConfig through AutoModel.
 set -eu
 
-exec chpst -u gpuq:gpuq-users /usr/local/bin/gpu-run \
+: "${APXINF_WORKDIR:?set the ApxInf source checkout}"
+: "${APXINF_MODEL_DIR:?set the Qwen2.5-Omni model directory}"
+: "${APXINF_SGLANG_PYTHON:?set the SGLang Python executable}"
+: "${APXINF_CACHE_ROOT:?set a writable cache directory}"
+
+gpu_run=${APXINF_GPU_RUN:-gpu-run}
+
+exec chpst -u gpuq:gpuq-users "$gpu_run" \
   --owner codex-apxinf --label sglang-0518-qwen25-omni-transformers \
   --mode exclusive --gpu-count 1 \
-  --cwd /mnt/user_dir/hanjinchen/apxinf-qwen25-omni-3b \
+  --cwd "$APXINF_WORKDIR" \
   --estimate 30m --queue-timeout 2h --run-timeout 1h -- \
   env \
   SETUPTOOLS_USE_DISTUTILS=local \
-  HF_HOME=/var/lib/agent-gpu-broker/hf-cache \
+  HF_HOME="$APXINF_CACHE_ROOT/huggingface" \
   TRANSFORMERS_OFFLINE=1 \
   HF_HUB_OFFLINE=1 \
   TOKENIZERS_PARALLELISM=false \
-  XDG_CACHE_HOME=/var/lib/agent-gpu-broker/cache \
-  TORCH_HOME=/var/lib/agent-gpu-broker/cache/torch \
-  TORCHINDUCTOR_CACHE_DIR=/var/lib/agent-gpu-broker/cache/torchinductor \
-  TORCH_EXTENSIONS_DIR=/var/lib/agent-gpu-broker/cache/torch-extensions \
-  TRITON_CACHE_DIR=/var/lib/agent-gpu-broker/cache/triton \
-  CUDA_CACHE_PATH=/var/lib/agent-gpu-broker/cache/cuda \
-  FLASHINFER_WORKSPACE_BASE=/var/lib/agent-gpu-broker \
-  /opt/apxinf/sglang-v0.5.17/bin/python -m sglang.launch_server \
-  --model-path /mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B \
+  XDG_CACHE_HOME="$APXINF_CACHE_ROOT" \
+  TORCH_HOME="$APXINF_CACHE_ROOT/torch" \
+  TORCHINDUCTOR_CACHE_DIR="$APXINF_CACHE_ROOT/torchinductor" \
+  TORCH_EXTENSIONS_DIR="$APXINF_CACHE_ROOT/torch-extensions" \
+  TRITON_CACHE_DIR="$APXINF_CACHE_ROOT/triton" \
+  CUDA_CACHE_PATH="$APXINF_CACHE_ROOT/cuda" \
+  FLASHINFER_WORKSPACE_BASE="$APXINF_CACHE_ROOT/flashinfer" \
+  "$APXINF_SGLANG_PYTHON" -m sglang.launch_server \
+  --model-path "$APXINF_MODEL_DIR" \
   --served-model-name Qwen/Qwen2.5-Omni-3B \
   --host 127.0.0.1 --port 8004 \
   --model-impl transformers --enable-multimodal --trust-remote-code \

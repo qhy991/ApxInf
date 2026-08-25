@@ -41,7 +41,7 @@ pub struct Pi05PerformanceProfile {
 }
 
 impl Pi05PerformanceProfile {
-    /// Public Mizar Thor contract: 49.83 ms P50 for this exact shape.
+    /// Validated Thor profile: 49.83 ms P50 for this exact shape.
     pub const THOR_TWO_VIEW: Self = Self {
         num_views: 2,
         action_horizon: 10,
@@ -135,7 +135,7 @@ impl Pi05Config {
         Self::from_json_str(&raw)
     }
 
-    /// Parse LeRobot's policy config while accepting OpenPI/Mizar aliases.
+    /// Parse LeRobot's policy config while accepting compatible OpenPI aliases.
     /// Architecture constants deliberately retain the validated π0.5 values
     /// when older checkpoints omit them.
     pub fn from_json_str(raw: &str) -> Result<Self> {

@@ -24,7 +24,7 @@ named a proxy because TTFT includes first-token work.
 Build the accepted RTX 4090 artifact with an explicit native architecture:
 
 ```bash
-CARGO_TARGET_DIR=/opt/apxinf/qwen25-omni-sm89-target \
+CARGO_TARGET_DIR=target/qwen25-omni-sm89 \
   benchmarks/qwen25_omni_4090/build_sm89.sh
 ```
 
@@ -38,9 +38,8 @@ vision encoder. Setting the operator set to `core` retains the roughly
 61-second, 15.5 MB text-only artifact but makes the full-vision selector fail
 closed.
 The build-system default remains `APXINF_CUDA_OPERATOR_SET=full` for backward
-compatibility; that setting also compiles architecture-coupled FA2, INT8 and
-Marlin objects and took 17 minutes 43 seconds with a 48.2 MB binary. Reusing
-the same target directory makes subsequent links faster.
+compatibility. Reusing the same target directory makes subsequent links
+faster.
 
 ```bash
 python3 benchmarks/qwen25_omni_4090/benchmark_service.py \
@@ -56,11 +55,13 @@ python3 benchmarks/qwen25_omni_4090/benchmark_contract.py \
 
 python3 benchmarks/qwen25_omni_4090/benchmark_multimodal.py \
   --image scripts/roofline_decode_throughput.png \
-  --audio /var/lib/agent-gpu-broker/apxinf-omni-tone.wav \
+  --audio "$APXINF_OMNI_AUDIO" \
+  --reference "$APXINF_OMNI_REFERENCE" \
   --output benchmarks/qwen25_omni_4090/results/multimodal.json
 
 python3 benchmarks/qwen25_omni_4090/benchmark_processor_recovery.py \
-  --binary-path /opt/apxinf/qwen25-omni-target/release/apxinf \
+  --binary-path "$APXINF_BINARY" \
+  --reference "$APXINF_OMNI_REFERENCE" \
   --output benchmarks/qwen25_omni_4090/results/processor-recovery.json
 
 python3 benchmarks/qwen25_omni_4090/decode_roofline.py \

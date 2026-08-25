@@ -27,7 +27,6 @@
     "rejection_rule": "reject on any trajectory mismatch, invalid-gate fallback, less than four of five 32K paired wins, median 32K speedup below 1.005, 12K median regression above one percent or sampled memory headroom below two GiB"
   },
   "implementation": {
-    "parent_revision": "47eb4c1914bb4ea2048f95275c18af7f734327f7",
     "selector": "APXINF_QWEN25_M1_PACKED_MLP=1",
     "prerequisite": "APXINF_QWEN25_DECODE_GRAPH=1",
     "gate": "captured M1 BF16 decode; eager decode and prefill retain separate Gate/Up weights",
@@ -142,10 +141,8 @@
     "graph_trace": {
       "baseline_job": "gpuq-116e8a2523cf",
       "candidate_job": "gpuq-76259c6b9ba3",
-      "baseline_report": "/var/lib/agent-gpu-broker/profiles/omni-32760-packed-mlp-A-graph-interactive.nsys-rep",
       "baseline_report_sha256": "0bbe1127154255bf502c5a2ec0054002d6a84c1b6a3fc253ea946a8e5dd9e161",
       "baseline_report_size_bytes": 2245673,
-      "candidate_report": "/var/lib/agent-gpu-broker/profiles/omni-32760-packed-mlp-B-graph-interactive.nsys-rep",
       "candidate_report_sha256": "f0093d1be0622bd526e583c017e72c747edbdfc49899eaeb443bc99914edef6b",
       "candidate_report_size_bytes": 2245410,
       "profiled_baseline_tpot_seconds": 0.01042440957142857,

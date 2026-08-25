@@ -2,27 +2,14 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-#[cfg(feature = "cuda")]
-use std::time::Instant;
 
 use apxinf_core::{DType, Device, Tensor};
-#[cfg(feature = "cuda")]
-use apxinf_cuda::CudaContext;
-#[cfg(feature = "cuda")]
-use apxinf_loader::safetensors;
-#[cfg(feature = "cuda")]
-use apxinf_model::qwen35::{load_embedding_row, HybridUnit, HybridUnitMode, Qwen35LmHead};
-use apxinf_model::{
-    AudioInput, AutoModel, ImageInput, LlmInput, LoadOptions, Qwen25OmniCheckpointReport,
-    Qwen25OmniConfig, Qwen35CheckpointReport, Qwen35Config,
-};
+use apxinf_model::{AudioInput, AutoModel, ImageInput, LlmInput, LoadOptions};
 use apxinf_tokenizer::{ChatMessage, Tokenizer};
 use clap::{Parser, Subcommand};
 
 #[cfg(feature = "cuda")]
 mod qwen25_omni_server;
-#[cfg(feature = "cuda")]
-mod qwen35_server;
 
 #[derive(Parser)]
 #[command(name = "apxinf")]
@@ -50,8 +37,7 @@ enum Commands {
         #[arg(long)]
         image: Option<PathBuf>,
 
-        /// Path to one local WAV file for Qwen2.5-Omni audio understanding.
-        /// Mutually exclusive with --image in the first CLI deployment slice.
+        /// Path to one WAV file for Qwen2.5-Omni audio understanding.
         #[arg(long, conflicts_with = "image")]
         audio: Option<PathBuf>,
 
@@ -77,15 +63,7 @@ enum Commands {
         dtype: String,
     },
 
-    /// Validate Qwen3.8 identity, config, shards, and quantization layout.
-    Inspect {
-        #[arg(short, long)]
-        model: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Start the resident OpenAI-compatible Qwen3.8 INT4 text service.
+    /// Start the serialized Qwen2.5-Omni text-output service.
     Serve {
         #[arg(short, long)]
         model: PathBuf,
@@ -95,13 +73,6 @@ enum Commands {
         port: u16,
         #[arg(long, default_value_t = 32768)]
         max_model_len: usize,
-        /// Allocate the experimental M64 Marlin prefill workspace. Requests
-        /// remain on M8 unless they explicitly set apxinf_prefill_mode.
-        #[arg(long)]
-        enable_experimental_marlin_m64: bool,
-        /// Load the native Qwen3.8 visual encoder and enable one-image chat
-        /// requests. Requires a Python executable with the pinned HF
-        /// processor dependencies in APXINF_PROCESSOR_PYTHON.
         #[arg(long)]
         enable_multimodal: bool,
     },
@@ -126,40 +97,21 @@ fn main() {
             dtype,
         } => {
             let device = parse_device(&device);
-            if read_model_type(&model).as_deref() == Some("qwen3_5") {
-                if image.is_some() || audio.is_some() {
-                    eprintln!("Qwen3.8 does not accept the requested image/audio input");
-                } else {
-                    #[cfg(feature = "cuda")]
-                    run_generate_qwen35(
-                        &model,
-                        &prompt,
-                        max_tokens,
-                        !no_eos_stop,
-                        system.as_deref(),
-                        device,
-                    );
-                    #[cfg(not(feature = "cuda"))]
-                    eprintln!("Qwen3.8 native generation requires an ApxInf CUDA build");
-                }
-            } else {
-                run_generate(
-                    &model,
-                    &prompt,
-                    image.as_ref(),
-                    audio.as_ref(),
-                    max_tokens,
-                    !no_eos_stop,
-                    system.as_deref(),
-                    device,
-                    &dtype,
-                );
-            }
-        }
-        Commands::Inspect { model, json } => {
-            if let Err(error) = run_inspect(&model, json) {
-                eprintln!("Model inspection failed: {error}");
-                std::process::exit(2);
+            // Report a failed generation through the exit status; a CLI that
+            // printed an error and still exited 0 reads as success to any caller.
+            if let Err(error) = run_generate(
+                &model,
+                &prompt,
+                image.as_ref(),
+                audio.as_ref(),
+                max_tokens,
+                !no_eos_stop,
+                system.as_deref(),
+                device,
+                &dtype,
+            ) {
+                eprintln!("{error}");
+                std::process::exit(1);
             }
         }
         Commands::Serve {
@@ -167,42 +119,24 @@ fn main() {
             host,
             port,
             max_model_len,
-            enable_experimental_marlin_m64,
             enable_multimodal,
         } => {
             #[cfg(feature = "cuda")]
-            if let Err(error) = if read_model_type(&model).as_deref() == Some("qwen2_5_omni") {
-                if !enable_multimodal {
-                    Err("Qwen2.5-Omni serve requires --enable-multimodal".into())
-                } else if enable_experimental_marlin_m64 {
-                    Err("Qwen2.5-Omni does not support the Qwen3.8 Marlin M64 option".into())
-                } else {
+            {
+                let result = if enable_multimodal {
                     qwen25_omni_server::serve(&model, &host, port, max_model_len)
+                } else {
+                    Err("Qwen2.5-Omni serve requires --enable-multimodal".into())
+                };
+                if let Err(error) = result {
+                    eprintln!("Server failed: {error}");
+                    std::process::exit(2);
                 }
-            } else {
-                qwen35_server::serve(
-                    &model,
-                    &host,
-                    port,
-                    max_model_len,
-                    enable_experimental_marlin_m64,
-                    enable_multimodal,
-                )
-            } {
-                eprintln!("Server failed: {error}");
-                std::process::exit(2);
             }
             #[cfg(not(feature = "cuda"))]
             {
-                let _ = (
-                    model,
-                    host,
-                    port,
-                    max_model_len,
-                    enable_experimental_marlin_m64,
-                    enable_multimodal,
-                );
-                eprintln!("The native Qwen3.8 server requires an ApxInf CUDA build");
+                let _ = (model, host, port, max_model_len, enable_multimodal);
+                eprintln!("The native Qwen2.5-Omni server requires an ApxInf CUDA build");
                 std::process::exit(2);
             }
         }
@@ -233,37 +167,25 @@ fn run_generate(
     system_prompt: Option<&str>,
     device: Device,
     dtype: &str,
-) {
+) -> Result<(), String> {
     println!("apxinf — LLM/VLM inference engine");
     println!();
 
-    let model_name = match AutoModel::detect_model_name(model_dir) {
-        Ok(name) => name,
-        Err(error) => {
-            eprintln!("Failed to detect model type: {error}");
-            return;
-        }
-    };
+    let model_name = AutoModel::detect_model_name(model_dir)
+        .map_err(|error| format!("Failed to detect model type: {error}"))?;
     if image_path.is_some()
         && !matches!(model_name.as_str(), "qwen3_vl" | "qwen3vl" | "qwen2_5_omni")
     {
-        eprintln!("Model `{model_name}` does not support image input");
-        return;
+        return Err(format!("Model `{model_name}` does not support image input"));
     }
     if audio_path.is_some() && model_name != "qwen2_5_omni" {
-        eprintln!("Model `{model_name}` does not support audio input");
-        return;
+        return Err(format!("Model `{model_name}` does not support audio input"));
     }
 
     let tokenizer_path = model_dir.join("tokenizer.json");
     println!("Loading tokenizer from {:?}...", tokenizer_path);
-    let tok = match Tokenizer::from_file(&tokenizer_path) {
-        Ok(tokenizer) => tokenizer,
-        Err(error) => {
-            eprintln!("Failed to load tokenizer: {error}");
-            return;
-        }
-    };
+    let tok = Tokenizer::from_file(&tokenizer_path)
+        .map_err(|error| format!("Failed to load tokenizer: {error}"))?;
     println!("Vocab size: {}", tok.vocab_size());
 
     let eos_token_id = if eos_stop { tok.eos_token_id() } else { None };
@@ -276,64 +198,34 @@ fn run_generate(
     let (tokens, prepared_image, prepared_audio) = if let Some(image_path) = image_path {
         println!("Preprocessing image via the Hugging Face processor...");
         let (data, shape, grid, tokens) =
-            match preprocess_image(model_dir, image_path, prompt, system_prompt) {
-                Ok(output) => output,
-                Err(error) => {
-                    eprintln!("Preprocessing failed: {error}");
-                    return;
-                }
-            };
+            preprocess_image(model_dir, image_path, prompt, system_prompt)
+                .map_err(|error| format!("Preprocessing failed: {error}"))?;
         println!(
             "pixel_values: {:?}, grid_thw: {:?}, prompt tokens: {}",
             shape,
             grid,
             tokens.len()
         );
-        let pixels = match Tensor::from_bf16(shape, &data) {
-            Ok(pixels) => pixels,
-            Err(error) => {
-                eprintln!("Invalid processor output: {error}");
-                return;
-            }
-        };
+        let pixels = Tensor::from_bf16(shape, &data)
+            .map_err(|error| format!("Invalid processor output: {error}"))?;
         (tokens, Some((pixels, vec![grid])), None)
     } else if let Some(audio_path) = audio_path {
-        println!("Preprocessing WAV audio via the local Hugging Face processor...");
+        println!("Preprocessing WAV audio via the Hugging Face processor...");
         let (features, feature_shape, mask, mask_shape, length, token_count, tokens) =
-            match preprocess_audio(model_dir, audio_path, prompt, system_prompt) {
-                Ok(output) => output,
-                Err(error) => {
-                    eprintln!("Audio preprocessing failed: {error}");
-                    return;
-                }
-            };
-        let features = match Tensor::from_bf16(feature_shape, &features) {
-            Ok(features) => features,
-            Err(error) => {
-                eprintln!("Invalid audio features: {error}");
-                return;
-            }
-        };
-        let mask = match Tensor::from_bf16(mask_shape, &mask) {
-            Ok(mask) => mask,
-            Err(error) => {
-                eprintln!("Invalid audio attention mask: {error}");
-                return;
-            }
-        };
+            preprocess_audio(model_dir, audio_path, prompt, system_prompt)
+                .map_err(|error| format!("Audio preprocessing failed: {error}"))?;
+        let features = Tensor::from_bf16(feature_shape, &features)
+            .map_err(|error| format!("Invalid audio features: {error}"))?;
+        let mask = Tensor::from_bf16(mask_shape, &mask)
+            .map_err(|error| format!("Invalid audio attention mask: {error}"))?;
         (
             tokens,
             None,
             Some((features, mask, vec![length], vec![token_count])),
         )
     } else {
-        let tokens = match encode_prompt(&tok, prompt, system_prompt) {
-            Ok(tokens) => tokens,
-            Err(error) => {
-                eprintln!("Failed to encode prompt: {error}");
-                return;
-            }
-        };
+        let tokens = encode_prompt(&tok, prompt, system_prompt)
+            .map_err(|error| format!("Failed to encode prompt: {error}"))?;
         (tokens, None, None)
     };
 
@@ -341,8 +233,9 @@ fn run_generate(
         "fp32" | "f32" => Some(DType::F32),
         "bf16" => Some(DType::BF16),
         other => {
-            eprintln!("Unsupported text weight dtype `{other}`; use fp32 or bf16");
-            return;
+            return Err(format!(
+                "Unsupported text weight dtype `{other}`; use fp32 or bf16"
+            ))
         }
     };
     let options = LoadOptions {
@@ -355,26 +248,19 @@ fn run_generate(
         "Loading {model_name} from {:?}... (dtype: {dtype})",
         model_dir
     );
-    let mut model = match AutoModel::load_model(device, model_dir, &options) {
-        Ok(model) => model,
-        Err(error) => {
-            eprintln!("Failed to load model: {error}");
-            return;
-        }
-    };
+    let mut model = AutoModel::load_model(device, model_dir, &options)
+        .map_err(|error| format!("Failed to load model: {error}"))?;
     if prepared_image.is_some() || prepared_audio.is_some() {
         match model.text_capabilities() {
             Ok(capabilities)
                 if (prepared_image.is_none() || capabilities.image)
                     && (prepared_audio.is_none() || capabilities.audio) => {}
             Ok(_) => {
-                eprintln!("Model `{model_name}` does not support image input");
-                return;
+                return Err(format!(
+                    "Model `{model_name}` does not support requested media"
+                ))
             }
-            Err(error) => {
-                eprintln!("Cannot generate with this model: {error}");
-                return;
-            }
+            Err(error) => return Err(format!("Cannot generate with this model: {error}")),
         }
     }
     println!("Model ready.");
@@ -396,32 +282,29 @@ fn run_generate(
     let mut out = stdout.lock();
     let mut all_tokens = tokens.clone();
 
-    let (_, profile) = match model.generate_streaming(
-        input,
-        max_tokens,
-        |token_id| {
-            all_tokens.push(token_id);
-            if let Ok(text) = tok.decode(&all_tokens) {
-                let previous = tok
-                    .decode(&all_tokens[..all_tokens.len() - 1])
-                    .unwrap_or_default();
-                let delta = text.strip_prefix(&previous).unwrap_or(&text);
-                print!("{delta}");
-                out.flush().ok();
-            }
-        },
-        eos_token_id,
-    ) {
-        Ok(result) => result,
-        Err(error) => {
-            eprintln!("Generation failed: {error}");
-            return;
-        }
-    };
+    let (_, profile) = model
+        .generate_streaming(
+            input,
+            max_tokens,
+            |token_id| {
+                all_tokens.push(token_id);
+                if let Ok(text) = tok.decode(&all_tokens) {
+                    let previous = tok
+                        .decode(&all_tokens[..all_tokens.len() - 1])
+                        .unwrap_or_default();
+                    let delta = text.strip_prefix(&previous).unwrap_or(&text);
+                    print!("{delta}");
+                    out.flush().ok();
+                }
+            },
+            eos_token_id,
+        )
+        .map_err(|error| format!("Generation failed: {error}"))?;
 
     println!();
     println!();
     println!("{}", profile.summary());
+    Ok(())
 }
 
 fn encode_prompt(
@@ -442,477 +325,6 @@ fn encode_prompt(
         tokenizer.encode(prompt).map_err(|error| error.to_string())
     }
 }
-#[cfg(feature = "cuda")]
-fn run_generate_qwen35(
-    model_dir: &PathBuf,
-    prompt: &str,
-    max_tokens: usize,
-    eos_stop: bool,
-    system_prompt: Option<&str>,
-    device: Device,
-) {
-    if device != Device::Cuda(0) {
-        eprintln!("Qwen3.5/Qwen3.8 native text generation currently requires --device cuda");
-        return;
-    }
-    if max_tokens == 0 {
-        eprintln!("--max-tokens must be positive");
-        return;
-    }
-    let tokenizer_path = model_dir.join("tokenizer.json");
-    let tokenizer = match Tokenizer::from_file(&tokenizer_path) {
-        Ok(tokenizer) => tokenizer,
-        Err(error) => {
-            eprintln!("Failed to load tokenizer: {error}");
-            return;
-        }
-    };
-    let prompt_tokens = if tokenizer.has_chat_template() {
-        let mut messages = Vec::new();
-        if let Some(system) = system_prompt {
-            messages.push(ChatMessage::system(system));
-        }
-        messages.push(ChatMessage::user(prompt));
-        match tokenizer.encode_chat(&messages) {
-            Ok(tokens) => tokens,
-            Err(error) => {
-                eprintln!("Failed to apply chat template: {error}");
-                return;
-            }
-        }
-    } else {
-        match tokenizer.encode(prompt) {
-            Ok(tokens) => tokens,
-            Err(error) => {
-                eprintln!("Failed to encode prompt: {error}");
-                return;
-            }
-        }
-    };
-    if prompt_tokens.is_empty() {
-        eprintln!("Tokenizer produced an empty prompt");
-        return;
-    }
-    let required = match prompt_tokens.len().checked_add(max_tokens) {
-        Some(required) if required <= 32768 => required,
-        _ => {
-            eprintln!(
-                "Current native text path supports prompt+output <=32768 tokens, got {}+{}",
-                prompt_tokens.len(),
-                max_tokens
-            );
-            return;
-        }
-    };
-    let max_seq_len = required.next_power_of_two().min(32768);
-    let manifest = match safetensors::inspect_path(model_dir) {
-        Ok(manifest) => manifest,
-        Err(error) => {
-            eprintln!("Failed to inspect checkpoint: {error}");
-            return;
-        }
-    };
-    let context = match CudaContext::new(0) {
-        Ok(context) => context,
-        Err(error) => {
-            eprintln!("Failed to initialize CUDA: {error}");
-            return;
-        }
-    };
-
-    println!("apxinf — Qwen3.8 native INT4 text generation");
-    println!(
-        "Loading 64 decoder layers and W8 LM head (KV capacity {})...",
-        max_seq_len
-    );
-    let load_start = Instant::now();
-    let decoder = match HybridUnit::load_all(&manifest, &context, max_seq_len) {
-        Ok(decoder) => decoder,
-        Err(error) => {
-            eprintln!("Failed to load Qwen3.8 decoder: {error}");
-            return;
-        }
-    };
-    let lm_head = match Qwen35LmHead::load(&manifest, &context) {
-        Ok(head) => head,
-        Err(error) => {
-            eprintln!("Failed to load Qwen3.8 LM head: {error}");
-            return;
-        }
-    };
-    let cache_shape = vec![4, max_seq_len, 256];
-    let key_cache = Tensor::zeros(cache_shape.clone(), DType::BF16);
-    let value_cache = Tensor::zeros(cache_shape, DType::BF16);
-    let first_embedding = match load_embedding_row(&manifest, prompt_tokens[0]) {
-        Ok(embedding) => embedding,
-        Err(error) => {
-            eprintln!("Failed to load embedding: {error}");
-            return;
-        }
-    };
-    if let Err(error) = decoder.reset(&context, &first_embedding, &key_cache, &value_cache) {
-        eprintln!("Failed to initialize decoder state: {error}");
-        return;
-    }
-    println!("Model ready in {:.3}s", load_start.elapsed().as_secs_f64());
-    println!("Prompt tokens: {}", prompt_tokens.len());
-
-    let prefill_start = Instant::now();
-    let tiled_tokens = prompt_tokens.len() / 8 * 8;
-    for position in (0..tiled_tokens).step_by(8) {
-        let embedding =
-            match load_embedding_tile8(&manifest, &prompt_tokens[position..position + 8]) {
-                Ok(embedding) => embedding,
-                Err(error) => {
-                    eprintln!("Embedding tile at {position}: {error}");
-                    return;
-                }
-            };
-        if let Err(error) = decoder.set_prefill8_input(&context, &embedding) {
-            eprintln!("Set prompt tile at {position}: {error}");
-            return;
-        }
-        if let Err(error) = decoder.forward_prefill8(&context, position, false) {
-            eprintln!("Prompt tile forward at {position}: {error}");
-            return;
-        }
-    }
-    for (offset, &token) in prompt_tokens[tiled_tokens..].iter().enumerate() {
-        let position = tiled_tokens + offset;
-        if position > 0 || tiled_tokens > 0 {
-            let embedding = match load_embedding_row(&manifest, token) {
-                Ok(embedding) => embedding,
-                Err(error) => {
-                    eprintln!("Embedding row {token}: {error}");
-                    return;
-                }
-            };
-            if let Err(error) = decoder.set_token_input(&context, &embedding) {
-                eprintln!("Set prompt token {position}: {error}");
-                return;
-            }
-        }
-        let bucket = (position + 1).next_power_of_two().min(max_seq_len);
-        if let Err(error) = decoder.forward(
-            &context,
-            HybridUnitMode::ModelOptimized,
-            bucket,
-            position as u32,
-            false,
-        ) {
-            eprintln!("Prompt forward at token {position}: {error}");
-            return;
-        }
-    }
-    if tiled_tokens == prompt_tokens.len() {
-        if let Err(error) = decoder.commit_prefill8_last(&context) {
-            eprintln!("Commit final prompt tile: {error}");
-            return;
-        }
-    }
-    if let Err(error) = context.synchronize() {
-        eprintln!("Prompt synchronization failed: {error}");
-        return;
-    }
-    let prefill_seconds = prefill_start.elapsed().as_secs_f64();
-
-    let eos_token = if eos_stop {
-        tokenizer.eos_token_id()
-    } else {
-        None
-    };
-    let mut all_tokens = prompt_tokens.clone();
-    let mut generated = Vec::with_capacity(max_tokens);
-    let mut step_times = Vec::with_capacity(max_tokens);
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    print!("\n");
-    for step in 0..max_tokens {
-        let step_start = Instant::now();
-        if step > 0 {
-            let previous = generated[step - 1];
-            let embedding = match load_embedding_row(&manifest, previous) {
-                Ok(embedding) => embedding,
-                Err(error) => {
-                    eprintln!("Embedding row {previous}: {error}");
-                    return;
-                }
-            };
-            if let Err(error) = decoder.set_token_input(&context, &embedding) {
-                eprintln!("Set decode token {step}: {error}");
-                return;
-            }
-            let position = prompt_tokens.len() + step - 1;
-            let bucket = (position + 1).next_power_of_two().min(max_seq_len);
-            if let Err(error) = decoder.forward(
-                &context,
-                HybridUnitMode::ModelOptimized,
-                bucket,
-                position as u32,
-                false,
-            ) {
-                eprintln!("Decode forward at step {step}: {error}");
-                return;
-            }
-        }
-        if let Err(error) = lm_head.forward(&context, decoder.normalized_output()) {
-            eprintln!("LM head at step {step}: {error}");
-            return;
-        }
-        let token = match lm_head.argmax_cpu() {
-            Ok(token) => token,
-            Err(error) => {
-                eprintln!("Argmax at step {step}: {error}");
-                return;
-            }
-        };
-        generated.push(token);
-        all_tokens.push(token);
-        step_times.push(step_start.elapsed().as_secs_f64());
-        if let Ok(text) = tokenizer.decode(&all_tokens) {
-            let previous_text = tokenizer
-                .decode(&all_tokens[..all_tokens.len() - 1])
-                .unwrap_or_default();
-            print!("{}", text.strip_prefix(&previous_text).unwrap_or(&text));
-            out.flush().ok();
-        }
-        if eos_token == Some(token) {
-            break;
-        }
-    }
-    println!("\n");
-    let decode_seconds = step_times.iter().sum::<f64>();
-    println!(
-        "ApxInf Qwen3.8: prefill={} tokens in {:.3}s ({:.1} tok/s, M8 tiles + M1 tail); decode={} tokens in {:.3}s ({:.2} tok/s, {:.2} ms/token)",
-        prompt_tokens.len(),
-        prefill_seconds,
-        prompt_tokens.len() as f64 / prefill_seconds,
-        generated.len(),
-        decode_seconds,
-        generated.len() as f64 / decode_seconds,
-        decode_seconds * 1000.0 / generated.len().max(1) as f64,
-    );
-}
-
-#[cfg(feature = "cuda")]
-fn load_embedding_tile8(
-    manifest: &safetensors::CheckpointManifest,
-    tokens: &[u32],
-) -> Result<Tensor, String> {
-    const HIDDEN: usize = 5120;
-    if tokens.len() != 8 {
-        return Err(format!(
-            "Qwen3.8 prefill tile requires 8 tokens, got {}",
-            tokens.len()
-        ));
-    }
-    let mut values = Vec::with_capacity(tokens.len() * HIDDEN);
-    for &token in tokens {
-        let row = load_embedding_row(manifest, token).map_err(|error| error.to_string())?;
-        values.extend_from_slice(row.as_bf16().map_err(|error| error.to_string())?);
-    }
-    Tensor::from_bf16(vec![tokens.len(), HIDDEN], &values).map_err(|error| error.to_string())
-}
-
-/// Read `model_type` from `config.json` if present. Empty string on any
-/// error (falls back to the Llama path).
-fn read_model_type(model_dir: &PathBuf) -> Option<String> {
-    let cfg_path = model_dir.join("config.json");
-    let raw = std::fs::read_to_string(&cfg_path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    v.get("model_type")?.as_str().map(|s| s.to_string())
-}
-
-fn run_inspect(model_dir: &PathBuf, json: bool) -> Result<(), String> {
-    let model_type = read_model_type(model_dir)
-        .ok_or_else(|| format!("missing model_type in {}/config.json", model_dir.display()))?;
-    if model_type == "qwen2_5_omni" {
-        return run_inspect_qwen25_omni(model_dir, json);
-    }
-    if model_type != "qwen3_5" {
-        return Err(format!(
-            "inspection contract currently supports model_type `qwen3_5`, got `{model_type}`"
-        ));
-    }
-    let config = Qwen35Config::from_json_file(&model_dir.join("config.json"))
-        .map_err(|error| error.to_string())?;
-    let report =
-        Qwen35CheckpointReport::inspect(model_dir, &config).map_err(|error| error.to_string())?;
-    let dtype_counts = report
-        .dtype_counts
-        .iter()
-        .map(|(dtype, count)| (dtype.to_string(), serde_json::json!(count)))
-        .collect::<serde_json::Map<_, _>>();
-
-    if json {
-        let output = serde_json::json!({
-            "status": "validated",
-            "native_execution_ready": cfg!(feature = "cuda"),
-            "native_capabilities": {
-                "text_generate": cfg!(feature = "cuda"),
-                "stateful_decode": cfg!(feature = "cuda"),
-                "multimodal": false,
-                "m_gt_1_prefill": cfg!(feature = "cuda"),
-                "serial_prefill": cfg!(feature = "cuda"),
-                "openai_compatible_service": cfg!(feature = "cuda"),
-                "unified_llm_input": false,
-            },
-            "model_type": config.model_type,
-            "architecture": config.architecture,
-            "text": {
-                "hidden_size": config.text.hidden_size,
-                "intermediate_size": config.text.intermediate_size,
-                "layers": config.text.n_layers,
-                "linear_attention_layers": report.linear_attention_layers,
-                "full_attention_layers": report.full_attention_layers,
-                "attention_heads": config.text.n_heads,
-                "kv_heads": config.text.n_kv_heads,
-                "head_dim": config.text.head_dim,
-                "max_position_embeddings": config.text.max_position_embeddings,
-            },
-            "vision": {
-                "depth": config.vision.depth,
-                "hidden_size": config.vision.hidden_size,
-                "output_hidden_size": config.vision.out_hidden_size,
-            },
-            "quantization": {
-                "method": config.quantization.method,
-                "format": config.quantization.format,
-                "bits": config.quantization.num_bits,
-                "group_size": config.quantization.group_size,
-                "symmetric": config.quantization.symmetric,
-                "quantized_linears": report.quantized_linears,
-                "ignored_modules": report.ignored_modules,
-            },
-            "checkpoint": {
-                "shards": report.shard_count,
-                "tensors": report.tensor_count,
-                "tensor_bytes": report.tensor_bytes,
-                "dtype_counts": dtype_counts,
-            },
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output).map_err(|error| error.to_string())?
-        );
-    } else {
-        println!("ApxInf Qwen3.5/Qwen3.8 checkpoint contract: VALID");
-        println!("model: {} ({})", config.model_type, config.architecture);
-        println!(
-            "text: hidden={}, intermediate={}, layers={} ({} GDN + {} full attention), heads={}/{}, head_dim={}, max_context={}",
-            config.text.hidden_size,
-            config.text.intermediate_size,
-            config.text.n_layers,
-            report.linear_attention_layers,
-            report.full_attention_layers,
-            config.text.n_heads,
-            config.text.n_kv_heads,
-            config.text.head_dim,
-            config.text.max_position_embeddings,
-        );
-        println!(
-            "vision: depth={}, hidden={}, output_hidden={}",
-            config.vision.depth, config.vision.hidden_size, config.vision.out_hidden_size
-        );
-        println!(
-            "quantization: {} {}, W{} group={} asymmetric, {} packed linears, {} ignored modules",
-            config.quantization.method,
-            config.quantization.format,
-            config.quantization.num_bits,
-            config.quantization.group_size,
-            report.quantized_linears,
-            report.ignored_modules,
-        );
-        println!(
-            "checkpoint: {} shards, {} tensors, {} bytes, dtypes={dtype_counts:?}",
-            report.shard_count, report.tensor_count, report.tensor_bytes
-        );
-        println!(
-            "native_text_execution_ready: {} (M8 prefill and service ready; unified LlmInput image path remains unsupported)",
-            cfg!(feature = "cuda")
-        );
-    }
-    Ok(())
-}
-
-fn run_inspect_qwen25_omni(model_dir: &PathBuf, json: bool) -> Result<(), String> {
-    let config = Qwen25OmniConfig::from_model_dir(model_dir).map_err(|error| error.to_string())?;
-    let report = Qwen25OmniCheckpointReport::inspect(model_dir, &config)
-        .map_err(|error| error.to_string())?;
-    let dtype_counts = report
-        .dtype_counts
-        .iter()
-        .map(|(dtype, count)| (dtype.to_string(), serde_json::json!(count)))
-        .collect::<serde_json::Map<_, _>>();
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "status":"validated",
-                "native_execution_ready":cfg!(feature = "cuda"),
-                "model_type":config.model_type,
-                "architecture":config.architecture,
-                "precision":"bf16",
-                "input_modalities":["text","image","audio"],
-                "output_modalities":["text"],
-                "talker_disabled":true,
-                "video":false,
-                "text":{
-                    "layers":config.text.n_layers,
-                    "hidden_size":config.text.hidden_size,
-                    "intermediate_size":config.text.intermediate_size,
-                    "attention_heads":config.text.n_heads,
-                    "kv_heads":config.text.n_kv_heads,
-                    "head_dim":config.text.head_dim,
-                    "max_position_embeddings":config.text.max_position_embeddings,
-                },
-                "vision":{
-                    "depth":config.vision.depth,
-                    "hidden_size":config.vision.hidden_size,
-                    "output_hidden_size":config.vision.out_hidden_size,
-                },
-                "audio":{
-                    "layers":config.audio.n_layers,
-                    "hidden_size":config.audio.hidden_size,
-                    "mel_bins":config.audio.num_mel_bins,
-                    "sampling_rate":config.processor.sampling_rate,
-                    "output_hidden_size":config.audio.output_dim,
-                },
-                "checkpoint":{
-                    "shards":report.shard_count,
-                    "tensors":report.checkpoint_tensor_count,
-                    "tensor_bytes":report.checkpoint_tensor_bytes,
-                    "required_thinker_tensors":report.required_tensor_count,
-                    "required_thinker_bytes":report.required_tensor_bytes,
-                    "excluded_speech_tensors":report.excluded_tensor_count,
-                    "excluded_speech_bytes":report.excluded_tensor_bytes,
-                    "dtype_counts":dtype_counts,
-                },
-                "fallback_active":false,
-            }))
-            .map_err(|error| error.to_string())?
-        );
-    } else {
-        println!("ApxInf Qwen2.5-Omni checkpoint contract: VALID");
-        println!("model: {} ({})", config.model_type, config.architecture);
-        println!(
-            "Thinker: text={} layers, vision={} layers, audio={} layers, BF16",
-            config.text.n_layers, config.vision.depth, config.audio.n_layers
-        );
-        println!(
-            "checkpoint: {} shards, {} required Thinker tensors ({} bytes), {} speech-output tensors excluded ({} bytes)",
-            report.shard_count,
-            report.required_tensor_count,
-            report.required_tensor_bytes,
-            report.excluded_tensor_count,
-            report.excluded_tensor_bytes
-        );
-        println!("modalities: text,image,audio -> text; video=false; talker_disabled=true");
-        println!("native_execution_ready: {}", cfg!(feature = "cuda"));
-    }
-    Ok(())
-}
-
 /// Preprocess an image with the model's Hugging Face processor. Raw image
 /// decoding and chat templating stay outside the model runtime; the resulting
 /// borrowed tensor is attached to LlmInput for unified generation.
@@ -1026,6 +438,79 @@ with open(metadata_path, "w") as output:
     Ok((pixel_data, pixel_shape, grid, tokens))
 }
 
+/// Read a NumPy v1 f32 array and convert it to bf16.
+fn read_npy_f32_to_bf16(path: &std::path::Path) -> Result<(Vec<usize>, Vec<half::bf16>), String> {
+    use std::io::Read;
+
+    let mut file =
+        std::fs::File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    if buffer.len() < 10 || &buffer[..6] != b"\x93NUMPY" {
+        return Err(format!("{} is not a NumPy array", path.display()));
+    }
+    if buffer[6] != 1 {
+        return Err(format!(
+            "{} uses unsupported NumPy format version {}",
+            path.display(),
+            buffer[6]
+        ));
+    }
+    let header_len = u16::from_le_bytes([buffer[8], buffer[9]]) as usize;
+    let data_start = 10usize
+        .checked_add(header_len)
+        .ok_or_else(|| "NumPy header length overflow".to_string())?;
+    if data_start > buffer.len() {
+        return Err("NumPy header exceeds file length".to_string());
+    }
+    let header = std::str::from_utf8(&buffer[10..data_start])
+        .map_err(|error| format!("invalid NumPy header: {error}"))?;
+    if !header.contains("<f4") {
+        return Err("processor pixel array is not little-endian f32".to_string());
+    }
+    let shape = parse_npy_shape(header)?;
+    let raw = &buffer[data_start..];
+    let expected_bytes = shape.iter().product::<usize>() * std::mem::size_of::<f32>();
+    if raw.len() != expected_bytes {
+        return Err(format!(
+            "NumPy payload has {} bytes, expected {expected_bytes}",
+            raw.len()
+        ));
+    }
+    let data = raw
+        .chunks_exact(4)
+        .map(|bytes| half::bf16::from_f32(f32::from_le_bytes(bytes.try_into().unwrap())))
+        .collect();
+    Ok((shape, data))
+}
+
+fn parse_npy_shape(header: &str) -> Result<Vec<usize>, String> {
+    let shape_offset = header
+        .find("shape")
+        .ok_or_else(|| "NumPy header has no shape".to_string())?;
+    let open_offset = header[shape_offset..]
+        .find('(')
+        .ok_or_else(|| "NumPy shape has no opening parenthesis".to_string())?;
+    let shape_start = shape_offset + open_offset + 1;
+    let close_offset = header[shape_start..]
+        .find(')')
+        .ok_or_else(|| "NumPy shape has no closing parenthesis".to_string())?;
+    let shape_text = &header[shape_start..shape_start + close_offset];
+    let shape = shape_text
+        .split(',')
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| {
+            part.trim()
+                .parse::<usize>()
+                .map_err(|error| format!("invalid NumPy shape: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if shape.is_empty() {
+        return Err("NumPy array has an empty shape".to_string());
+    }
+    Ok(shape)
+}
 type PreparedAudio = (
     Vec<half::bf16>,
     Vec<usize>,
@@ -1036,9 +521,6 @@ type PreparedAudio = (
     Vec<u32>,
 );
 
-/// Use only the pinned local processor for WAV decoding, chat templating and
-/// log-mel extraction. The helper never loads a model and never permits a
-/// remote model/media path.
 fn preprocess_audio(
     model_dir: &PathBuf,
     audio_path: &PathBuf,
@@ -1052,7 +534,7 @@ fn preprocess_audio(
         .and_then(|value| value.to_str())
         .is_none_or(|extension| !extension.eq_ignore_ascii_case("wav"))
     {
-        return Err("audio input must be a local WAV file".into());
+        return Err("audio input must be a WAV file".into());
     }
     let suffix = std::process::id();
     let feature_path = std::env::temp_dir().join(format!("apxinf-cli-{suffix}-audio.npy"));
@@ -1170,79 +652,6 @@ with open(metadata_path, "w") as output:
     ))
 }
 
-/// Read a NumPy v1 f32 array and convert it to bf16.
-fn read_npy_f32_to_bf16(path: &std::path::Path) -> Result<(Vec<usize>, Vec<half::bf16>), String> {
-    use std::io::Read;
-
-    let mut file =
-        std::fs::File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)
-        .map_err(|error| format!("read {}: {error}", path.display()))?;
-    if buffer.len() < 10 || &buffer[..6] != b"\x93NUMPY" {
-        return Err(format!("{} is not a NumPy array", path.display()));
-    }
-    if buffer[6] != 1 {
-        return Err(format!(
-            "{} uses unsupported NumPy format version {}",
-            path.display(),
-            buffer[6]
-        ));
-    }
-    let header_len = u16::from_le_bytes([buffer[8], buffer[9]]) as usize;
-    let data_start = 10usize
-        .checked_add(header_len)
-        .ok_or_else(|| "NumPy header length overflow".to_string())?;
-    if data_start > buffer.len() {
-        return Err("NumPy header exceeds file length".to_string());
-    }
-    let header = std::str::from_utf8(&buffer[10..data_start])
-        .map_err(|error| format!("invalid NumPy header: {error}"))?;
-    if !header.contains("<f4") {
-        return Err("processor pixel array is not little-endian f32".to_string());
-    }
-    let shape = parse_npy_shape(header)?;
-    let raw = &buffer[data_start..];
-    let expected_bytes = shape.iter().product::<usize>() * std::mem::size_of::<f32>();
-    if raw.len() != expected_bytes {
-        return Err(format!(
-            "NumPy payload has {} bytes, expected {expected_bytes}",
-            raw.len()
-        ));
-    }
-    let data = raw
-        .chunks_exact(4)
-        .map(|bytes| half::bf16::from_f32(f32::from_le_bytes(bytes.try_into().unwrap())))
-        .collect();
-    Ok((shape, data))
-}
-
-fn parse_npy_shape(header: &str) -> Result<Vec<usize>, String> {
-    let shape_offset = header
-        .find("shape")
-        .ok_or_else(|| "NumPy header has no shape".to_string())?;
-    let open_offset = header[shape_offset..]
-        .find('(')
-        .ok_or_else(|| "NumPy shape has no opening parenthesis".to_string())?;
-    let shape_start = shape_offset + open_offset + 1;
-    let close_offset = header[shape_start..]
-        .find(')')
-        .ok_or_else(|| "NumPy shape has no closing parenthesis".to_string())?;
-    let shape_text = &header[shape_start..shape_start + close_offset];
-    let shape = shape_text
-        .split(',')
-        .filter(|part| !part.trim().is_empty())
-        .map(|part| {
-            part.trim()
-                .parse::<usize>()
-                .map_err(|error| format!("invalid NumPy shape: {error}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if shape.is_empty() {
-        return Err("NumPy array has an empty shape".to_string());
-    }
-    Ok(shape)
-}
 fn run_test() {
     println!("apxinf — LLM inference engine (test mode)");
     println!();

@@ -161,29 +161,30 @@ after measurement, leaving the Broker GPU idle.
 
 The official version pair follows the
 [vLLM-Omni GPU installation guide](https://docs.vllm.ai/projects/vllm-omni/en/latest/getting_started/installation/gpu/).
-On this host, the isolated setup was:
+One isolated setup is:
 
 ```bash
-python3 -m pip install --prefix /opt/apxinf/vllm-omni-bootstrap uv==0.12.5
+python3 -m venv "$APXINF_VLLM_ROOT/bootstrap"
+"$APXINF_VLLM_ROOT/bootstrap/bin/pip" install uv==0.12.5
 
-UV_PYTHON_INSTALL_DIR=/opt/apxinf/vllm-omni-python \
-UV_CACHE_DIR=/opt/apxinf/vllm-omni-uv-cache \
-  /opt/apxinf/vllm-omni-bootstrap/local/bin/uv python install 3.12
+UV_PYTHON_INSTALL_DIR="$APXINF_VLLM_ROOT/python" \
+UV_CACHE_DIR="$APXINF_VLLM_ROOT/uv-cache" \
+  "$APXINF_VLLM_ROOT/bootstrap/bin/uv" python install 3.12
 
-UV_PYTHON_INSTALL_DIR=/opt/apxinf/vllm-omni-python \
-UV_CACHE_DIR=/opt/apxinf/vllm-omni-uv-cache \
-  /opt/apxinf/vllm-omni-bootstrap/local/bin/uv venv \
-  --python 3.12 --seed /opt/apxinf/vllm-omni-v0.26.0
+UV_PYTHON_INSTALL_DIR="$APXINF_VLLM_ROOT/python" \
+UV_CACHE_DIR="$APXINF_VLLM_ROOT/uv-cache" \
+  "$APXINF_VLLM_ROOT/bootstrap/bin/uv" venv \
+  --python 3.12 --seed "$APXINF_VLLM_ROOT/vllm-omni-v0.26.0"
 
-UV_CACHE_DIR=/opt/apxinf/vllm-omni-uv-cache \
-  /opt/apxinf/vllm-omni-bootstrap/local/bin/uv pip install \
-  --python /opt/apxinf/vllm-omni-v0.26.0/bin/python \
+UV_CACHE_DIR="$APXINF_VLLM_ROOT/uv-cache" \
+  "$APXINF_VLLM_ROOT/bootstrap/bin/uv" pip install \
+  --python "$APXINF_VLLM_ROOT/vllm-omni-v0.26.0/bin/python" \
   --torch-backend=auto vllm==0.26.0
 
 SETUPTOOLS_USE_DISTUTILS=local \
-UV_CACHE_DIR=/opt/apxinf/vllm-omni-uv-cache \
-  /opt/apxinf/vllm-omni-bootstrap/local/bin/uv pip install \
-  --python /opt/apxinf/vllm-omni-v0.26.0/bin/python \
+UV_CACHE_DIR="$APXINF_VLLM_ROOT/uv-cache" \
+  "$APXINF_VLLM_ROOT/bootstrap/bin/uv" pip install \
+  --python "$APXINF_VLLM_ROOT/vllm-omni-v0.26.0/bin/python" \
   vllm-omni==0.26.0
 ```
 
@@ -212,7 +213,7 @@ python3 benchmarks/qwen25_omni_4090/benchmark_vllm_omni.py \
 
 python3 benchmarks/qwen25_omni_4090/benchmark_vllm_omni_multimodal.py \
   --image scripts/roofline_decode_throughput.png \
-  --audio /var/lib/agent-gpu-broker/apxinf-omni-tone.wav \
+  --audio "$APXINF_OMNI_AUDIO" \
   --warmups 1 --repeats 3 \
   --output benchmarks/qwen25_omni_4090/results/vllm-multimodal.json
 ```

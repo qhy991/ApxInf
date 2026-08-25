@@ -22,7 +22,6 @@ use crate::kernels::preprocess::{avg_pool1d_bf16, im2col1d_bf16};
 use crate::kernels::qwen25_omni_attention::{
     grouped2_split_cta_write, grouped4_split_cta_write, SplitCtaWorkspace,
 };
-use crate::kernels::qwen35_attention;
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
 use crate::kernels::selection::argmax_bf16_into;
 use crate::CudaKVCache;
@@ -1971,80 +1970,6 @@ fn audio_im2col_and_average_pool_match_reference() {
         &download_bf16_as_fp32(&pooled).unwrap(),
         &[1.5, 2.5],
     );
-}
-
-#[test]
-fn qwen35_attention_prepare_uses_interleaved_mrope_axes() {
-    const Q_HEADS: usize = 24;
-    const KV_HEADS: usize = 4;
-    const DIM: usize = 256;
-    const ROTARY: usize = 64;
-    const THETA: f32 = 10_000_000.0;
-    let ctx = CudaContext::new(0).expect("CUDA device required");
-    let q_raw = (0..Q_HEADS * 2 * DIM)
-        .map(|index| ((index % DIM) as f32 * 0.003 - 0.4).sin())
-        .collect::<Vec<_>>();
-    let k_raw = (0..KV_HEADS * DIM)
-        .map(|index| (index as f32 * 0.005 - 0.2).cos())
-        .collect::<Vec<_>>();
-    let v_raw = vec![0.0f32; KV_HEADS * DIM];
-    let q = upload_fp32_as_bf16(&ctx, &q_raw, vec![1, Q_HEADS * 2 * DIM]).unwrap();
-    let k = upload_fp32_as_bf16(&ctx, &k_raw, vec![1, KV_HEADS * DIM]).unwrap();
-    let v = upload_fp32_as_bf16(&ctx, &v_raw, vec![1, KV_HEADS * DIM]).unwrap();
-    let q_norm = upload_fp32_as_bf16(&ctx, &vec![0.0; DIM], vec![DIM]).unwrap();
-    let k_norm = upload_fp32_as_bf16(&ctx, &vec![0.0; DIM], vec![DIM]).unwrap();
-    let query = upload_fp32_as_bf16(&ctx, &vec![0.0; Q_HEADS * DIM], vec![Q_HEADS, DIM]).unwrap();
-    let key = upload_fp32_as_bf16(&ctx, &vec![0.0; KV_HEADS * DIM], vec![KV_HEADS, DIM]).unwrap();
-    let value = upload_fp32_as_bf16(&ctx, &vec![0.0; KV_HEADS * DIM], vec![KV_HEADS, DIM]).unwrap();
-    let gate = upload_fp32_as_bf16(&ctx, &vec![0.0; Q_HEADS * DIM], vec![Q_HEADS, DIM]).unwrap();
-    let positions = HostMappedBuffer::alloc(3 * 4, ctx.device_id()).unwrap();
-    positions.write_u32s(&[5, 7, 11]).unwrap();
-    qwen35_attention::prepare_write(
-        &ctx,
-        &q,
-        &k,
-        &v,
-        &q_norm,
-        &k_norm,
-        &query,
-        &key,
-        &value,
-        &gate,
-        positions.address(),
-    )
-    .unwrap();
-    ctx.synchronize().unwrap();
-
-    let rounded = q_raw[..DIM]
-        .iter()
-        .map(|value| half::bf16::from_f32(*value).to_f32())
-        .collect::<Vec<_>>();
-    let inverse =
-        1.0 / (rounded.iter().map(|value| value * value).sum::<f32>() / DIM as f32 + 1e-6).sqrt();
-    let normalized = rounded
-        .iter()
-        .map(|value| value * inverse)
-        .collect::<Vec<_>>();
-    let mut expected = normalized.clone();
-    for dimension in 0..ROTARY {
-        let frequency = dimension & 31;
-        let axis = frequency % 3;
-        let position = [5.0f32, 7.0, 11.0][axis];
-        let angle = position * THETA.powf(-2.0 * frequency as f32 / ROTARY as f32);
-        let partner = if dimension < 32 {
-            dimension + 32
-        } else {
-            dimension - 32
-        };
-        let rotated = if dimension < 32 {
-            -normalized[partner]
-        } else {
-            normalized[partner]
-        };
-        expected[dimension] = normalized[dimension] * angle.cos() + rotated * angle.sin();
-    }
-    let actual = download_bf16_as_fp32(&query).unwrap();
-    assert_bf16_close_reduction(&actual[..DIM], &expected);
 }
 
 fn assert_vision_sdpa_bf16_case(head_dim: usize) {

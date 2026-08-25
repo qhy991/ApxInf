@@ -120,7 +120,6 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(apxinf_fa2_causal_sm80)");
     println!("cargo:rustc-check-cfg=cfg(apxinf_fa2_f16_sm100)");
     println!("cargo:rustc-check-cfg=cfg(apxinf_fa2_direct_e4m3_sm100)");
-    println!("cargo:rustc-check-cfg=cfg(apxinf_marlin_sm89)");
     println!("cargo:rerun-if-env-changed=APXINF_CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=APXINF_CUDA_ARCH_CUTLASS");
     println!("cargo:rerun-if-env-changed=APXINF_CUDA_OPERATOR_SET");
@@ -308,7 +307,6 @@ fn main() {
             let cutlass_bf16 = std::path::Path::new(&adapters_dir).join("cutlass_bf16_adapter.cu");
             let cutlass_bf16_sm89 = std::path::Path::new(&adapters_dir).join("cutlass_bf16_sm89_adapter.cu");
             let cutlass_int8 = std::path::Path::new(&adapters_dir).join("cutlass_w8a8_adapter.cu");
-            let marlin_adapter = std::path::Path::new(&adapters_dir).join("marlin_adapter.cu");
             let mut cutlass_includes = Vec::new();
             if build_full_operators
                 && cutlass_arch.as_deref().is_some_and(is_cutlass_sm100_family)
@@ -445,12 +443,9 @@ fn main() {
                         fa2_f16_hdim96,
                         fa2_f16_hdim256,
                     ]);
-                }
-                if fa2_sm80 {
-                    fa2_sources.push(fa2_hdim128_causal);
-                    if !fa2_bf16_hdim96_only {
-                        let fa2_split_hdim256 = fa2_root
-                            .join("flash_attn/flash_fwd_split_hdim256_bf16_sm80.cu");
+                    if fa2_sm80 {
+                        let fa2_split_hdim256 =
+                            fa2_root.join("flash_attn/flash_fwd_split_hdim256_bf16_sm80.cu");
                         assert!(
                             fa2_split_hdim256.is_file(),
                             "vendored FlashAttention-2 split-KV source is incomplete under {}",
@@ -458,6 +453,9 @@ fn main() {
                         );
                         fa2_sources.push(fa2_split_hdim256);
                     }
+                }
+                if fa2_sm80 {
+                    fa2_sources.push(fa2_hdim128_causal);
                 }
                 if fa2_f16_sm100 {
                     println!("cargo:rustc-cfg=apxinf_fa2_f16_sm100");
@@ -486,21 +484,6 @@ fn main() {
                     }
                 }
                 emit_rerun_if_changed_tree(&fa2_root);
-            }
-
-            if build_full_operators && nvcc_arch.as_deref() == Some("sm_89") {
-                let marlin_root = std::path::Path::new(&kernels_dir).join("marlin");
-                assert!(
-                    marlin_adapter.is_file()
-                        && marlin_root.join("kernel.h").is_file()
-                        && marlin_root.join("marlin_template.h").is_file()
-                        && marlin_root.join("core/scalar_type.hpp").is_file(),
-                    "vendored SM89 Marlin sources are incomplete under {}",
-                    marlin_root.display()
-                );
-                kernel_files.push(marlin_adapter.clone());
-                println!("cargo:rustc-cfg=apxinf_marlin_sm89");
-                emit_rerun_if_changed_tree(&marlin_root);
             }
 
             if !kernel_files.is_empty() {
@@ -590,12 +573,11 @@ fn main() {
                         ]);
                         if fa2_bf16_hdim96_only {
                             cmd.arg("-DAPXINF_FA2_BF16_HDIM96_ONLY=1");
+                        } else if fa2_sm80 {
+                            cmd.arg("-DAPXINF_FA2_SM80=1");
                         }
                         if fa2_sm80 {
                             cmd.arg("-DAPXINF_FA2_CAUSAL_HDIM128=1");
-                            if !fa2_bf16_hdim96_only {
-                                cmd.arg("-DAPXINF_FA2_SM80=1");
-                            }
                         }
                         for include in &fa2_includes {
                             cmd.arg(format!("-I{}", include.display()));
@@ -616,9 +598,6 @@ fn main() {
                         for include in &fa2_includes {
                             cmd.arg(format!("-I{}", include.display()));
                         }
-                    }
-                    if entry == &marlin_adapter {
-                        cmd.arg("--expt-relaxed-constexpr");
                     }
                     let status = cmd.status().expect("failed to run nvcc");
 

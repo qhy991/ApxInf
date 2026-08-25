@@ -1,14 +1,22 @@
 #!/bin/sh
 set -eu
 
-exec chpst -u gpuq:gpuq-users /usr/local/bin/gpu-run \
+: "${APXINF_WORKDIR:?set the ApxInf source checkout}"
+: "${APXINF_MODEL_DIR:?set the Qwen2.5-Omni model directory}"
+: "${APXINF_BINARY:?set the compiled ApxInf binary}"
+: "${APXINF_PROCESSOR_PATH:?set the pinned processor Python path}"
+: "${APXINF_CACHE_ROOT:?set a writable cache directory}"
+
+gpu_run=${APXINF_GPU_RUN:-gpu-run}
+
+exec chpst -u gpuq:gpuq-users "$gpu_run" \
   --owner codex-apxinf --label qwen25-omni-service \
   --mode exclusive --gpu-count 1 \
-  --cwd /mnt/user_dir/hanjinchen/apxinf-qwen25-omni-3b \
+  --cwd "$APXINF_WORKDIR" \
   --estimate unknown --queue-timeout 24h --run-timeout 8760h -- \
   env \
-  PYTHONPATH=/opt/apxinf/qwen25-omni-processor-4.56.0 \
-  HF_HOME=/var/lib/agent-gpu-broker/hf-cache \
+  PYTHONPATH="$APXINF_PROCESSOR_PATH" \
+  HF_HOME="$APXINF_CACHE_ROOT/huggingface" \
   TRANSFORMERS_OFFLINE=1 \
   HF_HUB_OFFLINE=1 \
   TOKENIZERS_PARALLELISM=false \
@@ -40,7 +48,7 @@ exec chpst -u gpuq:gpuq-users /usr/local/bin/gpu-run \
   APXINF_QWEN25_CHUNKED_PREFILL=1 \
   APXINF_QWEN25_BF16_CHUNK_TACTICS=1 \
   APXINF_QWEN25_M1_PACKED_MLP=1 \
-  /opt/apxinf/qwen25-omni-target/release/apxinf serve \
-  --model /mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B \
+  "$APXINF_BINARY" serve \
+  --model "$APXINF_MODEL_DIR" \
   --host 127.0.0.1 --port 8001 \
   --max-model-len 32768 --enable-multimodal

@@ -1,7 +1,7 @@
 //! Qwen3-VL-2B-Instruct model implementation.
 //!
 //! Text stack + vision tower today; multimodal wiring in Phase 5. All CUDA
-//! and bf16-first — see `doc/20260619-qwen3vl/plan.md`.
+//! and bf16-first.
 
 pub mod config;
 pub mod weights;

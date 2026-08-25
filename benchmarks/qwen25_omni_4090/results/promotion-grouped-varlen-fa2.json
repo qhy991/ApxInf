@@ -52,7 +52,6 @@
     "candidate_sha256": "942eea1b67eb173b0494dd6ec83d8b7559fc081612b0694de168de224bcda269",
     "candidate_size_bytes": 21698600,
     "formal_deployment_sha256": "942eea1b67eb173b0494dd6ec83d8b7559fc081612b0694de168de224bcda269",
-    "rollback_path": "/opt/apxinf/qwen25-omni-target/release/apxinf.20165551.pre-grouped-fa2",
     "clean_build_seconds": 230
   },
   "correctness": {
@@ -175,7 +174,6 @@
     "interpretation": "The two engines are within 2.8% on client wall for this one real PNG; vLLM retains lower TTFT while ApxInf retains lower TPOT."
   },
   "profile": {
-    "report_path": "/var/lib/agent-gpu-broker/profiles/omni-vision-grouped-varlen-fa2-1760-interactive.nsys-rep",
     "report_size_bytes": 744425,
     "report_sha256": "c6ed2dc9e120397573423f3b7ff8f42eff1a97dde93ba95f6beb6f3e967d2a9c",
     "kernel_csv": "omni-vision-grouped-varlen-fa2-1760-interactive_cuda_gpu_kern_sum.csv",
@@ -200,7 +198,7 @@
   "preliminary_noise_record": {
     "prefix": "candidate-grouped-varlen-fa2-multimodal-",
     "status": "not timing authority",
-    "reason": "A concurrent root cargo/rustc build for the next Qwen3.8 task consumed host CPU and inflated WAV service wall; PNG tokens and path correctness remained valid."
+    "reason": "A concurrent CPU build inflated WAV service wall; PNG tokens and path correctness remained valid."
   },
   "decision": {
     "status": "promote",

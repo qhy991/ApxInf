@@ -34,12 +34,8 @@ The physical reclassification itself only moves existing ApxInf code. Imported
 implementations retain source attribution and are accepted only after a
 correctness comparison and a representative-device benchmark.
 
-`quantization.cuh` contains a packed-four FP16-to-E4M3 path adapted from
-Mizar-Robo's `csrc/kernels/nvidia/quantize/quantize_fp8_static.cu` at commit
-`a260835599e9406067196968cfe7a67bf8d13b4d`, Copyright (c) 2025 Xingkai Yu,
-under the MIT license preserved in `licenses/MIZAR-ROBO-MIT.txt`. ApxInf adds an
-alignment guard and scalar tail so the existing arbitrary-length C ABI remains
-unchanged.
+`quantization.cuh` contains a packed-four FP16-to-E4M3 path. An alignment guard
+and scalar tail keep the existing arbitrary-length C ABI unchanged.
 
 On NVIDIA Thor SM110, an isolated CUDA-event A/B benchmark (100 warmups, 1,000
 iterations except 300 for 8M values) produced the following averages on

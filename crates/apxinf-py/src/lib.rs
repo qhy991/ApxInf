@@ -202,8 +202,12 @@ impl Model {
     /// * `device` — `cuda:N` (default) or `cpu`.
     /// * `precision` — `auto` (default), `fp8`, `bf16`, or `int8`.
     /// * `calibration` / `tactics` — optional FP8 calibration / tactics json.
+    /// * `action_horizon` — override the checkpoint's chunk length. `None`
+    ///   (default) runs the native `config.json` value; an explicit value wins
+    ///   over it. The horizon is a sequence length, not a weight dimension, so
+    ///   the same weights load and run at the requested chunk length.
     #[staticmethod]
-    #[pyo3(signature = (model, path, device="cuda:0", precision="auto", calibration=None, tactics=None))]
+    #[pyo3(signature = (model, path, device="cuda:0", precision="auto", calibration=None, tactics=None, action_horizon=None))]
     fn load(
         model: &str,
         path: PathBuf,
@@ -211,16 +215,29 @@ impl Model {
         precision: &str,
         calibration: Option<PathBuf>,
         tactics: Option<PathBuf>,
+        action_horizon: Option<usize>,
     ) -> PyResult<Self> {
         let device = parse_device(device)?;
+        let mut config = load_config(&path)?;
+        // Only hand the loader an explicit config when the caller actually
+        // overrode something; otherwise it reads `config.json` itself, exactly
+        // as before.
+        let overridden = match action_horizon {
+            Some(horizon) => {
+                config.action_horizon = horizon;
+                config.validate().map_err(runtime_err)?;
+                true
+            }
+            None => false,
+        };
         let options = LoadOptions {
             model_name: Some(model.to_owned()),
             precision: parse_precision(precision)?,
             calibration_path: calibration,
             tuning_path: tactics,
+            config: overridden.then(|| config.clone()),
             ..LoadOptions::default()
         };
-        let config = load_config(&path)?;
         let loaded = AutoModel::load_model(device, &path, &options).map_err(runtime_err)?;
         Ok(Self {
             model: loaded,

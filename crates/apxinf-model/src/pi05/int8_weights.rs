@@ -87,8 +87,8 @@ impl Int8LinearWeights {
     }
 }
 
-/// Convert ApxInf's physical `[input,output]` matrix into Mizar's physical
-/// `[output,input]` INT8 contract, with one `amax/127` scale per output.
+/// Convert ApxInf's physical `[input,output]` matrix into the kernel's physical
+/// `[output,input]` INT8 layout, with one `amax/127` scale per output.
 fn quantize_output_channels(tensor: &Tensor) -> Result<(Vec<i8>, Vec<f32>, usize, usize)> {
     if tensor.dtype() == DType::F8E4M3 {
         return Err(Error::Other(

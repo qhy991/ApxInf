@@ -19,7 +19,6 @@ keeps only the aggregate evidence listed below.
 
 ## Accepted artifact
 
-- Source commit: `2e09096bd73eb41767bc1ab06eacb09454ce6ef3`
 - Binary SHA-256:
   `af0330a74746e36972a2fd24187d7b73f9d7cf491d644b657590e0ffae39a7f1`
 - Immediate rollback SHA-256:
@@ -30,7 +29,7 @@ keeps only the aggregate evidence listed below.
 Build the accepted SM89 artifact with:
 
 ```bash
-CARGO_TARGET_DIR=/opt/apxinf/qwen25-omni-sm89-target \
+CARGO_TARGET_DIR=target/qwen25-omni-sm89 \
   benchmarks/qwen25_omni_4090/build_sm89.sh
 ```
 

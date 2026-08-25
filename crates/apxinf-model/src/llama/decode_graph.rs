@@ -5,7 +5,7 @@
 //! forward order (norm → QKV → RoPE → attention → MLP → residual), the
 //! GQA layout, and fusion choices (packed QKV, flash attention, etc.).
 //! The backend crate only provides single-kernel wrappers; the model
-//! composes them here. See `doc/design.md`.
+//! composes them here.
 //!
 //! CUDA-only. The portable `dyn Backend` path in `GeneralLlama::forward`
 //! handles CPU + non-workspace backends.

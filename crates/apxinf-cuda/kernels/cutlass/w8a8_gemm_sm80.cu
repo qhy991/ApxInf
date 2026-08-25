@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// Raw-pointer adaptation of Mizar's SM87 W8A8 GEMM. The custom epilogue
+// Raw-pointer adaptation of an upstream SM87 W8A8 GEMM. The custom epilogue
 // applies one FP32 activation scale per row and one FP32 weight scale per
 // output column, then writes BF16 directly. This removes the materialized
 // INT32 matrix and the standalone dequantization kernel from every aligned
@@ -177,8 +177,8 @@ cudaError_t w8a8_gemm_bf16(
       const_cast<float*>(static_cast<const float*>(column_scales));
   auto* d = static_cast<cutlass::bfloat16_t*>(output);
 
-  // Mizar's Orin-specific dispatch. Static inference uses the small-M branches for the
-  // denoiser and the medium-M branch for the vision/language prefix.
+  // Orin-specific dispatch. Static inference uses the small-M branches for
+  // the denoiser and the medium-M branch for the vision/language prefix.
   if (m <= 64 && n <= 4096) {
     return run_w8a8_bf16<
         cutlass::gemm::GemmShape<64, 64, 128>,

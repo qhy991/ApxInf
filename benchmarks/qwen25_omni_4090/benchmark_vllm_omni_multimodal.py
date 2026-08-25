@@ -135,11 +135,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--image", type=Path, default=Path("scripts/roofline_decode_throughput.png")
     )
-    parser.add_argument(
-        "--audio",
-        type=Path,
-        default=Path("/var/lib/agent-gpu-broker/apxinf-omni-tone.wav"),
-    )
+    parser.add_argument("--audio", type=Path, required=True)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=300.0)

@@ -129,9 +129,6 @@ impl CublasHandle {
                 }
             }
             DType::F8E4M3 => Err("use kernels::gemm::fp8 for FP8 operands".into()),
-            DType::I32 | DType::I64 => Err(format!(
-                "plain cuBLAS GEMM does not accept integer storage {dtype}"
-            )),
         }
     }
 
@@ -226,9 +223,6 @@ impl CublasHandle {
                 }
             }
             DType::F8E4M3 => Err("use kernels::gemm::fp8 for FP8 operands".into()),
-            DType::I32 | DType::I64 => Err(format!(
-                "plain cuBLAS batched GEMM does not accept integer storage {dtype}"
-            )),
         }
     }
 
@@ -328,9 +322,6 @@ impl CublasHandle {
                 }
             }
             DType::F8E4M3 => Err("use kernels::gemm::fp8 for FP8 operands".into()),
-            DType::I32 | DType::I64 => Err(format!(
-                "plain cuBLAS batched GEMM does not accept integer storage {dtype}"
-            )),
         }
     }
 
@@ -437,9 +428,6 @@ impl CublasHandle {
                 }
             }
             DType::F8E4M3 => Err("use kernels::gemm::fp8 for FP8 operands".into()),
-            DType::I32 | DType::I64 => Err(format!(
-                "plain cuBLAS GEMM does not accept integer storage {dtype}"
-            )),
         }
     }
 
@@ -451,7 +439,7 @@ impl CublasHandle {
     ///
     /// `activation` is physical `[m,k]` row-major. `weight_output_major` is
     /// physical `[n,k]` row-major (equivalently a `[k,n]` column-major view),
-    /// matching Mizar's INT8 kernel contract. `output` is physical `[m,n]`
+    /// matching the INT8 kernel contract. `output` is physical `[m,n]`
     /// row-major. Scaling and conversion to BF16 are left to the following
     /// stream-ordered kernel.
     pub fn gemm_int8_i32(

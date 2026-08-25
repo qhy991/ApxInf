@@ -1,7 +1,7 @@
 //! CPU backend implementation.
 
-use crate::{Backend, Device, Error, Graph, Result, Tensor};
 use crate::kv_cache::{CpuKVCache, KvCache};
+use crate::{Backend, Device, Error, Graph, Result, Tensor};
 
 /// CPU backend — all ops execute synchronously on the host.
 pub struct CpuBackend;
@@ -36,14 +36,22 @@ impl Backend for CpuBackend {
     fn add(&self, a: &Tensor, b: &Tensor) -> Result<Tensor> {
         let a_data = a.as_f32()?;
         let b_data = b.as_f32()?;
-        let out: Vec<f32> = a_data.iter().zip(b_data.iter()).map(|(a, b)| a + b).collect();
+        let out: Vec<f32> = a_data
+            .iter()
+            .zip(b_data.iter())
+            .map(|(a, b)| a + b)
+            .collect();
         Tensor::from_f32(a.shape().dims().to_vec(), &out)
     }
 
     fn mul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor> {
         let a_data = a.as_f32()?;
         let b_data = b.as_f32()?;
-        let out: Vec<f32> = a_data.iter().zip(b_data.iter()).map(|(a, b)| a * b).collect();
+        let out: Vec<f32> = a_data
+            .iter()
+            .zip(b_data.iter())
+            .map(|(a, b)| a * b)
+            .collect();
         Tensor::from_f32(a.shape().dims().to_vec(), &out)
     }
 
@@ -57,8 +65,14 @@ impl Backend for CpuBackend {
         a.matmul_cpu(b)
     }
 
-    fn rope(&self, input: &Tensor, n_heads: usize, head_dim: usize,
-            theta: f32, pos_offset: u32) -> Result<Tensor> {
+    fn rope(
+        &self,
+        input: &Tensor,
+        n_heads: usize,
+        head_dim: usize,
+        theta: f32,
+        pos_offset: u32,
+    ) -> Result<Tensor> {
         let data = input.as_f32()?;
         let dims = input.shape().dims();
         let seq_len = if dims.len() == 2 { 1 } else { dims[0] };
@@ -87,48 +101,22 @@ impl Backend for CpuBackend {
         Tensor::from_f32(dims.to_vec(), &out)
     }
 
-    fn rope_mrope(&self, input: &Tensor, n_heads: usize, head_dim: usize,
-                  theta: f32, sections: [usize; 3], pos_ids: &[u32]) -> Result<Tensor> {
+    fn rope_tmrope(
+        &self,
+        input: &Tensor,
+        n_heads: usize,
+        head_dim: usize,
+        theta: f32,
+        sections: [usize; 3],
+        pos_ids: &[u32],
+    ) -> Result<Tensor> {
         let data = input.as_f32()?;
         let dims = input.shape().dims();
         let seq_len = dims[0];
         if pos_ids.len() != seq_len * 3 || sections.iter().sum::<usize>() != head_dim / 2 {
-            return Err(Error::Other("rope_mrope: invalid positions or sections".into()));
-        }
-        let half = head_dim / 2;
-        let mut out = vec![0.0_f32; data.len()];
-        for seq in 0..seq_len {
-            for head in 0..n_heads {
-                let base = seq * n_heads * head_dim + head * head_dim;
-                for pair in 0..half {
-                    let remainder = pair % 3;
-                    let axis = if remainder == 1 && pair < sections[1] * 3 {
-                        1
-                    } else if remainder == 2 && pair < sections[2] * 3 {
-                        2
-                    } else {
-                        0
-                    };
-                    let frequency = 1.0 / theta.powf(2.0 * pair as f32 / head_dim as f32);
-                    let angle = pos_ids[seq * 3 + axis] as f32 * frequency;
-                    let (sin, cos) = angle.sin_cos();
-                    let first = data[base + pair];
-                    let second = data[base + half + pair];
-                    out[base + pair] = first * cos - second * sin;
-                    out[base + half + pair] = first * sin + second * cos;
-                }
-            }
-        }
-        Tensor::from_f32(dims.to_vec(), &out)
-    }
-
-    fn rope_tmrope(&self, input: &Tensor, n_heads: usize, head_dim: usize,
-                   theta: f32, sections: [usize; 3], pos_ids: &[u32]) -> Result<Tensor> {
-        let data = input.as_f32()?;
-        let dims = input.shape().dims();
-        let seq_len = dims[0];
-        if pos_ids.len() != seq_len * 3 || sections.iter().sum::<usize>() != head_dim / 2 {
-            return Err(Error::Other("rope_tmrope: invalid positions or sections".into()));
+            return Err(Error::Other(
+                "rope_tmrope: invalid positions or sections".into(),
+            ));
         }
         let half = head_dim / 2;
         let first_boundary = sections[0] * 2;
@@ -161,111 +149,42 @@ impl Backend for CpuBackend {
         Tensor::from_f32(dims.to_vec(), &output)
     }
 
-    fn layer_norm(&self, input: &Tensor, weight: &Tensor, bias: &Tensor,
-                  eps: f32) -> Result<Tensor> {
-        let data = input.as_f32()?;
-        let weight = weight.as_f32()?;
-        let bias = bias.as_f32()?;
-        let dims = input.shape().dims();
-        let cols = *dims.last().ok_or_else(|| Error::Other("layer_norm: scalar input".into()))?;
-        if weight.len() != cols || bias.len() != cols || data.len() % cols != 0 {
-            return Err(Error::Other("layer_norm: shape mismatch".into()));
-        }
-        let mut output = vec![0.0_f32; data.len()];
-        for (input_row, output_row) in data.chunks_exact(cols).zip(output.chunks_exact_mut(cols)) {
-            let mean = input_row.iter().sum::<f32>() / cols as f32;
-            let variance = input_row.iter().map(|value| (value - mean).powi(2)).sum::<f32>()
-                / cols as f32;
-            let inverse = 1.0 / (variance + eps).sqrt();
-            for col in 0..cols {
-                output_row[col] = (input_row[col] - mean) * inverse * weight[col] + bias[col];
-            }
-        }
-        Tensor::from_f32(dims.to_vec(), &output)
-    }
-
-    fn gelu_tanh(&self, input: &Tensor) -> Result<Tensor> {
-        let values = input.as_f32()?;
-        let scale = (2.0_f32 / std::f32::consts::PI).sqrt();
-        let output = values
-            .iter()
-            .map(|value| 0.5 * value * (1.0 + (scale * (value + 0.044715 * value.powi(3))).tanh()))
-            .collect::<Vec<_>>();
-        Tensor::from_f32(input.shape().dims().to_vec(), &output)
-    }
-
-    fn add_bias(&self, input: &Tensor, bias: &Tensor) -> Result<Tensor> {
-        let data = input.as_f32()?;
-        let bias = bias.as_f32()?;
-        let cols = *input.shape().dims().last()
-            .ok_or_else(|| Error::Other("add_bias: scalar input".into()))?;
-        if bias.len() != cols || data.len() % cols != 0 {
-            return Err(Error::Other("add_bias: shape mismatch".into()));
-        }
-        let output = data
-            .iter()
-            .enumerate()
-            .map(|(index, value)| value + bias[index % cols])
-            .collect::<Vec<_>>();
-        Tensor::from_f32(input.shape().dims().to_vec(), &output)
-    }
-
-    fn rope_vision_2d(&self, input: &Tensor, n_heads: usize, head_dim: usize,
-                      theta: f32, pos_ids: &[u32]) -> Result<Tensor> {
-        let data = input.as_f32()?;
-        let dims = input.shape().dims();
-        let seq_len = dims[0];
-        if pos_ids.len() != seq_len * 2 || head_dim % 4 != 0 {
-            return Err(Error::Other("rope_vision_2d: invalid positions or head dimension".into()));
-        }
-        let half = head_dim / 2;
-        let axis_pairs = half / 2;
-        let mut output = vec![0.0_f32; data.len()];
-        for seq in 0..seq_len {
-            for head in 0..n_heads {
-                let base = seq * n_heads * head_dim + head * head_dim;
-                for pair in 0..half {
-                    let axis = usize::from(pair >= axis_pairs);
-                    let pair_in_axis = pair % axis_pairs;
-                    let frequency = 1.0 / theta.powf(2.0 * pair_in_axis as f32 / half as f32);
-                    let angle = pos_ids[seq * 2 + axis] as f32 * frequency;
-                    let (sin, cos) = angle.sin_cos();
-                    let first = data[base + pair];
-                    let second = data[base + half + pair];
-                    output[base + pair] = first * cos - second * sin;
-                    output[base + half + pair] = first * sin + second * cos;
-                }
-            }
-        }
-        Tensor::from_f32(dims.to_vec(), &output)
-    }
-
-    fn vision_sdpa(&self, q: &Tensor, k: &Tensor, v: &Tensor,
-                   seq_len: usize, n_heads: usize, head_dim: usize) -> Result<Tensor> {
-        full_attention_cpu(q, k, v, seq_len, n_heads, head_dim, None)
-    }
-
-    fn grouped_sdpa(&self, q: &Tensor, k: &Tensor, v: &Tensor,
-                    seq_len: usize, n_heads: usize, head_dim: usize,
-                    group_ids: &[u32]) -> Result<Tensor> {
+    fn grouped_sdpa(
+        &self,
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        seq_len: usize,
+        n_heads: usize,
+        head_dim: usize,
+        group_ids: &[u32],
+    ) -> Result<Tensor> {
         if group_ids.len() != seq_len {
             return Err(Error::Other(format!(
                 "grouped_sdpa: {} group ids for {seq_len} tokens",
                 group_ids.len()
             )));
         }
-        full_attention_cpu(q, k, v, seq_len, n_heads, head_dim, Some(group_ids))
+        grouped_attention_cpu(q, k, v, seq_len, n_heads, head_dim, group_ids)
     }
 
-    fn im2col1d(&self, input: &Tensor, kernel: usize, stride: usize,
-                padding: usize) -> Result<Tensor> {
+    fn im2col1d(
+        &self,
+        input: &Tensor,
+        kernel: usize,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Tensor> {
         let data = input.as_f32()?;
         let dims = input.shape().dims();
         if dims.len() != 2 || kernel == 0 || stride == 0 {
-            return Err(Error::Other("im2col1d: expected rank-2 input and positive kernel/stride".into()));
+            return Err(Error::Other(
+                "im2col1d: expected rank-2 input and positive kernel/stride".into(),
+            ));
         }
         let (frames, channels) = (dims[0], dims[1]);
-        let padded = frames.checked_add(2 * padding)
+        let padded = frames
+            .checked_add(2 * padding)
             .ok_or_else(|| Error::Other("im2col1d: padded length overflow".into()))?;
         if padded < kernel {
             return Err(Error::Other("im2col1d: kernel exceeds padded input".into()));
@@ -276,7 +195,10 @@ impl Backend for CpuBackend {
             for channel in 0..channels {
                 for tap in 0..kernel {
                     let padded_frame = out_frame * stride + tap;
-                    if let Some(frame) = padded_frame.checked_sub(padding).filter(|frame| *frame < frames) {
+                    if let Some(frame) = padded_frame
+                        .checked_sub(padding)
+                        .filter(|frame| *frame < frames)
+                    {
                         output[out_frame * channels * kernel + channel * kernel + tap] =
                             data[frame * channels + channel];
                     }
@@ -290,7 +212,9 @@ impl Backend for CpuBackend {
         let data = input.as_f32()?;
         let dims = input.shape().dims();
         if dims.len() != 2 || kernel == 0 || stride == 0 || dims[0] < kernel {
-            return Err(Error::Other("avg_pool1d: invalid input or parameters".into()));
+            return Err(Error::Other(
+                "avg_pool1d: invalid input or parameters".into(),
+            ));
         }
         let (frames, channels) = (dims[0], dims[1]);
         let output_frames = (frames - kernel) / stride + 1;
@@ -321,12 +245,22 @@ impl Backend for CpuBackend {
         Tensor::from_f32(vec![seq_len, embed_dim], &out)
     }
 
-    fn sdpa_decode(&self, q: &Tensor, kv: &mut dyn KvCache,
-                   layer_idx: usize, n_heads: usize, n_kv_heads: usize,
-                   head_dim: usize, kv_len: usize, max_seq_len: usize) -> Result<Tensor> {
+    fn sdpa_decode(
+        &self,
+        q: &Tensor,
+        kv: &mut dyn KvCache,
+        layer_idx: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        kv_len: usize,
+        max_seq_len: usize,
+    ) -> Result<Tensor> {
         let _ = max_seq_len;
         let q_data = q.as_f32()?;
-        let cache = kv.as_any_mut().downcast_mut::<CpuKVCache>()
+        let cache = kv
+            .as_any_mut()
+            .downcast_mut::<CpuKVCache>()
             .ok_or_else(|| Error::Other("expected CpuKVCache".into()))?;
         let (k_cached, v_cached) = cache.get_kv(layer_idx);
 
@@ -356,13 +290,23 @@ impl Backend for CpuBackend {
         Tensor::from_f32(vec![1, n_heads * head_dim], &output)
     }
 
-    fn sdpa_prefill(&self, q: &Tensor, kv: &mut dyn KvCache,
-                    layer_idx: usize, n_heads: usize, n_kv_heads: usize,
-                    head_dim: usize, kv_len: usize, max_seq_len: usize) -> Result<Tensor> {
+    fn sdpa_prefill(
+        &self,
+        q: &Tensor,
+        kv: &mut dyn KvCache,
+        layer_idx: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        kv_len: usize,
+        max_seq_len: usize,
+    ) -> Result<Tensor> {
         let _ = max_seq_len;
         let q_data = q.as_f32()?;
         let seq_len = q.shape().dims()[0];
-        let cache = kv.as_any_mut().downcast_mut::<CpuKVCache>()
+        let cache = kv
+            .as_any_mut()
+            .downcast_mut::<CpuKVCache>()
             .ok_or_else(|| Error::Other("expected CpuKVCache".into()))?;
         let (k_cached, v_cached) = cache.get_kv(layer_idx);
 
@@ -381,15 +325,21 @@ impl Backend for CpuBackend {
                     }
                     scores[t] *= scale;
                 }
-                let max_score = scores[..valid_len].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                let exp_sum: f32 = scores[..valid_len].iter().map(|&s| (s - max_score).exp()).sum();
+                let max_score = scores[..valid_len]
+                    .iter()
+                    .cloned()
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let exp_sum: f32 = scores[..valid_len]
+                    .iter()
+                    .map(|&s| (s - max_score).exp())
+                    .sum();
                 for t in 0..valid_len {
                     scores[t] = (scores[t] - max_score).exp() / exp_sum;
                 }
                 for t in 0..valid_len {
                     for d in 0..head_dim {
-                        output[s * n_heads * head_dim + h * head_dim + d]
-                            += scores[t] * v_cached[kv_h][t][d];
+                        output[s * n_heads * head_dim + h * head_dim + d] +=
+                            scores[t] * v_cached[kv_h][t][d];
                     }
                 }
             }
@@ -397,25 +347,42 @@ impl Backend for CpuBackend {
         Tensor::from_f32(vec![seq_len, n_heads * head_dim], &output)
     }
 
-    fn create_kv_cache(&self, n_layers: usize, n_kv_heads: usize,
-                       head_dim: usize, max_seq_len: usize) -> Box<dyn KvCache> {
+    fn create_kv_cache(
+        &self,
+        n_layers: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        max_seq_len: usize,
+    ) -> Box<dyn KvCache> {
         Box::new(CpuKVCache::new(n_layers, n_kv_heads, head_dim, max_seq_len))
     }
 
-    fn kv_append(&self, kv: &mut dyn KvCache, layer_idx: usize,
-                 k: &Tensor, v: &Tensor, append_len: usize) -> Result<()> {
+    fn kv_append(
+        &self,
+        kv: &mut dyn KvCache,
+        layer_idx: usize,
+        k: &Tensor,
+        v: &Tensor,
+        append_len: usize,
+    ) -> Result<()> {
         kv.append(layer_idx, k, v, append_len)
     }
 
-    fn synchronize(&self) -> Result<()> { Ok(()) }
+    fn synchronize(&self) -> Result<()> {
+        Ok(())
+    }
 
-    fn begin_capture(&self) -> Result<()> { Ok(()) }
+    fn begin_capture(&self) -> Result<()> {
+        Ok(())
+    }
 
     fn end_capture(&self) -> Result<Box<dyn Graph>> {
         Ok(Box::new(NoopGraph))
     }
 
-    fn device(&self) -> Device { Device::Cpu }
+    fn device(&self) -> Device {
+        Device::Cpu
+    }
 
     fn to_device(&self, tensor: &Tensor) -> Result<Tensor> {
         Ok(tensor.clone())
@@ -425,24 +392,28 @@ impl Backend for CpuBackend {
         Ok(tensor.clone())
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// No-op graph (CPU has nothing to capture).
 struct NoopGraph;
 
 impl Graph for NoopGraph {
-    fn replay(&self) -> Result<()> { Ok(()) }
+    fn replay(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
-fn full_attention_cpu(
+fn grouped_attention_cpu(
     q: &Tensor,
     k: &Tensor,
     v: &Tensor,
     seq_len: usize,
     n_heads: usize,
     head_dim: usize,
-    group_ids: Option<&[u32]>,
+    group_ids: &[u32],
 ) -> Result<Tensor> {
     let q = q.as_f32()?;
     let k = k.as_f32()?;
@@ -458,7 +429,7 @@ fn full_attention_cpu(
             let query_offset = (query * n_heads + head) * head_dim;
             let mut scores = vec![f32::NEG_INFINITY; seq_len];
             for key in 0..seq_len {
-                if group_ids.is_some_and(|groups| groups[query] != groups[key]) {
+                if group_ids[query] != group_ids[key] {
                     continue;
                 }
                 let key_offset = (key * n_heads + head) * head_dim;
@@ -514,15 +485,12 @@ mod omni_operator_tests {
         let v = Tensor::from_f32(vec![2, 1, 1], &[2.0, 8.0]).unwrap();
         let isolated = backend.grouped_sdpa(&q, &k, &v, 2, 1, 1, &[0, 1]).unwrap();
         assert_eq!(isolated.to_f32_vec().unwrap(), vec![2.0, 8.0]);
-        let shared = backend.vision_sdpa(&q, &k, &v, 2, 1, 1).unwrap();
-        assert_eq!(shared.to_f32_vec().unwrap(), vec![5.0, 5.0]);
     }
 
     #[test]
     fn tmrope_uses_contiguous_full_dimension_axes() {
         let backend = CpuBackend;
-        let input = Tensor::from_f32(vec![1, 1, 6], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
-            .unwrap();
+        let input = Tensor::from_f32(vec![1, 1, 6], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
         let output = backend
             .rope_tmrope(&input, 1, 6, 10_000.0, [1, 1, 1], &[0, 0, 1])
             .unwrap()

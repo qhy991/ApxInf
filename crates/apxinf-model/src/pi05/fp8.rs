@@ -33,7 +33,7 @@ impl StaticFp8Calibration {
         Self::from_json_str(&raw)
     }
 
-    /// Accept either `{ "name": scale }`, Mizar's nested `scales` object,
+    /// Accept either `{ "name": scale }`, a nested `scales` object,
     /// or entries shaped as `{ "scale": number }` / `{ "amax": number }`.
     pub fn from_json_str(raw: &str) -> Result<Self> {
         let root: serde_json::Value = serde_json::from_str(raw)

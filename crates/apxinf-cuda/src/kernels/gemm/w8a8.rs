@@ -36,35 +36,12 @@ pub fn gemm_w8a8(
     gemm_w8a8_with_preference(ctx, activation, weight, prefer_cutlass)
 }
 
-/// Caller-owned W8A8 output for allocation-free decode and graph capture.
-pub fn gemm_w8a8_write(
-    ctx: &CudaContext,
-    activation: &Tensor,
-    weight: W8A8WeightView<'_>,
-    output: &Tensor,
-) -> Result<()> {
-    let prefer_cutlass = matches!(ctx.caps().arch_family, CudaArchFamily::Sm80);
-    gemm_w8a8_write_with_preference(ctx, activation, weight, output, prefer_cutlass)
-}
-
 pub(crate) fn gemm_w8a8_with_preference(
     ctx: &CudaContext,
     activation: &Tensor,
     weight: W8A8WeightView<'_>,
     prefer_cutlass: bool,
 ) -> Result<Tensor> {
-    validate(ctx, activation, weight)?;
-    let rows = activation.shape().dims()[0];
-    let output = crate::workspace::output_buffer(
-        ctx,
-        rows * weight.output_dim * DType::BF16.size_in_bytes(),
-    )?
-    .into_tensor(Shape::new(vec![rows, weight.output_dim]), DType::BF16);
-    gemm_w8a8_write_with_preference(ctx, activation, weight, &output, prefer_cutlass)?;
-    Ok(output)
-}
-
-fn validate(ctx: &CudaContext, activation: &Tensor, weight: W8A8WeightView<'_>) -> Result<()> {
     if activation.dtype() != DType::BF16 || activation.device() != Device::Cuda(ctx.device_id()) {
         return Err(Error::Other(format!(
             "gemm_w8a8 expects a BF16 activation on CUDA {}, got {} on {}",
@@ -104,31 +81,7 @@ fn validate(ctx: &CudaContext, activation: &Tensor, weight: W8A8WeightView<'_>) 
         )));
     }
 
-    Ok(())
-}
-
-fn gemm_w8a8_write_with_preference(
-    ctx: &CudaContext,
-    activation: &Tensor,
-    weight: W8A8WeightView<'_>,
-    output: &Tensor,
-    prefer_cutlass: bool,
-) -> Result<()> {
-    validate(ctx, activation, weight)?;
-    let rows = activation.shape().dims()[0];
-    if output.dtype() != DType::BF16
-        || output.device() != Device::Cuda(ctx.device_id())
-        || output.shape().dims() != [rows, weight.output_dim]
-    {
-        return Err(Error::Other(format!(
-            "gemm_w8a8 output must be BF16 [{rows},{}] on CUDA {}, got {} {:?} on {}",
-            weight.output_dim,
-            ctx.device_id(),
-            output.dtype(),
-            output.shape().dims(),
-            output.device()
-        )));
-    }
+    let rows = dims[0];
     let activation = CudaBuffer::from_tensor(activation).map_err(Error::Cuda)?;
     let weight_scales = CudaBuffer::from_tensor(weight.scales_f32).map_err(Error::Cuda)?;
     let quantized = crate::workspace::output_buffer(ctx, rows * weight.input_dim)?;
@@ -145,7 +98,10 @@ fn gemm_w8a8_write_with_preference(
         .map_err(Error::Cuda)?;
     }
 
-    let output = CudaBuffer::from_tensor(output).map_err(Error::Cuda)?;
+    let output = crate::workspace::output_buffer(
+        ctx,
+        rows * weight.output_dim * DType::BF16.size_in_bytes(),
+    )?;
     #[cfg(not(apxinf_cutlass_int8_sm80))]
     let _ = prefer_cutlass;
     #[cfg(apxinf_cutlass_int8_sm80)]
@@ -164,7 +120,7 @@ fn gemm_w8a8_write_with_preference(
             ))
             .map_err(Error::Cuda)?;
         }
-        return Ok(());
+        return Ok(output.into_tensor(Shape::new(vec![rows, weight.output_dim]), DType::BF16));
     }
 
     let accumulators = crate::workspace::output_buffer(
@@ -193,5 +149,5 @@ fn gemm_w8a8_write_with_preference(
         ))
         .map_err(Error::Cuda)?;
     }
-    Ok(())
+    Ok(output.into_tensor(Shape::new(vec![rows, weight.output_dim]), DType::BF16))
 }

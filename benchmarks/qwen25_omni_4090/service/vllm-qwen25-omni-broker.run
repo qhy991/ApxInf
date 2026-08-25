@@ -1,27 +1,33 @@
 #!/bin/sh
 set -eu
 
-exec chpst -u gpuq:gpuq-users /usr/local/bin/gpu-run \
+: "${APXINF_WORKDIR:?set the ApxInf source checkout}"
+: "${APXINF_MODEL_DIR:?set the Qwen2.5-Omni model directory}"
+: "${APXINF_VLLM_BIN:?set the vLLM executable}"
+: "${APXINF_VLLM_CONFIG:?set the thinker-only deployment config}"
+: "${APXINF_CACHE_ROOT:?set a writable cache directory}"
+
+gpu_run=${APXINF_GPU_RUN:-gpu-run}
+
+exec chpst -u gpuq:gpuq-users "$gpu_run" \
   --owner codex-apxinf --label vllm-omni-qwen25-thinker \
   --mode exclusive --gpu-count 1 \
-  --cwd /mnt/user_dir/hanjinchen/apxinf-qwen25-omni-3b \
+  --cwd "$APXINF_WORKDIR" \
   --estimate unknown --queue-timeout 24h --run-timeout 8760h -- \
   env \
   SETUPTOOLS_USE_DISTUTILS=local \
-  HF_HOME=/var/lib/agent-gpu-broker/hf-cache \
+  HF_HOME="$APXINF_CACHE_ROOT/huggingface" \
   TRANSFORMERS_OFFLINE=1 \
   HF_HUB_OFFLINE=1 \
   TOKENIZERS_PARALLELISM=false \
   VLLM_WORKER_MULTIPROC_METHOD=spawn \
-  XDG_CACHE_HOME=/var/lib/agent-gpu-broker/cache \
-  VLLM_CACHE_ROOT=/var/lib/agent-gpu-broker/cache/vllm \
-  VLLM_CONFIG_ROOT=/var/lib/agent-gpu-broker/config/vllm \
-  FLASHINFER_WORKSPACE_BASE=/var/lib/agent-gpu-broker \
-  TORCH_HOME=/var/lib/agent-gpu-broker/cache/torch \
-  TRITON_CACHE_DIR=/var/lib/agent-gpu-broker/cache/triton \
-  SPEAKER_SAMPLES_DIR=/var/lib/agent-gpu-broker/cache/vllm-omni/speakers \
-  /opt/apxinf/vllm-omni-v0.26.0/bin/vllm serve \
-  /mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B \
+  XDG_CACHE_HOME="$APXINF_CACHE_ROOT" \
+  VLLM_CACHE_ROOT="$APXINF_CACHE_ROOT/vllm" \
+  VLLM_CONFIG_ROOT="$APXINF_CACHE_ROOT/vllm-config" \
+  FLASHINFER_WORKSPACE_BASE="$APXINF_CACHE_ROOT/flashinfer" \
+  TORCH_HOME="$APXINF_CACHE_ROOT/torch" \
+  TRITON_CACHE_DIR="$APXINF_CACHE_ROOT/triton" \
+  SPEAKER_SAMPLES_DIR="$APXINF_CACHE_ROOT/vllm-omni/speakers" \
+  "$APXINF_VLLM_BIN" serve "$APXINF_MODEL_DIR" \
   --omni --host 127.0.0.1 --port 8003 \
-  --deploy-config \
-  /mnt/user_dir/hanjinchen/apxinf-qwen25-omni-3b/benchmarks/qwen25_omni_4090/comparators/vllm_omni_thinker_only.yaml
+  --deploy-config "$APXINF_VLLM_CONFIG"
