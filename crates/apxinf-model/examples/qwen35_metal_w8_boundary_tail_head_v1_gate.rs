@@ -75,6 +75,139 @@ enum Mode {
     BoundaryTailV1Free,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BodyMlpEpilogue {
+    Legacy,
+    DownResidualFused,
+}
+
+impl BodyMlpEpilogue {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "legacy" => Ok(Self::Legacy),
+            "down-residual-fused" => Ok(Self::DownResidualFused),
+            other => Err(format!("invalid --body-mlp-epilogue {other:?}")),
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::DownResidualFused => "down-residual-fused",
+        }
+    }
+
+    const fn runtime_label(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy-separate",
+            Self::DownResidualFused => "down-residual-fused",
+        }
+    }
+
+    const fn mlp_down_function_name(self) -> &'static str {
+        match self {
+            Self::Legacy => "w8_mlp_down",
+            Self::DownResidualFused => "w8_mlp_down_residual",
+        }
+    }
+
+    const fn metal(self) -> apxinf_metal::MlpEpilogueV1 {
+        match self {
+            Self::Legacy => apxinf_metal::MlpEpilogueV1::LegacySeparate,
+            Self::DownResidualFused => apxinf_metal::MlpEpilogueV1::DownResidualFused,
+        }
+    }
+
+    const fn from_metal(value: apxinf_metal::MlpEpilogueV1) -> Self {
+        match value {
+            apxinf_metal::MlpEpilogueV1::LegacySeparate => Self::Legacy,
+            apxinf_metal::MlpEpilogueV1::DownResidualFused => Self::DownResidualFused,
+        }
+    }
+
+    const fn initial_dispatches(self) -> usize {
+        match self {
+            Self::Legacy => 39,
+            Self::DownResidualFused => 36,
+        }
+    }
+
+    const fn boundary_dispatches(self) -> usize {
+        match self {
+            Self::Legacy => 44,
+            Self::DownResidualFused => 40,
+        }
+    }
+
+    const fn aggregate_dispatches(self) -> usize {
+        match self {
+            Self::Legacy => 267,
+            Self::DownResidualFused => 244,
+        }
+    }
+
+    const fn initial_barriers(self) -> usize {
+        match self {
+            Self::Legacy => 36,
+            Self::DownResidualFused => 33,
+        }
+    }
+
+    const fn boundary_barriers(self) -> usize {
+        match self {
+            Self::Legacy => 40,
+            Self::DownResidualFused => 36,
+        }
+    }
+
+    const fn aggregate_barriers(self) -> usize {
+        match self {
+            Self::Legacy => 243,
+            Self::DownResidualFused => 220,
+        }
+    }
+}
+
+fn mlp_epilogue_runtime_json_is_exact(
+    receipt: Option<&Value>,
+    body_mlp_epilogue: BodyMlpEpilogue,
+    kernel_dispatches_per_decode: usize,
+    buffer_barriers_per_decode: usize,
+) -> bool {
+    let Some(receipt) = receipt else {
+        return false;
+    };
+    receipt.get("requested_profile").and_then(Value::as_str)
+        == Some(body_mlp_epilogue.runtime_label())
+        && receipt.get("observed_profile").and_then(Value::as_str)
+            == Some(body_mlp_epilogue.runtime_label())
+        && receipt
+            .get("mlp_down_function_name")
+            .and_then(Value::as_str)
+            == Some(body_mlp_epilogue.mlp_down_function_name())
+        && receipt
+            .get("kernel_dispatches_per_decode")
+            .and_then(Value::as_u64)
+            == Some(kernel_dispatches_per_decode as u64)
+        && receipt
+            .get("buffer_barriers_per_decode")
+            .and_then(Value::as_u64)
+            == Some(buffer_barriers_per_decode as u64)
+}
+
+fn mlp_epilogue_runtime_is_exact(
+    receipt: apxinf_metal::MlpEpilogueRuntimeReceiptV1,
+    body_mlp_epilogue: BodyMlpEpilogue,
+    kernel_dispatches_per_decode: usize,
+    buffer_barriers_per_decode: usize,
+) -> bool {
+    receipt.requested_profile == body_mlp_epilogue.metal()
+        && receipt.observed_profile == body_mlp_epilogue.metal()
+        && receipt.mlp_down_function_name == body_mlp_epilogue.mlp_down_function_name()
+        && receipt.kernel_dispatches_per_decode == kernel_dispatches_per_decode
+        && receipt.buffer_barriers_per_decode == buffer_barriers_per_decode
+}
+
 impl Mode {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
@@ -193,6 +326,7 @@ fn argmax(logits: &Tensor, vocab_size: usize) -> Result<u32, Box<dyn Error>> {
 
 fn official_initial_stack_ledger_is_exact(
     ledger: apxinf_metal::LinearLayerStack3BufferLedger,
+    body_mlp_epilogue: BodyMlpEpilogue,
 ) -> bool {
     ledger.allocated_buffers == 76
         && ledger.shared_buffers == 68
@@ -209,6 +343,8 @@ fn official_initial_stack_ledger_is_exact(
         && ledger.state_host_transfer_bytes_per_decode == 0
         && ledger.command_buffers_per_decode == 1
         && ledger.compute_encoders_per_decode == 3
+        && ledger.kernel_dispatches_per_decode == body_mlp_epilogue.initial_dispatches()
+        && ledger.buffer_barriers_per_decode == body_mlp_epilogue.initial_barriers()
         && ledger.commits_per_decode == 1
         && ledger.waits_per_decode == 1
         && ledger.intermediate_host_finite_checks_per_decode == 0
@@ -217,6 +353,7 @@ fn official_initial_stack_ledger_is_exact(
 
 fn official_boundary_ledger_is_exact(
     ledger: apxinf_metal::MlpStack3BoundaryBufferLedgerV1,
+    body_mlp_epilogue: BodyMlpEpilogue,
 ) -> bool {
     ledger.scope == "resident-mtlbuffer-only"
         && ledger.exclusions
@@ -238,7 +375,8 @@ fn official_boundary_ledger_is_exact(
         && ledger.state_host_transfer_bytes_per_decode == 0
         && ledger.command_buffers_per_decode == 1
         && ledger.compute_encoders_per_decode == 4
-        && ledger.kernel_dispatches_per_decode == 44
+        && ledger.kernel_dispatches_per_decode == body_mlp_epilogue.boundary_dispatches()
+        && ledger.buffer_barriers_per_decode == body_mlp_epilogue.boundary_barriers()
         && ledger.commits_per_decode == 1
         && ledger.waits_per_decode == 1
         && ledger.intermediate_host_finite_checks_per_decode == 0
@@ -274,13 +412,18 @@ fn official_tail_ledger_is_exact(ledger: apxinf_metal::TailMlpHeadBufferLedgerV1
 
 fn official_aggregate_ledger_is_exact(
     aggregate: &Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger,
+    body_mlp_epilogue: BodyMlpEpilogue,
 ) -> bool {
     if aggregate.scope != "resident-mtlbuffer-only"
         || aggregate.exclusions
             != "CPU F32 weights, host F32 tied embedding and exact four-candidate rerank, host allocations, Metal pipelines/libraries/queues, command objects, driver allocations, full attention/KV, model loader, and prefill CPU head"
         || !aggregate.includes_lm_head
         || aggregate.initial_stack.layer_indices != [0, 1, 2]
-        || !official_initial_stack_ledger_is_exact(aggregate.initial_stack.ledger)
+        || aggregate.body_mlp_epilogue != body_mlp_epilogue.metal()
+        || !official_initial_stack_ledger_is_exact(
+            aggregate.initial_stack.ledger,
+            body_mlp_epilogue,
+        )
         || aggregate.tail_layer_index != 23
         || !official_tail_ledger_is_exact(aggregate.tail)
         || aggregate.boundaries.len() != BOUNDARY_REGIONS.len()
@@ -291,7 +434,7 @@ fn official_aggregate_ledger_is_exact(
             .all(|(entry, (boundary_mlp_layer_index, stack_layer_indices))| {
                 entry.boundary_mlp_layer_index == boundary_mlp_layer_index
                     && entry.stack_layer_indices == stack_layer_indices
-                    && official_boundary_ledger_is_exact(entry.ledger)
+                    && official_boundary_ledger_is_exact(entry.ledger, body_mlp_epilogue)
             })
     {
         return false;
@@ -311,10 +454,18 @@ fn official_aggregate_ledger_is_exact(
     }
     let recomputed_dispatches = boundaries
         .iter()
-        .try_fold(3usize * 13, |total, entry| {
-            total.checked_add(entry.ledger.kernel_dispatches_per_decode)
-        })
+        .try_fold(
+            aggregate.initial_stack.ledger.kernel_dispatches_per_decode,
+            |total, entry| total.checked_add(entry.ledger.kernel_dispatches_per_decode),
+        )
         .and_then(|total| total.checked_add(tail.kernel_dispatches_per_decode));
+    let recomputed_barriers = boundaries
+        .iter()
+        .try_fold(
+            aggregate.initial_stack.ledger.buffer_barriers_per_decode,
+            |total, entry| total.checked_add(entry.ledger.buffer_barriers_per_decode),
+        )
+        .and_then(|total| total.checked_add(tail.buffer_barriers_per_decode));
     aggregate.total_persistent_mtlbuffer_bytes
         == sum!(
             total_persistent_bytes,
@@ -364,6 +515,7 @@ fn official_aggregate_ledger_is_exact(
             )
             .unwrap_or(0)
         && aggregate.kernel_dispatches_per_decode == recomputed_dispatches.unwrap_or(0)
+        && aggregate.buffer_barriers_per_decode == recomputed_barriers.unwrap_or(0)
         && aggregate.commits_per_decode
             == sum!(commits_per_decode, commits_per_decode, commits_per_decode).unwrap_or(0)
         && aggregate.waits_per_decode
@@ -377,7 +529,8 @@ fn official_aggregate_ledger_is_exact(
         && aggregate.state_host_transfer_bytes_per_decode == 0
         && aggregate.command_buffers_per_decode == 7
         && aggregate.compute_encoders_per_decode == 24
-        && aggregate.kernel_dispatches_per_decode == 267
+        && aggregate.kernel_dispatches_per_decode == body_mlp_epilogue.aggregate_dispatches()
+        && aggregate.buffer_barriers_per_decode == body_mlp_epilogue.aggregate_barriers()
         && aggregate.commits_per_decode == 7
         && aggregate.waits_per_decode == 7
 }
@@ -399,6 +552,8 @@ fn stack3_ledger_json(ledger: apxinf_metal::LinearLayerStack3BufferLedger) -> Va
         "state_host_transfer_bytes_per_decode": ledger.state_host_transfer_bytes_per_decode,
         "command_buffers_per_decode": ledger.command_buffers_per_decode,
         "compute_encoders_per_decode": ledger.compute_encoders_per_decode,
+        "kernel_dispatches_per_decode": ledger.kernel_dispatches_per_decode,
+        "buffer_barriers_per_decode": ledger.buffer_barriers_per_decode,
         "commits_per_decode": ledger.commits_per_decode,
         "waits_per_decode": ledger.waits_per_decode,
         "intermediate_host_finite_checks_per_decode": ledger.intermediate_host_finite_checks_per_decode,
@@ -428,6 +583,7 @@ fn boundary_ledger_json(ledger: apxinf_metal::MlpStack3BoundaryBufferLedgerV1) -
         "command_buffers_per_decode": ledger.command_buffers_per_decode,
         "compute_encoders_per_decode": ledger.compute_encoders_per_decode,
         "kernel_dispatches_per_decode": ledger.kernel_dispatches_per_decode,
+        "buffer_barriers_per_decode": ledger.buffer_barriers_per_decode,
         "commits_per_decode": ledger.commits_per_decode,
         "waits_per_decode": ledger.waits_per_decode,
         "intermediate_host_finite_checks_per_decode": ledger.intermediate_host_finite_checks_per_decode,
@@ -470,6 +626,10 @@ fn aggregate_ledger_json(
         "scope": ledger.scope,
         "exclusions": ledger.exclusions,
         "includes_lm_head": ledger.includes_lm_head,
+        "body_mlp_epilogue": match ledger.body_mlp_epilogue {
+            apxinf_metal::MlpEpilogueV1::LegacySeparate => "legacy-separate",
+            apxinf_metal::MlpEpilogueV1::DownResidualFused => "down-residual-fused",
+        },
         "initial_stack": {
             "layer_indices": ledger.initial_stack.layer_indices,
             "ledger": stack3_ledger_json(ledger.initial_stack.ledger),
@@ -491,9 +651,13 @@ fn aggregate_ledger_json(
         "command_buffers_per_decode": ledger.command_buffers_per_decode,
         "compute_encoders_per_decode": ledger.compute_encoders_per_decode,
         "kernel_dispatches_per_decode": ledger.kernel_dispatches_per_decode,
+        "buffer_barriers_per_decode": ledger.buffer_barriers_per_decode,
         "commits_per_decode": ledger.commits_per_decode,
         "waits_per_decode": ledger.waits_per_decode,
-        "component_sum_recomputed_and_exact": official_aggregate_ledger_is_exact(ledger),
+        "component_sum_recomputed_and_exact": official_aggregate_ledger_is_exact(
+            ledger,
+            BodyMlpEpilogue::from_metal(ledger.body_mlp_epilogue),
+        ),
     })
 }
 
@@ -526,6 +690,7 @@ fn boundary_tail_generation_receipt_is_exact(
     receipt: &Value,
     body_tail_calls: usize,
     phase: TailPhaseCounts,
+    body_mlp_epilogue: BodyMlpEpilogue,
 ) -> bool {
     if phase.prefill != 0
         || phase.decode.checked_add(phase.teacher) != Some(body_tail_calls)
@@ -533,6 +698,8 @@ fn boundary_tail_generation_receipt_is_exact(
             != Some("apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1")
         || receipt.get("mechanism").and_then(Value::as_str)
             != Some("metal-w8-mlp-stack3-boundary-tail-head-v1")
+        || receipt.get("body_mlp_epilogue").and_then(Value::as_str)
+            != Some(body_mlp_epilogue.runtime_label())
         || receipt
             .get("cpu_full_attention_and_kv")
             .and_then(Value::as_bool)
@@ -587,6 +754,12 @@ fn boundary_tail_generation_receipt_is_exact(
     let initial_valid = initial.get("layer_indices") == Some(&json!([0, 1, 2]))
         && initial.get("mechanism").and_then(Value::as_str)
             == Some("metal-w8-linear-layer-stack3-v1")
+        && mlp_epilogue_runtime_json_is_exact(
+            initial.get("mlp_epilogue_runtime"),
+            body_mlp_epilogue,
+            body_mlp_epilogue.initial_dispatches(),
+            body_mlp_epilogue.initial_barriers(),
+        )
         && initial.get("prefill_seed_calls") == Some(&json!([1, 1, 1]))
         && initial.get("decode_calls").and_then(Value::as_u64) == Some(calls)
         && initial.get("successful_decodes").and_then(Value::as_u64) == Some(calls)
@@ -620,6 +793,12 @@ fn boundary_tail_generation_receipt_is_exact(
                     && entry.get("stack_layer_indices") == Some(&json!(stack_layer_indices))
                     && entry.get("mechanism").and_then(Value::as_str)
                         == Some("metal-w8-mlp-stack3-boundary-v1")
+                    && mlp_epilogue_runtime_json_is_exact(
+                        entry.get("mlp_epilogue_runtime"),
+                        body_mlp_epilogue,
+                        body_mlp_epilogue.boundary_dispatches(),
+                        body_mlp_epilogue.boundary_barriers(),
+                    )
                     && entry.get("prefill_seed_calls") == Some(&json!([1, 1, 1]))
                     && entry.get("decode_calls").and_then(Value::as_u64) == Some(calls)
                     && entry.get("successful_decodes").and_then(Value::as_u64) == Some(calls)
@@ -677,6 +856,8 @@ fn boundary_tail_generation_receipt_is_exact(
     let aggregate_valid = aggregate.get("scope").and_then(Value::as_str)
         == Some("resident-mtlbuffer-only")
         && aggregate.get("includes_lm_head").and_then(Value::as_bool) == Some(true)
+        && aggregate.get("body_mlp_epilogue").and_then(Value::as_str)
+            == Some(body_mlp_epilogue.runtime_label())
         && aggregate
             .get("persistent_mtlbuffer_bytes")
             .and_then(Value::as_u64)
@@ -707,7 +888,11 @@ fn boundary_tail_generation_receipt_is_exact(
         && aggregate
             .get("kernel_dispatches_per_decode")
             .and_then(Value::as_u64)
-            == Some(267)
+            == Some(body_mlp_epilogue.aggregate_dispatches() as u64)
+        && aggregate
+            .get("buffer_barriers_per_decode")
+            .and_then(Value::as_u64)
+            == Some(body_mlp_epilogue.aggregate_barriers() as u64)
         && aggregate.get("commits_per_decode").and_then(Value::as_u64) == Some(7)
         && aggregate.get("waits_per_decode").and_then(Value::as_u64) == Some(7);
     initial_valid && boundaries_valid && prefill_valid && tail_valid && aggregate_valid
@@ -763,6 +948,7 @@ fn boundary_tail_path_checks(
     generation_receipt: &Value,
     body_tail_calls: usize,
     phase: TailPhaseCounts,
+    body_mlp_epilogue: BodyMlpEpilogue,
 ) -> BoundaryTailPathChecks {
     let calls = body_tail_calls;
     let triple = calls.checked_mul(3);
@@ -843,7 +1029,14 @@ fn boundary_tail_path_checks(
             && stats.tail_layer_index == 23,
         mechanism_and_precision_valid: stats.mechanism
             == "metal-w8-mlp-stack3-boundary-tail-head-v1"
+            && stats.body_mlp_epilogue == body_mlp_epilogue.metal()
             && stats.initial_stack.mechanism == "metal-w8-linear-layer-stack3-v1"
+            && mlp_epilogue_runtime_is_exact(
+                stats.initial_stack.mlp_epilogue_runtime,
+                body_mlp_epilogue,
+                body_mlp_epilogue.initial_dispatches(),
+                body_mlp_epilogue.initial_barriers(),
+            )
             && stats
                 .initial_stack
                 .quantization
@@ -852,6 +1045,12 @@ fn boundary_tail_path_checks(
                 .all(quantization_profile_is_exact)
             && stats.boundaries.iter().all(|region| {
                 region.mechanism == "metal-w8-mlp-stack3-boundary-v1"
+                    && mlp_epilogue_runtime_is_exact(
+                        region.mlp_epilogue_runtime,
+                        body_mlp_epilogue,
+                        body_mlp_epilogue.boundary_dispatches(),
+                        body_mlp_epilogue.boundary_barriers(),
+                    )
                     && region
                         .quantization
                         .iter()
@@ -860,11 +1059,12 @@ fn boundary_tail_path_checks(
             }),
         six_region_execution_valid: initial_valid && boundaries_valid,
         tail_execution_and_phase_valid: tail_valid,
-        aggregate_ledger_valid: official_aggregate_ledger_is_exact(aggregate),
+        aggregate_ledger_valid: official_aggregate_ledger_is_exact(aggregate, body_mlp_epilogue),
         generation_receipt_valid: boundary_tail_generation_receipt_is_exact(
             generation_receipt,
             body_tail_calls,
             phase,
+            body_mlp_epilogue,
         ),
         terminal_clear: !stats.terminal_error
             && generation_receipt
@@ -973,6 +1173,8 @@ fn validate_cpu_teacher_receipt(
     validate_finalized_cpu_receipt_custody(receipt, expected_identity)?;
     if receipt.get("format").and_then(Value::as_str) != Some(CPU_TEACHER_FORMAT)
         || receipt.get("mode").and_then(Value::as_str) != Some(Mode::CpuTeacher.label())
+        || receipt.get("body_mlp_epilogue").and_then(Value::as_str)
+            != Some(BodyMlpEpilogue::Legacy.label())
         || receipt.get("passed").and_then(Value::as_bool) != Some(true)
         || receipt.get("identity") != Some(expected_identity)
         || receipt.get("comparisons").and_then(Value::as_u64) != Some(STEPS as u64)
@@ -1150,6 +1352,8 @@ fn validate_cpu_free_receipt(
     validate_finalized_cpu_receipt_custody(receipt, expected_identity)?;
     if receipt.get("format").and_then(Value::as_str) != Some(CPU_FREE_FORMAT)
         || receipt.get("mode").and_then(Value::as_str) != Some(Mode::CpuFree.label())
+        || receipt.get("body_mlp_epilogue").and_then(Value::as_str)
+            != Some(BodyMlpEpilogue::Legacy.label())
         || receipt.get("passed").and_then(Value::as_bool) != Some(true)
         || receipt.get("identity") != Some(expected_identity)
         || receipt.get("max_new_tokens").and_then(Value::as_u64) != Some(STEPS as u64)
@@ -1192,6 +1396,7 @@ struct Args {
     model_dir: PathBuf,
     source_lock: PathBuf,
     mode: Mode,
+    body_mlp_epilogue: BodyMlpEpilogue,
     input_receipt: Option<PathBuf>,
     output: PathBuf,
 }
@@ -1201,6 +1406,7 @@ fn usage() -> &'static str {
   --model-dir OFFICIAL_LOCAL_QWEN35_0_8B \
   --source-lock SOURCE_LOCK.json \
   --mode cpu-teacher|boundary-tail-v1-teacher|cpu-free|boundary-tail-v1-free \
+  [--body-mlp-epilogue legacy|down-residual-fused] \
   [--input-receipt CPU_RECEIPT.json] \
   --output NEW_RECEIPT.json"
 }
@@ -1213,6 +1419,7 @@ where
     let mut model_dir = None;
     let mut source_lock = None;
     let mut mode = None;
+    let mut body_mlp_epilogue = None;
     let mut input_receipt = None;
     let mut output = None;
     let mut iter = args.into_iter().map(Into::into).skip(1);
@@ -1238,6 +1445,12 @@ where
                     return Err("duplicate --mode".into());
                 }
             }
+            "--body-mlp-epilogue" => {
+                let parsed = BodyMlpEpilogue::parse(&value.to_string_lossy())?;
+                if body_mlp_epilogue.replace(parsed).is_some() {
+                    return Err("duplicate --body-mlp-epilogue".into());
+                }
+            }
             "--input-receipt" => {
                 if input_receipt.replace(PathBuf::from(value)).is_some() {
                     return Err("duplicate --input-receipt".into());
@@ -1256,6 +1469,7 @@ where
         source_lock: source_lock
             .ok_or_else(|| format!("--source-lock is required\n{}", usage()))?,
         mode: mode.ok_or_else(|| format!("--mode is required\n{}", usage()))?,
+        body_mlp_epilogue: body_mlp_epilogue.unwrap_or(BodyMlpEpilogue::Legacy),
         input_receipt,
         output: output.ok_or_else(|| format!("--output is required\n{}", usage()))?,
     };
@@ -1278,6 +1492,9 @@ where
         } else {
             "CPU modes reject --input-receipt".into()
         });
+    }
+    if !args.mode.is_candidate() && args.body_mlp_epilogue != BodyMlpEpilogue::Legacy {
+        return Err("CPU modes require --body-mlp-epilogue legacy".into());
     }
     Ok(args)
 }
@@ -1639,11 +1856,12 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
     let same_process_cpu_oracle_ms = same_process_oracle_started.elapsed().as_secs_f64() * 1_000.0;
     let construct_started = Instant::now();
     let mut model = if args.mode.is_candidate() {
-        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
+        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_body_mlp_epilogue(
             config,
             tensors,
             Device::Cpu,
             max_context,
+            args.body_mlp_epilogue.metal(),
         )?
     } else {
         GeneralQwen35::from_weights(config, tensors, Device::Cpu, max_context)?
@@ -1668,7 +1886,7 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
             "identity_fields": ["device", "inode", "size", "nlink", "ctime", "sha256"],
         },
         "cpu_reference_constructor": "GeneralQwen35::from_weights",
-        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1",
+        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_body_mlp_epilogue",
         "custody": custody.receipt_json(),
     });
     let setup = json!({
@@ -1741,6 +1959,7 @@ fn run_teacher(
             receipt: json!({
                 "format": args.mode.receipt_format(),
                 "mode": args.mode.label(),
+                "body_mlp_epilogue": args.body_mlp_epilogue.label(),
                 "identity": identity,
                 "prompt": PROMPT,
                 "prompt_token_ids": prompt_tokens,
@@ -1779,6 +1998,7 @@ fn run_teacher(
         &prefill_generation,
         0,
         TailPhaseCounts::teacher(0),
+        args.body_mlp_epilogue,
     );
     let input_path = args
         .input_receipt
@@ -1845,6 +2065,7 @@ fn run_teacher(
         &final_generation,
         STEPS,
         TailPhaseCounts::teacher(STEPS),
+        args.body_mlp_epilogue,
     );
     let passed = evaluation.passed && prefill_checks.all_valid() && final_checks.all_valid();
     gate_evidence::verify_file_unchanged(
@@ -1858,6 +2079,7 @@ fn run_teacher(
         receipt: json!({
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
+            "body_mlp_epilogue": args.body_mlp_epilogue.label(),
             "identity": identity,
             "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
@@ -1887,6 +2109,7 @@ fn run_teacher(
             "generation_path_contract": {
                 "schema": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
                 "binds_initial_stack_five_boundaries_and_fused_tail": true,
+                "body_mlp_epilogue": args.body_mlp_epilogue.runtime_label(),
                 "cpu_f32_prefill": true,
                 "tail_prefill_calls": 0,
                 "tail_decode_calls": 0,
@@ -1972,6 +2195,7 @@ fn run_free(
             receipt: json!({
                 "format": args.mode.receipt_format(),
                 "mode": args.mode.label(),
+                "body_mlp_epilogue": args.body_mlp_epilogue.label(),
                 "identity": identity,
                 "prompt": PROMPT,
                 "prompt_token_ids": prompt_tokens,
@@ -2011,6 +2235,7 @@ fn run_free(
         &generation,
         body_tail_calls,
         TailPhaseCounts::free(body_tail_calls),
+        args.body_mlp_epilogue,
     );
     let passed = mismatches.is_empty() && checks.all_valid();
     gate_evidence::verify_file_unchanged(
@@ -2022,6 +2247,7 @@ fn run_free(
         receipt: json!({
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
+            "body_mlp_epilogue": args.body_mlp_epilogue.label(),
             "identity": identity,
             "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
@@ -2039,6 +2265,7 @@ fn run_free(
                 "schema": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
                 "shared_generate_streaming": true,
                 "binds_initial_stack_five_boundaries_and_fused_tail": true,
+                "body_mlp_epilogue": args.body_mlp_epilogue.runtime_label(),
                 "body_tail_calls": body_tail_calls,
                 "cpu_f32_prefill_head_calls": 1,
                 "tail_prefill_calls": 0,
@@ -2133,7 +2360,9 @@ mod tests {
         });
     }
 
-    fn official_aggregate_fixture() -> Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
+    fn official_aggregate_fixture(
+        body_mlp_epilogue: BodyMlpEpilogue,
+    ) -> Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
         let initial_stack = Qwen35MetalW8LinearLayerStack3BufferLedger {
             layer_indices: [0, 1, 2],
             ledger: apxinf_metal::LinearLayerStack3BufferLedger {
@@ -2152,6 +2381,8 @@ mod tests {
                 state_host_transfer_bytes_per_decode: 0,
                 command_buffers_per_decode: 1,
                 compute_encoders_per_decode: 3,
+                kernel_dispatches_per_decode: body_mlp_epilogue.initial_dispatches(),
+                buffer_barriers_per_decode: body_mlp_epilogue.initial_barriers(),
                 commits_per_decode: 1,
                 waits_per_decode: 1,
                 intermediate_host_finite_checks_per_decode: 0,
@@ -2178,7 +2409,8 @@ mod tests {
             state_host_transfer_bytes_per_decode: 0,
             command_buffers_per_decode: 1,
             compute_encoders_per_decode: 4,
-            kernel_dispatches_per_decode: 44,
+            kernel_dispatches_per_decode: body_mlp_epilogue.boundary_dispatches(),
+            buffer_barriers_per_decode: body_mlp_epilogue.boundary_barriers(),
             commits_per_decode: 1,
             waits_per_decode: 1,
             intermediate_host_finite_checks_per_decode: 0,
@@ -2188,6 +2420,7 @@ mod tests {
             scope: "resident-mtlbuffer-only",
             exclusions: "CPU F32 weights, host F32 tied embedding and exact four-candidate rerank, host allocations, Metal pipelines/libraries/queues, command objects, driver allocations, full attention/KV, model loader, and prefill CPU head",
             includes_lm_head: true,
+            body_mlp_epilogue: body_mlp_epilogue.metal(),
             initial_stack,
             boundaries: BOUNDARY_REGIONS
                 .map(|(boundary_mlp_layer_index, stack_layer_indices)| {
@@ -2212,17 +2445,23 @@ mod tests {
             state_host_transfer_bytes_per_decode: 0,
             command_buffers_per_decode: 7,
             compute_encoders_per_decode: 24,
-            kernel_dispatches_per_decode: 267,
+            kernel_dispatches_per_decode: body_mlp_epilogue.aggregate_dispatches(),
+            buffer_barriers_per_decode: body_mlp_epilogue.aggregate_barriers(),
             commits_per_decode: 7,
             waits_per_decode: 7,
         }
     }
 
-    fn generation_receipt_fixture(calls: usize, phase: TailPhaseCounts) -> Value {
+    fn generation_receipt_fixture(
+        calls: usize,
+        phase: TailPhaseCounts,
+        body_mlp_epilogue: BodyMlpEpilogue,
+    ) -> Value {
         let transfer = calls * 4_096;
         json!({
             "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
             "mechanism": "metal-w8-mlp-stack3-boundary-tail-head-v1",
+            "body_mlp_epilogue": body_mlp_epilogue.runtime_label(),
             "cpu_full_attention_and_kv": true,
             "cpu_prefill_all_24_layers": true,
             "metal_w8_initial_complete_linear_layer_stack3": true,
@@ -2234,6 +2473,13 @@ mod tests {
             "initial_stack": {
                 "layer_indices": [0, 1, 2],
                 "mechanism": "metal-w8-linear-layer-stack3-v1",
+                "mlp_epilogue_runtime": {
+                    "requested_profile": body_mlp_epilogue.runtime_label(),
+                    "observed_profile": body_mlp_epilogue.runtime_label(),
+                    "mlp_down_function_name": body_mlp_epilogue.mlp_down_function_name(),
+                    "kernel_dispatches_per_decode": body_mlp_epilogue.initial_dispatches(),
+                    "buffer_barriers_per_decode": body_mlp_epilogue.initial_barriers(),
+                },
                 "prefill_seed_calls": [1, 1, 1],
                 "decode_calls": calls,
                 "successful_decodes": calls,
@@ -2253,6 +2499,13 @@ mod tests {
                 "boundary_mlp_layer_index": boundary_mlp_layer_index,
                 "stack_layer_indices": stack_layer_indices,
                 "mechanism": "metal-w8-mlp-stack3-boundary-v1",
+                "mlp_epilogue_runtime": {
+                    "requested_profile": body_mlp_epilogue.runtime_label(),
+                    "observed_profile": body_mlp_epilogue.runtime_label(),
+                    "mlp_down_function_name": body_mlp_epilogue.mlp_down_function_name(),
+                    "kernel_dispatches_per_decode": body_mlp_epilogue.boundary_dispatches(),
+                    "buffer_barriers_per_decode": body_mlp_epilogue.boundary_barriers(),
+                },
                 "prefill_seed_calls": [1, 1, 1],
                 "decode_calls": calls,
                 "successful_decodes": calls,
@@ -2296,6 +2549,7 @@ mod tests {
             "aggregate": {
                 "scope": "resident-mtlbuffer-only",
                 "includes_lm_head": true,
+                "body_mlp_epilogue": body_mlp_epilogue.runtime_label(),
                 "persistent_mtlbuffer_bytes": 799_543_312usize,
                 "allocated_buffers": 494,
                 "shared_buffers": 443,
@@ -2305,7 +2559,8 @@ mod tests {
                 "state_host_transfer_bytes_per_decode": 0,
                 "command_buffers_per_decode": 7,
                 "compute_encoders_per_decode": 24,
-                "kernel_dispatches_per_decode": 267,
+                "kernel_dispatches_per_decode": body_mlp_epilogue.aggregate_dispatches(),
+                "buffer_barriers_per_decode": body_mlp_epilogue.aggregate_barriers(),
                 "commits_per_decode": 7,
                 "waits_per_decode": 7,
             },
@@ -2364,10 +2619,42 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(args.mode, Mode::BoundaryTailV1Free);
+        assert_eq!(args.body_mlp_epilogue, BodyMlpEpilogue::Legacy);
         assert_eq!(
             args.input_receipt.unwrap(),
             std::path::PathBuf::from("/cpu-free.json")
         );
+        let fused = parse_args_from([
+            "gate",
+            "--model-dir",
+            "/model",
+            "--source-lock",
+            "/source-lock.json",
+            "--mode",
+            "boundary-tail-v1-free",
+            "--body-mlp-epilogue",
+            "down-residual-fused",
+            "--input-receipt",
+            "/cpu-free.json",
+            "--output",
+            "/new-fused-receipt.json",
+        ])
+        .unwrap();
+        assert_eq!(fused.body_mlp_epilogue, BodyMlpEpilogue::DownResidualFused);
+        assert!(parse_args_from([
+            "gate",
+            "--model-dir",
+            "/model",
+            "--source-lock",
+            "/source-lock.json",
+            "--mode",
+            "cpu-free",
+            "--body-mlp-epilogue",
+            "down-residual-fused",
+            "--output",
+            "/new-cpu-receipt.json",
+        ])
+        .is_err());
         assert!(parse_args_from([
             "gate",
             "--model-dir",
@@ -2417,6 +2704,7 @@ mod tests {
         let mut receipt = json!({
             "format": CPU_TEACHER_FORMAT,
             "mode": Mode::CpuTeacher.label(),
+            "body_mlp_epilogue": BodyMlpEpilogue::Legacy.label(),
             "passed": true,
             "identity": identity,
             "prompt_token_ids": [1, 2],
@@ -2430,6 +2718,15 @@ mod tests {
         let oracle = validate_cpu_teacher_receipt(&receipt, &identity, &[1, 2], 7).unwrap();
         assert_eq!(oracle.teacher_inputs.len(), 128);
         assert_eq!(oracle.expected_outputs.len(), 128);
+        let mut missing_profile = receipt.clone();
+        missing_profile
+            .as_object_mut()
+            .unwrap()
+            .remove("body_mlp_epilogue");
+        assert!(validate_cpu_teacher_receipt(&missing_profile, &identity, &[1, 2], 7).is_err());
+        let mut wrong_profile = receipt.clone();
+        wrong_profile["body_mlp_epilogue"] = json!(BodyMlpEpilogue::DownResidualFused.label());
+        assert!(validate_cpu_teacher_receipt(&wrong_profile, &identity, &[1, 2], 7).is_err());
         receipt["passed"] = json!(false);
         assert!(validate_cpu_teacher_receipt(&receipt, &identity, &[1, 2], 7).is_err());
     }
@@ -2496,6 +2793,7 @@ mod tests {
         let mut receipt = json!({
             "format": CPU_FREE_FORMAT,
             "mode": Mode::CpuFree.label(),
+            "body_mlp_epilogue": BodyMlpEpilogue::Legacy.label(),
             "passed": true,
             "identity": identity,
             "prompt_token_ids": [1, 2],
@@ -2508,6 +2806,15 @@ mod tests {
             validate_cpu_free_receipt(&receipt, &identity, &[1, 2]).unwrap(),
             tokens
         );
+        let mut missing_profile = receipt.clone();
+        missing_profile
+            .as_object_mut()
+            .unwrap()
+            .remove("body_mlp_epilogue");
+        assert!(validate_cpu_free_receipt(&missing_profile, &identity, &[1, 2]).is_err());
+        let mut wrong_profile = receipt.clone();
+        wrong_profile["body_mlp_epilogue"] = json!(BodyMlpEpilogue::DownResidualFused.label());
+        assert!(validate_cpu_free_receipt(&wrong_profile, &identity, &[1, 2]).is_err());
         receipt["generated_token_ids"].as_array_mut().unwrap().pop();
         assert!(validate_cpu_free_receipt(&receipt, &identity, &[1, 2]).is_err());
     }
@@ -2561,59 +2868,117 @@ mod tests {
 
     #[test]
     fn component_ledgers_and_recomputed_aggregate_are_strictly_frozen() {
-        let aggregate = official_aggregate_fixture();
-        assert!(official_aggregate_ledger_is_exact(&aggregate));
+        let aggregate = official_aggregate_fixture(BodyMlpEpilogue::Legacy);
+        assert!(official_aggregate_ledger_is_exact(
+            &aggregate,
+            BodyMlpEpilogue::Legacy,
+        ));
+
+        let fused = official_aggregate_fixture(BodyMlpEpilogue::DownResidualFused);
+        assert!(official_aggregate_ledger_is_exact(
+            &fused,
+            BodyMlpEpilogue::DownResidualFused,
+        ));
+        assert!(!official_aggregate_ledger_is_exact(
+            &fused,
+            BodyMlpEpilogue::Legacy,
+        ));
 
         let mut wrong = aggregate.clone();
         wrong.boundaries[2].ledger.total_persistent_bytes -= 1;
-        assert!(!official_aggregate_ledger_is_exact(&wrong));
+        assert!(!official_aggregate_ledger_is_exact(
+            &wrong,
+            BodyMlpEpilogue::Legacy,
+        ));
         let mut wrong = aggregate.clone();
         wrong.tail.host_output_bytes_per_decode -= 1;
-        assert!(!official_aggregate_ledger_is_exact(&wrong));
+        assert!(!official_aggregate_ledger_is_exact(
+            &wrong,
+            BodyMlpEpilogue::Legacy,
+        ));
         let mut wrong = aggregate.clone();
         wrong.total_persistent_mtlbuffer_bytes -= 1;
-        assert!(!official_aggregate_ledger_is_exact(&wrong));
+        assert!(!official_aggregate_ledger_is_exact(
+            &wrong,
+            BodyMlpEpilogue::Legacy,
+        ));
         let mut wrong = aggregate;
         wrong.kernel_dispatches_per_decode -= 1;
-        assert!(!official_aggregate_ledger_is_exact(&wrong));
+        assert!(!official_aggregate_ledger_is_exact(
+            &wrong,
+            BodyMlpEpilogue::Legacy,
+        ));
     }
 
     #[test]
     fn generation_receipt_locks_six_regions_tail_phases_and_commit_masks() {
         let phase = TailPhaseCounts::teacher(7);
-        let receipt = generation_receipt_fixture(7, phase);
+        let receipt = generation_receipt_fixture(7, phase, BodyMlpEpilogue::Legacy);
         assert!(boundary_tail_generation_receipt_is_exact(
-            &receipt, 7, phase
+            &receipt,
+            7,
+            phase,
+            BodyMlpEpilogue::Legacy,
         ));
 
         let mut wrong = receipt.clone();
         wrong["initial_stack"]["last_state_commit_mask"] = json!(0b011);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong,
+            7,
+            phase,
+            BodyMlpEpilogue::Legacy,
+        ));
         let mut wrong = receipt.clone();
         wrong["boundaries"][3]["last_state_commit_mask"] = json!(0b110);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong,
+            7,
+            phase,
+            BodyMlpEpilogue::Legacy,
+        ));
         let mut wrong = receipt.clone();
         wrong["decode_head"]["teacher_calls"] = json!(6);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong,
+            7,
+            phase,
+            BodyMlpEpilogue::Legacy,
+        ));
 
         let mut wrong = receipt.clone();
         wrong["terminal_error"] = json!(true);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong,
+            7,
+            phase,
+            BodyMlpEpilogue::Legacy,
+        ));
         let mut wrong = receipt;
         wrong["decode_head"]["terminal_error"] = json!(true);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong,
+            7,
+            phase,
+            BodyMlpEpilogue::Legacy,
+        ));
 
         let free_phase = TailPhaseCounts::free(7);
-        let free_receipt = generation_receipt_fixture(7, free_phase);
+        let free_receipt =
+            generation_receipt_fixture(7, free_phase, BodyMlpEpilogue::DownResidualFused);
         assert!(boundary_tail_generation_receipt_is_exact(
             &free_receipt,
             7,
-            free_phase
+            free_phase,
+            BodyMlpEpilogue::DownResidualFused,
         ));
         let mut wrong = free_receipt;
         wrong["prefill_head"]["tail_transactions"] = json!(1);
         assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong, 7, free_phase
+            &wrong,
+            7,
+            free_phase,
+            BodyMlpEpilogue::DownResidualFused,
         ));
     }
 

@@ -2,6 +2,7 @@ use super::{
     checked_sum, f32_bytes, rms_norm, GdnDecodeState, GdnDimensions, MetalW8Error,
     PackedW8LinearLayerBlock,
 };
+use crate::{MlpEpilogueRuntimeReceiptV1, MlpEpilogueV1};
 use crate::{PackedW8MlpBlock, W8GroupSize};
 
 const STACK_DEPTH: usize = 3;
@@ -36,6 +37,7 @@ pub struct MlpStack3BoundaryBufferLedgerV1 {
     pub command_buffers_per_decode: usize,
     pub compute_encoders_per_decode: usize,
     pub kernel_dispatches_per_decode: usize,
+    pub buffer_barriers_per_decode: usize,
     pub commits_per_decode: usize,
     pub waits_per_decode: usize,
     pub intermediate_host_finite_checks_per_decode: usize,
@@ -80,6 +82,7 @@ pub struct MetalW8MlpStack3BoundaryV1 {
     terminal_error: bool,
     stats: MlpStack3BoundaryMetalStatsV1,
     buffer_ledger: MlpStack3BoundaryBufferLedgerV1,
+    mlp_epilogue_receipt: MlpEpilogueRuntimeReceiptV1,
 }
 
 impl PackedW8MlpStack3BoundaryV1 {
@@ -146,6 +149,13 @@ impl PackedW8MlpStack3BoundaryV1 {
     }
 
     pub fn buffer_ledger(&self) -> Result<MlpStack3BoundaryBufferLedgerV1, MetalW8Error> {
+        self.buffer_ledger_with_mlp_epilogue_v1(MlpEpilogueV1::LegacySeparate)
+    }
+
+    pub fn buffer_ledger_with_mlp_epilogue_v1(
+        &self,
+        mlp_epilogue: MlpEpilogueV1,
+    ) -> Result<MlpStack3BoundaryBufferLedgerV1, MetalW8Error> {
         let layer_ledgers = self
             .stack_layers
             .iter()
@@ -273,7 +283,14 @@ impl PackedW8MlpStack3BoundaryV1 {
             state_host_transfer_bytes_per_decode: 0,
             command_buffers_per_decode: 1,
             compute_encoders_per_decode: 4,
-            kernel_dispatches_per_decode: 5 + STACK_DEPTH * 13,
+            kernel_dispatches_per_decode: match mlp_epilogue {
+                MlpEpilogueV1::LegacySeparate => 5 + STACK_DEPTH * 13,
+                MlpEpilogueV1::DownResidualFused => 4 + STACK_DEPTH * 12,
+            },
+            buffer_barriers_per_decode: match mlp_epilogue {
+                MlpEpilogueV1::LegacySeparate => 4 + STACK_DEPTH * 12,
+                MlpEpilogueV1::DownResidualFused => 3 + STACK_DEPTH * 11,
+            },
             commits_per_decode: 1,
             waits_per_decode: 1,
             intermediate_host_finite_checks_per_decode: 0,
@@ -324,16 +341,31 @@ impl PackedW8MlpStack3BoundaryV1 {
 
 impl MetalW8MlpStack3BoundaryV1 {
     pub fn from_packed(weights: &PackedW8MlpStack3BoundaryV1) -> Result<Self, MetalW8Error> {
+        Self::from_packed_with_mlp_epilogue_v1(weights, MlpEpilogueV1::LegacySeparate)
+    }
+
+    pub fn from_packed_with_mlp_epilogue_v1(
+        weights: &PackedW8MlpStack3BoundaryV1,
+        mlp_epilogue: MlpEpilogueV1,
+    ) -> Result<Self, MetalW8Error> {
         validate_u32_contract(weights)?;
-        let buffer_ledger = weights.buffer_ledger()?;
+        let buffer_ledger = weights.buffer_ledger_with_mlp_epilogue_v1(mlp_epilogue)?;
+        let inner = platform::BoundaryHandleV1::new(weights, mlp_epilogue)?;
+        let mlp_epilogue_receipt = inner.mlp_epilogue_receipt()?;
+        if mlp_epilogue_receipt.requested_profile != mlp_epilogue {
+            return Err(MetalW8Error::new(
+                "Metal W8 MLP→Stack3 boundary v1 runtime receipt changed the requested MLP epilogue",
+            ));
+        }
         Ok(Self {
             dims: weights.dims,
-            inner: platform::BoundaryHandleV1::new(weights)?,
+            inner,
             output: vec![0.0; weights.hidden_size()],
             seeded: false,
             terminal_error: false,
             stats: MlpStack3BoundaryMetalStatsV1::default(),
             buffer_ledger,
+            mlp_epilogue_receipt,
         })
     }
 
@@ -395,6 +427,10 @@ impl MetalW8MlpStack3BoundaryV1 {
 
     pub fn buffer_ledger(&self) -> MlpStack3BoundaryBufferLedgerV1 {
         self.buffer_ledger
+    }
+
+    pub fn mlp_epilogue_runtime_receipt_v1(&self) -> MlpEpilogueRuntimeReceiptV1 {
+        self.mlp_epilogue_receipt
     }
 
     fn validate_decode_input(&self, hidden: &[f32]) -> Result<(), MetalW8Error> {
@@ -685,6 +721,8 @@ mod tests {
         let bridge = include_str!("../metal_w8_mlp_stack3_boundary_v1_bridge.mm");
         for symbol in [
             "apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(",
+            "apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_with_mlp_epilogue_v1(",
+            "apxinf_metal_w8_mlp_stack3_boundary_mlp_epilogue_receipt_v1(",
             "apxinf_metal_w8_mlp_stack3_boundary_seed_states_v1(",
             "apxinf_metal_w8_mlp_stack3_boundary_decode_v1(",
             "apxinf_metal_w8_mlp_stack3_boundary_snapshot_state_v1(",
@@ -715,6 +753,11 @@ mod tests {
         assert!(bridge.contains("receipt->compute_encoders = 1;"));
         assert!(bridge.contains("receipt->compute_encoders += 1;"));
         assert!(bridge.contains("Only final hidden_a is checked"));
+        assert!(bridge.contains("invalid Metal W8 MLP-to-Stack3 boundary v1 MLP epilogue selector"));
+        assert!(bridge.contains("id<MTLFunction> mlp_down_function;"));
+        assert!(bridge.contains("@\"w8_mlp_down_residual\""));
+        assert!(bridge.contains("sizeof(BoundaryExecutionReceiptV1) == 40"));
+        assert!(bridge.contains("sizeof(MlpEpilogueRuntimeReceiptV1) == 80"));
         let prefix_encoder = bridge
             .split("void encode_boundary_mlp(")
             .nth(1)
@@ -773,13 +816,14 @@ mod tests {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock,
-        PackedW8MlpStack3BoundaryV1, STACK_DEPTH,
+        GdnDecodeState, GdnDimensions, MetalW8Error, MlpEpilogueRuntimeReceiptV1, MlpEpilogueV1,
+        PackedW8LinearLayerBlock, PackedW8MlpStack3BoundaryV1, STACK_DEPTH,
     };
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
 
     const ERROR_CAPACITY: usize = 1024;
+    const MLP_DOWN_FUNCTION_NAME_CAPACITY: usize = 64;
 
     #[repr(C)]
     struct BoundaryMlpDescriptorV1 {
@@ -893,12 +937,41 @@ mod platform {
         pub(super) result: Result<(), MetalW8Error>,
     }
 
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct RawMlpEpilogueRuntimeReceiptV1 {
+        requested_profile: u32,
+        observed_profile: u32,
+        kernel_dispatches_per_decode: u32,
+        buffer_barriers_per_decode: u32,
+        mlp_down_function_name: [c_char; MLP_DOWN_FUNCTION_NAME_CAPACITY],
+    }
+
+    impl Default for RawMlpEpilogueRuntimeReceiptV1 {
+        fn default() -> Self {
+            Self {
+                requested_profile: 0,
+                observed_profile: 0,
+                kernel_dispatches_per_decode: 0,
+                buffer_barriers_per_decode: 0,
+                mlp_down_function_name: [0; MLP_DOWN_FUNCTION_NAME_CAPACITY],
+            }
+        }
+    }
+
     extern "C" {
-        fn apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
+        fn apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_with_mlp_epilogue_v1(
             boundary: *const BoundaryMlpDescriptorV1,
             layers: *const BoundaryStackLayerDescriptorV1,
             layer_count: u32,
+            mlp_epilogue: u32,
             output: *mut *mut c_void,
+            error: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn apxinf_metal_w8_mlp_stack3_boundary_mlp_epilogue_receipt_v1(
+            handle: *mut c_void,
+            receipt: *mut RawMlpEpilogueRuntimeReceiptV1,
             error: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
@@ -933,7 +1006,10 @@ mod platform {
     pub(super) struct BoundaryHandleV1(NonNull<c_void>);
 
     impl BoundaryHandleV1 {
-        pub(super) fn new(weights: &PackedW8MlpStack3BoundaryV1) -> Result<Self, MetalW8Error> {
+        pub(super) fn new(
+            weights: &PackedW8MlpStack3BoundaryV1,
+            mlp_epilogue: MlpEpilogueV1,
+        ) -> Result<Self, MetalW8Error> {
             let boundary = BoundaryMlpDescriptorV1 {
                 gate_up_weights: weights.boundary_mlp.gate_up.values().as_ptr(),
                 gate_up_scales: weights.boundary_mlp.gate_up.scales().as_ptr(),
@@ -951,10 +1027,11 @@ mod platform {
             let mut output = std::ptr::null_mut();
             let mut error = [0 as c_char; ERROR_CAPACITY];
             let status = unsafe {
-                apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
+                apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_with_mlp_epilogue_v1(
                     &boundary,
                     layers.as_ptr(),
                     layers.len() as u32,
+                    mlp_epilogue.selector(),
                     &mut output,
                     error.as_mut_ptr(),
                     error.len(),
@@ -969,6 +1046,28 @@ mod platform {
             NonNull::new(output).map(Self).ok_or_else(|| {
                 MetalW8Error::new("create Metal W8 MLP→Stack3 boundary v1 returned a null handle")
             })
+        }
+
+        pub(super) fn mlp_epilogue_receipt(
+            &self,
+        ) -> Result<MlpEpilogueRuntimeReceiptV1, MetalW8Error> {
+            let mut receipt = RawMlpEpilogueRuntimeReceiptV1::default();
+            let mut error = [0 as c_char; ERROR_CAPACITY];
+            let status = unsafe {
+                apxinf_metal_w8_mlp_stack3_boundary_mlp_epilogue_receipt_v1(
+                    self.0.as_ptr(),
+                    &mut receipt,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                return Err(bridge_error(
+                    "read Metal W8 MLP→Stack3 boundary v1 MLP epilogue receipt",
+                    &error,
+                ));
+            }
+            decode_mlp_epilogue_receipt(receipt, 44, 40, 40, 36)
         }
 
         pub(super) fn seed(
@@ -1092,12 +1191,65 @@ mod platform {
             MetalW8Error::new(format!("{context}: {detail}"))
         }
     }
+
+    fn decode_mlp_epilogue_receipt(
+        receipt: RawMlpEpilogueRuntimeReceiptV1,
+        legacy_dispatches: usize,
+        legacy_barriers: usize,
+        fused_dispatches: usize,
+        fused_barriers: usize,
+    ) -> Result<MlpEpilogueRuntimeReceiptV1, MetalW8Error> {
+        let requested = MlpEpilogueV1::try_from(receipt.requested_profile)?;
+        let observed = MlpEpilogueV1::try_from(receipt.observed_profile)?;
+        if observed != requested {
+            return Err(MetalW8Error::new(
+                "Metal W8 MLP→Stack3 boundary v1 requested and observed MLP epilogues differ",
+            ));
+        }
+        let name_length = receipt
+            .mlp_down_function_name
+            .iter()
+            .position(|&byte| byte == 0)
+            .ok_or_else(|| {
+                MetalW8Error::new(
+                    "Metal W8 MLP→Stack3 boundary v1 MLP function name is not terminated",
+                )
+            })?;
+        let name_bytes = receipt.mlp_down_function_name[..name_length]
+            .iter()
+            .map(|&byte| byte as u8)
+            .collect::<Vec<_>>();
+        let function_name = std::str::from_utf8(&name_bytes).map_err(|_| {
+            MetalW8Error::new("Metal W8 MLP→Stack3 boundary v1 MLP function name is not UTF-8")
+        })?;
+        let expected_name = requested.expected_mlp_down_function_name();
+        let (expected_dispatches, expected_barriers) = match requested {
+            MlpEpilogueV1::LegacySeparate => (legacy_dispatches, legacy_barriers),
+            MlpEpilogueV1::DownResidualFused => (fused_dispatches, fused_barriers),
+        };
+        if function_name != expected_name
+            || receipt.kernel_dispatches_per_decode as usize != expected_dispatches
+            || receipt.buffer_barriers_per_decode as usize != expected_barriers
+        {
+            return Err(MetalW8Error::new(
+                "Metal W8 MLP→Stack3 boundary v1 live MLP epilogue receipt does not match its profile",
+            ));
+        }
+        Ok(MlpEpilogueRuntimeReceiptV1 {
+            requested_profile: requested,
+            observed_profile: observed,
+            mlp_down_function_name: expected_name,
+            kernel_dispatches_per_decode: expected_dispatches,
+            buffer_barriers_per_decode: expected_barriers,
+        })
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8MlpStack3BoundaryV1, STACK_DEPTH,
+        GdnDecodeState, GdnDimensions, MetalW8Error, MlpEpilogueRuntimeReceiptV1, MlpEpilogueV1,
+        PackedW8MlpStack3BoundaryV1, STACK_DEPTH,
     };
 
     #[derive(Clone, Copy, Debug, Default)]
@@ -1120,7 +1272,18 @@ mod platform {
     pub(super) struct BoundaryHandleV1;
 
     impl BoundaryHandleV1 {
-        pub(super) fn new(_weights: &PackedW8MlpStack3BoundaryV1) -> Result<Self, MetalW8Error> {
+        pub(super) fn new(
+            _weights: &PackedW8MlpStack3BoundaryV1,
+            _mlp_epilogue: MlpEpilogueV1,
+        ) -> Result<Self, MetalW8Error> {
+            Err(MetalW8Error::new(
+                "Metal W8 MLP→Stack3 boundary v1 requires macOS",
+            ))
+        }
+
+        pub(super) fn mlp_epilogue_receipt(
+            &self,
+        ) -> Result<MlpEpilogueRuntimeReceiptV1, MetalW8Error> {
             Err(MetalW8Error::new(
                 "Metal W8 MLP→Stack3 boundary v1 requires macOS",
             ))

@@ -85,3 +85,37 @@ kernel void w8_mlp_down(
         output[row] = sum;
     }
 }
+
+// Opt-in non-tail epilogue. The projection arithmetic and SIMD reduction are
+// intentionally identical to w8_mlp_down; only the lane-zero publication
+// folds in the residual row that the legacy path adds in a second dispatch.
+kernel void w8_mlp_down_residual(
+    device const char4 *weights [[buffer(0)]],
+    device const float *scales [[buffer(1)]],
+    device const float4 *activated [[buffer(2)]],
+    device const float *residual [[buffer(3)]],
+    device float *output [[buffer(4)]],
+    constant MlpParams& params [[buffer(5)]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint group [[threadgroup_position_in_grid]]) {
+    constexpr uint rows_per_threadgroup = 8;
+    constexpr uint float4_per_group = 16;
+    const uint row = group * rows_per_threadgroup + simdgroup;
+    if (row >= params.hidden_size) {
+        return;
+    }
+    const uint columns4 = params.intermediate_size >> 2;
+    const uint weight_base = row * columns4;
+    const uint scale_base = row * params.down_groups_per_row;
+    float sum = 0.0f;
+    for (uint index = lane; index < columns4; index += 32) {
+        const char4 quantized = weights[weight_base + index];
+        const float scale = scales[scale_base + index / float4_per_group];
+        sum += dot(float4(quantized), activated[index]) * scale;
+    }
+    sum = simd_sum(sum);
+    if (lane == 0) {
+        output[row] = residual[row] + sum;
+    }
+}
