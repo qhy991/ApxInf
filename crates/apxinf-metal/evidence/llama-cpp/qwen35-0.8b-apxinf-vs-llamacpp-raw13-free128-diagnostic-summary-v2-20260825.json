@@ -1,0 +1,330 @@
+{
+  "format": "apxinf-qwen35-vs-llamacpp-raw13-free128-diagnostic-summary-v2",
+  "schema_version": 2,
+  "created_at_local_date": "2026-08-25",
+  "publication": {
+    "apxinf_measurement_code_commit": "820ee4ed98f66feaec0324e1a8870a7eb0967531",
+    "apxinf_evidence_commit": "cb976735bbd373ed09f8e593af75c13236096f24",
+    "runner_contract_commit": "27ab4e670b5a523af3f56540eb9c3369fd0e778a",
+    "runner_contract_tree": "841de7f7c7d444d30a58e178318899181a4689c6"
+  },
+  "classification": {
+    "formal_performance_result": false,
+    "promotion_status": "candidate-only-not-promoted",
+    "promotion_claim_allowed": false,
+    "timing_use": "single-observation uncontrolled-host diagnostic only",
+    "quality_claim_scope": "exact free-run trajectory on the frozen raw13 fixed128 workload only",
+    "reasons_not_formal": [
+      "the quiet-host gate failed",
+      "system swap was nonzero",
+      "ApxInf and llama.cpp thread policies were not aligned",
+      "only one timed observation per implementation and tier was collected",
+      "the required ABBA/BAAB campaign and untimed warmups were not run",
+      "loaded system-library image hashes were not captured",
+      "llama.cpp teacher-forced cross-runtime quality was not measured",
+      "runner executable SHA-256 was verified outside the run receipts rather than embedded by the runner",
+      "GGUF model SHA-256 values were verified outside the runner receipts rather than computed from the pinned file descriptor"
+    ]
+  },
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "checkpoint_sha256": "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
+    "checkpoint_size": 1746942600,
+    "prompt": "Hello",
+    "prompt_ingress": "raw-token-ids-only",
+    "prompt_token_ids": [
+      248045,
+      846,
+      198,
+      9419,
+      248046,
+      198,
+      248045,
+      74455,
+      198,
+      248068,
+      271,
+      248069,
+      271
+    ],
+    "prompt_token_ids_compact_json_sha256": "4b890fa15ee3d7db4e9dd18bd79c6362d40e9e016ae4f9f74cb7fc420ef3b6d3",
+    "sampling": "greedy-argmax",
+    "generated_tokens": 128,
+    "eos_stopping": false,
+    "requested_context_length": 142,
+    "llama_cpp_effective_context_length": 256,
+    "effective_context_allocation_equal": false,
+    "runtime_parity": {
+      "same_physical_host": true,
+      "same_prompt_and_generation_contract": true,
+      "llama_cpp_threads": 4,
+      "apxinf_thread_policy": "not-explicitly-controllable",
+      "thread_policy_parity": false
+    },
+    "timing_definitions": {
+      "origin": "immediately-before-raw-token-prefill",
+      "ttft_ms": "first-token-ready-elapsed",
+      "total_latency_ms": "token-128-ready-elapsed",
+      "tpot_ms": "(total_latency_ms-ttft_ms)/127",
+      "generation_tps": "127000/(total_latency_ms-ttft_ms)",
+      "model_load_included": false,
+      "llama_cpp_execution_proof_decode_included": false
+    }
+  },
+  "contract_integrity": {
+    "path": "configs/qwen35-0.8b-llamacpp-comparison-v1.json",
+    "sha256": "f3b2057fc9b5be3211c6aa4ba73965c4554de8c9b882fbf70bc3a606b6ae3973",
+    "size": 19825,
+    "content_sha256": "23f46184dce0882ab15c6e7e0b87832d143194b80bf3929d5b5c13f5f2173d89"
+  },
+  "llama_cpp_build_integrity": {
+    "repository": "https://github.com/ggml-org/llama.cpp.git",
+    "source_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+    "source_tree": "21045aed8b426d7a5e25a98e646054cbd9487e81",
+    "clean_detached_checkout": true,
+    "runner_schema": "apxinf.llama-cpp.raw-token-diagnostic.v2",
+    "runner_source": {
+      "path": "benchmarks/llama_cpp/raw_token_runner.cpp",
+      "sha256": "76a5a354f729d22659387557ef368b75e83910e28a09d52876ddb366106c66e4",
+      "size": 41807
+    },
+    "cmake_lists": {
+      "path": "benchmarks/llama_cpp/CMakeLists.txt",
+      "sha256": "50c8bd83995b73f239dc4e3e4573127952e35d360f3584823a9529626904201d",
+      "size": 5757
+    },
+    "runner_binary": {
+      "sha256": "ccfa5ecd78119d4f8cdd8721e7faae360cb94b8334f9d61ed47e2e00290f2716",
+      "size": 6499056,
+      "clean_rebuild_byte_identical": true,
+      "linkage": "static-llama-ggml-with-system-dynamic-libraries-only",
+      "receipt_binding": "outer-summary-only-not-self-reported-by-runner"
+    },
+    "dynamic_backend_scan_invoked": false,
+    "loaded_system_library_hashes_captured": false
+  },
+  "model_artifacts": {
+    "llama_cpp_f32": {
+      "name": "Qwen3.5-0.8B-2fc063647-F32.gguf",
+      "sha256": "69ad6b3ef11f0fb4d9af2d9f59a235c8576d9ef2e64b4375274ca35fc34530e4",
+      "size": 3020533248,
+      "hash_binding": "post-run outer-contract verification"
+    },
+    "llama_cpp_pure_q8_0": {
+      "name": "Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+      "sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c",
+      "size": 811843072,
+      "hash_binding": "post-run outer-contract verification"
+    }
+  },
+  "receipt_integrity": {
+    "apxinf_gate_summary": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-v1-real-gate-summary-v2-20260825.json",
+      "sha256": "278c12898db65b12b4cb3fea923ee0f5e8b20bca26cc48bebd3ac16e03bfb829",
+      "size": 8269
+    },
+    "apxinf_cpu_teacher": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-v1-cpu-teacher-v2-20260825.json",
+      "sha256": "9f4477517ef0f7ff2f112f66fe2a051fc22e884f32fb3f18bea60bd9cb1447b5",
+      "size": 44576
+    },
+    "apxinf_candidate_teacher": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-v1-teacher-gate-v2-20260825.json",
+      "sha256": "e0956a575aa8754487412ce4c642153d67547d69d5f51d711a9ae9a72e4cded4",
+      "size": 67561
+    },
+    "apxinf_cpu_free": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-v1-cpu-free-v2-20260825.json",
+      "sha256": "af242a97a68f8c5fbb31cd6e271068d79212f5f409677a9dc3b2570940300f86",
+      "size": 44016
+    },
+    "apxinf_candidate_free": {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-v1-free-gate-v2-20260825.json",
+      "sha256": "1135e183b287e975c6a7b99054c8a9adcebb2b28277900a683fa06f420c17311",
+      "size": 56965
+    },
+    "llama_cpp_f32_cpu": {
+      "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-f280b269-f32-cpu-f32kv-raw13-free128-diagnostic-v2-20260825.json",
+      "sha256": "4dda7e5c6364cedb349e0e611dd944abc5848691bcb34f3433946e2d129fee12",
+      "size": 7716
+    },
+    "llama_cpp_q8_0_metal": {
+      "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-f280b269-q8_0-metal-raw13-free128-diagnostic-v2-20260825.json",
+      "sha256": "5c78e89225f62afd1448e9d0ec92d7241b131877bc75ae2c3643bdc25debe31c",
+      "size": 7943
+    }
+  },
+  "quality": {
+    "canonical_free128_token_ids_compact_json_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe",
+    "free_run": {
+      "apxinf_cpu_f32": "exact-canonical-128",
+      "apxinf_metal_w8": "exact-canonical-128",
+      "llama_cpp_cpu_f32": "exact-canonical-128",
+      "llama_cpp_metal_q8_0": "exact-canonical-128",
+      "all_four_trajectories_identical": true,
+      "position_match_count": 128,
+      "position_match_ratio": 1.0,
+      "exact_prefix_tokens": 128,
+      "first_mismatch": null,
+      "free_run_exact_for_frozen_workload": true,
+      "general_quality_parity_claim_allowed": false,
+      "claim_scope": "one frozen prompt and 128-token trajectory"
+    },
+    "teacher_forced": {
+      "apxinf_metal_w8_vs_same_process_apxinf_cpu_f32": "exact-128-of-128",
+      "llama_cpp_cross_runtime_measured": false,
+      "llama_cpp_cross_runtime": "not-measured",
+      "cross_runtime_teacher_exactness_claim_allowed": false
+    }
+  },
+  "comparison_lanes": {
+    "f32_reference": {
+      "claim_scope": "same-hf-revision-f32-runtime-diagnostic",
+      "apxinf": {
+        "runtime": "cpu-f32-reference",
+        "weight_precision": "f32",
+        "kv_precision": "f32",
+        "ttft_ms": 152.304916,
+        "tpot_ms": 49.66726115748032,
+        "generation_tps": 20.133987191870585,
+        "total_latency_ms": 6460.047083
+      },
+      "llama_cpp": {
+        "runtime": "cpu-only",
+        "weight_precision": "f32-gguf",
+        "kv_precision": "f32",
+        "threads": 4,
+        "ttft_ms": 482.482292,
+        "tpot_ms": 46.08815157480315,
+        "generation_tps": 21.69755058145378,
+        "total_latency_ms": 6335.677542,
+        "execution_proof": "26-of-26-completed-sentinels-on-cpu"
+      },
+      "diagnostic_ratios": {
+        "llama_cpp_generation_tps_over_apxinf": 1.0776579112067038,
+        "llama_cpp_generation_tps_delta_percent": 7.765791120670382,
+        "llama_cpp_tpot_over_apxinf": 0.9279382535040767,
+        "llama_cpp_tpot_delta_percent": -7.206174649592334,
+        "llama_cpp_total_latency_over_apxinf": 0.9807478893880996,
+        "llama_cpp_total_latency_delta_percent": -1.9252110611900408,
+        "llama_cpp_ttft_over_apxinf": 3.1678707731272443,
+        "llama_cpp_ttft_delta_percent": 216.78707731272443
+      }
+    },
+    "eight_bit_storage": {
+      "claim_scope": "same-hf-revision-non-equivalent-eight-bit-storage-diagnostic",
+      "quantization_mechanisms_equal": false,
+      "weight_regimes_equal": false,
+      "apxinf": {
+        "runtime": "metal-w8-mlp-stack3-boundary-tail-head-v1",
+        "weight_regime": "custom-g32-g64-w8-hybrid-with-cpu-f32-remainder",
+        "kv_precision": "f32-cpu-remainder",
+        "ttft_ms": 140.958833,
+        "tpot_ms": 15.07460531496063,
+        "generation_tps": 66.33672849846097,
+        "total_latency_ms": 2055.433708
+      },
+      "llama_cpp": {
+        "runtime": "metal-all-transformer-layers",
+        "weight_regime": "pure-q8_0-gguf",
+        "kv_precision": "f16",
+        "threads": 4,
+        "ttft_ms": 34.40675,
+        "tpot_ms": 14.151488842519685,
+        "generation_tps": 70.66394293407429,
+        "total_latency_ms": 1831.645833,
+        "execution_proof": "input-embedding-on-cpu-plus-24-layer-endpoints-and-output-on-mtl0",
+        "pure_all_device_memory": false
+      },
+      "diagnostic_ratios": {
+        "llama_cpp_generation_tps_over_apxinf": 1.0652310497300708,
+        "llama_cpp_generation_tps_delta_percent": 6.52310497300709,
+        "llama_cpp_tpot_over_apxinf": 0.938763473195228,
+        "llama_cpp_tpot_delta_percent": -6.123652680477198,
+        "llama_cpp_total_latency_over_apxinf": 0.8911237690960355,
+        "llama_cpp_total_latency_delta_percent": -10.887623090396453,
+        "llama_cpp_ttft_over_apxinf": 0.2440907693950616,
+        "llama_cpp_ttft_delta_percent": -75.59092306049384
+      }
+    }
+  },
+  "placement_and_memory": {
+    "llama_cpp_f32_cpu": {
+      "cpu_model_bytes": 3009572096,
+      "cpu_context_bytes": 26492928,
+      "cpu_compute_bytes": 13079680,
+      "gpu_total_bytes": 0
+    },
+    "llama_cpp_q8_0_metal": {
+      "gpu_model_bytes": 800881920,
+      "gpu_context_bytes": 23347200,
+      "gpu_compute_bytes": 13026368,
+      "gpu_total_bytes": 837255488,
+      "cpu_model_bytes": 270172160,
+      "cpu_compute_bytes": 113792,
+      "cpu_total_bytes": 270285952,
+      "cpu_fallback": "input-embedding"
+    },
+    "apxinf_metal_w8": {
+      "resident_mtlbuffer_bytes": 799543312,
+      "ledger_scope": "resident-mtlbuffer-only",
+      "same_process_cpu_oracle_present": true
+    },
+    "cross_runtime_memory_ratio_allowed": false,
+    "reason": "the ApxInf ledger, llama.cpp device breakdown, and process RSS observations have different scopes"
+  },
+  "unbound_resource_observations": {
+    "classification": "diagnostic-only-not-atomically-bound-to-json-receipts",
+    "apxinf": {
+      "cpu_free_maximum_resident_set_size_bytes": 4704632832,
+      "candidate_free_maximum_resident_set_size_bytes": 5905612800,
+      "candidate_rss_includes_same_process_cpu_oracle_high_water": true,
+      "system_swap_before": "5529.19 MiB used",
+      "system_swap_after": "5269.12 MiB used",
+      "system_swap_invariant": false
+    },
+    "llama_cpp_f32_cpu": {
+      "raw_stderr_sha256": "bc7a35e0552d5d6ab4bfac2809f9c77922c1a239d355ef94834ccca6da5894ab",
+      "raw_stderr_size": 57804,
+      "real_seconds": 7.78,
+      "maximum_resident_set_size_bytes": 3104260096,
+      "peak_memory_footprint_bytes": 3163704128,
+      "child_swaps": 0
+    },
+    "llama_cpp_q8_0_metal": {
+      "raw_stderr_sha256": "e9ebaccd2ab57c610ee16f3af744a47c95867c7cb7cb042d684fdc6d51007149",
+      "raw_stderr_size": 66197,
+      "real_seconds": 2.97,
+      "maximum_resident_set_size_bytes": 1525645312,
+      "peak_memory_footprint_bytes": 1542145824,
+      "child_swaps": 0
+    },
+    "post_llama_run_host_snapshot": {
+      "quiet_host": false,
+      "non_allowlisted_process_above_five_percent_cpu": true,
+      "system_swap_used_mib": 2933.38,
+      "load_averages": [
+        3.29,
+        3.25,
+        3.18
+      ]
+    },
+    "process_rss_cross_runtime_comparison_allowed": false
+  },
+  "formal_follow_up": {
+    "required": true,
+    "blockers": [
+      "quiet-host-gate",
+      "zero-and-invariant-system-swap",
+      "explicit-thread-policy-parity",
+      "three-untimed-warmups-per-implementation",
+      "six-block-abba-baab-campaign",
+      "twelve-timed-samples-per-implementation-and-tier",
+      "loaded-system-library-image-hashes",
+      "runner-and-model-sha256-atomically-bound-in-run-receipts",
+      "llama-cpp-teacher-forced-quality-receipt"
+    ]
+  },
+  "content_sha256": "a70a8a3b46dd9efd37d0cd5aac906a5ee10f4a61eaf1960e92ec9ebc690bf884"
+}

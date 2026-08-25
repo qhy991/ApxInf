@@ -438,3 +438,12 @@ fresh network transfer remains a throughput test, not a correctness gap.
 These numbers are a bring-up baseline, not a final benchmark contract; a
 dedicated benchmark run must control temperature, background load, prompt
 set, and cache state.
+
+## llama.cpp diagnostic comparison
+
+The pinned-source raw-token comparison with llama.cpp is documented in
+[`qwen35-apxinf-vs-llamacpp-diagnostic-comparison-v2.md`](./qwen35-apxinf-vs-llamacpp-diagnostic-comparison-v2.md).
+Its two single-observation lanes reproduce the exact same frozen 128-token
+free-run trajectory, while remaining explicitly non-formal because the host,
+thread-policy, repetition, and teacher-forced cross-runtime gates are not yet
+closed.
