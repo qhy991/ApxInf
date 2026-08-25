@@ -26,7 +26,7 @@ pub use linear_layer::{
 pub use tail_mlp_head_v1::{
     MetalW8TailMlpHeadV1, PackedW8TailMlpHeadV1, TailMlpHeadBufferLedgerV1,
     TailMlpHeadDecodeResultV1, TailMlpHeadDecodeViewV1, TailMlpHeadMetalStatsV1,
-    TailMlpHeadRowsKernelV1,
+    TailMlpHeadRowsKernelReceiptV1, TailMlpHeadRowsKernelV1,
 };
 
 pub const W8_GROUP_SIZE: usize = 64;
