@@ -7,6 +7,60 @@ use crate::{ffi, CudaBuffer, CudaContext};
 pub const HEADS: usize = 16;
 pub const HEAD_DIM: usize = 80;
 pub const HIDDEN: usize = HEADS * HEAD_DIM;
+pub const INTERMEDIATE: usize = 3_420;
+
+pub fn gate_up_bias_silu_mul_exact(
+    ctx: &CudaContext,
+    gate: &Tensor,
+    gate_bias: &Tensor,
+    up: &Tensor,
+    up_bias: &Tensor,
+) -> Result<Tensor> {
+    let sequence = gate.shape().dims().first().copied().unwrap_or(0);
+    let device = Device::Cuda(ctx.device_id());
+    let matrix_shape = [sequence, INTERMEDIATE];
+    if ctx.caps().sm != 89
+        || sequence == 0
+        || sequence > 65_535
+        || gate.dtype() != DType::BF16
+        || gate.device() != device
+        || gate.shape().dims() != matrix_shape
+        || up.dtype() != DType::BF16
+        || up.device() != device
+        || up.shape().dims() != matrix_shape
+        || [gate_bias, up_bias].iter().any(|bias| {
+            bias.dtype() != DType::BF16
+                || bias.device() != device
+                || bias.shape().dims() != [INTERMEDIATE]
+        })
+    {
+        return Err(Error::Other(
+            "Qwen2.5-Omni vision Gate/Up bias SiLU/multiply contract mismatch".into(),
+        ));
+    }
+    let gate = CudaBuffer::from_tensor(gate).map_err(Error::Cuda)?;
+    let gate_bias = CudaBuffer::from_tensor(gate_bias).map_err(Error::Cuda)?;
+    let up = CudaBuffer::from_tensor(up).map_err(Error::Cuda)?;
+    let up_bias = CudaBuffer::from_tensor(up_bias).map_err(Error::Cuda)?;
+    let bytes = sequence
+        .checked_mul(INTERMEDIATE)
+        .and_then(|elements| elements.checked_mul(DType::BF16.size_in_bytes()))
+        .ok_or_else(|| Error::Other("vision Gate/Up output size overflow".into()))?;
+    let output = uninitialized_buffer(ctx, bytes)?;
+    check_cuda(unsafe {
+        ffi::apxinf_static_qwen25_omni_vision_gate_up_bias_silu_mul_exact_bf16(
+            gate.ptr(),
+            gate_bias.ptr(),
+            up.ptr(),
+            up_bias.ptr(),
+            output.ptr(),
+            sequence as i32,
+            INTERMEDIATE as i32,
+            ctx.stream().handle(),
+        )
+    })?;
+    Ok(output.into_tensor(Shape::new(vec![sequence, INTERMEDIATE]), DType::BF16))
+}
 
 pub fn bias_residual_exact(
     ctx: &CudaContext,

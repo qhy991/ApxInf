@@ -78,6 +78,17 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_static_qwen25_omni_vision_gate_up_bias_silu_mul_exact_bf16(
+        gate: *const c_void,
+        gate_bias: *const c_void,
+        up: *const c_void,
+        up_bias: *const c_void,
+        output: *mut c_void,
+        sequence: i32,
+        intermediate: i32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_static_qwen25_omni_attention_flash_split_cta_bf16(
         query: *const c_void,
         key_cache: *const c_void,

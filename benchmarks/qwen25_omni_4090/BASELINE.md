@@ -20,9 +20,9 @@ keeps only the aggregate evidence listed below.
 ## Accepted artifact
 
 - Binary SHA-256:
-  `07c642b8fd0f3b45c89427874b0e623cc0cef6c945c57256fd7823f5a463ce2e`
+  `9e7c314dc1aeb3c413f7c6afa98d60bb0934bfe1c0476ec335631ef8004a342f`
 - Immediate rollback SHA-256:
-  `31727ac7a33b70290cb5065ea78d90eca249ad8245d2aabd0cd5c847aa69d268`
+  `07c642b8fd0f3b45c89427874b0e623cc0cef6c945c57256fd7823f5a463ce2e`
 - Service owner: runit plus `agent-gpu-broker`
 - Desired state after validation: stopped
 
@@ -59,7 +59,8 @@ The accepted implementation combines:
   four full-attention vision blocks;
 - one BF16-exact Q/K/V bias and Q/K 2-D RoPE owner in each vision block;
 - one BF16-exact SiLU/multiply owner in each vision MLP;
-- two BF16-exact projection-bias/residual owners in each vision block.
+- two BF16-exact projection-bias/residual owners in each vision block;
+- one BF16-exact Gate/Up-bias and SiLU/multiply owner in each vision MLP.
 
 The latest packed-MLP refinement removes 72 graph nodes per generated token.
 Eager decode and prefill retain their previous projection ownership and GEMM
@@ -131,6 +132,13 @@ is at least `1.0033x`. Systems replaces 64 bias plus 64 residual-add nodes with
 2.756 ms, and reduces first-token GPU busy by 0.91 ms. The larger profile
 envelope change includes a host-side gap and is not attributed to the kernel.
 
+The latest vision Gate/Up refinement lowers real-PNG wall median from 0.56073 s
+to 0.55675 s and TTFT from 234.61 ms to 227.45 ms. All five alternating wall
+and TTFT pairs win; the slowest paired wall and TTFT speedups are `1.0067x` and
+`1.0230x`. Systems replaces 64 Gate/Up bias nodes plus 32 SiLU/multiply nodes
+with 32 exact owners, reducing the target boundary from 10.926 ms to 4.817 ms,
+first-token GPU busy by 6.67 ms, and the complete envelope by 6.07 ms.
+
 ## Accepted measurements
 
 | Workload | ApxInf TTFT | ApxInf TPOT | vLLM-Omni 0.26.0 TPOT | Result |
@@ -148,9 +156,9 @@ For the latest packed-MLP candidate, five fixed-parent AB/BA pairs at
 minimum pair was `1.0172x`. The 12K eager guard was neutral at about `1.001x`.
 All compared text trajectories were exact.
 
-For real PNG 1,760+16, ApxInf wall p50 is 0.560 s versus 0.565 s for
-vLLM-Omni: near parity, with ApxInf now slightly lower on wall time, vLLM
-retaining lower TTFT, and ApxInf retaining
+For real PNG 1,760+16, ApxInf wall p50 is 0.557 s versus 0.565 s for
+vLLM-Omni. On the frozen matched records ApxInf is now lower on wall time,
+TTFT (`227.45` versus `231.96` ms), and
 `2.440x` lower TPOT. For real WAV 52+16, the final acceptance wall is 0.164 s
 versus vLLM-Omni 0.619 s.
 Both media cases preserve the accepted complete output-token trajectories.
@@ -171,6 +179,7 @@ being admitted to OOM.
 - vision QKV bias/RoPE CUDA regression: 1 passed;
 - vision fused SiLU/multiply CUDA regression: 1 passed;
 - vision exact bias/residual CUDA regression: 1 passed;
+- vision Gate/Up bias SiLU/multiply CUDA regression: 1 passed;
 - exact text trajectories: 1K, 128-token decode, 4K, 8K, 12K, and 32K cells;
 - exact media trajectories: real PNG and WAV;
 - typed contract and malformed-media recovery: passed.
@@ -197,6 +206,8 @@ being admitted to OOM.
   activation promotion, exact primitive gate, and Systems attribution;
 - `results/promotion-vision-bias-residual.json`: current real-image vision
   projection/residual promotion, two-round BF16 gate, and Systems attribution;
+- `results/promotion-vision-gate-up-bias-silu-mul.json`: current real-image
+  vision Gate/Up activation promotion, four-seam BF16 gate, and attribution;
 - `results/promotion-grouped-varlen-fa2.json`: current real-image promotion and
   complete multimodal controls;
 - `results/omni-packed-mlp-acceptance-summary.json`: final endpoint acceptance

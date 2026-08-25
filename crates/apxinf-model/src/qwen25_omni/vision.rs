@@ -131,6 +131,7 @@ pub fn forward(
     use_fused_qkv_bias_rope: bool,
     use_fused_silu_mul: bool,
     use_fused_bias_residual: bool,
+    use_fused_gate_up_bias_silu_mul: bool,
 ) -> Result<Tensor> {
     let vision = &config.vision;
     let raw_tokens = validate_input(config, pixel_values, grid_thw)?;
@@ -209,12 +210,37 @@ pub fn forward(
             use_fused_bias_residual,
         )?;
         let normalized = backend.rms_norm(&hidden, &block.norm2, 1e-6)?;
-        let gate = backend.add_bias(&backend.matmul(&normalized, &block.w_gate)?, &block.b_gate)?;
-        let up = backend.add_bias(&backend.matmul(&normalized, &block.w_up)?, &block.b_up)?;
-        let mlp = if use_fused_silu_mul {
-            backend.silu_mul(&gate, &up)?
+        let gate = backend.matmul(&normalized, &block.w_gate)?;
+        let mlp = if use_fused_gate_up_bias_silu_mul {
+            #[cfg(feature = "cuda")]
+            {
+                let up = backend.matmul(&normalized, &block.w_up)?;
+                let cuda = cuda_backend(backend).ok_or_else(|| {
+                    Error::Other(
+                        "vision Gate/Up bias SiLU/multiply fusion requires CudaBackend".into(),
+                    )
+                })?;
+                cuda.qwen25_omni_vision_gate_up_bias_silu_mul_exact(
+                    &gate,
+                    &block.b_gate,
+                    &up,
+                    &block.b_up,
+                )?
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                return Err(Error::Other(
+                    "vision Gate/Up bias SiLU/multiply fusion requires CUDA".into(),
+                ));
+            }
         } else {
-            backend.mul(&backend.silu(&gate)?, &up)?
+            let gate = backend.add_bias(&gate, &block.b_gate)?;
+            let up = backend.add_bias(&backend.matmul(&normalized, &block.w_up)?, &block.b_up)?;
+            if use_fused_silu_mul {
+                backend.silu_mul(&gate, &up)?
+            } else {
+                backend.mul(&backend.silu(&gate)?, &up)?
+            }
         };
         let mlp = backend.matmul(&mlp, &block.w_down)?;
         hidden = projection_bias_residual(
