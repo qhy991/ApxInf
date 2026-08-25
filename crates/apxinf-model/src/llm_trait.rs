@@ -2,9 +2,13 @@
 
 use std::collections::HashMap;
 
-use apxinf_core::{Device, Error, Result, Tensor};
+use apxinf_core::{
+    Backend, Device, Error, NextTokenLogits, Result, Tensor, TokenSamplingInit,
+    TokenSamplingParams, TokenSamplingSpec,
+};
 use apxinf_loader::ModelConfig;
 
+use crate::generation_config::{GenerationOptions, ResolvedGenerationOptions};
 use crate::profiling::GenerationProfile;
 
 /// Processor output for one or more images in a generation prompt.
@@ -131,6 +135,32 @@ impl LlmCapabilities {
     };
 }
 
+/// Complete prompt plus generation policy.
+#[derive(Clone, Copy, Debug)]
+pub struct GenerationRequest<'a> {
+    pub input: LlmInput<'a>,
+    pub options: &'a GenerationOptions,
+}
+
+/// One generated token and its optional post-filter log-probability.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GeneratedToken {
+    pub token_id: u32,
+    pub logprob: Option<f32>,
+}
+
+/// Generated tokens together with host-side timing metrics.
+pub struct GenerationOutput {
+    pub tokens: Vec<GeneratedToken>,
+    pub profile: GenerationProfile,
+}
+
+impl GenerationOutput {
+    pub fn token_ids(&self) -> Vec<u32> {
+        self.tokens.iter().map(|token| token.token_id).collect()
+    }
+}
+
 /// Common interface for all LLM implementations.
 pub trait LlmTrait {
     /// Load model weights and configure for the given device.
@@ -141,6 +171,9 @@ pub trait LlmTrait {
     /// Token-level forward pass.
     /// Returns logits of shape `[seq_len, vocab_size]`.
     fn forward(&mut self, token_ids: &[u32], start_pos: u32) -> Result<Tensor>;
+
+    /// Backend that owns model tensors and creates the model-neutral sampler.
+    fn backend(&self) -> &dyn Backend;
 
     /// Modalities accepted by [`Self::prefill`]. Text is always supported.
     fn capabilities(&self) -> LlmCapabilities {
@@ -193,8 +226,20 @@ pub trait LlmTrait {
         None
     }
 
-    /// Vocabulary size (used by default generate_streaming for argmax).
+    /// Vocabulary size used to validate logits and allocate sampler state.
     fn vocab_size(&self) -> usize;
+
+    /// Options-based streaming entry point with GPU sampling support.
+    fn generate_streaming_with_options(
+        &mut self,
+        request: GenerationRequest<'_>,
+        on_token: impl FnMut(GeneratedToken),
+    ) -> Result<GenerationOutput>
+    where
+        Self: Sized,
+    {
+        generate_streaming_with_options(self, request, on_token)
+    }
 
     /// Ergonomic, statically typed streaming entrypoint. Models that replace
     /// the shared greedy algorithm should override `generate_streaming_dyn`
@@ -212,6 +257,15 @@ pub trait LlmTrait {
         generate_streaming(self, input, max_new_tokens, on_token, eos_token_id)
     }
 
+    /// Object-safe options-based entry used by [`crate::LoadedModel`].
+    fn generate_streaming_with_options_dyn(
+        &mut self,
+        request: GenerationRequest<'_>,
+        on_token: &mut dyn FnMut(GeneratedToken),
+    ) -> Result<GenerationOutput> {
+        generate_streaming_with_options(self, request, on_token)
+    }
+
     /// Object-safe entry used by `AutoModel`. The vtable dispatch happens
     /// once for the complete request; the concrete model then owns the whole
     /// prefill/decode loop rather than paying model dispatch per token.
@@ -224,6 +278,125 @@ pub trait LlmTrait {
     ) -> Result<(Vec<u32>, GenerationProfile)> {
         generate_streaming(self, input, max_new_tokens, on_token, eos_token_id)
     }
+}
+
+/// Run the shared sampling-aware generation loop. Model implementations only
+/// produce device-resident logits; this driver owns EOS handling and invokes
+/// the sampler created by the model's backend.
+pub fn generate_streaming_with_options<M, F>(
+    model: &mut M,
+    request: GenerationRequest<'_>,
+    on_token: F,
+) -> Result<GenerationOutput>
+where
+    M: LlmTrait + ?Sized,
+    F: FnMut(GeneratedToken),
+{
+    let options = request.options.resolve()?;
+    generate_streaming_with_resolved_options(model, request.input, &options, on_token)
+}
+
+fn generate_streaming_with_resolved_options<M, F>(
+    model: &mut M,
+    input: LlmInput<'_>,
+    options: &ResolvedGenerationOptions,
+    mut on_token: F,
+) -> Result<GenerationOutput>
+where
+    M: LlmTrait + ?Sized,
+    F: FnMut(GeneratedToken),
+{
+    let prompt_tokens = input.token_ids;
+    validate_generation_limits(
+        prompt_tokens.len(),
+        options.max_new_tokens,
+        model.max_new_tokens_limit(),
+        model.max_context_len(),
+    )?;
+    if input.image.is_some() && !model.capabilities().image {
+        return Err(Error::Other(
+            "this model does not support image input".into(),
+        ));
+    }
+    if input.audio.is_some() && !model.capabilities().audio {
+        return Err(Error::Other(
+            "this model does not support audio input".into(),
+        ));
+    }
+    let mut profile = GenerationProfile::new();
+    if options.max_new_tokens == 0 {
+        profile.finalize(prompt_tokens.len(), 0);
+        return Ok(GenerationOutput {
+            tokens: Vec::new(),
+            profile,
+        });
+    }
+
+    let capacity = prompt_tokens
+        .len()
+        .checked_add(options.max_new_tokens)
+        .ok_or_else(|| Error::Other("generation sequence length overflow".into()))?;
+    let spec = TokenSamplingSpec {
+        vocab_size: model.vocab_size(),
+        max_sequence_len: capacity,
+    };
+    let mut sampler = model.backend().create_token_sampler(spec)?;
+    sampler.begin(TokenSamplingInit {
+        prompt_token_ids: prompt_tokens,
+        params: &options.sampling,
+        rng: options.rng,
+    })?;
+
+    model.reset();
+    model.prewarm_decode(prompt_tokens.len(), options.max_new_tokens);
+
+    let mut generated = Vec::with_capacity(options.max_new_tokens);
+    let logits = model.prefill(input)?;
+    let first = sampler.sample(NextTokenLogits::last(&logits, spec.vocab_size)?)?;
+    profile.record_first_token();
+    let mut current = GeneratedToken {
+        token_id: first.token_id,
+        logprob: first.logprob,
+    };
+    generated.push(current);
+    on_token(current);
+    let use_decode_token = options.sampling == TokenSamplingParams::greedy();
+
+    for index in 1..options.max_new_tokens {
+        if options.eos_token_ids.contains(&current.token_id) {
+            break;
+        }
+        let position = prompt_tokens
+            .len()
+            .checked_add(index - 1)
+            .and_then(|position| u32::try_from(position).ok())
+            .ok_or_else(|| Error::Other("generation position exceeds u32".into()))?;
+        if use_decode_token {
+            if let Some(result) = model.decode_token(current.token_id, position) {
+                current = GeneratedToken {
+                    token_id: result?,
+                    logprob: None,
+                };
+                generated.push(current);
+                on_token(current);
+                continue;
+            }
+        }
+        let logits = model.forward(&[current.token_id], position)?;
+        let sample = sampler.sample(NextTokenLogits::last(&logits, spec.vocab_size)?)?;
+        current = GeneratedToken {
+            token_id: sample.token_id,
+            logprob: sample.logprob,
+        };
+        generated.push(current);
+        on_token(current);
+    }
+
+    profile.finalize(prompt_tokens.len(), generated.len());
+    Ok(GenerationOutput {
+        tokens: generated,
+        profile,
+    })
 }
 
 /// Run the shared greedy generation loop for a concrete model or
@@ -241,94 +414,16 @@ where
     M: LlmTrait + ?Sized,
     F: FnMut(u32),
 {
-    let prompt_tokens = input.token_ids;
-    validate_generation_limits(
-        prompt_tokens.len(),
-        max_new_tokens,
-        model.max_new_tokens_limit(),
-        model.max_context_len(),
+    let options = GenerationOptions::greedy(max_new_tokens, eos_token_id);
+    let output = generate_streaming_with_options(
+        model,
+        GenerationRequest {
+            input,
+            options: &options,
+        },
+        |token| on_token(token.token_id),
     )?;
-    // Reject unsupported media before graph prewarm or any model forward.
-    if input.image.is_some() && !model.capabilities().image {
-        return Err(Error::Other(
-            "this model does not support image input".into(),
-        ));
-    }
-    if input.audio.is_some() && !model.capabilities().audio {
-        return Err(Error::Other(
-            "this model does not support audio input".into(),
-        ));
-    }
-
-    let mut profile = GenerationProfile::new();
-    let mut generated = Vec::with_capacity(max_new_tokens);
-    let vocab_size = model.vocab_size();
-
-    // Pre-capture any decode graphs (CUDA) BEFORE prefill so the per-token
-    // TPOT below is pure graph replay — keeps capture/instantiate cost in
-    // setup (TTFT bucket), not in the steady-state TPOT measurement.
-    model.prewarm_decode(prompt_tokens.len(), max_new_tokens);
-
-    // Prefill: process the entire prompt
-    let logits = model.prefill(input)?;
-    profile.record_first_token();
-
-    let next_token = argmax_last_row(&logits, prompt_tokens.len(), vocab_size)?;
-    generated.push(next_token);
-    on_token(next_token);
-
-    if eos_token_id == Some(next_token) {
-        profile.finalize(prompt_tokens.len(), generated.len());
-        return Ok((generated, profile));
-    }
-
-    // Decode: one token at a time
-    let prompt_len = prompt_tokens.len();
-    let mut current_token = next_token;
-    let perf = std::env::var("APXINF_PERF")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false);
-    let mut t_fwd = std::time::Duration::ZERO;
-    let mut t_am = std::time::Duration::ZERO;
-    let mut t_cb = std::time::Duration::ZERO;
-    for i in 0..max_new_tokens.saturating_sub(1) {
-        let pos = (prompt_len + i) as u32;
-        // GPU-argmax fast path: skip full-logits D2H + CPU scan.
-        if let Some(result) = model.decode_token(current_token, pos) {
-            current_token = result?;
-            generated.push(current_token);
-            on_token(current_token);
-            if eos_token_id == Some(current_token) {
-                break;
-            }
-            continue;
-        }
-        let t0 = std::time::Instant::now();
-        let logits = model.forward(&[current_token], pos)?;
-        t_fwd += t0.elapsed();
-        let t1 = std::time::Instant::now();
-        current_token = argmax_last_row(&logits, 1, vocab_size)?;
-        t_am += t1.elapsed();
-        generated.push(current_token);
-        let t2 = std::time::Instant::now();
-        on_token(current_token);
-        t_cb += t2.elapsed();
-        if eos_token_id == Some(current_token) {
-            break;
-        }
-    }
-    if perf {
-        let n = generated.len().saturating_sub(1).max(1) as f32;
-        eprintln!(
-            "[loop] fwd={:.2}ms am={:.3}ms cb={:.3}ms (per-tok)",
-            t_fwd.as_secs_f32() * 1000.0 / n,
-            t_am.as_secs_f32() * 1000.0 / n,
-            t_cb.as_secs_f32() * 1000.0 / n
-        );
-    }
-
-    profile.finalize(prompt_len, generated.len());
-    Ok((generated, profile))
+    Ok((output.token_ids(), output.profile))
 }
 
 /// Validate the one canonical autoregressive capacity contract.
@@ -345,11 +440,6 @@ pub fn validate_generation_limits(
 ) -> Result<()> {
     if prompt_tokens == 0 {
         return Err(Error::Other("generate_streaming: empty prompt".into()));
-    }
-    if max_new_tokens == 0 {
-        return Err(Error::Other(
-            "generate_streaming: max_new_tokens must be positive".into(),
-        ));
     }
     if let Some(limit) = max_new_tokens_limit {
         if max_new_tokens > limit {
@@ -371,52 +461,11 @@ pub fn validate_generation_limits(
     Ok(())
 }
 
-/// Extract logits for the last row and return its argmax token.
-/// `logits` shape: `[seq_len, vocab_size]`. Logits may live on any device — this
-/// helper moves to CPU if needed (callers' responsibility for now).
-fn argmax_last_row(logits: &Tensor, seq_len: usize, vocab_size: usize) -> Result<u32> {
-    let dims = logits.shape().dims();
-    if dims.len() != 2 || dims[1] != vocab_size || dims[0] == 0 {
-        return Err(Error::Other(format!(
-            "argmax logits shape {dims:?}, expected [rows, {vocab_size}]"
-        )));
-    }
-    let _ = seq_len;
-    let last_row_offset = (dims[0] - 1) * vocab_size;
-    // Fast path: scan bf16 directly (the decode graph returns a bf16 row).
-    // Manual loop with `>` beats the iterator + partial_cmp (no NaN handling
-    // overhead; logits don't contain NaN in practice).
-    if let Ok(data) = logits.as_bf16() {
-        let row = &data[last_row_offset..last_row_offset + vocab_size];
-        let mut best = half::bf16::from_f32(f32::NEG_INFINITY);
-        let mut best_i: u32 = 0;
-        for (i, &v) in row.iter().enumerate() {
-            if v > best {
-                best = v;
-                best_i = i as u32;
-            }
-        }
-        return Ok(best_i);
-    }
-    // Fallback: f32 path for non-bf16 tensors (prefill, CPU models).
-    let data = logits.to_f32_vec()?;
-    let row = &data[last_row_offset..last_row_offset + vocab_size];
-    let mut best = f32::NEG_INFINITY;
-    let mut best_i: u32 = 0;
-    for (i, &v) in row.iter().enumerate() {
-        if v > best {
-            best = v;
-            best_i = i as u32;
-        }
-    }
-    Ok(best_i)
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
-    use apxinf_core::{Device, Error, Result, Tensor};
+    use apxinf_core::{Backend, CpuBackend, Device, Error, Result, Tensor};
     use apxinf_loader::ModelConfig;
 
     use super::{validate_generation_limits, LlmInput, LlmTrait};
@@ -440,6 +489,11 @@ mod tests {
             Tensor::from_f32(vec![1, 2], &[0.0, 1.0])
         }
 
+        fn backend(&self) -> &dyn Backend {
+            static BACKEND: CpuBackend = CpuBackend;
+            &BACKEND
+        }
+
         fn reset(&mut self) {}
 
         fn decode_token(&mut self, _token: u32, _pos: u32) -> Option<Result<u32>> {
@@ -459,7 +513,7 @@ mod tests {
         assert!(validate_generation_limits(1, 129, Some(128), Some(32_768)).is_err());
         assert!(validate_generation_limits(usize::MAX, 1, Some(128), Some(usize::MAX)).is_err());
         assert!(validate_generation_limits(0, 1, Some(128), Some(32_768)).is_err());
-        assert!(validate_generation_limits(1, 0, Some(128), Some(32_768)).is_err());
+        assert!(validate_generation_limits(1, 0, Some(128), Some(32_768)).is_ok());
     }
 
     #[test]

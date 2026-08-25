@@ -4,7 +4,10 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use apxinf_core::{DType, Device, Tensor};
-use apxinf_model::{AudioInput, AutoModel, ImageInput, LlmInput, LoadOptions};
+use apxinf_model::{
+    AudioInput, AutoModel, GenerationConfigSource, GenerationOptions, ImageInput, LlmInput,
+    LoadOptions, SamplingMode,
+};
 use apxinf_tokenizer::{ChatMessage, Tokenizer};
 use clap::{Parser, Subcommand};
 
@@ -42,8 +45,52 @@ enum Commands {
         audio: Option<PathBuf>,
 
         /// Maximum new tokens to generate
-        #[arg(long, default_value = "50")]
-        max_tokens: usize,
+        #[arg(long)]
+        max_tokens: Option<usize>,
+
+        /// Explicitly enable random categorical sampling.
+        #[arg(long, conflicts_with = "greedy")]
+        sample: bool,
+
+        /// Explicitly use greedy token selection.
+        #[arg(long, conflicts_with = "sample")]
+        greedy: bool,
+
+        /// Sampling temperature. Zero selects greedy generation.
+        #[arg(long)]
+        temperature: Option<f32>,
+
+        /// Retain only the highest-k logits; zero or negative disables top-k.
+        #[arg(long)]
+        top_k: Option<i64>,
+
+        /// Nucleus probability mass.
+        #[arg(long)]
+        top_p: Option<f32>,
+
+        /// Repetition penalty; 1 disables it.
+        #[arg(long)]
+        repetition_penalty: Option<f32>,
+
+        /// Frequency penalty applied per token occurrence.
+        #[arg(long)]
+        frequency_penalty: Option<f32>,
+
+        /// Presence penalty applied once to previously seen tokens.
+        #[arg(long)]
+        presence_penalty: Option<f32>,
+
+        /// Counter-based sampling seed.
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Generation defaults: auto, apxinf, or a JSON file/directory path.
+        #[arg(long, default_value = "auto")]
+        generation_config: String,
+
+        /// JSON object applied over model defaults and under request flags.
+        #[arg(long)]
+        override_generation_config: Option<String>,
 
         /// Disable EOS-based early stopping (generate until max_tokens)
         #[arg(long)]
@@ -91,6 +138,17 @@ fn main() {
             image,
             audio,
             max_tokens,
+            sample,
+            greedy,
+            temperature,
+            top_k,
+            top_p,
+            repetition_penalty,
+            frequency_penalty,
+            presence_penalty,
+            seed,
+            generation_config,
+            override_generation_config,
             no_eos_stop,
             system,
             device,
@@ -109,6 +167,17 @@ fn main() {
                 system.as_deref(),
                 device,
                 &dtype,
+                sample,
+                greedy,
+                temperature,
+                top_k,
+                top_p,
+                repetition_penalty,
+                frequency_penalty,
+                presence_penalty,
+                seed,
+                &generation_config,
+                override_generation_config.as_deref(),
             ) {
                 eprintln!("{error}");
                 std::process::exit(1);
@@ -162,11 +231,22 @@ fn run_generate(
     prompt: &str,
     image_path: Option<&PathBuf>,
     audio_path: Option<&PathBuf>,
-    max_tokens: usize,
+    max_tokens: Option<usize>,
     eos_stop: bool,
     system_prompt: Option<&str>,
     device: Device,
     dtype: &str,
+    sample: bool,
+    greedy: bool,
+    temperature: Option<f32>,
+    top_k: Option<i64>,
+    top_p: Option<f32>,
+    repetition_penalty: Option<f32>,
+    frequency_penalty: Option<f32>,
+    presence_penalty: Option<f32>,
+    seed: Option<u64>,
+    generation_config: &str,
+    override_generation_config: Option<&str>,
 ) -> Result<(), String> {
     println!("apxinf — LLM/VLM inference engine");
     println!();
@@ -188,7 +268,7 @@ fn run_generate(
         .map_err(|error| format!("Failed to load tokenizer: {error}"))?;
     println!("Vocab size: {}", tok.vocab_size());
 
-    let eos_token_id = if eos_stop { tok.eos_token_id() } else { None };
+    let eos_token_id = tok.eos_token_id();
     if let Some(eos) = eos_token_id {
         println!("EOS token ID: {eos}");
     }
@@ -238,9 +318,16 @@ fn run_generate(
             ))
         }
     };
+    let generation_overrides = override_generation_config
+        .map(GenerationOptions::from_json_str)
+        .transpose()
+        .map_err(|error| format!("Invalid --override-generation-config: {error}"))?
+        .unwrap_or_default();
     let options = LoadOptions {
         model_name: Some(model_name.clone()),
         text_weight_dtype,
+        generation_config: GenerationConfigSource::from_cli_value(generation_config),
+        generation_overrides,
         ..LoadOptions::default()
     };
 
@@ -276,34 +363,67 @@ fn run_generate(
         (Some(_), Some(_)) => unreachable!("clap rejects simultaneous image and audio"),
     };
 
+    let configured_eos = model
+        .generation_defaults()
+        .map_err(|error| format!("Cannot read generation defaults: {error}"))?
+        .eos_token_ids
+        .is_some();
+    let effective_max_tokens = max_tokens
+        .or(model
+            .generation_defaults()
+            .ok()
+            .and_then(|defaults| defaults.max_new_tokens))
+        .unwrap_or(GenerationOptions::DEFAULT_MAX_NEW_TOKENS);
+
     println!();
-    println!("Generating {max_tokens} tokens...");
+    println!("Generating up to {effective_max_tokens} tokens...");
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let mut all_tokens = tokens.clone();
 
-    let (_, profile) = model
-        .generate_streaming(
-            input,
-            max_tokens,
-            |token_id| {
-                all_tokens.push(token_id);
-                if let Ok(text) = tok.decode(&all_tokens) {
-                    let previous = tok
-                        .decode(&all_tokens[..all_tokens.len() - 1])
-                        .unwrap_or_default();
-                    let delta = text.strip_prefix(&previous).unwrap_or(&text);
-                    print!("{delta}");
-                    out.flush().ok();
-                }
-            },
-            eos_token_id,
-        )
+    let generation_options = GenerationOptions {
+        max_new_tokens: max_tokens,
+        eos_token_ids: if !eos_stop {
+            Some(Vec::new())
+        } else if configured_eos {
+            None
+        } else {
+            eos_token_id.map(|id| vec![id])
+        },
+        sampling_mode: if sample {
+            Some(SamplingMode::Random)
+        } else if greedy {
+            Some(SamplingMode::Greedy)
+        } else {
+            None
+        },
+        temperature,
+        top_k,
+        top_p,
+        repetition_penalty,
+        frequency_penalty,
+        presence_penalty,
+        seed,
+        return_logprob: Some(false),
+    };
+    let output = model
+        .generate_streaming_with_options(input, &generation_options, |token| {
+            let token_id = token.token_id;
+            all_tokens.push(token_id);
+            if let Ok(text) = tok.decode(&all_tokens) {
+                let previous = tok
+                    .decode(&all_tokens[..all_tokens.len() - 1])
+                    .unwrap_or_default();
+                let delta = text.strip_prefix(&previous).unwrap_or(&text);
+                print!("{delta}");
+                out.flush().ok();
+            }
+        })
         .map_err(|error| format!("Generation failed: {error}"))?;
 
     println!();
     println!();
-    println!("{}", profile.summary());
+    println!("{}", output.profile.summary());
     Ok(())
 }
 

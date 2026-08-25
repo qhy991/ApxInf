@@ -1138,6 +1138,10 @@ impl LlmTrait for GeneralQwen25Omni {
         result
     }
 
+    fn backend(&self) -> &dyn Backend {
+        &*self.backend
+    }
+
     fn capabilities(&self) -> LlmCapabilities {
         LlmCapabilities::OMNI
     }
