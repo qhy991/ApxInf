@@ -1,0 +1,243 @@
+{
+  "format": "apxinf-qwen35-boundary-tail-pair2-r16-sg8-rejected-diagnostic-summary-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "STOP_REVERT_REQUIRED",
+  "classification": {
+    "formal_performance_result": false,
+    "promotion_evidence": false,
+    "use": "diagnostic hypothesis rejection only",
+    "limitations": [
+      "the strict quiet-host preflight failed because non-allowlisted background processes exceeded five percent CPU",
+      "the candidate missed the predeclared direct-tail two-percent gate, so the AND gate stopped before counterbalanced end-to-end timing",
+      "the single candidate free run is an exactness smoke and is not comparative performance evidence"
+    ]
+  },
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "prompt": "Hello",
+    "prompt_tokens": 13,
+    "output_tokens": 128,
+    "decode_path": "ApxInf Metal W8 boundary-tail-v1",
+    "quantization": "ApxInf native hybrid W8 (G32 GDN-output projections; G64 other packed projections including tail vocab) with native-F32 top-4 rerank",
+    "target": "Apple M4 Metal"
+  },
+  "hypothesis": {
+    "id": "boundary-tail-head-pair2-r16-sg8-v1",
+    "legacy_kernel": "w8_rows_topk4",
+    "candidate_kernel": "w8_rows_topk4_pair2_r16_sg8",
+    "change": "evaluate sixteen vocabulary rows per 256-thread threadgroup by assigning two consecutive complete rows to each of eight independent SIMDgroups and reusing each hidden float4 load across the row pair",
+    "expected_mechanism": "halve the first-stage top-4 threadgroup count and partial-top4 scratch without SG16-R16's 512-thread threadgroup",
+    "predeclared_keep_threshold": {
+      "logic": "AND",
+      "teacher_and_free_exactness_required": true,
+      "tail_ratio_of_medians_improvement_percent_at_least": 2.0,
+      "quiet_host_end_to_end_tpot_improvement_percent_at_least": 0.5,
+      "clearly_negative_block_definition": "reject if any counterbalanced block has candidate TPOT improvement at or below -0.5 percent"
+    },
+    "llama_cpp_equivalence_claimed": false,
+    "llama_cpp_note": "llama.cpp commit f280b269 Q8_0 uses NR0=2 and NSG=4 so four SIMDgroups cooperate along K on the same two rows and reduce across SIMDgroups; this candidate uses eight independent SIMDgroups, each computing two complete rows, and performs fused local top-4"
+  },
+  "build": {
+    "baseline_parent_commit": "b2df2f4f7313940877ef962a0a3236b09042fc30",
+    "candidate_source_commit": "72cae5f8cd07aaf065619bc3dd588d1abae95ee4",
+    "candidate_source_disposition": "preserved in the named commit and scheduled for an explicit revert after this evidence is committed",
+    "binary": {
+      "path_at_measurement": "/Users/haiyan-mini/Agent4Kernel/ApxInf/target/pair2-r16-sg8-v1/release/examples/qwen35_metal_w8_boundary_tail_head_v1_gate",
+      "sha256": "5f003a933d87b63eb4359541f0aff54aa0223b13ef64ef851f285aa135995279",
+      "size_bytes": 9349216,
+      "profile": "release",
+      "features": [
+        "accelerate",
+        "metal-w8"
+      ]
+    },
+    "toolchain": "stable-aarch64-apple-darwin from /Users/haiyan-mini/Agent4Kernel/.apxinf-toolchains"
+  },
+  "runtime_observed_execution_contract": {
+    "legacy": {
+      "kernel": "w8_rows_topk4",
+      "rows_per_threadgroup": 8,
+      "rows_per_simdgroup": 1,
+      "simdgroups_per_threadgroup": 8,
+      "threads_per_threadgroup": 256,
+      "partial_count": 31040,
+      "partial_topk_bytes": 993280,
+      "pipeline_max_total_threads_per_threadgroup": 1024,
+      "pipeline_thread_execution_width": 32,
+      "persistent_mtlbuffer_bytes": 799543312
+    },
+    "candidate": {
+      "kernel": "w8_rows_topk4_pair2_r16_sg8",
+      "rows_per_threadgroup": 16,
+      "rows_per_simdgroup": 2,
+      "simdgroups_per_threadgroup": 8,
+      "threads_per_threadgroup": 256,
+      "partial_count": 15520,
+      "partial_topk_bytes": 496640,
+      "pipeline_max_total_threads_per_threadgroup": 1024,
+      "pipeline_thread_execution_width": 32,
+      "persistent_mtlbuffer_bytes": 799046672
+    },
+    "runtime_observed": true,
+    "identity_binding": "Metal MTLFunction.name, MTLBuffer.length, pipeline threadExecutionWidth, and pipeline maxTotalThreadsPerThreadgroup were read through the bridge and verified by Rust before receipt publication",
+    "unchanged_per_decode": {
+      "tail_kernel_dispatches": 8,
+      "tail_buffer_barriers": 7,
+      "tail_compute_encoders": 1,
+      "tail_command_buffers": 1,
+      "tail_commits": 1,
+      "tail_waits": 1
+    }
+  },
+  "quality_gate": {
+    "cpu_teacher_128_passed": true,
+    "two_legacy_teacher_128_receipts_passed": true,
+    "two_pair2_r16_sg8_teacher_128_receipts_passed": true,
+    "all_teacher_mismatch_arrays_empty": true,
+    "all_four_teacher_top4_arrays_identical": true,
+    "canonical_teacher_top4_compact_json_sha256": "ab6049a5fe86456d31d8c08d27c219b5bf7f07aace90261a51900d33a5dceb85",
+    "cpu_free_128_passed": true,
+    "candidate_free_smoke_128_passed": true,
+    "candidate_free_smoke_mismatch_count": 0,
+    "candidate_free_smoke_exact_128_token_trajectory": true,
+    "canonical_free128_token_ids_compact_json_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"
+  },
+  "teacher_tail_diagnostic": {
+    "order": [
+      "A1 legacy",
+      "B1 pair2-R16-SG8",
+      "B2 pair2-R16-SG8",
+      "A2 legacy"
+    ],
+    "samples_per_variant": 256,
+    "median_definition": "arithmetic mean of the two central sorted values for an even sample count",
+    "per_run": [
+      {
+        "run": "A1",
+        "kernel": "w8_rows_topk4",
+        "tail_transaction_median_ns": 3358062.5,
+        "tail_transaction_total_ms": 437.174499
+      },
+      {
+        "run": "B1",
+        "kernel": "w8_rows_topk4_pair2_r16_sg8",
+        "tail_transaction_median_ns": 3307708.5,
+        "tail_transaction_total_ms": 430.116204
+      },
+      {
+        "run": "B2",
+        "kernel": "w8_rows_topk4_pair2_r16_sg8",
+        "tail_transaction_median_ns": 3306708.0,
+        "tail_transaction_total_ms": 432.9695
+      },
+      {
+        "run": "A2",
+        "kernel": "w8_rows_topk4",
+        "tail_transaction_median_ns": 3353291.5,
+        "tail_transaction_total_ms": 439.953915
+      }
+    ],
+    "legacy_pooled_median_ns": 3355749.5,
+    "candidate_pooled_median_ns": 3306708.0,
+    "candidate_ratio_of_medians_improvement_percent": 1.4614171886191147,
+    "legacy_mean_ns": 3426282.8671875,
+    "candidate_mean_ns": 3371428.53125,
+    "candidate_mean_improvement_percent": 1.6009867854993465,
+    "tail_keep_threshold_passed": false,
+    "early_stop": true,
+    "reason": "the direct-tail gate is a required conjunct and missed its two-percent threshold, so the predeclared AND gate stopped before E2E sampling"
+  },
+  "candidate_free_smoke": {
+    "comparative": false,
+    "passed": true,
+    "exact_128_token_trajectory": true,
+    "mismatch_count": 0,
+    "tpot_ms": 14.944447834645668,
+    "generation_tps": 66.91448296147168,
+    "classification": "candidate-only single pass under an uncontrolled host; never formal or promotion evidence"
+  },
+  "host_observation": {
+    "quiet_gate_passed": false,
+    "raw_preflight_receipt_committed": false,
+    "provenance": "values observed from the strict preflight stdout before the diagnostic screen",
+    "strict_preflight_problem": "non-allowlisted process exceeded 5% CPU",
+    "final_swap_used_bytes_observed_before_screen": 6423838720,
+    "dominant_offenders": [
+      {
+        "process": "logioptionsplus_agent",
+        "maximum_observed_cpu_percent": 74.8
+      },
+      {
+        "process": "logioptionsplus_logivoice",
+        "maximum_observed_cpu_percent": 46.7
+      },
+      {
+        "process": "trustd",
+        "maximum_observed_cpu_percent": 32.2
+      }
+    ]
+  },
+  "receipt_integrity": [
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r16-sg8-v1-cpu-free-v1-20260825.json",
+      "sha256": "d2131e834f0143e9bf55773e88869e8b40319f7aa7d47acc0a2664f62ece6901",
+      "size_bytes": 44068
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r16-sg8-v1-cpu-teacher-v1-20260825.json",
+      "sha256": "9a0dcaec37a51b14e6fec9cd0dcd7ffd2944523eb7be7b4ff6fdd66b9815b4b9",
+      "size_bytes": 44641
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r16-sg8-v1-legacy-teacher-a1-v1-20260825.json",
+      "sha256": "e82a07ce6d033d120c3844909ceedfa0976f7c7dc2b02a20fa7bbd1c4d6c3f53",
+      "size_bytes": 68872
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r16-sg8-v1-legacy-teacher-a2-v1-20260825.json",
+      "sha256": "a7cd8f9b1c2e7b48db7a908e591e8762d90b323228862e1c2488c91aa62beef8",
+      "size_bytes": 68864
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r16-sg8-v1-pair2-free-smoke-v1-20260825.json",
+      "sha256": "7d6dfea6553351a01a7efd8cd78ed6a87b56c1ba7303a56ae06d6ac9e0fd3af4",
+      "size_bytes": 57992
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r16-sg8-v1-pair2-teacher-b1-v1-20260825.json",
+      "sha256": "67c014456e040e2503986b8cbd248437667f66f1a40b5f7a5d9e18243c1a3109",
+      "size_bytes": 68924
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r16-sg8-v1-pair2-teacher-b2-v1-20260825.json",
+      "sha256": "9c5adc578029e470d502bec984e6ca60837b695ce119a59c6aeeef7e13a90f81",
+      "size_bytes": 68929
+    }
+  ],
+  "validation": {
+    "results": [
+      "apxinf-metal focused tail_mlp_head_v1: 13 passed",
+      "apxinf-metal full suite: 62 passed with one explicitly ignored production-shape gate",
+      "apxinf-model feature-complete library suite: 128 passed",
+      "boundary-tail gate example: 23 passed and 1 ignored",
+      "local source-lock ignored test run explicitly: passed",
+      "two independent implementation and receipt audits: CLEAN",
+      "format, frozen general source hash, and whitespace checks passed",
+      "release build completed"
+    ]
+  },
+  "llama_cpp_comparison_policy": {
+    "updates_published_comparison": false,
+    "reason": "a rejected, uncontrolled intra-ApxInf row-kernel screen is not a replacement llama.cpp benchmark",
+    "published_apxinf_metal_w8_tps_remains": 66.33672849846097,
+    "published_llama_cpp_metal_q8_0_tps_remains": 70.66394293407429,
+    "published_llama_cpp_advantage_percent_remains": 6.52310497300709
+  },
+  "decision": {
+    "accepted": false,
+    "action": "commit all raw receipts and this summary, then explicitly revert the pair2-R16-SG8 candidate",
+    "reason": "teacher and free exactness passed and the runtime receipt proved the requested 16/2/8/256 geometry, but the pooled direct-tail median improved only 1.461 percent versus the required 2.0 percent",
+    "next_hypothesis": "screen a distinct pair2-R32-SG16 layout that keeps 512 threads but reduces first-stage groups and partial-top4 scratch to one quarter of legacy; do not call it llama.cpp-equivalent"
+  }
+}
