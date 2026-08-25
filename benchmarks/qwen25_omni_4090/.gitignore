@@ -8,3 +8,4 @@ results/*
 !results/promotion-m1-packed-mlp.json
 !results/promotion-m1-gemv-tactics.json
 !results/promotion-short-exact-residual-norm.json
+!results/promotion-short-w32-attention.json

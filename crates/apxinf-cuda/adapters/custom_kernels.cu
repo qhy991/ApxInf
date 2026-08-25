@@ -94,6 +94,28 @@ extern "C" cudaError_t apxinf_static_evict_l2(
   return cudaGetLastError();
 }
 
+extern "C" cudaError_t
+apxinf_static_qwen25_omni_attention_flash_w32_bf16(
+    const void* query, const void* key_cache, const void* value_cache,
+    void* output, int query_heads, int kv_heads, int head_dim,
+    int bucket_kv_len, int max_seq_len, float scale, const void* position,
+    cudaStream_t stream) {
+  if (query == nullptr || key_cache == nullptr || value_cache == nullptr ||
+      output == nullptr || position == nullptr || query_heads != 16 ||
+      kv_heads != 2 || head_dim != 128 || bucket_kv_len != 32768 ||
+      max_seq_len != 32768 || !(scale > 0.0f)) {
+    return cudaErrorInvalidValue;
+  }
+  flash_attn_decode_bf16_splitk_kernel<128, 32><<<16, 1024, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(query),
+      static_cast<const __nv_bfloat16*>(key_cache),
+      static_cast<const __nv_bfloat16*>(value_cache),
+      static_cast<__nv_bfloat16*>(output), query_heads, kv_heads,
+      bucket_kv_len, max_seq_len, scale,
+      static_cast<const uint32_t*>(position));
+  return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_static_qwen25_omni_attention_flash_split_cta_bf16(
     const void* query, const void* key_cache, const void* value_cache,
     void* partial_max, void* partial_sum, void* partial_accumulator,

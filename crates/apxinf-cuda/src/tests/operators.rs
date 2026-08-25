@@ -20,7 +20,7 @@ use crate::kernels::embedding::lookup;
 use crate::kernels::norm::{layer, residual_add_rms_exact_bf16_into, rms};
 use crate::kernels::preprocess::{avg_pool1d_bf16, im2col1d_bf16};
 use crate::kernels::qwen25_omni_attention::{
-    grouped2_split_cta_write, grouped4_split_cta_write, SplitCtaWorkspace,
+    grouped2_split_cta_write, grouped4_split_cta_write, short_w32_write, SplitCtaWorkspace,
 };
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
 use crate::kernels::selection::argmax_bf16_into;
@@ -1033,6 +1033,109 @@ fn qwen25_grouped4_split_cta_matches_accepted_long_decode() {
         &download_bf16_as_fp32(&candidate).unwrap(),
         &download_bf16_as_fp32(&accepted).unwrap(),
     );
+}
+
+#[test]
+fn qwen25_short_w32_attention_matches_w16_reduction_gate() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    if ctx.caps().sm != 89 {
+        return;
+    }
+    let (query_heads, kv_heads, head_dim, kv_len, max_seq_len) =
+        (16usize, 2usize, 128usize, 1_024usize, 32_768usize);
+    let query_values = (0..query_heads * head_dim)
+        .map(|index| ((index as f32 * 0.031) - 2.0).sin())
+        .collect::<Vec<_>>();
+    let key_values = (0..kv_len * kv_heads * head_dim)
+        .map(|index| ((index as f32 * 0.047) - 1.0).cos())
+        .collect::<Vec<_>>();
+    let value_values = (0..kv_len * kv_heads * head_dim)
+        .map(|index| ((index as f32 * 0.013) - 0.75).sin())
+        .collect::<Vec<_>>();
+    let query = upload_fp32_as_bf16(
+        &ctx,
+        &query_values,
+        vec![1, query_heads, head_dim],
+    )
+    .unwrap();
+    let key = upload_fp32_as_bf16(&ctx, &key_values, vec![kv_len, kv_heads, head_dim])
+        .unwrap();
+    let value = upload_fp32_as_bf16(
+        &ctx,
+        &value_values,
+        vec![kv_len, kv_heads, head_dim],
+    )
+    .unwrap();
+    let cache = CudaKVCache::new(ctx.device_id(), 1, kv_heads, head_dim, max_seq_len).unwrap();
+    cache.append(&ctx, 0, &key, &value, kv_len).unwrap();
+    let accepted = upload_fp32_as_bf16(
+        &ctx,
+        &vec![0.0; query_heads * head_dim],
+        vec![1, query_heads * head_dim],
+    )
+    .unwrap();
+    let candidate = upload_fp32_as_bf16(
+        &ctx,
+        &vec![0.0; query_heads * head_dim],
+        vec![1, query_heads * head_dim],
+    )
+    .unwrap();
+    let position = CudaBuffer::alloc(std::mem::size_of::<u32>(), ctx.device_id()).unwrap();
+    position
+        .copy_from_host(&u32::try_from(kv_len - 1).unwrap().to_ne_bytes())
+        .unwrap();
+    let query = CudaBuffer::from_tensor(&query).unwrap();
+    let accepted_buffer = CudaBuffer::from_tensor(&accepted).unwrap();
+    let candidate_buffer = CudaBuffer::from_tensor(&candidate).unwrap();
+    let scale = (head_dim as f32).sqrt().recip();
+
+    crate::kernels::attention::flash_bf16_into(
+        &ctx,
+        &query,
+        cache.k_buffer(0),
+        cache.v_buffer(0),
+        &accepted_buffer,
+        query_heads,
+        kv_heads,
+        head_dim,
+        max_seq_len,
+        max_seq_len,
+        scale,
+        position.address(),
+    )
+    .unwrap();
+    short_w32_write(
+        &ctx,
+        &query,
+        cache.k_buffer(0),
+        cache.v_buffer(0),
+        &candidate_buffer,
+        max_seq_len,
+        max_seq_len,
+        scale,
+        position.address(),
+    )
+    .unwrap();
+    ctx.synchronize().unwrap();
+    assert_bf16_close_reduction(
+        &download_bf16_as_fp32(&candidate).unwrap(),
+        &download_bf16_as_fp32(&accepted).unwrap(),
+    );
+
+    assert!(short_w32_write(
+        &ctx,
+        &query,
+        cache.k_buffer(0),
+        cache.v_buffer(0),
+        &candidate_buffer,
+        1_024,
+        max_seq_len,
+        scale,
+        position.address(),
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("W32 attention contract mismatch"));
 }
 
 #[cfg(apxinf_fa2_causal_sm80)]

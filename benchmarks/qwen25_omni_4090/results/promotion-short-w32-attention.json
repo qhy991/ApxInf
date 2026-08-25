@@ -1,0 +1,195 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "candidate": "short_decode_w32_attention",
+  "completed_on": "2026-08-25",
+  "contract": {
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "hardware": "NVIDIA GeForce RTX 4090",
+    "sm": 89,
+    "cuda": "12.3",
+    "precision": "bf16",
+    "concurrency": 1,
+    "sampling": "greedy",
+    "primary_request": {
+      "prompt_tokens": 1024,
+      "output_tokens": 128
+    },
+    "guard_requests": [
+      {
+        "prompt_tokens": 128,
+        "output_tokens": 128
+      },
+      {
+        "prompt_tokens": 12288,
+        "output_tokens": 8
+      },
+      {
+        "prompt_tokens": 32760,
+        "output_tokens": 8
+      }
+    ],
+    "timing_authority": "no-profiler service wall time and service-emitted TTFT/TPOT"
+  },
+  "implementation": {
+    "base_commit": "e16a029ced7ea58886e6c0f1af6cad1f996af5ec",
+    "selector": "APXINF_QWEN25_SHORT_DECODE_W32_ATTENTION=1",
+    "default_enabled_in_runtime": false,
+    "deployment_enabled": true,
+    "classification": "source/runtime graph launch geometry",
+    "eligible_path": "SM89 one-token Qwen2.5-Omni-3B graph with start_pos < 3072",
+    "baseline_geometry": "16 split-K warps per query-head CTA",
+    "candidate_geometry": "32 split-K warps per query-head CTA",
+    "excluded_paths": [
+      "prefill",
+      "eager decode",
+      "12K decode",
+      "post-32K long-decode graph"
+    ],
+    "candidate_binary_sha256": "67ebb11e203e7dd9b0bacaac243483b8aa06aebb6d12b20d55ac8eced5eb0f1a",
+    "rollback_binary_sha256": "b1a6252930d0312000cceda77c449988e22c17072fc62e930e196b3ad292083c"
+  },
+  "operator_screen": {
+    "positions": [
+      128,
+      255,
+      1023,
+      2047,
+      3071
+    ],
+    "w32_speedup_vs_w16": [
+      1.094798923,
+      1.237480879,
+      1.496762872,
+      1.464679599,
+      1.486106277
+    ],
+    "primary_range": {
+      "first_position": 128,
+      "last_position": 255,
+      "positions_exact": 36,
+      "positions": 128,
+      "exact_values": 261990,
+      "values": 262144,
+      "max_abs": 0.00048828125
+    },
+    "interpretation": "The merge order is not universally byte-exact. Operator differences remain small, but complete model token trajectories are the correctness authority."
+  },
+  "no_profiler": {
+    "binary_control": "one immutable SM89 binary with only the short W32 selector changed from 0 to 1",
+    "order": [
+      "A",
+      "B",
+      "B",
+      "A",
+      "A",
+      "B",
+      "B",
+      "A",
+      "A",
+      "B"
+    ],
+    "pairs": 5,
+    "primary_1024_128": {
+      "paired_wall_wins": 5,
+      "baseline_wall_median_seconds": 1.2103905975818634,
+      "candidate_wall_median_seconds": 1.132696121931076,
+      "wall_reduction_pct": 6.418958954737963,
+      "paired_wall_speedup_median": 1.0687594219904473,
+      "paired_wall_speedup_min": 1.066429695567271,
+      "baseline_tpot_median_seconds": 0.00899432248031496,
+      "candidate_tpot_median_seconds": 0.008369313992125985,
+      "tpot_reduction_pct": 6.948922384725176,
+      "trajectory_sha256": "36eeb0e9c85c00123f3afeedc14df90050ced8063c4bb6f3ce96aa13b0da06e9"
+    },
+    "decode_128": {
+      "paired_wall_wins": 5,
+      "baseline_wall_median_seconds": 1.0114080309867859,
+      "candidate_wall_median_seconds": 1.0001529678702354,
+      "wall_reduction_pct": 1.1128113255704952,
+      "paired_wall_speedup_median": 1.0107618558568818,
+      "paired_wall_speedup_min": 1.0098613391514244,
+      "baseline_tpot_median_seconds": 0.007813969755905512,
+      "candidate_tpot_median_seconds": 0.007727340732283464,
+      "tpot_reduction_pct": 1.1086429347461624,
+      "trajectory_sha256": "a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039"
+    },
+    "context_12288": {
+      "baseline_wall_median_seconds": 0.7525580748915672,
+      "candidate_wall_median_seconds": 0.7531218975782394,
+      "candidate_wall_change_pct": 0.0749208207955876,
+      "worst_pair_regression_pct": 0.1777436597092367,
+      "trajectory_sha256": "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832"
+    },
+    "context_32760": {
+      "baseline_wall_median_seconds": 2.683991640806198,
+      "candidate_wall_median_seconds": 2.682095415890217,
+      "candidate_wall_change_pct": -0.07064943448973349,
+      "worst_pair_regression_pct": 0.045643711194998326,
+      "trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9"
+    }
+  },
+  "systems_profile": {
+    "workload": "1024 prompt + 128 output after one unprofiled warmup",
+    "baseline": {
+      "mean_decode_envelope_ms": 9.491071666666666,
+      "mean_decode_gpu_busy_ms": 9.072714333333334,
+      "attention_ms_per_step": 1.5981948333333333,
+      "kernels_per_decode_step": 437,
+      "raw_sha256": "c36b0509e649f29b4a777a135c1daec2c3c88dcaca12bcb28ad94df24101d60f"
+    },
+    "candidate": {
+      "mean_decode_envelope_ms": 8.857408833333334,
+      "mean_decode_gpu_busy_ms": 8.408367333333334,
+      "attention_ms_per_step": 0.9382484999999999,
+      "kernels_per_decode_step": 437,
+      "raw_sha256": "a729592724c8c5d1bd197c737e05f23904cf3e98c1dd7121388e2869314552cb"
+    },
+    "mean_envelope_saved_ms": 0.6336628333333323,
+    "mean_gpu_busy_saved_ms": 0.6643469999999994,
+    "attention_saved_ms_per_step": 0.6599463333333334,
+    "attention_reduction_pct": 41.29323406439078,
+    "attribution": "Kernel count and graph structure are unchanged. W32 shortens the same attention node by about 0.660 ms per step, matching the complete GPU-busy and no-profiler TPOT changes.",
+    "raw_trace_deleted_after_derivation": true
+  },
+  "correctness": {
+    "all_screen_trajectories_exact": true,
+    "screen_cases": 40,
+    "path_markers": {
+      "baseline_installs": 0,
+      "candidate_installs": 5
+    },
+    "cuda_regression": {
+      "w16_w32_reduction_gate": true,
+      "unsupported_bucket_fails_closed": true
+    },
+    "acceptance": {
+      "quick_three_of_three": true,
+      "http_contract": true,
+      "real_png": true,
+      "real_wav": true,
+      "malformed_media_recovery": true
+    }
+  },
+  "external_comparison": {
+    "vllm_omni_version": "0.26.0",
+    "vllm_decode_128_tpot_seconds": 0.022681,
+    "apxinf_candidate_decode_128_tpot_seconds": 0.007727340732283464,
+    "apxinf_decode_128_tpot_speedup": 2.935162403961662,
+    "vllm_quick_tpot_seconds": 0.022617,
+    "apxinf_candidate_quick_tpot_seconds": 0.008414677741935482,
+    "apxinf_quick_tpot_speedup": 2.687803465994386
+  },
+  "decision": {
+    "status": "promote",
+    "scope": "single-request BF16 one-token short decode on one RTX 4090 for the pinned Qwen2.5-Omni-3B Thinker",
+    "reason": "All five primary and 128 guard wall pairs win above materiality, long-context guards stay within 0.5%, complete text and real-media trajectories pass, and Systems attributes the gain to the intended attention geometry without changing graph node count.",
+    "non_claims": [
+      "multi-request throughput",
+      "continuous batching",
+      "non-SM89 hardware",
+      "video input",
+      "speech generation"
+    ]
+  }
+}
