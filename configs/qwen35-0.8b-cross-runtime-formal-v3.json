@@ -628,8 +628,8 @@
       "source_tree": "21045aed8b426d7a5e25a98e646054cbd9487e81",
       "clean_detached_checkout_required": true,
       "runner_binary_name": "apxinf-llama-cpp-raw-token-runner",
-      "runner_binary_size_bytes": 6499056,
-      "runner_binary_sha256": "ccfa5ecd78119d4f8cdd8721e7faae360cb94b8334f9d61ed47e2e00290f2716",
+      "runner_binary_size_bytes": 6516368,
+      "runner_binary_sha256": "66a5bfac8b9434296e4bf5c69312e71b98f83467ce73b0a27042e3987b29f8b6",
       "loaded_non_system_library_closure_sha256_required": true,
       "GGML_BACKEND_PATH_must_be_unset": true,
       "dynamic_backend_scan_allowed": false

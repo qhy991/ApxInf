@@ -102,3 +102,7 @@ required-features = ["accelerate", "metal-w8"]
 [[example]]
 name = "qwen35_metal_w8_boundary_tail_head_v1_gate"
 required-features = ["accelerate", "metal-w8"]
+
+[[example]]
+name = "qwen35_native_raw_token_runner_v3"
+required-features = ["accelerate", "metal-w8"]

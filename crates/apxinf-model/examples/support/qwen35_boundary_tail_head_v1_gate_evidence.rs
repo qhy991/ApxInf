@@ -75,6 +75,8 @@ const MLP_STACK3_BOUNDARY_RUST_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/linear_layer/mlp_stack3_boundary.rs");
 const TAIL_MLP_HEAD_V1_RUST_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/tail_mlp_head_v1.rs");
+const FULL_ATTENTION_DECODE_V1_RUST_SOURCE_BYTES: &[u8] =
+    include_bytes!("../../../apxinf-metal/src/full_attention_decode_v1.rs");
 const METAL_W8_GDN_BRIDGE_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_gdn_bridge.mm");
 const METAL_W8_LINEAR_LAYER_BRIDGE_SOURCE_BYTES: &[u8] =
@@ -85,6 +87,8 @@ const MLP_STACK3_BOUNDARY_BRIDGE_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_mlp_stack3_boundary_v1_bridge.mm");
 const TAIL_MLP_HEAD_V1_BRIDGE_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_tail_mlp_head_v1_bridge.mm");
+const METAL_FULL_ATTENTION_DECODE_V1_BRIDGE_SOURCE_BYTES: &[u8] =
+    include_bytes!("../../../apxinf-metal/src/metal_full_attention_decode_v1_bridge.mm");
 const GDN_RECURRENT_COUNT18_PROFILE_BRIDGE_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_gdn_recurrent_count18_profile_v1_bridge.mm");
 const GDN_CORE_FUSED_COUNT18_PROFILE_BRIDGE_SOURCE_BYTES: &[u8] =
@@ -106,8 +110,10 @@ const METAL_W8_LINEAR_LAYER_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_linear_layer.metal");
 const METAL_W8_GDN_OUT_G32_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_gdn_out_g32.metal");
+const METAL_FULL_ATTENTION_DECODE_V1_SOURCE_BYTES: &[u8] =
+    include_bytes!("../../../apxinf-metal/src/metal_full_attention_decode_v1.metal");
 const MAX_CACHE_ENTRIES: usize = 4096;
-const SOURCE_SET_ID: &str = "boundary-tail-head-gdn-core-fused-v1-explicit-audited-source-set-v6";
+const SOURCE_SET_ID: &str = "boundary-tail-head-gdn-core-fused-v1-explicit-audited-source-set-v7";
 const SOURCE_SET_COVERAGE: &str = "explicit-non-transitive-source-set-v1";
 
 #[derive(Clone, Copy)]
@@ -119,7 +125,7 @@ struct BuildSourceSpec {
     metal_shader: bool,
 }
 
-fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 54] {
+fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 57] {
     [
         BuildSourceSpec {
             receipt_name: "gate_evidence",
@@ -396,6 +402,13 @@ fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 54] {
             metal_shader: false,
         },
         BuildSourceSpec {
+            receipt_name: "full_attention_decode_v1_rust",
+            label: "Metal full-attention decode v1 Rust source",
+            manifest_relative_path: "../apxinf-metal/src/full_attention_decode_v1.rs",
+            embedded_bytes: FULL_ATTENTION_DECODE_V1_RUST_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
             receipt_name: "metal_w8_head_bridge",
             label: "Metal W8 head bridge source",
             manifest_relative_path: "../apxinf-metal/src/metal_w8_bridge.mm",
@@ -442,6 +455,14 @@ fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 54] {
             label: "Metal tail MLP head v1 bridge source",
             manifest_relative_path: "../apxinf-metal/src/metal_w8_tail_mlp_head_v1_bridge.mm",
             embedded_bytes: TAIL_MLP_HEAD_V1_BRIDGE_SOURCE_BYTES,
+            metal_shader: false,
+        },
+        BuildSourceSpec {
+            receipt_name: "metal_full_attention_decode_v1_bridge",
+            label: "Metal full-attention decode v1 bridge source",
+            manifest_relative_path:
+                "../apxinf-metal/src/metal_full_attention_decode_v1_bridge.mm",
+            embedded_bytes: METAL_FULL_ATTENTION_DECODE_V1_BRIDGE_SOURCE_BYTES,
             metal_shader: false,
         },
         BuildSourceSpec {
@@ -502,6 +523,13 @@ fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 54] {
             embedded_bytes: METAL_W8_LINEAR_LAYER_SOURCE_BYTES,
             metal_shader: true,
         },
+        BuildSourceSpec {
+            receipt_name: "metal_full_attention_decode_v1",
+            label: "Metal full-attention decode v1 shader source",
+            manifest_relative_path: "../apxinf-metal/src/metal_full_attention_decode_v1.metal",
+            embedded_bytes: METAL_FULL_ATTENTION_DECODE_V1_SOURCE_BYTES,
+            metal_shader: true,
+        },
     ]
 }
 
@@ -517,7 +545,7 @@ fn source_specs_for_set(source_set_id: &str) -> Result<Vec<BuildSourceSpec>, Box
 }
 
 fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>> {
-    const EXPECTED_NAMES: [&str; 54] = [
+    const EXPECTED_NAMES: [&str; 57] = [
         "gate_evidence",
         "production_ac_predeclaration",
         "gdn_core_fused_primitive_raw",
@@ -557,6 +585,7 @@ fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>
         "stack3_rust",
         "mlp_stack3_boundary_rust",
         "tail_mlp_head_v1_rust",
+        "full_attention_decode_v1_rust",
         "metal_w8_head_bridge",
         "metal_w8_mlp_bridge",
         "metal_w8_gdn_bridge",
@@ -564,6 +593,7 @@ fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>
         "stack3_bridge",
         "mlp_stack3_boundary_bridge",
         "tail_mlp_head_v1_bridge",
+        "metal_full_attention_decode_v1_bridge",
         "gdn_recurrent_count18_profile_bridge",
         "gdn_core_fused_count18_profile_bridge",
         "metal_w8_head",
@@ -572,6 +602,7 @@ fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>
         "metal_w8_gdn",
         "metal_w8_gdn_out_g32",
         "metal_w8_linear_layer",
+        "metal_full_attention_decode_v1",
     ];
     let observed_names = specs
         .iter()
@@ -604,7 +635,7 @@ fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>
         })
         .map(|spec| spec.manifest_relative_path.to_string())
         .collect::<BTreeSet<_>>();
-    if declared_build_inputs.len() != 15 || attested_build_inputs != declared_build_inputs {
+    if declared_build_inputs.len() != 17 || attested_build_inputs != declared_build_inputs {
         return Err(invalid(
             "boundary-tail v1 explicit source set does not exactly cover apxinf-metal build inputs",
         ));
@@ -1563,7 +1594,7 @@ mod tests {
             .iter()
             .map(|spec| spec.receipt_name)
             .collect::<Vec<_>>();
-        assert_eq!(names.len(), 54);
+        assert_eq!(names.len(), 57);
         assert_eq!(
             names.iter().copied().collect::<BTreeSet<_>>().len(),
             names.len()
@@ -1608,6 +1639,7 @@ mod tests {
             "stack3_rust",
             "mlp_stack3_boundary_rust",
             "tail_mlp_head_v1_rust",
+            "full_attention_decode_v1_rust",
             "metal_w8_head_bridge",
             "metal_w8_mlp_bridge",
             "metal_w8_gdn_bridge",
@@ -1615,6 +1647,7 @@ mod tests {
             "stack3_bridge",
             "mlp_stack3_boundary_bridge",
             "tail_mlp_head_v1_bridge",
+            "metal_full_attention_decode_v1_bridge",
             "gdn_recurrent_count18_profile_bridge",
             "gdn_core_fused_count18_profile_bridge",
             "metal_w8_gdn",
@@ -1623,6 +1656,7 @@ mod tests {
             "metal_w8_gdn_out_g32",
             "metal_w8_head",
             "metal_w8_matvec",
+            "metal_full_attention_decode_v1",
         ] {
             assert!(names.contains(&required), "missing {required}");
         }
