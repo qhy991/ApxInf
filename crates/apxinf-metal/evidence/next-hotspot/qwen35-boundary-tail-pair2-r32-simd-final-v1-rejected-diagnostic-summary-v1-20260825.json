@@ -1,0 +1,563 @@
+{
+  "format": "apxinf-qwen35-boundary-tail-pair2-r32-simd-final-rejected-diagnostic-summary-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "STOP_REVERT_REQUIRED",
+  "classification": {
+    "formal_performance_result": false,
+    "promotion_evidence": false,
+    "use": "diagnostic three-arm hypothesis rejection only",
+    "limitations": [
+      "the strict quiet-host preflight failed because non-allowlisted background processes exceeded five percent CPU",
+      "two symmetric six-sample E2E blocks were collected; the candidate missed both the predeclared 0.65 percent retention target and the original 0.5 percent minimum",
+      "no additional samples were collected after the predeclared failure, and the formal six-block contract was not run"
+    ]
+  },
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "prompt": "Hello",
+    "prompt_tokens": 13,
+    "output_tokens": 128,
+    "decode_path": "ApxInf Metal W8 boundary-tail-v1",
+    "quantization": "ApxInf native hybrid W8 (G32 GDN-output projections; G64 other packed projections including tail vocab) with native-F32 top-4 rerank",
+    "target": "Apple M4 Metal"
+  },
+  "hypothesis": {
+    "id": "boundary-tail-head-pair2-r32-simd-final-v1",
+    "arms": {
+      "A": "legacy R8/SG8 rows plus serial threadgroup final top-4",
+      "B": "pair2 R32/SG16 rows plus serial threadgroup final top-4",
+      "C": "pair2 R32/SG16 rows plus two-level SIMDgroup hierarchical final top-4"
+    },
+    "change": "replace the fixed thread-zero scan of 1024 local candidates with an exact two-level SIMDgroup reduction that writes eight top-4 leaders into 256 bytes of threadgroup memory and uses one threadgroup barrier",
+    "expected_mechanism": "retain pair2-R32's quarter-sized partial list while reducing final-stage serial merge depth without changing the external dispatch, encoder, command-buffer, commit, or wait contract",
+    "predeclared_keep_threshold": {
+      "logic": "AND",
+      "teacher_and_free_exactness_required": true,
+      "C_over_A_tail_ratio_of_medians_improvement_percent_at_least": 3.0,
+      "C_over_B_tail_ratio_of_medians_improvement_percent_at_least": 0.25,
+      "quiet_host_C_over_A_end_to_end_tpot_improvement_percent_at_least": 0.65,
+      "clearly_negative_block_definition": "reject if any counterbalanced block has C-over-A TPOT improvement at or below -0.5 percent"
+    },
+    "llama_cpp_equivalence_claimed": false,
+    "llama_cpp_note": "llama.cpp commit f280b269 Q8_0 uses NR0=2 and NSG=4 so four SIMDgroups cooperate along K on the same two rows; arm C uses sixteen independent rows-stage SIMDgroups plus a separate exact two-level final top-4 reduction"
+  },
+  "build": {
+    "baseline_parent_commit": "b751d7de2a14a2b61fc62ce0a34577ce6f041151",
+    "candidate_source_commit": "00c338517d2f248dc3d349f12c245565e20c6e40",
+    "candidate_source_disposition": "preserved in the named commit and scheduled for an explicit revert after this evidence is committed",
+    "binary": {
+      "path_at_measurement": "/Users/haiyan-mini/Agent4Kernel/ApxInf/target/pair2-r32-simd-final-v1/release/examples/qwen35_metal_w8_boundary_tail_head_v1_gate",
+      "sha256": "4f482d3da9fde699e20f8d2cc69c086efd79e8b1726e0adf5b089f768463ce23",
+      "size_bytes": 9398704,
+      "profile": "release",
+      "features": [
+        "accelerate",
+        "metal-w8"
+      ]
+    },
+    "toolchain": "stable-aarch64-apple-darwin from /Users/haiyan-mini/Agent4Kernel/.apxinf-toolchains"
+  },
+  "host_observation": {
+    "quiet_gate_passed": false,
+    "raw_preflight_receipt_committed": false,
+    "provenance": "values observed from the strict preflight stdout immediately before the three-arm screen",
+    "strict_preflight_problem": "non-allowlisted process exceeded 5% CPU",
+    "swap_used_bytes_observed": [
+      5951256003,
+      5951256003,
+      5951256003,
+      5951256003,
+      5951256003
+    ],
+    "load_1m_observed": [
+      2.94,
+      2.94,
+      2.94,
+      2.94,
+      2.94
+    ],
+    "pages_throttled_observed": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "offender_count": 14,
+    "dominant_offenders": [
+      {
+        "process": "logioptionsplus_agent",
+        "maximum_observed_cpu_percent": 58.8
+      },
+      {
+        "process": "logioptionsplus_logivoice",
+        "maximum_observed_cpu_percent": 49.0
+      },
+      {
+        "process": "trustd",
+        "maximum_observed_cpu_percent": 19.5
+      }
+    ]
+  },
+  "runtime_observed_execution_contract": {
+    "A": {
+      "rows_kernel": "w8_rows_topk4",
+      "rows_per_threadgroup": 8,
+      "rows_per_simdgroup": 1,
+      "rows_simdgroups_per_threadgroup": 8,
+      "rows_threads_per_threadgroup": 256,
+      "partial_count": 31040,
+      "partial_topk_bytes": 993280,
+      "final_kernel": "w8_final_topk4",
+      "final_threads_per_threadgroup": 256,
+      "final_simdgroups_per_threadgroup": 8,
+      "final_stage_one_leader_count": 256,
+      "final_stage_one_candidate_slots": 1024,
+      "final_threadgroup_barriers": 1,
+      "final_static_threadgroup_bytes_observed": 8192,
+      "tail_persistent_mtlbuffer_bytes": 282923024,
+      "aggregate_persistent_mtlbuffer_bytes": 799543312
+    },
+    "B": {
+      "rows_kernel": "w8_rows_topk4_pair2_r32_sg16",
+      "rows_per_threadgroup": 32,
+      "rows_per_simdgroup": 2,
+      "rows_simdgroups_per_threadgroup": 16,
+      "rows_threads_per_threadgroup": 512,
+      "partial_count": 7760,
+      "partial_topk_bytes": 248320,
+      "final_kernel": "w8_final_topk4",
+      "final_threads_per_threadgroup": 256,
+      "final_simdgroups_per_threadgroup": 8,
+      "final_stage_one_leader_count": 256,
+      "final_stage_one_candidate_slots": 1024,
+      "final_threadgroup_barriers": 1,
+      "final_static_threadgroup_bytes_observed": 8192,
+      "tail_persistent_mtlbuffer_bytes": 282178064,
+      "aggregate_persistent_mtlbuffer_bytes": 798798352
+    },
+    "C": {
+      "rows_kernel": "w8_rows_topk4_pair2_r32_sg16",
+      "rows_per_threadgroup": 32,
+      "rows_per_simdgroup": 2,
+      "rows_simdgroups_per_threadgroup": 16,
+      "rows_threads_per_threadgroup": 512,
+      "partial_count": 7760,
+      "partial_topk_bytes": 248320,
+      "final_kernel": "w8_final_topk4_simd_hierarchical",
+      "final_threads_per_threadgroup": 256,
+      "final_simdgroups_per_threadgroup": 8,
+      "final_stage_one_leader_count": 8,
+      "final_stage_one_candidate_slots": 32,
+      "final_threadgroup_barriers": 1,
+      "final_static_threadgroup_bytes_observed": 256,
+      "tail_persistent_mtlbuffer_bytes": 282178064,
+      "aggregate_persistent_mtlbuffer_bytes": 798798352
+    },
+    "runtime_observed": true,
+    "identity_binding": "rows and final Metal MTLFunction.name, MTLBuffer.length, pipeline threadExecutionWidth, pipeline maxTotalThreadsPerThreadgroup, and final staticThreadgroupMemoryLength were read through the bridge and verified by Rust before receipt publication",
+    "pipeline_observation": {
+      "rows_pipeline_max_total_threads_per_threadgroup": 1024,
+      "rows_pipeline_thread_execution_width": 32,
+      "final_pipeline_max_total_threads_per_threadgroup": 1024,
+      "final_pipeline_thread_execution_width": 32
+    },
+    "unchanged_tail_ledger": {
+      "allocated_buffers": 13,
+      "shared_buffers": 10,
+      "private_buffers": 3,
+      "kernel_dispatches_per_decode": 8,
+      "encoder_buffer_barriers_per_decode": 7,
+      "compute_encoders_per_decode": 1,
+      "command_buffers_per_decode": 1,
+      "commits_per_decode": 1,
+      "waits_per_decode": 1
+    },
+    "B_and_C_aggregate_ledger": {
+      "allocated_buffers": 494,
+      "shared_buffers": 443,
+      "private_buffers": 51,
+      "kernel_dispatches_per_decode": 267,
+      "compute_encoders_per_decode": 24,
+      "command_buffers_per_decode": 7,
+      "commits_per_decode": 7,
+      "waits_per_decode": 7,
+      "persistent_mtlbuffer_bytes": 798798352
+    }
+  },
+  "quality_gate": {
+    "cpu_teacher_128_passed": true,
+    "six_three_arm_teacher_128_receipts_passed": true,
+    "all_teacher_mismatch_arrays_empty": true,
+    "all_six_teacher_top4_arrays_identical": true,
+    "canonical_teacher_top4_compact_json_sha256": "ab6049a5fe86456d31d8c08d27c219b5bf7f07aace90261a51900d33a5dceb85",
+    "cpu_free_128_passed": true,
+    "all_twelve_symmetric_free_receipts_passed": true,
+    "all_twelve_free_mismatch_counts": 0,
+    "all_twelve_free_token_trajectories_identical_to_cpu": true,
+    "canonical_free128_token_ids_compact_json_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe",
+    "all_twenty_receipt_identities_identical": true,
+    "all_twenty_end_custody_verifications_passed": true,
+    "all_eighteen_gpu_input_receipts_verified_at_publication": true
+  },
+  "teacher_tail_three_arm_diagnostic": {
+    "order": [
+      "A",
+      "B",
+      "C",
+      "C",
+      "B",
+      "A"
+    ],
+    "samples_per_arm": 256,
+    "median_definition": "arithmetic mean of the two central sorted values for an even sample count",
+    "per_run": [
+      {
+        "run": "s1-A",
+        "tail_transaction_median_ns": 3343125.0,
+        "tail_transaction_mean_ns": 3405945.3671875,
+        "tail_transaction_total_ms": 435.961007
+      },
+      {
+        "run": "s2-B",
+        "tail_transaction_median_ns": 3250500.0,
+        "tail_transaction_mean_ns": 3267444.6328125,
+        "tail_transaction_total_ms": 418.232913
+      },
+      {
+        "run": "s3-C",
+        "tail_transaction_median_ns": 3199021.0,
+        "tail_transaction_mean_ns": 3265266.90625,
+        "tail_transaction_total_ms": 417.954164
+      },
+      {
+        "run": "s4-C",
+        "tail_transaction_median_ns": 3203958.0,
+        "tail_transaction_mean_ns": 3259533.8984375,
+        "tail_transaction_total_ms": 417.220339
+      },
+      {
+        "run": "s5-B",
+        "tail_transaction_median_ns": 3253271.0,
+        "tail_transaction_mean_ns": 3278625.9609375,
+        "tail_transaction_total_ms": 419.664123
+      },
+      {
+        "run": "s6-A",
+        "tail_transaction_median_ns": 3354875.0,
+        "tail_transaction_mean_ns": 3417079.0859375,
+        "tail_transaction_total_ms": 437.386123
+      }
+    ],
+    "pooled": {
+      "A": {
+        "median_ns": 3351937.5,
+        "mean_ns": 3411512.2265625
+      },
+      "B": {
+        "median_ns": 3251916.0,
+        "mean_ns": 3273035.296875
+      },
+      "C": {
+        "median_ns": 3202042.0,
+        "mean_ns": 3262400.40234375
+      }
+    },
+    "ratio_of_medians_improvement_percent": {
+      "B_over_A": 2.9839906024500755,
+      "C_over_A": 4.471906173668215,
+      "C_over_B": 1.533680451770587
+    },
+    "mean_improvement_percent": {
+      "B_over_A": 4.059106944108238,
+      "C_over_A": 4.370842439248641,
+      "C_over_B": 0.3249245292711598
+    },
+    "C_over_A_three_percent_threshold_passed": true,
+    "C_over_B_quarter_percent_threshold_passed": true
+  },
+  "symmetric_free_three_arm_diagnostic": {
+    "block_orders": [
+      [
+        "A",
+        "B",
+        "C",
+        "C",
+        "B",
+        "A"
+      ],
+      [
+        "C",
+        "B",
+        "A",
+        "A",
+        "B",
+        "C"
+      ]
+    ],
+    "samples": [
+      {
+        "sample": "b1-s1-A",
+        "tps": 66.78712891072821,
+        "tpot_ms": 14.972944881889765,
+        "ttft_ms": 133.059917,
+        "generation_total_latency_ms": 2034.623917
+      },
+      {
+        "sample": "b1-s2-B",
+        "tps": 67.03688856391611,
+        "tpot_ms": 14.917160110236221,
+        "ttft_ms": 143.066833,
+        "generation_total_latency_ms": 2037.546167
+      },
+      {
+        "sample": "b1-s3-C",
+        "tps": 67.22141390795048,
+        "tpot_ms": 14.876211937007874,
+        "ttft_ms": 130.444,
+        "generation_total_latency_ms": 2019.722916
+      },
+      {
+        "sample": "b1-s4-C",
+        "tps": 67.21558658278428,
+        "tpot_ms": 14.877501645669291,
+        "ttft_ms": 121.739625,
+        "generation_total_latency_ms": 2011.182334
+      },
+      {
+        "sample": "b1-s5-B",
+        "tps": 66.99058488789716,
+        "tpot_ms": 14.927470803149607,
+        "ttft_ms": 134.835958,
+        "generation_total_latency_ms": 2030.62475
+      },
+      {
+        "sample": "b1-s6-A",
+        "tps": 66.21780639829554,
+        "tpot_ms": 15.101678149606299,
+        "ttft_ms": 135.112958,
+        "generation_total_latency_ms": 2053.026083
+      },
+      {
+        "sample": "b2-s1-C",
+        "tps": 67.19633015168868,
+        "tpot_ms": 14.881765086614173,
+        "ttft_ms": 123.266584,
+        "generation_total_latency_ms": 2013.25075
+      },
+      {
+        "sample": "b2-s2-B",
+        "tps": 67.35514022009532,
+        "tpot_ms": 14.846676834645669,
+        "ttft_ms": 139.552375,
+        "generation_total_latency_ms": 2025.080333
+      },
+      {
+        "sample": "b2-s3-A",
+        "tps": 66.99264330362833,
+        "tpot_ms": 14.927012141732284,
+        "ttft_ms": 153.474333,
+        "generation_total_latency_ms": 2049.204875
+      },
+      {
+        "sample": "b2-s4-A",
+        "tps": 67.21490182021437,
+        "tpot_ms": 14.877653212598426,
+        "ttft_ms": 154.53125,
+        "generation_total_latency_ms": 2043.993208
+      },
+      {
+        "sample": "b2-s5-B",
+        "tps": 67.14743908771878,
+        "tpot_ms": 14.89260072440945,
+        "ttft_ms": 149.595792,
+        "generation_total_latency_ms": 2040.956084
+      },
+      {
+        "sample": "b2-s6-C",
+        "tps": 67.3976689662838,
+        "tpot_ms": 14.837308401574804,
+        "ttft_ms": 145.374917,
+        "generation_total_latency_ms": 2029.713084
+      }
+    ],
+    "block_tpot_reductions": [
+      {
+        "block": 1,
+        "A_median_tpot_ms": 15.037311515748032,
+        "B_median_tpot_ms": 14.922315456692914,
+        "C_median_tpot_ms": 14.876856791338582,
+        "C_over_A_improvement_percent": 1.0670439608929494,
+        "C_over_B_improvement_percent": 0.30463546683663384
+      },
+      {
+        "block": 2,
+        "A_median_tpot_ms": 14.902332677165354,
+        "B_median_tpot_ms": 14.869638779527559,
+        "C_median_tpot_ms": 14.859536744094488,
+        "C_over_A_improvement_percent": 0.28717606832413795,
+        "C_over_B_improvement_percent": 0.06793732909625115
+      }
+    ],
+    "pooled": {
+      "A": {
+        "median_tpot_ms": 14.949978511811025,
+        "median_tps": 66.88988610717827,
+        "median_total_latency_ms": 2046.5990415
+      },
+      "B": {
+        "median_tpot_ms": 14.904880417322836,
+        "median_tps": 67.09216382581744,
+        "median_total_latency_ms": 2034.0854585
+      },
+      "C": {
+        "median_tpot_ms": 14.876856791338582,
+        "median_tps": 67.21850024536738,
+        "median_total_latency_ms": 2016.486833
+      }
+    },
+    "pooled_improvement_percent": {
+      "B_over_A_tpot": 0.30165992849126844,
+      "C_over_A_tpot": 0.4891092011582105,
+      "C_over_B_tpot": 0.18801644293424935,
+      "B_over_A_tps": 0.30240404104598867,
+      "C_over_A_tps": 0.49127627106819777,
+      "C_over_B_tps": 0.18830279476144798,
+      "C_over_A_total_latency": 1.4713291606904222
+    },
+    "all_blocks_avoid_negative_half_percent_reject_line": true,
+    "passes_predeclared_0_65_percent_tpot_gate": false,
+    "passes_original_0_5_percent_tpot_gate": false
+  },
+  "validation": {
+    "results": [
+      "apxinf-metal focused tail_mlp_head_v1: 14 passed",
+      "apxinf-metal full suite: 63 passed with one explicitly ignored production-shape gate",
+      "apxinf-model feature-complete library suite: 128 passed",
+      "boundary-tail gate example: 23 passed and 1 ignored",
+      "local source-lock ignored test run explicitly: passed",
+      "independent implementation and source audit: CLEAN",
+      "independent raw-receipt audit: CLEAN across 20 raw receipts and 77 unique custody paths; 1005 custody, identity, input-binding, exactness, metric, runtime, and ledger checks completed with zero errors",
+      "format, frozen general source hash, and whitespace checks passed",
+      "release build completed"
+    ],
+    "frozen_general_rs_sha256": "2db2d3cbb177836fddb0583a0e872e8ae2ab32f14591136ee7f44adb0c693993"
+  },
+  "receipt_integrity": [
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-cpu-free-v1-20260825.json",
+      "sha256": "e8f97f78ed9c62a6768caea7c945cdf4c883436259e4734de38778ed7121ccf8",
+      "size_bytes": 44102
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-cpu-teacher-v1-20260825.json",
+      "sha256": "916d98f9d02b69164ca68f643b472d4d086cada71efea1752452ab642c147942",
+      "size_bytes": 44658
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-free-b1-s1-a-legacy-v1-20260825.json",
+      "sha256": "c88958a496af134f47dba29e29080da3eaf93742a0951f71bc2469c8399d2640",
+      "size_bytes": 58980
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-free-b1-s2-b-r32-serial-v1-20260825.json",
+      "sha256": "ddc131e80b6b24d59730b2d59112610f4214906c8579c884530a58c0ba235ebe",
+      "size_bytes": 59045
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-free-b1-s3-c-r32-hier-v1-20260825.json",
+      "sha256": "605e0e25a9b54718ae5206bfceb29d1a3f5aaa00d93ba6a2252c84df58f33ed4",
+      "size_bytes": 59062
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-free-b1-s4-c-r32-hier-v1-20260825.json",
+      "sha256": "1c7de5414a9294c6de92ef7660b1f1b7fb0635c8d8b0f3337902a18429203a03",
+      "size_bytes": 59075
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-free-b1-s5-b-r32-serial-v1-20260825.json",
+      "sha256": "69edd4f353c814aa65b005278f6290cd0a7d1588e6a4a774e6858300013034a9",
+      "size_bytes": 59024
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-free-b1-s6-a-legacy-v1-20260825.json",
+      "sha256": "40084a6f2629736cdf46c0b24a37121f5a427b06ae002c92ac443fd80d349bbe",
+      "size_bytes": 58988
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-free-b2-s1-c-r32-hier-v1-20260825.json",
+      "sha256": "afa0c1b505f8403f183157327d329b4eb1a806c542917e2ba3b128b0175634d5",
+      "size_bytes": 59063
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-free-b2-s2-b-r32-serial-v1-20260825.json",
+      "sha256": "4bab5f052b9dcfb69cefa718fa1825a56838903511340c4c0112c31e8b97232c",
+      "size_bytes": 59030
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-free-b2-s3-a-legacy-v1-20260825.json",
+      "sha256": "29bcfe06483102dab8b880b48f82e7936c690bfef618d4fa39dbdfb205303b0a",
+      "size_bytes": 58982
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-free-b2-s4-a-legacy-v1-20260825.json",
+      "sha256": "c0a35f834d1ec724378d3646e0b24ac346ad80d296d5164d3ec45b45f5426676",
+      "size_bytes": 58972
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-free-b2-s5-b-r32-serial-v1-20260825.json",
+      "sha256": "95207ee1ec33ef4f24e0c01fed1d729e5665e5b3a7e6236da5d9c1d5f7c8c0a0",
+      "size_bytes": 59035
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-free-b2-s6-c-r32-hier-v1-20260825.json",
+      "sha256": "067a51b918cd1352767693eddd64a21f085f1c378ee94146eaf797e8901e84d7",
+      "size_bytes": 59066
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-teacher-s1-a-legacy-v1-20260825.json",
+      "sha256": "5ea3c080ce13428dcc31698e7a8f3b470cae6c52ed3074f1959dca9344019e56",
+      "size_bytes": 70274
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-teacher-s2-b-r32-serial-v1-20260825.json",
+      "sha256": "2dfa2c66c755b81b1d32d5420637ac672a3fd24a5ee2afc417f975f9599e87ec",
+      "size_bytes": 70336
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-teacher-s3-c-r32-hier-v1-20260825.json",
+      "sha256": "44f97cd936eb59429202777143a962bbe1edcf0460b0e07da66c7e9c2720443d",
+      "size_bytes": 70391
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-teacher-s4-c-r32-hier-v1-20260825.json",
+      "sha256": "f3573ee02e6d080311f8525afc98716305ca864acb9051d7a3b1e027b8900996",
+      "size_bytes": 70389
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-teacher-s5-b-r32-serial-v1-20260825.json",
+      "sha256": "cb63c8f53af09a7c99a3067b7d114dac51b17cbb1feae3c094dc10c4b0b8a224",
+      "size_bytes": 70337
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-r32-simd-final-v1-teacher-s6-a-legacy-v1-20260825.json",
+      "sha256": "24e93dd0bde696de5263932f4610a8e0f0b6ea68c70cacbf0d664c8f066bf70d",
+      "size_bytes": 70273
+    }
+  ],
+  "llama_cpp_comparison_policy": {
+    "updates_published_comparison": false,
+    "reason": "a rejected, uncontrolled intra-ApxInf three-arm kernel screen is not a replacement llama.cpp benchmark",
+    "published_apxinf_metal_w8_tps_remains": 66.33672849846097,
+    "published_llama_cpp_metal_q8_0_tps_remains": 70.66394293407429,
+    "published_llama_cpp_advantage_percent_remains": 6.52310497300709
+  },
+  "decision": {
+    "accepted": false,
+    "action": "commit all raw receipts and this summary, then explicitly revert the pair2-R32 plus SIMD-final candidate",
+    "reason": "teacher/free exactness and both direct-tail thresholds passed, but pooled C-over-A E2E TPOT improved only 0.489 percent versus the predeclared 0.65 percent retention target and the original 0.5 percent minimum, while the strict quiet-host admission check also failed",
+    "interpretation": "the hierarchical final reduction materially improved the isolated tail, but the end-to-end result remained too small and block-dependent to retain under the declared policy",
+    "next_hypothesis": "stop deepening this head-geometry family and use existing per-region elapsed receipts to target a larger non-tail decode region before another formal llama.cpp comparison"
+  }
+}
