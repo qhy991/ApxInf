@@ -183,6 +183,8 @@
   },
   "host_observation": {
     "quiet_gate_passed": false,
+    "raw_preflight_receipt_committed": false,
+    "provenance": "values observed from the strict preflight stdout before the diagnostic screen",
     "strict_preflight_problem": "non-allowlisted process exceeded 5% CPU",
     "final_swap_used_bytes_observed_before_screen": 6201603523,
     "dominant_offenders": [
@@ -249,7 +251,7 @@
   "decision": {
     "accepted": false,
     "action": "commit all raw receipts and this summary, then explicitly revert the private-vocabulary-storage candidate",
-    "reason": "teacher and free exactness passed and the bridge proved that both 270172160-byte vocabulary buffers were actually private, but the pooled direct-tail median improved only 0.236 percent versus the required 2.0 percent",
+    "reason": "teacher and free exactness passed and the bridge proved that both vocabulary buffers, totaling 270172160 bytes, were actually private, but the pooled direct-tail median improved only 0.236 percent versus the required 2.0 percent",
     "next_hypothesis": "private storage is not a material lever on Apple unified memory; return to the row-kernel execution geometry and screen a 16-row, eight-SIMDgroup pair2 candidate that halves partial-top4 work without using SG16's 512-thread threadgroups"
   },
   "llama_cpp_comparison_policy": {
