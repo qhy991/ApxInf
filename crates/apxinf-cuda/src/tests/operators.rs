@@ -17,7 +17,7 @@ use crate::kernels::attention::grouped_varlen_fa2;
 use crate::kernels::cache::append;
 use crate::kernels::elementwise::{add, add_bias, mul, scale};
 use crate::kernels::embedding::lookup;
-use crate::kernels::norm::{layer, rms};
+use crate::kernels::norm::{layer, residual_add_rms_exact_bf16_into, rms};
 use crate::kernels::preprocess::{avg_pool1d_bf16, im2col1d_bf16};
 use crate::kernels::qwen25_omni_attention::{
     grouped2_split_cta_write, grouped4_split_cta_write, SplitCtaWorkspace,
@@ -187,6 +187,67 @@ fn rms_norm_bf16_matches_fp32_reference() {
     let t_w = upload_fp32_as_bf16(&ctx, &weight, vec![cols]).unwrap();
     let out = rms(&ctx, &t_in, &t_w, eps).unwrap();
     assert_bf16_close_reduction(&download_bf16_as_fp32(&out).unwrap(), &expected);
+}
+
+#[test]
+fn residual_add_rms_exact_bf16_is_bit_exact() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (rows, cols) = (2usize, 2048usize);
+    let residual = (0..rows * cols)
+        .map(|index| ((index * 17 % 257) as f32 - 128.0) / 31.0)
+        .collect::<Vec<_>>();
+    let delta = (0..rows * cols)
+        .map(|index| ((index * 29 % 193) as f32 - 96.0) / 47.0)
+        .collect::<Vec<_>>();
+    let weight = (0..cols)
+        .map(|index| 0.75 + (index * 11 % 127) as f32 / 256.0)
+        .collect::<Vec<_>>();
+    let eps = 1e-6f32;
+
+    let baseline_residual = add(
+        &ctx,
+        &upload_fp32_as_bf16(&ctx, &residual, vec![rows, cols]).unwrap(),
+        &upload_fp32_as_bf16(&ctx, &delta, vec![rows, cols]).unwrap(),
+    )
+    .unwrap();
+    let weight_tensor = upload_fp32_as_bf16(&ctx, &weight, vec![cols]).unwrap();
+    let baseline_norm = rms(&ctx, &baseline_residual, &weight_tensor, eps).unwrap();
+
+    let candidate_residual = upload_fp32_as_bf16(&ctx, &residual, vec![rows, cols]).unwrap();
+    let candidate_residual_buffer = CudaBuffer::from_tensor(&candidate_residual).unwrap();
+    let delta_tensor = upload_fp32_as_bf16(&ctx, &delta, vec![rows, cols]).unwrap();
+    let delta_buffer = CudaBuffer::from_tensor(&delta_tensor).unwrap();
+    let weight_buffer = CudaBuffer::from_tensor(&weight_tensor).unwrap();
+    let output_buffer =
+        CudaBuffer::alloc_zeros(rows * cols * DType::BF16.size_in_bytes(), ctx.device_id())
+            .unwrap();
+    residual_add_rms_exact_bf16_into(
+        &ctx,
+        &candidate_residual_buffer,
+        &delta_buffer,
+        &weight_buffer,
+        &output_buffer,
+        cols,
+        rows,
+        eps,
+    )
+    .unwrap();
+    ctx.synchronize().unwrap();
+    let candidate_norm = make_gpu_tensor(
+        Shape::new(vec![rows, cols]),
+        DType::BF16,
+        ctx.device_id(),
+        output_buffer,
+    );
+
+    assert_eq!(
+        download_bf16_as_fp32(&candidate_residual).unwrap(),
+        download_bf16_as_fp32(&baseline_residual).unwrap()
+    );
+    assert_eq!(
+        download_bf16_as_fp32(&candidate_norm).unwrap(),
+        download_bf16_as_fp32(&baseline_norm).unwrap()
+    );
 }
 
 // ── Reduction: softmax ────────────────────────────────────────────

@@ -15,6 +15,7 @@
 // separate add + norm it replaces). One block per row; block size up to
 // BLOCK_SIZE (256) threads, strided load, warp-shuffle reduction.
 
+template <bool ROUND_BEFORE_NORM>
 __global__ void rms_norm_add_bf16_kernel(
     __nv_bfloat16* x_inout, const __nv_bfloat16* delta,
     const __nv_bfloat16* weight, __nv_bfloat16* output,
@@ -37,6 +38,9 @@ __global__ void rms_norm_add_bf16_kernel(
         float xv = __bfloat162float(x_inout[offset + i]);
         float dv = __bfloat162float(delta[offset + i]);
         float xn = xv + dv;
+        if constexpr (ROUND_BEFORE_NORM) {
+            xn = __bfloat162float(__float2bfloat16(xn));
+        }
         x_new[i] = xn;
         partial += xn * xn;
     }
@@ -561,4 +565,3 @@ __global__ void gqa_qkv_split_bias_bf16_kernel(
     }
   }
 }
-

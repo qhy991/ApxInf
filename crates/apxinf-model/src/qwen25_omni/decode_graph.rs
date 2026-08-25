@@ -166,6 +166,7 @@ fn decode_forward_capturable(
     config: &Qwen25OmniDecodeGraphConfig,
     select_token: bool,
     fuse_tmrope_kv: bool,
+    fuse_residual_norm: bool,
 ) -> Result<()> {
     if weights.layers.len() != config.n_layers || config.n_layers == 0 {
         return Err(Error::Other(
@@ -193,17 +194,32 @@ fn decode_forward_capturable(
         1,
     )?;
 
-    for (index, layer) in weights.layers.iter().enumerate() {
+    if fuse_residual_norm {
         kernels::norm::rms_into(
             context,
             DType::BF16,
             &workspace.x,
-            &weight_view(layer.attn_norm, device)?,
+            &weight_view(weights.layers[0].attn_norm, device)?,
             &workspace.norm,
             hidden,
             1,
             config.rms_norm_eps,
         )?;
+    }
+
+    for (index, layer) in weights.layers.iter().enumerate() {
+        if !fuse_residual_norm {
+            kernels::norm::rms_into(
+                context,
+                DType::BF16,
+                &workspace.x,
+                &weight_view(layer.attn_norm, device)?,
+                &workspace.norm,
+                hidden,
+                1,
+                config.rms_norm_eps,
+            )?;
+        }
         let packed_views = match &layer.qkv {
             Qwen25OmniDecodeQkvWeights::Packed { weight, bias } => {
                 let total = hidden + 2 * kv_width;
@@ -438,24 +454,37 @@ fn decode_forward_capturable(
             0.0,
             &workspace.attn_proj,
         )?;
-        kernels::elementwise::add_into(
-            context,
-            DType::BF16,
-            &workspace.x,
-            &workspace.attn_proj,
-            &workspace.x,
-            hidden,
-        )?;
-        kernels::norm::rms_into(
-            context,
-            DType::BF16,
-            &workspace.x,
-            &weight_view(layer.ffn_norm, device)?,
-            &workspace.ffn_norm,
-            hidden,
-            1,
-            config.rms_norm_eps,
-        )?;
+        if fuse_residual_norm {
+            kernels::norm::residual_add_rms_exact_bf16_into(
+                context,
+                &workspace.x,
+                &workspace.attn_proj,
+                &weight_view(layer.ffn_norm, device)?,
+                &workspace.ffn_norm,
+                hidden,
+                1,
+                config.rms_norm_eps,
+            )?;
+        } else {
+            kernels::elementwise::add_into(
+                context,
+                DType::BF16,
+                &workspace.x,
+                &workspace.attn_proj,
+                &workspace.x,
+                hidden,
+            )?;
+            kernels::norm::rms_into(
+                context,
+                DType::BF16,
+                &workspace.x,
+                &weight_view(layer.ffn_norm, device)?,
+                &workspace.ffn_norm,
+                hidden,
+                1,
+                config.rms_norm_eps,
+            )?;
+        }
         if let Some(gate_up_packed) = layer.gate_up_packed {
             kernels::gemm::write(
                 context,
@@ -538,26 +567,46 @@ fn decode_forward_capturable(
             0.0,
             &workspace.mlp_out,
         )?;
-        kernels::elementwise::add_into(
+        if fuse_residual_norm {
+            let next_norm = if index + 1 < weights.layers.len() {
+                weights.layers[index + 1].attn_norm
+            } else {
+                weights.output_norm
+            };
+            kernels::norm::residual_add_rms_exact_bf16_into(
+                context,
+                &workspace.x,
+                &workspace.mlp_out,
+                &weight_view(next_norm, device)?,
+                &workspace.norm,
+                hidden,
+                1,
+                config.rms_norm_eps,
+            )?;
+        } else {
+            kernels::elementwise::add_into(
+                context,
+                DType::BF16,
+                &workspace.x,
+                &workspace.mlp_out,
+                &workspace.x,
+                hidden,
+            )?;
+        }
+    }
+
+    if !fuse_residual_norm {
+        kernels::norm::rms_into(
             context,
             DType::BF16,
             &workspace.x,
-            &workspace.mlp_out,
-            &workspace.x,
+            &weight_view(weights.output_norm, device)?,
+            &workspace.norm,
             hidden,
+            1,
+            config.rms_norm_eps,
         )?;
     }
-
-    kernels::norm::rms_into(
-        context,
-        DType::BF16,
-        &workspace.x,
-        &weight_view(weights.output_norm, device)?,
-        &workspace.norm,
-        hidden,
-        1,
-        config.rms_norm_eps,
-    )?;
     kernels::gemm::write(
         context,
         DType::BF16,
@@ -588,6 +637,7 @@ pub struct Qwen25OmniDecodeGraph {
     graph: Option<Box<dyn Graph>>,
     select_token: bool,
     fuse_tmrope_kv: bool,
+    fuse_residual_norm: bool,
 }
 
 impl Qwen25OmniDecodeGraph {
@@ -596,6 +646,7 @@ impl Qwen25OmniDecodeGraph {
         config: Qwen25OmniDecodeGraphConfig,
         select_token: bool,
         fuse_tmrope_kv: bool,
+        fuse_residual_norm: bool,
         grouped_long_attention: bool,
     ) -> Result<Self> {
         if config.n_layers == 0
@@ -614,6 +665,7 @@ impl Qwen25OmniDecodeGraph {
             graph: None,
             select_token,
             fuse_tmrope_kv,
+            fuse_residual_norm,
         })
     }
 
@@ -639,6 +691,7 @@ impl Qwen25OmniDecodeGraph {
             &self.config,
             self.select_token,
             self.fuse_tmrope_kv,
+            self.fuse_residual_norm,
         )?;
         backend.synchronize()?;
         cache.clear()?;
@@ -652,6 +705,7 @@ impl Qwen25OmniDecodeGraph {
             &self.config,
             self.select_token,
             self.fuse_tmrope_kv,
+            self.fuse_residual_norm,
         );
         let graph = backend.end_capture()?;
         capture?;
@@ -689,6 +743,7 @@ impl Qwen25OmniDecodeGraph {
                 &self.config,
                 self.select_token,
                 self.fuse_tmrope_kv,
+                self.fuse_residual_norm,
             )?;
         } else {
             graph.replay()?;
