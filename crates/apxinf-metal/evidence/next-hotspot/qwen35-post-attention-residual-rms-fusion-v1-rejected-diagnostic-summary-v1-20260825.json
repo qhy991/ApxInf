@@ -1,0 +1,326 @@
+{
+  "format": "apxinf-qwen35-post-attention-residual-rms-fusion-v1-rejected-diagnostic-summary-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "REJECTED_BY_PREDECLARED_PRIMITIVE_GATE",
+  "scope": {
+    "stage": "count-matched aggregate same-encoder residual-to-RMS mechanism screen only",
+    "model_shape": "Qwen/Qwen3.5-0.8B decode, H=1024",
+    "same_encoder_seams_per_current_decode": 18,
+    "target": "Apple M4 Metal",
+    "classification": "non-formal diagnostic only",
+    "production_submission_topology": false,
+    "production_path_modified": false,
+    "full_path_plumbing_executed": false,
+    "end_to_end_model_benchmark_executed": false,
+    "cross_runtime_benchmark_executed": false
+  },
+  "source_and_build_binding": {
+    "baseline_parent_commit": "3733bdcfd9f5f730744c13faee7cc31795edfac4",
+    "candidate_commit": "416748d48be26dbbf50ee9511f77610075efd5b4",
+    "candidate_pushed_before_sampling": true,
+    "head_origin_main_and_github_main_equal_candidate_at_start_and_end": true,
+    "origin_url": "https://github.com/qhy991/ApxInf.git",
+    "worktree_clean_at_start_and_end_before_receipt_publication": true,
+    "release_binary_size_bytes": 1596928,
+    "release_binary_sha256": "0a9359a9b369f6840e6be151e5124b09ff97be36922b26097742306acb9085ec",
+    "gate_source_size_bytes": 47247,
+    "gate_source_sha256": "a280aa688d5adfe0f8459cd7fb9a2d5dca1aea759e067fd98183b8b44a90266d",
+    "raw_receipt_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-post-attention-residual-rms-fusion-primitive-ab-v1-20260825.json",
+    "raw_receipt_size_bytes": 28877,
+    "raw_receipt_sha256": "2379c4865d5abb5aca3d7a3065ecc2d0e57a4c02921b77cbcbbcc08de0eda68e",
+    "predeclaration_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-post-attention-residual-rms-fusion-v1-predeclared-primitive-gate-v1-20260825.json",
+    "predeclaration_size_bytes": 10474,
+    "predeclaration_sha256": "723341ec8d123092123b2ef002ce880c59985a6f8225ae7fb14a4f61af529d59",
+    "all_bound_source_and_binary_hashes_matched_disk": true,
+    "embedded_source_hashes_matched_disk_before_and_after_sampling": true,
+    "binary_and_source_custody_unchanged_during_sampling": true,
+    "receipt_publication_note": "the raw receipt was published after the end-custody snapshot, so its subsequently untracked state does not contradict the captured clean worktree"
+  },
+  "host_observation": {
+    "formal_quiet_host_admission_passed": false,
+    "hardware_model": "Mac16,10",
+    "chip": "Apple M4",
+    "external_preflight_evidence_source": "orchestrator session log; not a separately persisted artifact",
+    "external_load_averages_immediately_before_launch": [
+      3.04,
+      2.26,
+      2.06
+    ],
+    "external_background_cpu_observations_percent": [
+      {
+        "process": "logioptionsplus_agent",
+        "cpu_percent": 59.9
+      },
+      {
+        "process": "logioptionsplus_logivoice",
+        "cpu_percent": 45.7
+      },
+      {
+        "process": "Google Chrome Helper",
+        "cpu_percent": 18.0
+      },
+      {
+        "process": "trustd",
+        "cpu_percent": 17.5
+      },
+      {
+        "process": "Cursor",
+        "cpu_percent": 6.8
+      }
+    ],
+    "embedded_preflight": {
+      "quiet_host_attested": false,
+      "load_averages": [
+        3.04,
+        2.26,
+        2.06
+      ],
+      "largest_cpu_observations_percent": [
+        {
+          "process": "logioptionsplus_logivoice",
+          "cpu_percent": 49.3
+        },
+        {
+          "process": "logioptionsplus_agent",
+          "cpu_percent": 42.5
+        },
+        {
+          "process": "trustd",
+          "cpu_percent": 21.0
+        }
+      ]
+    },
+    "user_or_system_processes_terminated": false,
+    "interpretation": "the predeclared fixed schedule was completed exactly once, but the result cannot be classified as formal performance evidence"
+  },
+  "hypothesis": {
+    "A": "18 legacy residual-add dispatches plus pair-local broad buffer barriers and 18 legacy RMS dispatches, followed by 18 common consumer barriers",
+    "B": "18 additive fused dispatches that materialize each residual, retain four f32 values per lane across the unchanged legacy nine-barrier RMS tree, and publish the normalized row, followed by the same 18 common consumer barriers",
+    "source_call_mapping": "linear-attention layers [0,1,2], [4,5,6], [8,9,10], [12,13,14], [16,17,18], and [20,21,22]",
+    "excluded_rms_calls": {
+      "cross_encoder_inter_layer_seams": 17,
+      "body_full_attention_cpu_boundary_calls": 5,
+      "tail_cpu_fed_post_attention_call": 1,
+      "tail_final_call": 1,
+      "initial_embedding_fed_call": 1
+    },
+    "exactness_narrowing": "on the captured target and fixtures, an output-only nested '#pragma clang fp reassociate(off)' preserved the legacy left-associated normalized-output product; the source-identical 256-thread nine-barrier reduction remained in its legacy compiler mode",
+    "exactness_qualification": "target- and fixture-specific bit-identity evidence, not a claim of universally strict floating-point behavior",
+    "source_logical_residual_row_read_reduction_bytes_per_projected_decode": 147456,
+    "source_logical_formula": "18 * 1024 * 4 * 2",
+    "source_logical_qualification": "source-level access ledger only; not measured cache, system-memory, or DRAM traffic, and private-register spills remain possible"
+  },
+  "quality_gate": {
+    "passed": true,
+    "correctness_fixtures": 8,
+    "correctness_order_per_fixture": [
+      "A",
+      "B",
+      "B",
+      "A"
+    ],
+    "seams_per_call": 18,
+    "trace_rows_per_call": 36,
+    "finite_checks": 1179648,
+    "compared_output_elements": 884736,
+    "materialized_residual_comparisons": 442368,
+    "normalized_comparisons": 442368,
+    "all_outputs_finite": true,
+    "both_full_traces_match_to_bits": true,
+    "outputs_poisoned_before_every_correctness_call": true,
+    "invalid_selector_failed_closed_without_receipt_or_snapshot_mutation": true,
+    "fixture_sha256_f32_le_with_shape_and_epsilon": "0dacb91dd2ee781cbcbd1da448615ae6024e1a18e8d8aff4623342f1b0e98d7d"
+  },
+  "runtime_observed_execution_contract": {
+    "successful_runs_per_arm": 528,
+    "A": {
+      "requested_and_observed_functions": [
+        "linear_layer_residual_add",
+        "linear_layer_rms_norm"
+      ],
+      "kernel_dispatches_per_run": 36,
+      "explicit_buffer_barriers_per_run": 36,
+      "pair_local_raw_barriers_per_run": 18,
+      "common_consumer_barriers_per_run": 18,
+      "total_successful_kernel_dispatches": 19008,
+      "total_successful_explicit_buffer_barriers": 19008,
+      "total_successful_pair_local_raw_barriers": 9504,
+      "total_successful_common_consumer_barriers": 9504,
+      "total_source_derived_internal_threadgroup_barriers": 85536
+    },
+    "B": {
+      "requested_and_observed_functions": [
+        "linear_layer_residual_rms_norm_fused_exact_v1"
+      ],
+      "kernel_dispatches_per_run": 18,
+      "explicit_buffer_barriers_per_run": 18,
+      "pair_local_raw_barriers_per_run": 0,
+      "common_consumer_barriers_per_run": 18,
+      "total_successful_kernel_dispatches": 9504,
+      "total_successful_explicit_buffer_barriers": 9504,
+      "total_successful_pair_local_raw_barriers": 0,
+      "total_successful_common_consumer_barriers": 9504,
+      "total_source_derived_internal_threadgroup_barriers": 85536
+    },
+    "command_buffers_per_run_both": 1,
+    "compute_encoders_per_run_both": 1,
+    "commits_per_run_both": 1,
+    "waits_per_run_both": 1,
+    "threads_per_threadgroup": 256,
+    "simdgroups_per_threadgroup": 8,
+    "internal_threadgroup_barriers_per_run_both_source_derived": 162,
+    "explicit_bridge_memcpy_bytes_inside_timed_run": 0,
+    "zero_copy_qualification": "zero explicit bridge memcpy inside the timed run, not zero GPU or shared-memory traffic",
+    "runtime_receipts_valid": true
+  },
+  "fixed_schedule": {
+    "warmup_blocks": [
+      "ABBA",
+      "BAAB"
+    ],
+    "timed_blocks": [
+      "ABBA",
+      "BAAB"
+    ],
+    "calls_per_cell": 64,
+    "timed_samples_per_arm_per_block": 128,
+    "timed_samples_per_arm_pooled": 256,
+    "timed_dispatches_A_total": 9216,
+    "timed_dispatches_B_total": 4608,
+    "no_resampling_after_failure": true,
+    "resampling_performed": false
+  },
+  "performance_gate": {
+    "continue_threshold_percent": 5.0,
+    "requires_both_blocks_positive": true,
+    "clearly_negative_block_reject_percent": -0.5,
+    "block_1": {
+      "A_median_ns": 291708.0,
+      "B_median_ns": 281458.0,
+      "A_p10_ns": 277792,
+      "B_p10_ns": 263708,
+      "A_p90_ns": 375250,
+      "B_p90_ns": 284125,
+      "absolute_gap_ns": 10250.0,
+      "B_improvement_percent": 3.5137877603631025,
+      "positive": true
+    },
+    "block_2": {
+      "A_median_ns": 268188.0,
+      "B_median_ns": 266875.0,
+      "A_p10_ns": 245792,
+      "B_p10_ns": 210291,
+      "A_p90_ns": 285708,
+      "B_p90_ns": 279167,
+      "absolute_gap_ns": 1313.0,
+      "B_improvement_percent": 0.48958193506048,
+      "positive": true
+    },
+    "pooled": {
+      "A_median_ns": 284896.0,
+      "B_median_ns": 277042.0,
+      "A_p10_ns": 260333,
+      "B_p10_ns": 221084,
+      "A_p90_ns": 299417,
+      "B_p90_ns": 283167,
+      "absolute_gap_ns": 7854.0,
+      "B_improvement_percent": 2.7567954622037516,
+      "threshold_miss_percentage_points": 2.2432045377962484
+    },
+    "passed": false,
+    "failed_conditions": [
+      "pooled candidate improvement was 2.756795 percent, below the predeclared 5.0 percent continuation threshold"
+    ],
+    "interpretation": "both blocks were directionally positive and neither negative guard fired, but the conjunctive rule fixed before sampling rejects a positive-but-subthreshold result without judgment, extrapolation, or additional sampling"
+  },
+  "production_projection_not_realized": {
+    "current_kernel_dispatches_per_decode": 267,
+    "candidate_projected_kernel_dispatches_per_decode": 249,
+    "current_explicit_broad_buffer_barriers_per_decode": 243,
+    "candidate_projected_explicit_broad_buffer_barriers_per_decode": 225,
+    "compute_encoders_per_decode_unchanged": 24,
+    "command_buffers_per_decode_unchanged": 7,
+    "realized_in_production": false,
+    "reason": "the additive diagnostic bridge and harness never changed any production default or accepted bridge selection"
+  },
+  "validation": {
+    "apxinf_metal_tests": {
+      "passed": 61,
+      "failed": 0,
+      "ignored": 1,
+      "evidence_source": "orchestrator session log; not a separately persisted test log"
+    },
+    "release_gate_build_passed": true,
+    "format_check_passed": true,
+    "diff_check_passed": true,
+    "clippy_attempted_but_component_unavailable": true,
+    "independent_exactness_and_arithmetic_audit": "CLEAN",
+    "independent_production_mapping_and_disposition_audit": "CLEAN",
+    "independent_gate_schedule_and_publication_audit": "CLEAN",
+    "independent_raw_receipt_recomputation": "PASS; raw arrays, medians, percentiles, improvements, fixture hash, counts, runtime topology, hashes, git custody, origin URL, and GitHub main independently reconciled without rerunning the benchmark"
+  },
+  "decision": {
+    "accepted": false,
+    "primitive_continue_gate_passed": false,
+    "full_path_plumbing_authorized": false,
+    "action": "commit and push the raw receipt and this summary, then explicitly revert the fused implementation and primitive harness while retaining the predeclaration and rejection evidence",
+    "reason": "correctness, live identity, runtime topology, and custody passed, but the fixed pooled improvement was 2.756795 percent versus the predeclared 5.0 percent continuation threshold; the host was also nonquiet",
+    "candidate_performance_resampling_allowed": false,
+    "production_integration_allowed": false,
+    "full_path_benchmark_allowed": false,
+    "cross_runtime_rerun_allowed": false,
+    "retained_mechanism_evidence": "captured-target bit identity, exact runtime receipts, source-logical read and topology mapping, and a directionally positive but subthreshold diagnostic result",
+    "unsupported_inferences": [
+      "a stable 2.756795 percent production improvement",
+      "an end-to-end or TPS improvement",
+      "a measured DRAM-traffic reduction",
+      "that the output-only pragma or register spills caused the limited gain",
+      "that the mechanism is slower, inexact, or universally useless"
+    ]
+  },
+  "llama_cpp_comparison_policy": {
+    "candidate_is_not_llama_equivalent": true,
+    "frozen_comparison_unchanged": true,
+    "current_apxinf_tps": 66.33672849846097,
+    "current_llama_cpp_tps": 70.66394293407429,
+    "current_llama_cpp_advantage_percent": 6.52310497300709,
+    "llama_cpp_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+    "reason": "a rejected non-production ApxInf primitive screen is not a replacement llama.cpp or Ollama benchmark"
+  },
+  "next_hypothesis": {
+    "id": "qwen35-gdn-recurrent-local-reuse-v1",
+    "status": "ranked next bounded primitive portfolio; not yet implemented or sampled",
+    "surface": "18 accepted linear-attention recurrent dispatches across 288 threadgroups; standalone diagnostic bridge and full-attention/tail paths excluded",
+    "arms": {
+      "A": "current 256-thread recurrent kernel",
+      "B": "dedicated 128-thread variant with one leader computing beta and decay per threadgroup and publishing two f32 values through one threadgroup barrier",
+      "C": "B plus cooperative staging of Q[128] and K[128] before the same one threadgroup barrier"
+    },
+    "source_logical_mechanism": {
+      "uniform_prefix_evaluations_A": 73728,
+      "uniform_prefix_evaluations_B_and_C": 288,
+      "selected_uniform_scalar_reads_bytes_A": 1179648,
+      "selected_uniform_scalar_reads_bytes_B_and_C": 4608,
+      "Q_and_K_reads_bytes_A_and_B": 56623104,
+      "Q_and_K_reads_bytes_C": 294912,
+      "B_threadgroup_storage_bytes_source_declared": 8,
+      "C_threadgroup_storage_bytes_source_declared": 1032,
+      "qualification": "source-expression ledger and mechanism hypothesis only; hardware broadcast/cache behavior and runtime metadata must be observed"
+    },
+    "production_topology_if_later_selected": {
+      "kernel_dispatches_per_decode_unchanged": 267,
+      "explicit_broad_buffer_barriers_per_decode_unchanged": 243,
+      "compute_encoders_per_decode_unchanged": 24,
+      "command_buffers_per_decode_unchanged": 7
+    },
+    "first_gate": "same-binary, count-18 aggregate A/B/C portfolio that compares both core and next_state to_bits before timing and attests requested/observed functions, dedicated 128-thread geometry, threadgroup-memory metadata, and identical 18-dispatch/18-broad-barrier topology",
+    "constraints": [
+      "preserve per-value key accumulation order and state arithmetic",
+      "do not change the global 256-thread geometry used by other kernels",
+      "keep the existing broad buffer barrier after every recurrent dispatch",
+      "do not tile or reuse recurrent state in the first portfolio",
+      "do not infer physical traffic or end-to-end benefit from the source-logical ledger",
+      "do not update the frozen llama.cpp comparison until a production full-path candidate passes"
+    ]
+  }
+}
