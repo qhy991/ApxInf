@@ -86,56 +86,6 @@ kernel void w8_rows_topk4(
     }
 }
 
-// One SIMD-group evaluates one vocabulary row, exactly as in w8_rows_topk4.
-// Sixteen rows share a larger threadgroup so the first-stage partial list and
-// the final-kernel input are halved without changing any per-row arithmetic.
-kernel void w8_rows_topk4_sg16(
-    device const char4 *weights [[buffer(0)]],
-    device const float *scales [[buffer(1)]],
-    device const float4 *hidden [[buffer(2)]],
-    device Candidate *partial [[buffer(3)]],
-    constant KernelParams& params [[buffer(4)]],
-    uint tid [[thread_index_in_threadgroup]],
-    uint lane [[thread_index_in_simdgroup]],
-    uint simdgroup [[simdgroup_index_in_threadgroup]],
-    uint group [[threadgroup_position_in_grid]]) {
-    constexpr uint rows_per_threadgroup = 16;
-    constexpr uint float4_per_group = 16;
-    threadgroup float row_scores[rows_per_threadgroup];
-    threadgroup uint row_tokens[rows_per_threadgroup];
-
-    const uint row = group * rows_per_threadgroup + simdgroup;
-    const uint columns4 = params.columns >> 2;
-    float sum = 0.0f;
-    if (row < params.rows) {
-        const uint weight_base = row * columns4;
-        const uint scale_base = row * params.groups_per_row;
-        for (uint index = lane; index < columns4; index += 32) {
-            const char4 quantized = weights[weight_base + index];
-            const float scale = scales[scale_base + index / float4_per_group];
-            sum += dot(float4(quantized), hidden[index]) * scale;
-        }
-    }
-    sum = simd_sum(sum);
-    if (lane == 0) {
-        row_scores[simdgroup] = row < params.rows && !isnan(sum) ? sum : -INFINITY;
-        row_tokens[simdgroup] = row < params.rows ? row : UINT_MAX;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    if (tid == 0) {
-        float scores[top_k] = {-INFINITY, -INFINITY, -INFINITY, -INFINITY};
-        uint tokens[top_k] = {UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX};
-        for (uint index = 0; index < rows_per_threadgroup; ++index) {
-            insert_candidate(scores, tokens, row_scores[index], row_tokens[index]);
-        }
-        const uint base = group * top_k;
-        for (uint index = 0; index < top_k; ++index) {
-            partial[base + index] = Candidate{scores[index], tokens[index]};
-        }
-    }
-}
-
 // A single threadgroup folds every per-group top-4 list into the global top-4.
 // Each thread first produces a sorted local list. Thread zero then merges the
 // 256 small lists deterministically and writes only four token IDs.

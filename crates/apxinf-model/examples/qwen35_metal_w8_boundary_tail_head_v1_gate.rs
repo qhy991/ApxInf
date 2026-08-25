@@ -17,7 +17,6 @@ use std::{error::Error, time::Instant};
 use serde_json::{json, Value};
 
 use apxinf_core::{Device, Tensor};
-use apxinf_metal::TailMlpHeadRowsKernelV1;
 #[cfg(test)]
 use apxinf_model::qwen35::general::{
     Qwen35MetalW8LinearLayerStack3BufferLedger, Qwen35MetalW8MlpStack3BoundaryRegionBufferLedgerV1,
@@ -112,34 +111,6 @@ impl Mode {
     const fn is_candidate(self) -> bool {
         self.requires_input_receipt()
     }
-}
-
-fn parse_tail_rows_kernel(value: &str) -> Result<TailMlpHeadRowsKernelV1, String> {
-    match value {
-        "legacy-r8-sg8" => Ok(TailMlpHeadRowsKernelV1::LegacyR8Sg8),
-        "sg16-r16" => Ok(TailMlpHeadRowsKernelV1::Sg16R16),
-        other => Err(format!("invalid --tail-rows-kernel {other:?}")),
-    }
-}
-
-fn tail_rows_kernel_contract(kernel: TailMlpHeadRowsKernelV1) -> Value {
-    let (
-        rows_per_threadgroup,
-        rows_per_simdgroup,
-        simdgroups_per_threadgroup,
-        threads_per_threadgroup,
-        cooperative_across_simdgroups,
-    ) = kernel.execution_shape();
-    let partial_count = 248_320_u32.div_ceil(rows_per_threadgroup);
-    json!({
-        "kernel": kernel.receipt_label(),
-        "rows_per_threadgroup": rows_per_threadgroup,
-        "rows_per_simdgroup": rows_per_simdgroup,
-        "simdgroups_per_threadgroup": simdgroups_per_threadgroup,
-        "threads_per_threadgroup": threads_per_threadgroup,
-        "partial_count": partial_count,
-        "cooperative_across_simdgroups": cooperative_across_simdgroups,
-    })
 }
 
 const STEPS: usize = 128;
@@ -274,14 +245,7 @@ fn official_boundary_ledger_is_exact(
         && ledger.final_output_finite_checks_per_decode == 1
 }
 
-fn official_tail_ledger_is_exact(
-    ledger: apxinf_metal::TailMlpHeadBufferLedgerV1,
-    rows_kernel: TailMlpHeadRowsKernelV1,
-) -> bool {
-    let (partial_topk_bytes, total_persistent_bytes) = match rows_kernel {
-        TailMlpHeadRowsKernelV1::LegacyR8Sg8 => (993_280, 282_923_024),
-        TailMlpHeadRowsKernelV1::Sg16R16 => (496_640, 282_426_384),
-    };
+fn official_tail_ledger_is_exact(ledger: apxinf_metal::TailMlpHeadBufferLedgerV1) -> bool {
     ledger.scope == "resident-mtlbuffer-only"
         && ledger.exclusions
             == "CPU packed weights, host F32 tied embedding and exact four-candidate rerank, host allocations, Metal pipelines/libraries/queues, command objects, driver allocations, attention/KV, model loader, and all earlier model layers"
@@ -294,9 +258,9 @@ fn official_tail_ledger_is_exact(
         && ledger.f32_parameter_bytes == 8_192
         && ledger.hidden_activation_bytes == 8_192
         && ledger.mlp_activation_bytes == 43_008
-        && ledger.partial_topk_bytes == partial_topk_bytes
+        && ledger.partial_topk_bytes == 993_280
         && ledger.output_token_bytes == 16
-        && ledger.total_persistent_bytes == total_persistent_bytes
+        && ledger.total_persistent_bytes == 282_923_024
         && ledger.host_input_bytes_per_decode == 4_096
         && ledger.host_output_bytes_per_decode == 4_112
         && ledger.state_host_transfer_bytes_per_decode == 0
@@ -310,12 +274,7 @@ fn official_tail_ledger_is_exact(
 
 fn official_aggregate_ledger_is_exact(
     aggregate: &Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger,
-    rows_kernel: TailMlpHeadRowsKernelV1,
 ) -> bool {
-    let expected_total_persistent_bytes = match rows_kernel {
-        TailMlpHeadRowsKernelV1::LegacyR8Sg8 => 799_543_312,
-        TailMlpHeadRowsKernelV1::Sg16R16 => 799_046_672,
-    };
     if aggregate.scope != "resident-mtlbuffer-only"
         || aggregate.exclusions
             != "CPU F32 weights, host F32 tied embedding and exact four-candidate rerank, host allocations, Metal pipelines/libraries/queues, command objects, driver allocations, full attention/KV, model loader, and prefill CPU head"
@@ -323,7 +282,7 @@ fn official_aggregate_ledger_is_exact(
         || aggregate.initial_stack.layer_indices != [0, 1, 2]
         || !official_initial_stack_ledger_is_exact(aggregate.initial_stack.ledger)
         || aggregate.tail_layer_index != 23
-        || !official_tail_ledger_is_exact(aggregate.tail, rows_kernel)
+        || !official_tail_ledger_is_exact(aggregate.tail)
         || aggregate.boundaries.len() != BOUNDARY_REGIONS.len()
         || !aggregate
             .boundaries
@@ -409,7 +368,7 @@ fn official_aggregate_ledger_is_exact(
             == sum!(commits_per_decode, commits_per_decode, commits_per_decode).unwrap_or(0)
         && aggregate.waits_per_decode
             == sum!(waits_per_decode, waits_per_decode, waits_per_decode).unwrap_or(0)
-        && aggregate.total_persistent_mtlbuffer_bytes == expected_total_persistent_bytes
+        && aggregate.total_persistent_mtlbuffer_bytes == 799_543_312
         && aggregate.allocated_buffers == 494
         && aggregate.shared_buffers == 443
         && aggregate.private_buffers == 51
@@ -506,7 +465,6 @@ fn tail_ledger_json(ledger: apxinf_metal::TailMlpHeadBufferLedgerV1) -> Value {
 
 fn aggregate_ledger_json(
     ledger: &Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger,
-    rows_kernel: TailMlpHeadRowsKernelV1,
 ) -> Value {
     json!({
         "scope": ledger.scope,
@@ -535,7 +493,7 @@ fn aggregate_ledger_json(
         "kernel_dispatches_per_decode": ledger.kernel_dispatches_per_decode,
         "commits_per_decode": ledger.commits_per_decode,
         "waits_per_decode": ledger.waits_per_decode,
-        "component_sum_recomputed_and_exact": official_aggregate_ledger_is_exact(ledger, rows_kernel),
+        "component_sum_recomputed_and_exact": official_aggregate_ledger_is_exact(ledger),
     })
 }
 
@@ -692,24 +650,7 @@ fn boundary_tail_generation_receipt_is_exact(
     let Some(tail) = receipt.get("decode_head") else {
         return false;
     };
-    let rows_kernel_valid = [
-        TailMlpHeadRowsKernelV1::LegacyR8Sg8,
-        TailMlpHeadRowsKernelV1::Sg16R16,
-    ]
-    .into_iter()
-    .map(tail_rows_kernel_contract)
-    .any(|contract| {
-        tail.get("topk_rows_kernel") == contract.get("kernel")
-            && tail.get("rows_per_threadgroup") == contract.get("rows_per_threadgroup")
-            && tail.get("rows_per_simdgroup") == contract.get("rows_per_simdgroup")
-            && tail.get("simdgroups_per_threadgroup") == contract.get("simdgroups_per_threadgroup")
-            && tail.get("threads_per_threadgroup") == contract.get("threads_per_threadgroup")
-            && tail.get("partial_count") == contract.get("partial_count")
-            && tail.get("cooperative_across_simdgroups")
-                == contract.get("cooperative_across_simdgroups")
-    });
     let tail_valid = tail.get("mechanism").and_then(Value::as_str) == Some("metal-w8-tail-v1")
-        && rows_kernel_valid
         && tail.get("layer_index").and_then(Value::as_u64) == Some(23)
         && tail.get("calls").and_then(Value::as_u64) == Some(phase.decode as u64)
         && tail.get("teacher_calls").and_then(Value::as_u64) == Some(phase.teacher as u64)
@@ -730,12 +671,6 @@ fn boundary_tail_generation_receipt_is_exact(
         && tail.get("last_output_commit_mask").and_then(Value::as_u64)
             == Some(if body_tail_calls == 0 { 0 } else { 0b11 })
         && tail.get("terminal_error").and_then(Value::as_bool) == Some(false);
-    let expected_persistent_mtlbuffer_bytes =
-        match tail.get("topk_rows_kernel").and_then(Value::as_str) {
-            Some("w8_rows_topk4") => Some(799_543_312),
-            Some("w8_rows_topk4_sg16") => Some(799_046_672),
-            _ => None,
-        };
     let Some(aggregate) = receipt.get("aggregate") else {
         return false;
     };
@@ -745,7 +680,7 @@ fn boundary_tail_generation_receipt_is_exact(
         && aggregate
             .get("persistent_mtlbuffer_bytes")
             .and_then(Value::as_u64)
-            == expected_persistent_mtlbuffer_bytes
+            == Some(799_543_312)
         && aggregate.get("allocated_buffers").and_then(Value::as_u64) == Some(494)
         && aggregate.get("shared_buffers").and_then(Value::as_u64) == Some(443)
         && aggregate.get("private_buffers").and_then(Value::as_u64) == Some(51)
@@ -874,22 +809,8 @@ fn boundary_tail_path_checks(
                 && !execution.terminal_error
                 && !region.terminal_error
         });
-    let expected_rows_kernel = tail_rows_kernel_contract(stats.tail_rows_kernel);
-    let rows_kernel_valid = generation_receipt.get("decode_head").is_some_and(|tail| {
-        tail.get("topk_rows_kernel") == expected_rows_kernel.get("kernel")
-            && tail.get("rows_per_threadgroup") == expected_rows_kernel.get("rows_per_threadgroup")
-            && tail.get("rows_per_simdgroup") == expected_rows_kernel.get("rows_per_simdgroup")
-            && tail.get("simdgroups_per_threadgroup")
-                == expected_rows_kernel.get("simdgroups_per_threadgroup")
-            && tail.get("threads_per_threadgroup")
-                == expected_rows_kernel.get("threads_per_threadgroup")
-            && tail.get("partial_count") == expected_rows_kernel.get("partial_count")
-            && tail.get("cooperative_across_simdgroups")
-                == expected_rows_kernel.get("cooperative_across_simdgroups")
-    });
     let tail = stats.tail;
-    let tail_valid = rows_kernel_valid
-        && h4.is_some()
+    let tail_valid = h4.is_some()
         && h4_top4.is_some()
         && stats.prefill_body_calls == 1
         && stats.prefill_cpu_head_calls == 1
@@ -939,10 +860,7 @@ fn boundary_tail_path_checks(
             }),
         six_region_execution_valid: initial_valid && boundaries_valid,
         tail_execution_and_phase_valid: tail_valid,
-        aggregate_ledger_valid: official_aggregate_ledger_is_exact(
-            aggregate,
-            stats.tail_rows_kernel,
-        ),
+        aggregate_ledger_valid: official_aggregate_ledger_is_exact(aggregate),
         generation_receipt_valid: boundary_tail_generation_receipt_is_exact(
             generation_receipt,
             body_tail_calls,
@@ -1274,7 +1192,6 @@ struct Args {
     model_dir: PathBuf,
     source_lock: PathBuf,
     mode: Mode,
-    tail_rows_kernel: TailMlpHeadRowsKernelV1,
     input_receipt: Option<PathBuf>,
     output: PathBuf,
 }
@@ -1284,7 +1201,6 @@ fn usage() -> &'static str {
   --model-dir OFFICIAL_LOCAL_QWEN35_0_8B \
   --source-lock SOURCE_LOCK.json \
   --mode cpu-teacher|boundary-tail-v1-teacher|cpu-free|boundary-tail-v1-free \
-  [--tail-rows-kernel legacy-r8-sg8|sg16-r16] \
   [--input-receipt CPU_RECEIPT.json] \
   --output NEW_RECEIPT.json"
 }
@@ -1297,7 +1213,6 @@ where
     let mut model_dir = None;
     let mut source_lock = None;
     let mut mode = None;
-    let mut tail_rows_kernel = None;
     let mut input_receipt = None;
     let mut output = None;
     let mut iter = args.into_iter().map(Into::into).skip(1);
@@ -1323,12 +1238,6 @@ where
                     return Err("duplicate --mode".into());
                 }
             }
-            "--tail-rows-kernel" => {
-                let parsed = parse_tail_rows_kernel(&value.to_string_lossy())?;
-                if tail_rows_kernel.replace(parsed).is_some() {
-                    return Err("duplicate --tail-rows-kernel".into());
-                }
-            }
             "--input-receipt" => {
                 if input_receipt.replace(PathBuf::from(value)).is_some() {
                     return Err("duplicate --input-receipt".into());
@@ -1347,7 +1256,6 @@ where
         source_lock: source_lock
             .ok_or_else(|| format!("--source-lock is required\n{}", usage()))?,
         mode: mode.ok_or_else(|| format!("--mode is required\n{}", usage()))?,
-        tail_rows_kernel: tail_rows_kernel.unwrap_or_default(),
         input_receipt,
         output: output.ok_or_else(|| format!("--output is required\n{}", usage()))?,
     };
@@ -1370,9 +1278,6 @@ where
         } else {
             "CPU modes reject --input-receipt".into()
         });
-    }
-    if !args.mode.is_candidate() && args.tail_rows_kernel != TailMlpHeadRowsKernelV1::LegacyR8Sg8 {
-        return Err("CPU modes reject a non-legacy --tail-rows-kernel".into());
     }
     Ok(args)
 }
@@ -1734,23 +1639,16 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
     let same_process_cpu_oracle_ms = same_process_oracle_started.elapsed().as_secs_f64() * 1_000.0;
     let construct_started = Instant::now();
     let mut model = if args.mode.is_candidate() {
-        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_rows_kernel_v1(
+        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
             config,
             tensors,
             Device::Cpu,
             max_context,
-            args.tail_rows_kernel,
         )?
     } else {
         GeneralQwen35::from_weights(config, tensors, Device::Cpu, max_context)?
     };
     let model_construct_ms = construct_started.elapsed().as_secs_f64() * 1_000.0;
-    let actual_tail_rows_kernel = model.metal_w8_mlp_stack3_boundary_tail_head_v1_rows_kernel();
-    if args.mode.is_candidate() && actual_tail_rows_kernel != Some(args.tail_rows_kernel) {
-        return Err(
-            "constructed boundary-tail lane did not retain the requested rows kernel".into(),
-        );
-    }
     let identity = json!({
         "repo_id": REPO_ID,
         "revision": LOCKED_REVISION,
@@ -1770,7 +1668,7 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
             "identity_fields": ["device", "inode", "size", "nlink", "ctime", "sha256"],
         },
         "cpu_reference_constructor": "GeneralQwen35::from_weights",
-        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_rows_kernel_v1",
+        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1",
         "custody": custody.receipt_json(),
     });
     let setup = json!({
@@ -1960,7 +1858,6 @@ fn run_teacher(
         receipt: json!({
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
-            "tail_rows_kernel": tail_rows_kernel_contract(args.tail_rows_kernel),
             "identity": identity,
             "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
@@ -1996,9 +1893,8 @@ fn run_teacher(
                 "tail_teacher_calls": STEPS,
                 "f32_rerank_input": "tail-normalized-hidden-direct",
                 "hidden_tensor_exactness_claimed": false,
-                "tail_rows_kernel": tail_rows_kernel_contract(args.tail_rows_kernel),
             },
-            "aggregate_buffer_ledger": aggregate_ledger_json(&aggregate, args.tail_rows_kernel),
+            "aggregate_buffer_ledger": aggregate_ledger_json(&aggregate),
             "path_checks": {
                 "prefill": prefill_checks.receipt_json(),
                 "final": final_checks.receipt_json(),
@@ -2126,7 +2022,6 @@ fn run_free(
         receipt: json!({
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
-            "tail_rows_kernel": tail_rows_kernel_contract(args.tail_rows_kernel),
             "identity": identity,
             "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
@@ -2150,9 +2045,8 @@ fn run_free(
                 "tail_decode_calls": body_tail_calls,
                 "tail_teacher_calls": 0,
                 "f32_rerank_input": "tail-normalized-hidden-direct",
-                "tail_rows_kernel": tail_rows_kernel_contract(args.tail_rows_kernel),
             },
-            "aggregate_buffer_ledger": aggregate_ledger_json(&aggregate, args.tail_rows_kernel),
+            "aggregate_buffer_ledger": aggregate_ledger_json(&aggregate),
             "path_checks": checks.receipt_json(),
             "profile": generation_profile_json(
                 &profile,
@@ -2382,13 +2276,6 @@ mod tests {
             },
             "decode_head": {
                 "mechanism": "metal-w8-tail-v1",
-                "topk_rows_kernel": "w8_rows_topk4",
-                "rows_per_threadgroup": 8,
-                "rows_per_simdgroup": 1,
-                "simdgroups_per_threadgroup": 8,
-                "threads_per_threadgroup": 256,
-                "partial_count": 31_040,
-                "cooperative_across_simdgroups": false,
                 "layer_index": 23,
                 "calls": phase.decode,
                 "teacher_calls": phase.teacher,
@@ -2477,7 +2364,6 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(args.mode, Mode::BoundaryTailV1Free);
-        assert_eq!(args.tail_rows_kernel, TailMlpHeadRowsKernelV1::LegacyR8Sg8);
         assert_eq!(
             args.input_receipt.unwrap(),
             std::path::PathBuf::from("/cpu-free.json")
@@ -2494,24 +2380,6 @@ mod tests {
             "/new.json",
         ])
         .is_err());
-
-        let sg16 = parse_args_from([
-            "gate",
-            "--model-dir",
-            "/model",
-            "--source-lock",
-            "/source-lock.json",
-            "--mode",
-            "boundary-tail-v1-free",
-            "--tail-rows-kernel",
-            "sg16-r16",
-            "--input-receipt",
-            "/cpu-free.json",
-            "--output",
-            "/sg16.json",
-        ])
-        .unwrap();
-        assert_eq!(sg16.tail_rows_kernel, TailMlpHeadRowsKernelV1::Sg16R16);
         assert!(parse_args_from([
             "gate",
             "--model-dir",
@@ -2694,52 +2562,20 @@ mod tests {
     #[test]
     fn component_ledgers_and_recomputed_aggregate_are_strictly_frozen() {
         let aggregate = official_aggregate_fixture();
-        assert!(official_aggregate_ledger_is_exact(
-            &aggregate,
-            TailMlpHeadRowsKernelV1::LegacyR8Sg8,
-        ));
-        let mut sg16 = aggregate.clone();
-        sg16.tail = apxinf_metal::TailMlpHeadBufferLedgerV1::from_dimensions_with_rows_kernel(
-            1_024,
-            3_584,
-            248_320,
-            TailMlpHeadRowsKernelV1::Sg16R16,
-        )
-        .unwrap();
-        sg16.total_persistent_mtlbuffer_bytes = 799_046_672;
-        assert!(official_aggregate_ledger_is_exact(
-            &sg16,
-            TailMlpHeadRowsKernelV1::Sg16R16,
-        ));
-        assert!(!official_aggregate_ledger_is_exact(
-            &sg16,
-            TailMlpHeadRowsKernelV1::LegacyR8Sg8,
-        ));
+        assert!(official_aggregate_ledger_is_exact(&aggregate));
 
         let mut wrong = aggregate.clone();
         wrong.boundaries[2].ledger.total_persistent_bytes -= 1;
-        assert!(!official_aggregate_ledger_is_exact(
-            &wrong,
-            TailMlpHeadRowsKernelV1::LegacyR8Sg8,
-        ));
+        assert!(!official_aggregate_ledger_is_exact(&wrong));
         let mut wrong = aggregate.clone();
         wrong.tail.host_output_bytes_per_decode -= 1;
-        assert!(!official_aggregate_ledger_is_exact(
-            &wrong,
-            TailMlpHeadRowsKernelV1::LegacyR8Sg8,
-        ));
+        assert!(!official_aggregate_ledger_is_exact(&wrong));
         let mut wrong = aggregate.clone();
         wrong.total_persistent_mtlbuffer_bytes -= 1;
-        assert!(!official_aggregate_ledger_is_exact(
-            &wrong,
-            TailMlpHeadRowsKernelV1::LegacyR8Sg8,
-        ));
+        assert!(!official_aggregate_ledger_is_exact(&wrong));
         let mut wrong = aggregate;
         wrong.kernel_dispatches_per_decode -= 1;
-        assert!(!official_aggregate_ledger_is_exact(
-            &wrong,
-            TailMlpHeadRowsKernelV1::LegacyR8Sg8,
-        ));
+        assert!(!official_aggregate_ledger_is_exact(&wrong));
     }
 
     #[test]
@@ -2759,19 +2595,6 @@ mod tests {
         let mut wrong = receipt.clone();
         wrong["decode_head"]["teacher_calls"] = json!(6);
         assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
-        let mut wrong = receipt.clone();
-        wrong["decode_head"]["partial_count"] = json!(15_520);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
-
-        let mut sg16 = receipt.clone();
-        sg16["decode_head"]["topk_rows_kernel"] = json!("w8_rows_topk4_sg16");
-        sg16["decode_head"]["rows_per_threadgroup"] = json!(16);
-        sg16["decode_head"]["rows_per_simdgroup"] = json!(1);
-        sg16["decode_head"]["simdgroups_per_threadgroup"] = json!(16);
-        sg16["decode_head"]["threads_per_threadgroup"] = json!(512);
-        sg16["decode_head"]["partial_count"] = json!(15_520);
-        sg16["aggregate"]["persistent_mtlbuffer_bytes"] = json!(799_046_672);
-        assert!(boundary_tail_generation_receipt_is_exact(&sg16, 7, phase));
 
         let mut wrong = receipt.clone();
         wrong["terminal_error"] = json!(true);
