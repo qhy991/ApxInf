@@ -1,0 +1,218 @@
+{
+  "format": "apxinf-qwen35-mlp-semantic-pair-silu-v1-rejected-diagnostic-summary-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "REJECTED_BY_PREDECLARED_PRIMITIVE_GATE",
+  "scope": {
+    "stage": "production-shape standalone MLP primitive screen only",
+    "model_shape": "Qwen/Qwen3.5-0.8B text MLP",
+    "hidden_size": 1024,
+    "intermediate_size": 3584,
+    "weight_format": "ApxInf W8 G64 with F32 scales",
+    "target": "Apple M4 Metal",
+    "full_boundary_tail_plumbing_executed": false,
+    "end_to_end_model_benchmark_executed": false,
+    "cross_runtime_benchmark_executed": false
+  },
+  "source_and_build_binding": {
+    "baseline_parent_commit": "30c2f55e4ba36a9ef82641ada51980bd71310a94",
+    "candidate_commit": "93e0a506e8582655eb4a6fba0530d9ef8b45ca36",
+    "candidate_pushed_before_sampling": true,
+    "head_and_origin_main_equal_candidate_at_start_and_end": true,
+    "worktree_clean_at_start_and_end": true,
+    "release_binary_sha256": "25b216253d76fcc9d41cc43229bb9ddd537d5eb30620b9a8b530ab23e4d7b312",
+    "raw_receipt_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-mlp-semantic-pair-primitive-ab-v1-20260825.json",
+    "raw_receipt_sha256": "1937984ca81afd4c9c5f64d76a37508291db780f414284b583145f0d00321e21",
+    "predeclaration_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-mlp-semantic-pair-silu-v1-predeclared-primitive-gate-v1-20260825.json",
+    "predeclaration_sha256": "d7b6aec1438f90f1385f294bcaecfc81cf8696ca2ff5a2a8641f4c263f6e8136",
+    "embedded_source_hashes_matched_disk_before_and_after_sampling": true,
+    "binary_and_source_custody_unchanged_during_sampling": true
+  },
+  "host_observation": {
+    "formal_quiet_host_admission_passed": false,
+    "classification": "non-formal diagnostic only",
+    "hardware_model": "Mac16,10",
+    "chip": "Apple M4",
+    "memory_bytes": 17179869184,
+    "gpu_cores": 10,
+    "metal_support": "Metal 4",
+    "load_averages_before_sampling": [
+      1.69,
+      1.82,
+      1.84
+    ],
+    "largest_observed_background_cpu_percent_before_sampling": [
+      {
+        "process": "logioptionsplus_logivoice",
+        "cpu_percent": 39.6
+      },
+      {
+        "process": "logioptionsplus_agent",
+        "cpu_percent": 30.5
+      },
+      {
+        "process": "mdworker_shared",
+        "cpu_percent": 4.6
+      },
+      {
+        "process": "mdworker_shared",
+        "cpu_percent": 4.6
+      },
+      {
+        "process": "syspolicyd",
+        "cpu_percent": 2.6
+      }
+    ],
+    "user_or_system_processes_terminated": false,
+    "interpretation": "the predeclared schedule was completed once, but the result cannot be classified as formal performance evidence"
+  },
+  "hypothesis": {
+    "A": "legacy gate/up rows plus separate SiLU-times-up dispatch",
+    "B": "one SIMDgroup per semantic gate/up row pair with shared input load and direct SiLU-times-up publication",
+    "projected_full_path_mlps_per_decode": 24,
+    "projected_logical_input_read_reduction_bytes_per_decode": 352321536,
+    "projected_gate_up_intermediate_traffic_reduction_bytes_per_decode": 1376256,
+    "projected_dispatches_per_decode": {
+      "A": 267,
+      "B": 243
+    },
+    "projected_external_buffer_barriers_per_decode": {
+      "A": 243,
+      "B": 219
+    },
+    "logical_mapping_is_measured_dram_traffic": false
+  },
+  "quality_gate": {
+    "passed": true,
+    "correctness_inputs": 8,
+    "correctness_order_per_input": [
+      "A",
+      "B",
+      "B",
+      "A"
+    ],
+    "compared_output_elements": 24576,
+    "all_outputs_finite": true,
+    "all_outputs_match_to_bits": true,
+    "fixture_sha256_f32_le": "e35aba01d4ce8c21bcce8efeb8605b57e25204beb12cfbedf00c69f6d00f27fb"
+  },
+  "runtime_observed_execution_contract": {
+    "successful_calls_per_arm": 528,
+    "A": {
+      "requested_and_observed_function": "w8_mlp_gate_up",
+      "gate_up_threadgroups_per_call": 896,
+      "command_buffers_per_call": 1,
+      "compute_encoders_per_call": 1,
+      "kernel_dispatches_per_call": 3,
+      "explicit_buffer_barriers_per_call": 2,
+      "last_observed_topology_matches_declared": true
+    },
+    "B": {
+      "requested_and_observed_function": "w8_mlp_gate_up_semantic_pair_silu",
+      "gate_up_threadgroups_per_call": 448,
+      "command_buffers_per_call": 1,
+      "compute_encoders_per_call": 1,
+      "kernel_dispatches_per_call": 2,
+      "explicit_buffer_barriers_per_call": 1,
+      "last_observed_topology_matches_declared": true
+    },
+    "threads_per_threadgroup": 256,
+    "simdgroups_per_threadgroup": 8,
+    "pipeline_thread_execution_width": 32,
+    "static_threadgroup_memory_bytes": 0,
+    "dynamic_threadgroup_memory_bytes": 0,
+    "internal_threadgroup_barriers_per_call": 0,
+    "actual_call_site_counters_validated_before_every_commit": true,
+    "last_observed_counters_published_only_after_gpu_completion": true
+  },
+  "fixed_schedule": {
+    "warmup_blocks": [
+      "ABBA",
+      "BAAB"
+    ],
+    "timed_blocks": [
+      "ABBA",
+      "BAAB"
+    ],
+    "calls_per_cell": 64,
+    "timed_samples_per_arm_per_block": 128,
+    "timed_samples_per_arm_pooled": 256,
+    "no_resampling_after_failure": true,
+    "resampling_performed": false
+  },
+  "performance_gate": {
+    "continue_threshold_percent": 5.0,
+    "requires_both_blocks_positive": true,
+    "clearly_negative_block_reject_percent": -0.5,
+    "block_1": {
+      "A_median_ns": 405979.5,
+      "B_median_ns": 358521.0,
+      "B_improvement_percent": 11.689875966643635,
+      "positive": true
+    },
+    "block_2": {
+      "A_median_ns": 359292.0,
+      "B_median_ns": 355604.5,
+      "B_improvement_percent": 1.0263239927412802,
+      "positive": true
+    },
+    "pooled": {
+      "A_median_ns": 359437.5,
+      "B_median_ns": 356312.5,
+      "B_improvement_percent": 0.869414014953921,
+      "threshold_miss_percentage_points": 4.130585985046079
+    },
+    "passed": false,
+    "failed_conditions": [
+      "pooled candidate improvement was 0.869414 percent, below the predeclared 5.0 percent continuation threshold"
+    ],
+    "block_drift_note": "block 1 and block 2 differed materially; because the host was not quiet and no-resampling was predeclared, the divergence is reported rather than resolved by additional samples"
+  },
+  "validation": {
+    "apxinf_metal_tests": {
+      "passed": 62,
+      "failed": 0,
+      "ignored": 1
+    },
+    "release_gate_build_passed": true,
+    "format_check_passed": true,
+    "diff_check_passed": true,
+    "independent_implementation_audit_after_actual_topology_counter_fix": "CLEAN",
+    "independent_gate_and_custody_audit_after_fixes": "CLEAN",
+    "independent_raw_receipt_recomputation": "PASS; sample counts, medians, percentiles, improvements, exactness accounting, fixture hash, topology, source hashes, binary hash, git custody, and GitHub main were independently verified"
+  },
+  "decision": {
+    "accepted": false,
+    "full_path_plumbing_authorized": false,
+    "action": "commit and push the raw receipt and this summary, then explicitly revert the semantic-pair implementation and primitive harness while retaining the predeclaration and rejection evidence",
+    "reason": "correctness, live identity, topology, and custody all passed, but the pooled direct MLP gain was only 0.869 percent versus the predeclared 5.0 percent continuation threshold; the fixed run was also non-formal because the host was not quiet",
+    "inference": "the mechanism did not clear the predeclared 5 percent continuation gate in this fixed non-formal primitive screen; do not spend the larger integration cost on this candidate",
+    "candidate_performance_resampling_allowed": false
+  },
+  "llama_cpp_comparison_policy": {
+    "candidate_is_not_llama_equivalent": true,
+    "frozen_comparison_unchanged": true,
+    "current_apxinf_tps": 66.33672849846097,
+    "current_llama_cpp_tps": 70.66394293407429,
+    "current_llama_cpp_advantage_percent": 6.52310497300709,
+    "llama_cpp_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+    "reason": "a rejected primitive-only ApxInf screen is not a replacement llama.cpp or Ollama benchmark"
+  },
+  "next_hypothesis": {
+    "id": "qwen35-exact-simd-tail-rms-v1",
+    "status": "ranked next bounded primitive screen; not yet implemented or sampled",
+    "mechanism": "preserve the existing H=1024 RMS reduction operand-pairing tree through shared-memory strides 128, 64, and 32, then finish strides 16, 8, 4, 2, and 1 with SIMD shuffle-down operations",
+    "projected_surface": "43 RMS invocations per decode",
+    "projected_internal_threadgroup_barriers_per_rms": {
+      "legacy": 9,
+      "candidate": 4
+    },
+    "first_gate": "same-binary, production-H=1024, count-matched 43-RMS-call primitive ABBA with mandatory to_bits exactness and no full-path plumbing before a direct win",
+    "why_next": "the fixed pooled semantic-pair diagnostic measured 0.869 percent and failed the 5 percent gate; RMS targets 43 calls and repeated internal synchronization while retaining the exact arithmetic tree",
+    "constraints": [
+      "do not repeat semantic-pair fusion",
+      "do not infer measured DRAM savings from logical load counts",
+      "reject before performance if the SIMD tail changes any output bit",
+      "do not update the frozen llama.cpp comparison until a full-path candidate passes"
+    ]
+  }
+}
