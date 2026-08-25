@@ -348,12 +348,7 @@ pub fn install_cublaslt_bf16_tactics(
         }
     }
     for tactic in tactics {
-        set_cublaslt_gemm_heuristic(
-            tactic.m,
-            tactic.n,
-            tactic.k,
-            tactic.heuristic_rank,
-        )?;
+        set_cublaslt_gemm_heuristic(tactic.m, tactic.n, tactic.k, tactic.heuristic_rank)?;
         unsafe {
             ffi::check_cublas(ffi::apxinf_static_prepare_bf16_gemm(
                 tactic.m as i32,
@@ -434,6 +429,73 @@ pub(crate) fn set_cublaslt_gemm_split_custom(
     ffi::check_cublas(status).map_err(Error::Cuda)
 }
 
+/// Physical BF16 GEMM into caller-owned storage.
+#[allow(clippy::too_many_arguments)]
+pub fn write_bf16(
+    ctx: &CudaContext,
+    activation: &CudaBuffer,
+    weight: &CudaBuffer,
+    output: &CudaBuffer,
+    m: usize,
+    n: usize,
+    k: usize,
+    alpha: f32,
+) -> Result<()> {
+    let persisted_tactic = crate::tuning::lookup_gemm_exact(&tuning_key(ctx, m, n, k));
+    let use_split_serial = persisted_tactic
+        .is_some_and(|tactic| tactic.backend == TacticBackend::CublasLtCustomSplitSerial);
+    let use_persisted_cublaslt = persisted_tactic.is_some_and(|tactic| {
+        matches!(
+            tactic.backend,
+            TacticBackend::CublasLt
+                | TacticBackend::CublasLtCustom
+                | TacticBackend::CublasLtCustomSplitSerial
+        )
+    });
+    if use_persisted_cublaslt {
+        if crate::workspace::may_prepare_native_resources() {
+            unsafe {
+                let status = if use_split_serial {
+                    ffi::apxinf_static_prepare_bf16_gemm_split(m as i32, n as i32, k as i32)
+                } else {
+                    ffi::apxinf_static_prepare_bf16_gemm(m as i32, n as i32, k as i32)
+                };
+                ffi::check_cublas(status).map_err(Error::Cuda)?;
+            }
+        }
+        unsafe {
+            let status = if use_split_serial {
+                crate::ffi::apxinf_static_bf16_gemm_split(
+                    activation.ptr(),
+                    weight.ptr(),
+                    output.ptr(),
+                    m as i32,
+                    n as i32,
+                    k as i32,
+                    alpha,
+                    ctx.stream().handle(),
+                )
+            } else {
+                crate::ffi::apxinf_static_bf16_gemm(
+                    activation.ptr(),
+                    weight.ptr(),
+                    output.ptr(),
+                    m as i32,
+                    n as i32,
+                    k as i32,
+                    alpha,
+                    ctx.stream().handle(),
+                )
+            };
+            crate::ffi::check_cublas(status).map_err(Error::Cuda)?;
+        }
+        return Ok(());
+    }
+    ctx.cublas()
+        .gemm(DType::BF16, m, n, k, alpha, activation, weight, 0.0, output)
+        .map_err(Error::Cuda)
+}
+
 /// Physical BF16 GEMM contract: `[M,K] @ [K,N] -> [M,N]`.
 pub fn gemm_bf16(ctx: &CudaContext, activation: &Tensor, weight: &Tensor) -> Result<Tensor> {
     if activation.dtype() != DType::BF16 || weight.dtype() != DType::BF16 {
@@ -469,69 +531,7 @@ pub fn gemm_bf16(ctx: &CudaContext, activation: &Tensor, weight: &Tensor) -> Res
     let output = uninitialized_buffer(ctx, m * n * DType::BF16.size_in_bytes())?;
     let activation = CudaBuffer::from_tensor(activation).map_err(Error::Cuda)?;
     let weight = CudaBuffer::from_tensor(weight).map_err(Error::Cuda)?;
-    let persisted_tactic = crate::tuning::lookup_gemm_exact(&tuning_key(ctx, m, n, k));
-    let use_split_serial = persisted_tactic
-        .is_some_and(|tactic| tactic.backend == TacticBackend::CublasLtCustomSplitSerial);
-    let use_persisted_cublaslt = persisted_tactic.is_some_and(|tactic| {
-        matches!(
-            tactic.backend,
-            TacticBackend::CublasLt
-                | TacticBackend::CublasLtCustom
-                | TacticBackend::CublasLtCustomSplitSerial
-        )
-    });
-    if use_persisted_cublaslt {
-        if crate::workspace::may_prepare_native_resources() {
-            unsafe {
-                let status = if use_split_serial {
-                    ffi::apxinf_static_prepare_bf16_gemm_split(m as i32, n as i32, k as i32)
-                } else {
-                    ffi::apxinf_static_prepare_bf16_gemm(m as i32, n as i32, k as i32)
-                };
-                ffi::check_cublas(status).map_err(Error::Cuda)?;
-            }
-        }
-        unsafe {
-            let status = if use_split_serial {
-                crate::ffi::apxinf_static_bf16_gemm_split(
-                    activation.ptr(),
-                    weight.ptr(),
-                    output.ptr(),
-                    m as i32,
-                    n as i32,
-                    k as i32,
-                    1.0,
-                    ctx.stream().handle(),
-                )
-            } else {
-                crate::ffi::apxinf_static_bf16_gemm(
-                    activation.ptr(),
-                    weight.ptr(),
-                    output.ptr(),
-                    m as i32,
-                    n as i32,
-                    k as i32,
-                    1.0,
-                    ctx.stream().handle(),
-                )
-            };
-            crate::ffi::check_cublas(status).map_err(Error::Cuda)?;
-        }
-        return Ok(output.into_tensor(Shape::new(vec![m, n]), DType::BF16));
-    }
-    ctx.cublas()
-        .gemm(
-            DType::BF16,
-            m,
-            n,
-            k,
-            1.0,
-            &activation,
-            &weight,
-            0.0,
-            &output,
-        )
-        .map_err(Error::Cuda)?;
+    write_bf16(ctx, &activation, &weight, &output, m, n, k, 1.0)?;
     Ok(output.into_tensor(Shape::new(vec![m, n]), DType::BF16))
 }
 
@@ -607,9 +607,7 @@ pub fn gemm_bf16_geglu_fused(
             got: selected_weight.device(),
         });
     }
-    if ctx.caps().sm == 89
-        && ((full_n, k) == (8192, 1024) || (full_n, k) == (32768, 2048))
-    {
+    if ctx.caps().sm == 89 && ((full_n, k) == (8192, 1024) || (full_n, k) == (32768, 2048)) {
         let Some(sm89_weight) = bf16_sm89_geglu_interleaved else {
             return Ok(None);
         };
@@ -639,7 +637,9 @@ pub fn gemm_bf16_geglu_fused(
                 ctx,
                 m.checked_mul(n)
                     .and_then(|elements| elements.checked_mul(DType::BF16.size_in_bytes()))
-                    .ok_or_else(|| Error::Other("BF16 SM89 fused GeGLU output size overflow".into()))?,
+                    .ok_or_else(|| {
+                        Error::Other("BF16 SM89 fused GeGLU output size overflow".into())
+                    })?,
             )?;
             let activation_buffer = CudaBuffer::from_tensor(activation).map_err(Error::Cuda)?;
             let weight_buffer = CudaBuffer::from_tensor(sm89_weight).map_err(Error::Cuda)?;

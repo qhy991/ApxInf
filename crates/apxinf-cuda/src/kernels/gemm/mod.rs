@@ -15,7 +15,7 @@ use crate::workspace::uninitialized_buffer;
 
 pub use bf16::{
     autotune_cublaslt_bf16, gemm_bf16 as bf16, gemm_bf16_geglu_fused as bf16_geglu_fused,
-    install_cublaslt_bf16_tactics, Bf16AutotuneResult, Bf16CublasLtTactic,
+    install_cublaslt_bf16_tactics, write_bf16, Bf16AutotuneResult, Bf16CublasLtTactic,
 };
 #[cfg(apxinf_cutlass_gemm)]
 pub use fp8::autotune_cutlass_gemm_f16 as autotune_cutlass_fp8;
@@ -112,6 +112,9 @@ pub fn write(
             ("output", output, checked_bytes(dtype, &[m, n], "GEMM")?),
         ],
     )?;
+    if dtype == DType::BF16 && beta == 0.0 {
+        return bf16::write_bf16(ctx, a, b, output, m, n, k, alpha);
+    }
     ctx.cublas()
         .gemm(dtype, m, n, k, alpha, a, b, beta, output)
         .map_err(apxinf_core::Error::Cuda)

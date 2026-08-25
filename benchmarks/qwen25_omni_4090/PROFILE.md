@@ -3693,3 +3693,64 @@ accepted single-request BF16 SM89 grouped4 split-64 selector at cached KV
 32,761--32,767.** Structured authority is
 `promotion-long-decode-graph.json`; no multi-request, continuous-batching,
 non-SM89 or other-context claim is introduced.
+
+### Promoted M1 packed MLP
+
+After graph replay removed the host control path, the leading remaining 32K
+decode family was 144 M=1 GEMV launches per token. The bounded rewrite changes
+only captured decode MLPs: each layer concatenates its Gate and Up weights at
+load time, one `[1,2048] @ [2048,22016]` projection replaces two
+`[1,2048] @ [2048,11008]` projections, and the existing exact fused
+SiLU/multiply kernel consumes two views of the packed output. Eager decode and
+prefill retain their separate Gate/Up weights and prior tactic selection.
+
+The exact cold-L2 probe selects cuBLASLt heuristic rank 1. It measures
+0.10752 ms for the packed projection versus 0.12231 ms for two vendor Gate/Up
+projections, or 1.138x. A deterministic full-width numerical comparison is
+bit exact (`max_abs=0`, `RMSE=0`, `cosine=1`). The explicit
+`APXINF_QWEN25_M1_PACKED_MLP=1` gate requires the decode graph and fails model
+load when the prerequisite is absent.
+
+The first exploratory arm also installed M1 QKV, WO and Down tactics. Although
+its 32K screen was positive, one 12K observation was about 4% high, so that
+broader policy was not eligible for promotion. The final selector retains only
+the packed Gate/Up record; five paired 12K guards below show eager decode is
+neutral.
+
+Five same-binary AB/BA pairs measure both 12K and 32K after each service load.
+At 32K the candidate wins 5/5: raw median TPOT moves from 10.432 to 10.242 ms,
+paired median speedup is 1.0250x, and the slowest pair is 1.0172x. Candidate
+CV is 0.404%; TTFT changes by -0.039% and wall time improves by 1.0011x. The
+12K eager-decode guard is neutral: raw median TPOT changes from 13.143 to
+13.127 ms, paired median speedup is 1.0010x, and the slowest pair is 0.9979x.
+All twenty complete trajectories are exact.
+
+Matched graph-node Systems profiles explain the gain. Across six complete
+decode steps, kernel instances fall from 3,702 to 3,270, exactly 72 fewer per
+step: 36 Gate/Up GEMVs and 36 separate SiLU/multiply nodes. Mean GPU busy time
+falls from 10.337 to 10.070 ms and the full envelope from 10.975 to 10.633 ms.
+The packed projection plus remaining GEMVs use 4.395 ms/step versus
+4.629 ms/step for the four separate parent GEMVs; the fused activation removes
+another 0.032 ms/step. Low-overhead graph-level tracing preserves the direction
+at 10.424 versus 10.197 ms TPOT (1.0223x).
+
+Regression passes 66/66 model CPU tests, 15/15 benchmark-script tests, quick,
+128-token decode, 4K/8K/12K/32K text, real PNG/WAV, typed request errors and
+malformed-media recovery. CUDA remains 94/96 with only the two existing RTX
+4090 FP8 cuBLAS status-15 controls failing. The 32K request peaks at 15,993
+MiB, leaving 8,571 MiB sampled headroom. Relative to frozen vLLM-Omni 0.26.0,
+ApxInf wins 32K TPOT by 1.716x and reaches a 71.48% algorithmic minimum-BWU
+lower bound.
+
+The deployed binary SHA-256 is
+`af0330a74746e36972a2fd24187d7b73f9d7cf491d644b657590e0ffae39a7f1`;
+the immediate rollback is
+`c322a8bb97635f5efaeb79bbbcab88505d53f273b24531d994f55bd7ab4e20be`.
+A runit-owned smoke reproduces the exact 12K and 32K trajectories at 13.197
+and 10.270 ms TPOT before the service returns down and the Broker reports the
+GPU idle.
+
+**Decision: promote the packed MLP and exact rank-1 tactic only for captured
+M=1 BF16 decode on the frozen RTX 4090 model contract.** Structured authority
+is `promotion-m1-packed-mlp.json`; eager decode, prefill, multimodal processing,
+multi-request serving and non-SM89 hardware are not performance claims.

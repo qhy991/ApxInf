@@ -1,0 +1,309 @@
+{
+  "schema": "apxinf.qwen25_omni.m1_packed_mlp_acceptance.v1",
+  "binary_sha256": "af0330a74746e36972a2fd24187d7b73f9d7cf491d644b657590e0ffae39a7f1",
+  "passed": true,
+  "reports": {
+    "quick": true,
+    "decode": true,
+    "context": true,
+    "multimodal": true,
+    "contract": true,
+    "recovery": true
+  },
+  "quick": {
+    "case_id": "prefill_1k_decode_32",
+    "prompt_tokens": 1024,
+    "output_tokens": 32,
+    "family": "fixed",
+    "trial_count": 1,
+    "passed_trials": 1,
+    "failed_trials": 0,
+    "wall_seconds": {
+      "mean": 0.3549640625715256,
+      "p50": 0.3549640625715256,
+      "p90": 0.3549640625715256,
+      "cv": 0.0
+    },
+    "ttft_seconds": {
+      "mean": 0.06862535,
+      "p50": 0.06862535,
+      "p90": 0.06862535,
+      "cv": 0.0
+    },
+    "tpot_seconds": {
+      "mean": 0.009178890612903227,
+      "p50": 0.009178890612903227,
+      "p90": 0.009178890612903227,
+      "cv": 0.0
+    },
+    "prefill_tokens_per_second_proxy": {
+      "mean": 14921.599671258507,
+      "p50": 14921.599671258507,
+      "p90": 14921.599671258507,
+      "cv": 0.0
+    },
+    "decode_tokens_per_second": {
+      "mean": 108.94562776401865,
+      "p50": 108.94562776401865,
+      "p90": 108.94562776401865,
+      "cv": 0.0
+    },
+    "e2e_output_tokens_per_second": {
+      "mean": 90.1499711496906,
+      "p50": 90.1499711496906,
+      "p90": 90.1499711496906,
+      "cv": 0.0
+    },
+    "trajectory_sha256s": [
+      "bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea"
+    ],
+    "trajectory_stable": true
+  },
+  "decode": {
+    "case_id": "decode_128",
+    "prompt_tokens": 128,
+    "output_tokens": 128,
+    "family": "fixed",
+    "trial_count": 1,
+    "passed_trials": 1,
+    "failed_trials": 0,
+    "wall_seconds": {
+      "mean": 1.0351392701268196,
+      "p50": 1.0351392701268196,
+      "p90": 1.0351392701268196,
+      "cv": 0.0
+    },
+    "ttft_seconds": {
+      "mean": 0.014271154,
+      "p50": 0.014271154,
+      "p90": 0.014271154,
+      "cv": 0.0
+    },
+    "tpot_seconds": {
+      "mean": 0.008026348291338583,
+      "p50": 0.008026348291338583,
+      "p90": 0.008026348291338583,
+      "cv": 0.0
+    },
+    "prefill_tokens_per_second_proxy": {
+      "mean": 8969.141528428605,
+      "p50": 8969.141528428605,
+      "p90": 8969.141528428605,
+      "cv": 0.0
+    },
+    "decode_tokens_per_second": {
+      "mean": 124.5896594194801,
+      "p50": 124.5896594194801,
+      "p90": 124.5896594194801,
+      "cv": 0.0
+    },
+    "e2e_output_tokens_per_second": {
+      "mean": 123.65485852383722,
+      "p50": 123.65485852383722,
+      "p90": 123.65485852383722,
+      "cv": 0.0
+    },
+    "trajectory_sha256s": [
+      "a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039"
+    ],
+    "trajectory_stable": true
+  },
+  "contexts": [
+    {
+      "case_id": "context_4096",
+      "prompt_tokens": 4096,
+      "output_tokens": 8,
+      "family": "context",
+      "trial_count": 1,
+      "passed_trials": 1,
+      "failed_trials": 0,
+      "wall_seconds": {
+        "mean": 0.4678826555609703,
+        "p50": 0.4678826555609703,
+        "p90": 0.4678826555609703,
+        "cv": 0.0
+      },
+      "ttft_seconds": {
+        "mean": 0.395210324,
+        "p50": 0.395210324,
+        "p90": 0.395210324,
+        "cv": 0.0
+      },
+      "tpot_seconds": {
+        "mean": 0.010030639,
+        "p50": 0.010030639,
+        "p90": 0.010030639,
+        "cv": 0.0
+      },
+      "prefill_tokens_per_second_proxy": {
+        "mean": 10364.101723213082,
+        "p50": 10364.101723213082,
+        "p90": 10364.101723213082,
+        "cv": 0.0
+      },
+      "decode_tokens_per_second": {
+        "mean": 99.6945458808756,
+        "p50": 99.6945458808756,
+        "p90": 99.6945458808756,
+        "cv": 0.0
+      },
+      "e2e_output_tokens_per_second": {
+        "mean": 17.09830425410482,
+        "p50": 17.09830425410482,
+        "p90": 17.09830425410482,
+        "cv": 0.0
+      },
+      "trajectory_sha256s": [
+        "edc940b80ff945971996ddf2b30534773258bb41d3d1812c38f36ba06eaabcbd"
+      ],
+      "trajectory_stable": true
+    },
+    {
+      "case_id": "context_8192",
+      "prompt_tokens": 8192,
+      "output_tokens": 8,
+      "family": "context",
+      "trial_count": 1,
+      "passed_trials": 1,
+      "failed_trials": 0,
+      "wall_seconds": {
+        "mean": 0.48585135489702225,
+        "p50": 0.48585135489702225,
+        "p90": 0.48585135489702225,
+        "cv": 0.0
+      },
+      "ttft_seconds": {
+        "mean": 0.407607674,
+        "p50": 0.407607674,
+        "p90": 0.407607674,
+        "cv": 0.0
+      },
+      "tpot_seconds": {
+        "mean": 0.010711686428571428,
+        "p50": 0.010711686428571428,
+        "p90": 0.010711686428571428,
+        "cv": 0.0
+      },
+      "prefill_tokens_per_second_proxy": {
+        "mean": 20097.757040756795,
+        "p50": 20097.757040756795,
+        "p90": 20097.757040756795,
+        "cv": 0.0
+      },
+      "decode_tokens_per_second": {
+        "mean": 93.3559814944439,
+        "p50": 93.3559814944439,
+        "p90": 93.3559814944439,
+        "cv": 0.0
+      },
+      "e2e_output_tokens_per_second": {
+        "mean": 16.46594152587189,
+        "p50": 16.46594152587189,
+        "p90": 16.46594152587189,
+        "cv": 0.0
+      },
+      "trajectory_sha256s": [
+        "490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf"
+      ],
+      "trajectory_stable": true
+    },
+    {
+      "case_id": "context_12288",
+      "prompt_tokens": 12288,
+      "output_tokens": 8,
+      "family": "context",
+      "trial_count": 1,
+      "passed_trials": 1,
+      "failed_trials": 0,
+      "wall_seconds": {
+        "mean": 0.7496204674243927,
+        "p50": 0.7496204674243927,
+        "p90": 0.7496204674243927,
+        "cv": 0.0
+      },
+      "ttft_seconds": {
+        "mean": 0.6545333130000001,
+        "p50": 0.6545333130000001,
+        "p90": 0.6545333130000001,
+        "cv": 0.0
+      },
+      "tpot_seconds": {
+        "mean": 0.013056927142857142,
+        "p50": 0.013056927142857142,
+        "p90": 0.013056927142857142,
+        "cv": 0.0
+      },
+      "prefill_tokens_per_second_proxy": {
+        "mean": 18773.68157730422,
+        "p50": 18773.68157730422,
+        "p90": 18773.68157730422,
+        "cv": 0.0
+      },
+      "decode_tokens_per_second": {
+        "mean": 76.58769854950557,
+        "p50": 76.58769854950557,
+        "p90": 76.58769854950557,
+        "cv": 0.0
+      },
+      "e2e_output_tokens_per_second": {
+        "mean": 10.672067196200038,
+        "p50": 10.672067196200038,
+        "p90": 10.672067196200038,
+        "cv": 0.0
+      },
+      "trajectory_sha256s": [
+        "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832"
+      ],
+      "trajectory_stable": true
+    },
+    {
+      "case_id": "context_32760",
+      "prompt_tokens": 32760,
+      "output_tokens": 8,
+      "family": "context",
+      "trial_count": 1,
+      "passed_trials": 1,
+      "failed_trials": 0,
+      "wall_seconds": {
+        "mean": 2.675080746412277,
+        "p50": 2.675080746412277,
+        "p90": 2.675080746412277,
+        "cv": 0.0
+      },
+      "ttft_seconds": {
+        "mean": 2.5949546690000003,
+        "p50": 2.5949546690000003,
+        "p90": 2.5949546690000003,
+        "cv": 0.0
+      },
+      "tpot_seconds": {
+        "mean": 0.010231179714285714,
+        "p50": 0.010231179714285714,
+        "p90": 0.010231179714285714,
+        "cv": 0.0
+      },
+      "prefill_tokens_per_second_proxy": {
+        "mean": 12624.497988870262,
+        "p50": 12624.497988870262,
+        "p90": 12624.497988870262,
+        "cv": 0.0
+      },
+      "decode_tokens_per_second": {
+        "mean": 97.74043931646592,
+        "p50": 97.74043931646592,
+        "p90": 97.74043931646592,
+        "cv": 0.0
+      },
+      "e2e_output_tokens_per_second": {
+        "mean": 2.990563933716511,
+        "p50": 2.990563933716511,
+        "p90": 2.990563933716511,
+        "cv": 0.0
+      },
+      "trajectory_sha256s": [
+        "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9"
+      ],
+      "trajectory_stable": true
+    }
+  ]
+}

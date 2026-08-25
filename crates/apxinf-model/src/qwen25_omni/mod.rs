@@ -16,3 +16,14 @@ pub use config::{
 };
 pub use general::GeneralQwen25Omni;
 pub use weights::Qwen25OmniTextWeights;
+
+#[cfg(feature = "cuda")]
+pub(crate) fn parse_binary_env(name: &str) -> std::result::Result<bool, String> {
+    match std::env::var(name) {
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Ok(value) if value == "0" => Ok(false),
+        Ok(value) if value == "1" => Ok(true),
+        Ok(value) => Err(format!("{name} must be 0 or 1, got `{value}`")),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} must be UTF-8")),
+    }
+}

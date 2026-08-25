@@ -39,6 +39,7 @@ exec chpst -u gpuq:gpuq-users /usr/local/bin/gpu-run \
   APXINF_QWEN25_FUSED_SILU_MUL=1 \
   APXINF_QWEN25_CHUNKED_PREFILL=1 \
   APXINF_QWEN25_BF16_CHUNK_TACTICS=1 \
+  APXINF_QWEN25_M1_PACKED_MLP=1 \
   /opt/apxinf/qwen25-omni-target/release/apxinf serve \
   --model /mnt/user_dir/hanjinchen/models/Qwen/Qwen2.5-Omni-3B \
   --host 127.0.0.1 --port 8001 \

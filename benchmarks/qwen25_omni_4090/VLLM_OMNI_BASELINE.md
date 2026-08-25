@@ -82,14 +82,14 @@ paired measurements; vLLM numbers retain their frozen p50 after one warmup.
 |---:|---:|---:|---:|---:|---:|---|
 | 8,192 | 0.407 s | 0.512 s | ApxInf 1.259× | 10.69 ms | 19.11 ms | ApxInf 1.337× |
 | 12,288 | 0.655 s | 0.830 s | ApxInf 1.267× | 13.07 ms | 19.09 ms | ApxInf 1.284× |
-| 32,760 | 2.602 s | 2.912 s | ApxInf 1.119× | 10.41 ms | 17.58 ms | ApxInf 1.131× |
+| 32,760 | 2.597 s | 2.912 s | ApxInf 1.122× | 10.24 ms | 17.58 ms | ApxInf 1.134× |
 
 ApxInf's causal FA2 path, FA2-aware 1,024-token chunks and request-scoped early
 FA2 remove the former prefill deficit across all frozen lengths. At the 32K
 decode boundary, grouped-GQA split-64 attention plus the dedicated long decode
-CUDA Graph lowers ApxInf TPOT from 24.35 to 10.41 ms and reverses the last vLLM
-text advantage: ApxInf is 1.688× faster. The minimum-BWU lower bound at 32K is
-70.33% for ApxInf and 41.65% for vLLM.
+CUDA Graph and packed M1 MLP lower ApxInf TPOT from 24.35 to 10.24 ms and
+reverse the last vLLM text advantage: ApxInf is 1.716× faster. The minimum-BWU
+lower bound at 32K is 71.48% for ApxInf and 41.65% for vLLM.
 
 Both engines pass 32,760 + 8. vLLM's throughput-oriented automatic policy
 reserved 11.45 GiB for 333,552 KV tokens—10.18 simultaneous 32K requests—and

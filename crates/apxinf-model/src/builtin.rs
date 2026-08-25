@@ -32,60 +32,74 @@ fn load_qwen25_omni(
 ) -> Result<LoadedModel> {
     validate_qwen25_omni_load_options(device, options)?;
     #[cfg(feature = "cuda")]
-    if qwen25_omni_chunk_tactics_enabled()? {
-        use crate::accelerator::cuda::{downcast, kernels};
-        let cuda = downcast(&*backend)
-            .ok_or_else(|| Error::Other("Qwen2.5-Omni tactics require CudaBackend".into()))?;
-        if cuda.context().caps().sm != 89
-            || cuda.context().caps().device_name != "NVIDIA GeForce RTX 4090"
-        {
-            return Err(Error::Other(format!(
-                "Qwen2.5-Omni chunk tactics require RTX 4090 SM89, got {} SM{}",
-                cuda.context().caps().device_name,
-                cuda.context().caps().sm
-            )));
+    {
+        let chunk_tactics = qwen25_omni_chunk_tactics_enabled()?;
+        let m1_packed_mlp = qwen25_omni_m1_packed_mlp_enabled()?;
+        if chunk_tactics || m1_packed_mlp {
+            use crate::accelerator::cuda::{downcast, kernels};
+            let cuda = downcast(&*backend)
+                .ok_or_else(|| Error::Other("Qwen2.5-Omni tactics require CudaBackend".into()))?;
+            if cuda.context().caps().sm != 89
+                || cuda.context().caps().device_name != "NVIDIA GeForce RTX 4090"
+            {
+                return Err(Error::Other(format!(
+                    "Qwen2.5-Omni chunk tactics require RTX 4090 SM89, got {} SM{}",
+                    cuda.context().caps().device_name,
+                    cuda.context().caps().sm
+                )));
+            }
+            use kernels::gemm::Bf16CublasLtTactic as Tactic;
+            let mut tactics = Vec::new();
+            if chunk_tactics {
+                tactics.extend([
+                    Tactic {
+                        m: 256,
+                        n: 2560,
+                        k: 2048,
+                        heuristic_rank: 2,
+                        milliseconds: 0.029792001470923424,
+                    },
+                    Tactic {
+                        m: 256,
+                        n: 11008,
+                        k: 2048,
+                        heuristic_rank: 1,
+                        milliseconds: 0.08908800780773163,
+                    },
+                    Tactic {
+                        m: 256,
+                        n: 2048,
+                        k: 11008,
+                        heuristic_rank: 2,
+                        milliseconds: 0.09156159311532974,
+                    },
+                    Tactic {
+                        m: 1024,
+                        n: 2560,
+                        k: 2048,
+                        heuristic_rank: 2,
+                        milliseconds: 0.07874559611082077,
+                    },
+                    Tactic {
+                        m: 1024,
+                        n: 11008,
+                        k: 2048,
+                        heuristic_rank: 1,
+                        milliseconds: 0.2900064289569855,
+                    },
+                ]);
+            }
+            if m1_packed_mlp {
+                tactics.push(Tactic {
+                    m: 1,
+                    n: 22016,
+                    k: 2048,
+                    heuristic_rank: 1,
+                    milliseconds: 0.10788639634847641,
+                });
+            }
+            kernels::gemm::install_cublaslt_bf16_tactics(cuda.context(), &tactics)?;
         }
-        use kernels::gemm::Bf16CublasLtTactic as Tactic;
-        kernels::gemm::install_cublaslt_bf16_tactics(
-            cuda.context(),
-            &[
-                Tactic {
-                    m: 256,
-                    n: 2560,
-                    k: 2048,
-                    heuristic_rank: 2,
-                    milliseconds: 0.029792001470923424,
-                },
-                Tactic {
-                    m: 256,
-                    n: 11008,
-                    k: 2048,
-                    heuristic_rank: 1,
-                    milliseconds: 0.08908800780773163,
-                },
-                Tactic {
-                    m: 256,
-                    n: 2048,
-                    k: 11008,
-                    heuristic_rank: 2,
-                    milliseconds: 0.09156159311532974,
-                },
-                Tactic {
-                    m: 1024,
-                    n: 2560,
-                    k: 2048,
-                    heuristic_rank: 2,
-                    milliseconds: 0.07874559611082077,
-                },
-                Tactic {
-                    m: 1024,
-                    n: 11008,
-                    k: 2048,
-                    heuristic_rank: 1,
-                    milliseconds: 0.2900064289569855,
-                },
-            ],
-        )?;
     }
     let model_dir = if path.is_dir() {
         path
@@ -100,17 +114,12 @@ fn load_qwen25_omni(
 
 #[cfg(feature = "cuda")]
 fn qwen25_omni_chunk_tactics_enabled() -> Result<bool> {
-    match std::env::var("APXINF_QWEN25_BF16_CHUNK_TACTICS") {
-        Err(std::env::VarError::NotPresent) => Ok(false),
-        Ok(value) if value == "0" => Ok(false),
-        Ok(value) if value == "1" => Ok(true),
-        Ok(value) => Err(Error::Other(format!(
-            "APXINF_QWEN25_BF16_CHUNK_TACTICS must be 0 or 1, got `{value}`"
-        ))),
-        Err(std::env::VarError::NotUnicode(_)) => Err(Error::Other(
-            "APXINF_QWEN25_BF16_CHUNK_TACTICS must be UTF-8".into(),
-        )),
-    }
+    crate::qwen25_omni::parse_binary_env("APXINF_QWEN25_BF16_CHUNK_TACTICS").map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
+fn qwen25_omni_m1_packed_mlp_enabled() -> Result<bool> {
+    crate::qwen25_omni::parse_binary_env("APXINF_QWEN25_M1_PACKED_MLP").map_err(Error::Other)
 }
 
 pub fn validate_qwen25_omni_load_options(device: Device, options: &LoadOptions) -> Result<()> {
@@ -119,7 +128,10 @@ pub fn validate_qwen25_omni_load_options(device: Device, options: &LoadOptions) 
             "qwen2.5-omni BF16 deployment requires a CUDA device".into(),
         ));
     }
-    if !matches!(options.precision, ModelPrecision::Auto | ModelPrecision::Bf16) {
+    if !matches!(
+        options.precision,
+        ModelPrecision::Auto | ModelPrecision::Bf16
+    ) {
         return Err(Error::Other(format!(
             "qwen2.5-omni deployment supports only checkpoint-native BF16, not {:?}",
             options.precision

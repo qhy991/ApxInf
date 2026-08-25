@@ -82,6 +82,37 @@ pub fn silu_mul_bf16_into(
     })
 }
 
+/// Exact fused BF16 SiLU(gate) * up into caller-owned decode storage.
+pub fn silu_mul_separate_bf16_into(
+    ctx: &CudaContext,
+    gate: &CudaBuffer,
+    up: &CudaBuffer,
+    output: &CudaBuffer,
+    count: usize,
+) -> Result<()> {
+    let bytes = checked_bytes(DType::BF16, &[count], "separate decode SiLU multiply")?;
+    require_buffers(
+        ctx,
+        "separate decode SiLU multiply",
+        &[
+            ("gate", gate, bytes),
+            ("up", up, bytes),
+            ("output", output, bytes),
+        ],
+    )?;
+    let count = u32::try_from(count)
+        .map_err(|_| Error::Other("separate decode SiLU multiply exceeds u32 elements".into()))?;
+    check_cuda(unsafe {
+        ffi::apxinf_silu_mul_separate_bf16(
+            gate.ptr(),
+            up.ptr(),
+            output.ptr(),
+            count,
+            ctx.stream().handle(),
+        )
+    })
+}
+
 /// Exact fused BF16 SiLU(gate) * up for separate, shape-identical tensors.
 pub fn silu_mul(ctx: &CudaContext, gate: &Tensor, up: &Tensor) -> Result<Tensor> {
     if gate.dtype() != DType::BF16 || up.dtype() != DType::BF16 || gate.shape() != up.shape() {
@@ -104,15 +135,7 @@ pub fn silu_mul(ctx: &CudaContext, gate: &Tensor, up: &Tensor) -> Result<Tensor>
             ("output", &output, bytes),
         ],
     )?;
-    check_cuda(unsafe {
-        ffi::apxinf_silu_mul_separate_bf16(
-            gate_buffer.ptr(),
-            up_buffer.ptr(),
-            output.ptr(),
-            count,
-            ctx.stream().handle(),
-        )
-    })?;
+    silu_mul_separate_bf16_into(ctx, &gate_buffer, &up_buffer, &output, count as usize)?;
     Ok(make_gpu_tensor(
         gate.shape().clone(),
         DType::BF16,
@@ -159,8 +182,12 @@ pub fn gelu_tanh(ctx: &CudaContext, input: &Tensor) -> Result<Tensor> {
     let count = input.numel() as u32;
     let out_buf = uninitialized_buffer(ctx, input.size_in_bytes())?;
     unsafe {
-        let res =
-            ffi::apxinf_gelu_tanh_bf16(gpu_ptr(input)?, out_buf.ptr(), count, ctx.stream().handle());
+        let res = ffi::apxinf_gelu_tanh_bf16(
+            gpu_ptr(input)?,
+            out_buf.ptr(),
+            count,
+            ctx.stream().handle(),
+        );
         ffi::check_cuda(res).map_err(Error::Cuda)?;
     }
     Ok(make_gpu_tensor(

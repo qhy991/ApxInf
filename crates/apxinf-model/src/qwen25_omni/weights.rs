@@ -36,6 +36,7 @@ pub struct Qwen25OmniTextLayer {
     pub ffn_norm: Tensor,
     pub w_gate: Tensor,
     pub w_up: Tensor,
+    pub gate_up_packed: Option<Tensor>,
     pub w_down: Tensor,
 }
 
@@ -80,6 +81,7 @@ impl Qwen25OmniTextWeights {
                 )?,
                 w_gate: transpose_2d(&take(&format!("{prefix}.mlp.gate_proj.weight"), tensors)?)?,
                 w_up: transpose_2d(&take(&format!("{prefix}.mlp.up_proj.weight"), tensors)?)?,
+                gate_up_packed: None,
                 w_down: transpose_2d(&take(&format!("{prefix}.mlp.down_proj.weight"), tensors)?)?,
             });
         }
@@ -125,6 +127,11 @@ impl Qwen25OmniTextWeights {
                     ffn_norm: backend.to_device(&layer.ffn_norm)?,
                     w_gate: backend.to_device(&layer.w_gate)?,
                     w_up: backend.to_device(&layer.w_up)?,
+                    gate_up_packed: layer
+                        .gate_up_packed
+                        .as_ref()
+                        .map(|weight| backend.to_device(weight))
+                        .transpose()?,
                     w_down: backend.to_device(&layer.w_down)?,
                 })
             })
@@ -175,10 +182,43 @@ impl Qwen25OmniTextWeights {
                     ffn_norm: layer.ffn_norm,
                     w_gate: layer.w_gate,
                     w_up: layer.w_up,
+                    gate_up_packed: layer.gate_up_packed,
                     w_down: layer.w_down,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            token_embedding: self.token_embedding,
+            layers,
+            output_norm: self.output_norm,
+            lm_head: self.lm_head,
+        })
+    }
+
+    pub fn into_packed_gate_up(self, backend: &dyn Backend) -> Result<Self> {
+        let layers = self
+            .layers
+            .into_iter()
+            .map(|layer| {
+                if layer.gate_up_packed.is_some() {
+                    return Err(Error::Other(
+                        "Qwen2.5-Omni Gate/Up weights were packed twice".into(),
+                    ));
+                }
+                let gate_up_packed = Some(backend.concat_2d(&[&layer.w_gate, &layer.w_up])?);
+                Ok(Qwen25OmniTextLayer {
+                    attn_norm: layer.attn_norm,
+                    qkv: layer.qkv,
+                    wo: layer.wo,
+                    ffn_norm: layer.ffn_norm,
+                    w_gate: layer.w_gate,
+                    w_up: layer.w_up,
+                    gate_up_packed,
+                    w_down: layer.w_down,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        backend.synchronize()?;
         Ok(Self {
             token_embedding: self.token_embedding,
             layers,

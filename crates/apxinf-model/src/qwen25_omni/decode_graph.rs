@@ -53,6 +53,7 @@ pub struct Qwen25OmniDecodeLayerWeights<'a> {
     pub ffn_norm: &'a Tensor,
     pub w_gate: &'a Tensor,
     pub w_up: &'a Tensor,
+    pub gate_up_packed: Option<&'a Tensor>,
     pub w_down: &'a Tensor,
 }
 
@@ -71,6 +72,7 @@ struct DecodeWorkspace {
     gate: CudaBuffer,
     gate_silu: CudaBuffer,
     up: CudaBuffer,
+    gate_up: CudaBuffer,
     mlp_hidden: CudaBuffer,
     mlp_out: CudaBuffer,
     logits: CudaBuffer,
@@ -110,6 +112,7 @@ impl DecodeWorkspace {
             gate: allocate(intermediate)?,
             gate_silu: allocate(intermediate)?,
             up: allocate(intermediate)?,
+            gate_up: allocate(2 * intermediate)?,
             mlp_hidden: allocate(intermediate)?,
             mlp_out: allocate(hidden)?,
             logits: allocate(config.vocab_size)?,
@@ -453,45 +456,76 @@ fn decode_forward_capturable(
             1,
             config.rms_norm_eps,
         )?;
-        kernels::gemm::write(
-            context,
-            DType::BF16,
-            1,
-            intermediate,
-            hidden,
-            1.0,
-            &workspace.ffn_norm,
-            &weight_view(layer.w_gate, device)?,
-            0.0,
-            &workspace.gate,
-        )?;
-        kernels::gemm::write(
-            context,
-            DType::BF16,
-            1,
-            intermediate,
-            hidden,
-            1.0,
-            &workspace.ffn_norm,
-            &weight_view(layer.w_up, device)?,
-            0.0,
-            &workspace.up,
-        )?;
-        kernels::activation::silu_into(
-            context,
-            DType::BF16,
-            &workspace.gate,
-            &workspace.gate_silu,
-            intermediate,
-        )?;
-        kernels::elementwise::mul_into(
-            context,
-            DType::BF16,
-            &workspace.gate_silu,
-            &workspace.up,
-            &workspace.mlp_hidden,
-            intermediate,
-        )?;
+        if let Some(gate_up_packed) = layer.gate_up_packed {
+            kernels::gemm::write(
+                context,
+                DType::BF16,
+                1,
+                2 * intermediate,
+                hidden,
+                1.0,
+                &workspace.ffn_norm,
+                &weight_view(gate_up_packed, device)?,
+                0.0,
+                &workspace.gate_up,
+            )?;
+            let element_bytes = DType::BF16.size_in_bytes();
+            let gate = workspace
+                .gate_up
+                .view(0, intermediate * element_bytes)
+                .map_err(Error::Cuda)?;
+            let up = workspace
+                .gate_up
+                .view(intermediate * element_bytes, intermediate * element_bytes)
+                .map_err(Error::Cuda)?;
+            kernels::activation::silu_mul_separate_bf16_into(
+                context,
+                &gate,
+                &up,
+                &workspace.mlp_hidden,
+                intermediate,
+            )?;
+        } else {
+            kernels::gemm::write(
+                context,
+                DType::BF16,
+                1,
+                intermediate,
+                hidden,
+                1.0,
+                &workspace.ffn_norm,
+                &weight_view(layer.w_gate, device)?,
+                0.0,
+                &workspace.gate,
+            )?;
+            kernels::gemm::write(
+                context,
+                DType::BF16,
+                1,
+                intermediate,
+                hidden,
+                1.0,
+                &workspace.ffn_norm,
+                &weight_view(layer.w_up, device)?,
+                0.0,
+                &workspace.up,
+            )?;
+            kernels::activation::silu_into(
+                context,
+                DType::BF16,
+                &workspace.gate,
+                &workspace.gate_silu,
+                intermediate,
+            )?;
+            kernels::elementwise::mul_into(
+                context,
+                DType::BF16,
+                &workspace.gate_silu,
+                &workspace.up,
+                &workspace.mlp_hidden,
+                intermediate,
+            )?;
+        }
         kernels::gemm::write(
             context,
             DType::BF16,

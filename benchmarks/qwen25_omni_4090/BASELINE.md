@@ -6,9 +6,9 @@
   `Qwen/Qwen2.5-Omni-3B@f75b40e3da2003cdd6e1829b1f420ca70797c34e`
 - GPU: NVIDIA GeForce RTX 4090, 24,564 MiB, single request, BF16
 - Deployed binary SHA-256:
-  `c322a8bb97635f5efaeb79bbbcab88505d53f273b24531d994f55bd7ab4e20be`
+  `af0330a74746e36972a2fd24187d7b73f9d7cf491d644b657590e0ffae39a7f1`
 - Immediate rollback SHA-256:
-  `2db3d8ea5d3186a24849a651e3676da3acec3eb212889ee06f87313e311dce21`
+  `c322a8bb97635f5efaeb79bbbcab88505d53f273b24531d994f55bd7ab4e20be`
 - Deployment owner: runit launches the checked-in Broker service definition;
   the service is stopped when unused so other queued work can own the GPU.
 
@@ -69,6 +69,11 @@ token selection into a dedicated CUDA Graph. It replays only at positions
 32,760--32,767 and requires every existing decode-graph and long-attention
 prerequisite at model load. Shorter decode and every prefill or multimodal
 request remain on their accepted paths.
+The graph MLP refinement additionally concatenates each layer's Gate and Up
+weights once at load time, executes one exact M=1 cuBLASLt projection, and
+replaces separate SiLU and multiply nodes with their bit-exact fused
+composition. Only captured M=1 decode consumes the packed weights; eager
+decode and prefill retain their existing projection ownership and tactics.
 
 | Workload | Repeats | Current TTFT p50/median | Prior causal-FA2 TTFT | Change | TPOT median |
 |---|---:|---:|---:|---:|---:|
@@ -77,7 +82,7 @@ request remain on their accepted paths.
 | 7,168 + 8 control | 1 | 0.6252 s | same inactive path | control | 10.392 ms |
 | 8,192 + 8 | 5 paired | 0.4065 s | 0.6140 s | 1.511× median | 10.694 ms |
 | 12,288 + 8 | 5 paired | 0.6552 s | 0.8661 s | 1.322× median | 13.075 ms |
-| 32,760 + 8 | 5 paired | 2.6021 s | 2.6030 s | unchanged | 10.410 ms |
+| 32,760 + 8 | 5 paired | 2.5965 s | 2.5975 s | unchanged | 10.242 ms |
 
 The resident processor improves service wall time independently of model
 execution:
@@ -92,7 +97,7 @@ The exact 32,768-token contract, malformed-media recovery and real PNG/WAV
 exact-token gates pass. All 94 non-FP8 CUDA tests and all 66 model CPU tests
 pass. The same two RTX 4090
 FP8 cuBLAS status-15 failures remain explicit known control failures. See
-`PROFILE.md` and `promotion-long-decode-graph.json` for the latest promotion
+`PROFILE.md` and `promotion-m1-packed-mlp.json` for the latest promotion
 evidence.
 
 ## Original frozen deployment

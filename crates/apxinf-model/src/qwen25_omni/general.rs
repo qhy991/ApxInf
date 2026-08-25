@@ -18,6 +18,8 @@ use super::decode_graph::{
     Qwen25OmniDecodeGraph, Qwen25OmniDecodeGraphConfig, Qwen25OmniDecodeGraphWeights,
     Qwen25OmniDecodeLayerWeights, Qwen25OmniDecodeQkvWeights,
 };
+#[cfg(feature = "cuda")]
+use super::parse_binary_env;
 use super::vision::{self, Qwen25OmniVisionWeights};
 use super::weights::{Qwen25OmniQkvWeights, Qwen25OmniTextWeights};
 
@@ -100,17 +102,6 @@ pub struct GeneralQwen25Omni {
 }
 
 #[cfg(feature = "cuda")]
-fn parse_binary_env(name: &str) -> std::result::Result<bool, String> {
-    match std::env::var(name) {
-        Err(std::env::VarError::NotPresent) => Ok(false),
-        Ok(value) if value == "0" => Ok(false),
-        Ok(value) if value == "1" => Ok(true),
-        Ok(value) => Err(format!("{name} must be 0 or 1, got `{value}`")),
-        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{name} must be UTF-8")),
-    }
-}
-
-#[cfg(feature = "cuda")]
 fn decode_graph_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
     ENABLED
@@ -142,6 +133,15 @@ fn packed_qkv_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
     ENABLED
         .get_or_init(|| parse_binary_env("APXINF_QWEN25_PACKED_QKV"))
+        .clone()
+        .map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
+fn m1_packed_mlp_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| parse_binary_env("APXINF_QWEN25_M1_PACKED_MLP"))
         .clone()
         .map_err(Error::Other)
 }
@@ -303,6 +303,7 @@ impl GeneralQwen25Omni {
             let select_token = gpu_argmax_enabled()?;
             let eager_select_token = eager_gpu_argmax_enabled()?;
             let packed_qkv = packed_qkv_enabled()?;
+            let m1_packed_mlp = m1_packed_mlp_enabled()?;
             let fused_tmrope_kv = fused_tmrope_kv_enabled()?;
             if select_token && !graph_enabled {
                 return Err(Error::Other(
@@ -317,6 +318,11 @@ impl GeneralQwen25Omni {
             if packed_qkv && !graph_enabled {
                 return Err(Error::Other(
                     "APXINF_QWEN25_PACKED_QKV requires APXINF_QWEN25_DECODE_GRAPH=1".into(),
+                ));
+            }
+            if m1_packed_mlp && !graph_enabled {
+                return Err(Error::Other(
+                    "APXINF_QWEN25_M1_PACKED_MLP=1 requires APXINF_QWEN25_DECODE_GRAPH=1".into(),
                 ));
             }
             if fused_tmrope_kv && !graph_enabled {
@@ -349,6 +355,12 @@ impl GeneralQwen25Omni {
                 }
                 if packed_qkv {
                     text = text.into_packed_qkv(&*backend)?;
+                }
+                if m1_packed_mlp {
+                    text = text.into_packed_gate_up(&*backend)?;
+                    eprintln!(
+                        "ApxInf Qwen2.5-Omni M1 packed MLP: combined Gate/Up with exact SM89 cuBLASLt tactic"
+                    );
                 }
                 let short = Qwen25OmniDecodeGraph::new(
                     cuda,
@@ -455,6 +467,7 @@ impl GeneralQwen25Omni {
                     ffn_norm: &layer.ffn_norm,
                     w_gate: &layer.w_gate,
                     w_up: &layer.w_up,
+                    gate_up_packed: layer.gate_up_packed.as_ref(),
                     w_down: &layer.w_down,
                 })
                 .collect(),

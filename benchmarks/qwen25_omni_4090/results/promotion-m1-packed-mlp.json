@@ -1,0 +1,178 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "completed_at": "2026-08-25T05:47:59Z",
+  "contract": {
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "hardware": "NVIDIA GeForce RTX 4090",
+    "sm": 89,
+    "precision": "bf16",
+    "concurrency": 1,
+    "sampling": "greedy",
+    "primary_request": {"prompt_tokens": 32760, "output_tokens": 8},
+    "eager_guard_request": {"prompt_tokens": 12288, "output_tokens": 8},
+    "shape": {
+      "layers": 36,
+      "hidden": 2048,
+      "intermediate": 11008,
+      "packed_projection": [1, 2048, 22016],
+      "max_context_tokens": 32768
+    },
+    "timing_authority": "no-profiler service-emitted TPOT and TTFT plus client wall time",
+    "profile_role": "causal attribution only"
+  },
+  "hypothesis": {
+    "removed_work": "replace two per-layer M1 Gate/Up projections with one packed projection and replace separate SiLU plus multiply nodes with their bit-exact fused composition",
+    "expected_effect": "remove 72 graph nodes per decode token and reduce Gate/Up projection time without changing eager decode, prefill or final tokens",
+    "rejection_rule": "reject on any trajectory mismatch, invalid-gate fallback, less than four of five 32K paired wins, median 32K speedup below 1.005, 12K median regression above one percent or sampled memory headroom below two GiB"
+  },
+  "implementation": {
+    "parent_revision": "47eb4c1914bb4ea2048f95275c18af7f734327f7",
+    "selector": "APXINF_QWEN25_M1_PACKED_MLP=1",
+    "prerequisite": "APXINF_QWEN25_DECODE_GRAPH=1",
+    "gate": "captured M1 BF16 decode; eager decode and prefill retain separate Gate/Up weights",
+    "packed_weight_bytes": 3246391296,
+    "candidate_binary_sha256": "af0330a74746e36972a2fd24187d7b73f9d7cf491d644b657590e0ffae39a7f1",
+    "candidate_binary_bytes": 23096504,
+    "rollback_binary_sha256": "c322a8bb97635f5efaeb79bbbcab88505d53f273b24531d994f55bd7ab4e20be",
+    "unsupported_behavior": "model load fails closed; no runtime fallback"
+  },
+  "operator_screen": {
+    "job": "gpuq-8e214bb457f1",
+    "raw": "omni-packed-mlp-m1-numerical.json",
+    "separate_gate_or_up_vendor_ms": 0.06115520000457764,
+    "packed_vendor_ms": 0.1212287999689579,
+    "packed_rank1_ms": 0.10751999914646149,
+    "packed_rank1_speedup_over_two_vendor_projections": 1.1375595329250943,
+    "selected_rank": 1,
+    "numerical": {"max_abs": 0.0, "rmse": 0.0, "cosine": 1.0}
+  },
+  "rejected_broad_arm": {
+    "scope": "additional M1 QKV, WO and Down tactics",
+    "reason": "the broader arm changed eager decode policy and produced one unqualified roughly four-percent-high 12K observation",
+    "final_action": "remove the three unrelated tactics and retain only the packed Gate/Up record before formal pairing"
+  },
+  "no_profiler": {
+    "binary_control": "the same immutable SM89 binary and service configuration with only APXINF_QWEN25_M1_PACKED_MLP changed from 0 to 1",
+    "order": ["A", "B", "B", "A", "A", "B", "B", "A", "A", "B"],
+    "pairs": 5,
+    "primary_32k": {
+      "paired_wins": 5,
+      "baseline_tpot_median_seconds": 0.010432199999999999,
+      "candidate_tpot_median_seconds": 0.010241975,
+      "paired_tpot_speedup_median": 1.0249939379529722,
+      "paired_tpot_speedup_min": 1.0171557173857022,
+      "raw_median_tpot_reduction_pct": 1.8234408849523653,
+      "baseline_tpot_cv_pct": 0.8297125692897672,
+      "candidate_tpot_cv_pct": 0.4038018695487162,
+      "baseline_ttft_median_seconds": 2.597529359,
+      "candidate_ttft_median_seconds": 2.596522207,
+      "candidate_ttft_change_pct": -0.03877345973051227,
+      "baseline_wall_median_seconds": 2.679822914302349,
+      "candidate_wall_median_seconds": 2.676881566643715,
+      "wall_speedup": 1.0010987963364857
+    },
+    "eager_12k_guard": {
+      "paired_wins": 3,
+      "baseline_tpot_median_seconds": 0.013142886714285713,
+      "candidate_tpot_median_seconds": 0.013126657714285716,
+      "paired_tpot_speedup_median": 1.0009884248546346,
+      "paired_tpot_speedup_min": 0.9979229489536742,
+      "candidate_raw_median_change_pct": -0.12348124390632043
+    },
+    "all_12k_exact": true,
+    "all_32k_exact": true,
+    "raw_pattern": "omni-packed-mlp-abba-s??-p*-?.json",
+    "summary": "omni-packed-mlp-screen-summary.json"
+  },
+  "correctness": {
+    "trajectory_12k_sha256": "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832",
+    "trajectory_32k_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9",
+    "final_acceptance": "omni-packed-mlp-acceptance-summary.json",
+    "final_acceptance_passed": true,
+    "adjacent_cells": ["1024+32", "128+128", "4096+8", "8192+8", "12288+8"],
+    "multimodal": ["real PNG exact-token", "real WAV exact-token"],
+    "failure_recovery": ["typed request-contract errors", "malformed PNG then exact valid PNG"],
+    "memory_used_peak_mib_at_32k": 15993,
+    "memory_headroom_min_mib_at_32k": 8571
+  },
+  "regression": {
+    "model_cpu": "66 passed",
+    "benchmark_scripts": "15 passed",
+    "invalid_composition": {
+      "job": "gpuq-5bda920681a9",
+      "expected_exit": 2,
+      "log": "omni-packed-mlp-invalid-gate.log",
+      "passed": true
+    },
+    "cuda": {
+      "job": "gpuq-d42805d27a83",
+      "passed": 94,
+      "failed": 2,
+      "known_control_failures": [
+        "tests::fp8::fp8_identity_gemm_runs_on_device: cuBLAS status 15",
+        "tests::fp8::fp8_large_k_gemm_matches_quantized_cpu_reference: cuBLAS status 15"
+      ]
+    }
+  },
+  "systems_profile": {
+    "node_trace": {
+      "baseline_job": "gpuq-a1da0c20d74b",
+      "candidate_job": "gpuq-d4e216cb0f92",
+      "boundary": "six complete intervals between the last seven GPU argmax token commits",
+      "baseline_report_sha256": "9a5536ead0092a53a52e1e25d0c74a42cfb1881d6d4811bcb235cd077f36c90a",
+      "baseline_report_size_bytes": 2368879,
+      "candidate_report_sha256": "205874753c6e54fb753efef27f227e0f669c9d9c50485095291f40d42ad81b69",
+      "candidate_report_size_bytes": 2351136,
+      "baseline_kernel_instances": 3702,
+      "candidate_kernel_instances": 3270,
+      "removed_kernel_instances": 432,
+      "removed_per_step": 72,
+      "baseline_mean_envelope_ms": 10.975134666666666,
+      "candidate_mean_envelope_ms": 10.632963666666666,
+      "baseline_mean_gpu_busy_ms": 10.336945666666667,
+      "candidate_mean_gpu_busy_ms": 10.069756666666667,
+      "mean_gpu_busy_saved_ms": 0.267189,
+      "baseline_four_gemv_ms_per_step": 4.628521,
+      "candidate_packed_plus_remaining_gemv_ms_per_step": 4.394874,
+      "baseline_silu_mul_ms_per_step": 0.066794,
+      "candidate_fused_silu_mul_ms_per_step": 0.034603,
+      "timing_limitation": "node tracing perturbs graph execution; no-profiler pairs remain the performance authority"
+    },
+    "graph_trace": {
+      "baseline_job": "gpuq-116e8a2523cf",
+      "candidate_job": "gpuq-76259c6b9ba3",
+      "baseline_report": "/var/lib/agent-gpu-broker/profiles/omni-32760-packed-mlp-A-graph-interactive.nsys-rep",
+      "baseline_report_sha256": "0bbe1127154255bf502c5a2ec0054002d6a84c1b6a3fc253ea946a8e5dd9e161",
+      "baseline_report_size_bytes": 2245673,
+      "candidate_report": "/var/lib/agent-gpu-broker/profiles/omni-32760-packed-mlp-B-graph-interactive.nsys-rep",
+      "candidate_report_sha256": "f0093d1be0622bd526e583c017e72c747edbdfc49899eaeb443bc99914edef6b",
+      "candidate_report_size_bytes": 2245410,
+      "profiled_baseline_tpot_seconds": 0.01042440957142857,
+      "profiled_candidate_tpot_seconds": 0.010196803714285716,
+      "profiled_tpot_speedup": 1.0223212943506972
+    }
+  },
+  "frozen_vllm_omni_0_26_comparison": {
+    "vllm_tpot_seconds": 0.017576508224010468,
+    "apxinf_tpot_seconds": 0.010241975,
+    "apxinf_tpot_speedup": 1.7161248903664057,
+    "apxinf_minimum_bwu_lower_bound_pct": 71.48264163615207,
+    "vllm_minimum_bwu_lower_bound_pct": 41.6521
+  },
+  "deployment": {
+    "service_owner": "runit plus agent-gpu-broker",
+    "service_definition": "benchmarks/qwen25_omni_4090/service/apxinf-qwen25-omni-broker.run",
+    "deployed_smoke": "deployed-m1-packed-mlp-smoke.json",
+    "deployed_12k_tpot_seconds": 0.013196661285714286,
+    "deployed_32k_tpot_seconds": 0.01026974242857143,
+    "deployed_trajectories_exact": true,
+    "desired_state_after_validation": "down"
+  },
+  "decision": {
+    "status": "promote",
+    "scope": "captured M1 BF16 decode on the frozen single-request RTX 4090 Qwen2.5-Omni contract",
+    "reason": "the exact operator gate passes, all 32K pairs win, the 12K eager guard is neutral, complete trajectories and media/recovery gates pass, and Systems attributes the gain to 72 removed graph nodes per token",
+    "non_claims": ["eager decode speedup", "prefill speedup", "multi-request", "continuous batching", "non-SM89", "video", "speech generation"]
+  }
+}

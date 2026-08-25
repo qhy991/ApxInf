@@ -1,5 +1,9 @@
 use apxinf_core::{Backend, DType, Tensor};
-use apxinf_cuda::{kernels::gemm::autotune_cublaslt_bf16, CudaBackend};
+use apxinf_cuda::{
+    kernels::gemm::{autotune_cublaslt_bf16, install_cublaslt_bf16_tactics, Bf16CublasLtTactic},
+    CudaBackend,
+};
+use half::bf16;
 
 fn env_usize(name: &str, default: usize) -> Result<usize, Box<dyn std::error::Error>> {
     Ok(std::env::var(name)
@@ -24,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("k_v", m, 256usize, 2048usize),
         ("packed_qkv", m, 2560usize, 2048usize),
         ("gate_up", m, 11008usize, 2048usize),
+        ("packed_gate_up", m, 22016usize, 2048usize),
         ("down", m, 2048usize, 11008usize),
     ];
     if kv_len > 0 {
@@ -58,6 +63,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
+    let activation_values = (0..2048)
+        .map(|index| bf16::from_f32(((index * 17 % 31) as f32 - 15.0) / 128.0))
+        .collect::<Vec<_>>();
+    let weight_values = (0..2048 * 22016)
+        .map(|index| bf16::from_f32(((index * 13 % 29) as f32 - 14.0) / 128.0))
+        .collect::<Vec<_>>();
+    let activation = backend.to_device(&Tensor::from_bf16(vec![1, 2048], &activation_values)?)?;
+    let weight = backend.to_device(&Tensor::from_bf16(vec![2048, 22016], &weight_values)?)?;
+    let reference = backend
+        .to_cpu(&backend.matmul(&activation, &weight)?)?
+        .to_f32_vec()?;
+    install_cublaslt_bf16_tactics(
+        backend.context(),
+        &[Bf16CublasLtTactic {
+            m: 1,
+            n: 22016,
+            k: 2048,
+            heuristic_rank: 1,
+            milliseconds: 0.10788639634847641,
+        }],
+    )?;
+    let candidate = backend
+        .to_cpu(&backend.matmul(&activation, &weight)?)?
+        .to_f32_vec()?;
+    let mut max_abs = 0.0f32;
+    let mut square_error = 0.0f64;
+    let mut dot = 0.0f64;
+    let mut reference_norm = 0.0f64;
+    let mut candidate_norm = 0.0f64;
+    for (&expected, &actual) in reference.iter().zip(&candidate) {
+        let error = (expected - actual).abs();
+        max_abs = max_abs.max(error);
+        square_error += f64::from(error * error);
+        dot += f64::from(expected * actual);
+        reference_norm += f64::from(expected * expected);
+        candidate_norm += f64::from(actual * actual);
+    }
+    let rmse = (square_error / reference.len() as f64).sqrt();
+    let cosine = dot / (reference_norm.sqrt() * candidate_norm.sqrt());
+
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
@@ -75,6 +120,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "benchmark_iterations": benchmark_iterations,
             },
             "records": records,
+            "packed_gate_up_validation": {
+                "shape": [1, 2048, 22016],
+                "heuristic_rank": 1,
+                "max_abs": max_abs,
+                "rmse": rmse,
+                "cosine": cosine,
+            },
         }))?
     );
     Ok(())
