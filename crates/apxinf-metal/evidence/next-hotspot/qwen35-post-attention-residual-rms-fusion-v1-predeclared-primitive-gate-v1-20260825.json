@@ -1,0 +1,202 @@
+{
+  "format": "apxinf-qwen35-post-attention-residual-rms-fusion-v1-predeclared-primitive-gate-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "PREDECLARED_BEFORE_CANDIDATE_PERFORMANCE_SAMPLING",
+  "baseline_parent_commit": "3733bdcfd9f5f730744c13faee7cc31795edfac4",
+  "candidate_source_binding": "the additive fused kernel, count-18 same-binary primitive, runtime receipts, tests, custody inputs, and this predeclaration must be committed and pushed together before the first candidate performance sample",
+  "scope": {
+    "stage": "count-matched primitive screen only; a pass authorizes opt-in production plumbing but is not an end-to-end acceptance",
+    "model_shape": "Qwen/Qwen3.5-0.8B same-encoder linear-attention post-attention residual-to-RMS seams",
+    "hidden_size": 1024,
+    "seams_per_current_decode": 18,
+    "target": "Apple M4 Metal",
+    "same_binary_and_live_library": true,
+    "default_runtime_path_unchanged": true
+  },
+  "production_call_mapping": {
+    "initial_stack_linear_layer_indices": [
+      0,
+      1,
+      2
+    ],
+    "five_boundary_stack_linear_layer_indices": [
+      [
+        4,
+        5,
+        6
+      ],
+      [
+        8,
+        9,
+        10
+      ],
+      [
+        12,
+        13,
+        14
+      ],
+      [
+        16,
+        17,
+        18
+      ],
+      [
+        20,
+        21,
+        22
+      ]
+    ],
+    "total": "3 + 5 * 3 = 18",
+    "excluded": {
+      "cross_encoder_inter_layer_residual_to_input_rms_seams": 17,
+      "tail_mlp_residual_to_final_rms_seams": 1,
+      "body_full_attention_cpu_boundary_rms_calls": 5,
+      "tail_full_attention_cpu_fed_post_attention_rms_calls": 1,
+      "initial_layer0_embedding_fed_input_rms_calls": 1,
+      "standalone_linear_layer_bridge": "not part of the accepted seven-command-buffer production path"
+    },
+    "qualification": "source- and ledger-derived mapping of the accepted boundary/tail decode lane; not a performance counter"
+  },
+  "hypothesis": {
+    "id": "qwen35-post-attention-residual-rms-fusion-v1",
+    "arms": {
+      "A": "existing linear_layer_residual_add dispatch, broad pair-local buffer barrier, existing linear_layer_rms_norm dispatch, and broad common consumer barrier",
+      "B": "one additive linear_layer_residual_rms_norm_fused_exact_v1 dispatch that materializes the residual, retains four f32 values per lane across the unchanged legacy nine-barrier reduction tree, and publishes normalized output, followed by the same broad common consumer barrier"
+    },
+    "exactness_driven_narrowing": {
+      "selected_design": "four retained residual values per lane with Clang floating-point reassociation disabled only in a nested compound around the final normalized-output product; the reduction remains under the existing compiler mode and the legacy shared tree is unchanged",
+      "pre_sampling_exactness_diagnosis": "the unscoped default-fast-math formulation produced one-ULP target mismatches only in the final retained-value product; a nested '#pragma clang fp reassociate(off)' eliminated them in the full 18-row target regression before this predeclaration without changing following legacy kernel compilation",
+      "source_logical_residual_row_read_reduction_bytes_per_decode": 147456,
+      "source_logical_residual_row_read_formula": "18 seams * 1024 f32 elements * 4 bytes * 2 legacy RMS reads",
+      "physical_traffic_claimed": false,
+      "compiler_risk": "four values remain live across nine barriers and final register allocation may spill; static threadgroup-memory metadata cannot attest private spills",
+      "reason": "preserve target bit identity without compounding the previously rejected SIMD-tail reduction"
+    },
+    "fixed_candidate_shape": {
+      "hidden_size": 1024,
+      "threads_per_threadgroup": 256,
+      "fused_threadgroups_per_seam": 1,
+      "hardcoded_values_per_lane": 4,
+      "materialized_residual_required": true,
+      "normalized_output_required": true,
+      "static_threadgroup_memory_bytes": 1024,
+      "dynamic_threadgroup_memory_bytes": 0,
+      "legacy_rms_internal_threadgroup_barriers_per_seam": 9,
+      "candidate_internal_threadgroup_barriers_per_seam": 9,
+      "candidate_fp_reassociation_disabled_only_for_nested_normalized_output_compound": true,
+      "buffer_ranges_must_be_non_overlapping": true
+    },
+    "count18_aggregate_primitive_topology": {
+      "A": {
+        "command_buffers": 1,
+        "compute_encoders": 1,
+        "kernel_dispatches": 36,
+        "residual_add_threadgroups": 72,
+        "rms_threadgroups": 18,
+        "total_threadgroups": 90,
+        "pair_local_raw_buffer_barriers": 18,
+        "common_consumer_buffer_barriers": 18,
+        "explicit_buffer_barriers": 36,
+        "internal_threadgroup_barriers": 162,
+        "commits": 1,
+        "waits": 1
+      },
+      "B": {
+        "command_buffers": 1,
+        "compute_encoders": 1,
+        "kernel_dispatches": 18,
+        "fused_threadgroups": 18,
+        "total_threadgroups": 18,
+        "pair_local_raw_buffer_barriers": 0,
+        "common_consumer_buffer_barriers": 18,
+        "explicit_buffer_barriers": 18,
+        "internal_threadgroup_barriers": 162,
+        "commits": 1,
+        "waits": 1
+      },
+      "common_barrier_qualification": "17 barriers make the next dependent seam visible and one final symmetric trailing barrier mirrors the production consumer convention",
+      "explicit_bridge_host_to_device_memcpy_bytes_inside_timed_run": 0,
+      "explicit_bridge_device_to_host_memcpy_bytes_inside_timed_run": 0,
+      "zero_timed_copy_qualification": "zero explicit bridge memcpy inside the timed run, not zero GPU or shared-memory traffic",
+      "production_submission_topology": false
+    },
+    "projected_production_topology_if_a_later_full_path_candidate_is_accepted": {
+      "current_kernel_dispatches_per_decode": 267,
+      "candidate_kernel_dispatches_per_decode": 249,
+      "removed_kernel_dispatches_per_decode": 18,
+      "current_explicit_broad_buffer_barriers_per_decode": 243,
+      "candidate_explicit_broad_buffer_barriers_per_decode": 225,
+      "removed_explicit_broad_buffer_barriers_per_decode": 18,
+      "compute_encoders_per_decode_unchanged": 24,
+      "command_buffers_per_decode_unchanged": 7,
+      "persistent_buffers_and_host_transfers_unchanged": true,
+      "qualification": "source/ledger projection only; no production integration exists at primitive-screen time"
+    }
+  },
+  "admission": {
+    "primitive_harness_classification": "always a non-formal diagnostic mechanism screen; it cannot promote or default a runtime path",
+    "quiet_host_preflight_required_for_formal_classification": true,
+    "if_quiet_host_fails": "complete the fixed schedule once only as explicitly non-formal diagnostic evidence",
+    "correctness": {
+      "all_three_functions_must_be_present_in_one_live_library": true,
+      "requested_and_observed_runtime_profile_must_match": true,
+      "runtime_function_sequence_must_be_attested": true,
+      "pipeline_thread_execution_width_must_equal": 32,
+      "pipeline_max_threads_must_be_at_least": 256,
+      "outputs_poisoned_with_nan_before_each_correctness_call": true,
+      "all_18_materialized_residual_rows_must_be_finite": true,
+      "all_18_normalized_rows_must_be_finite": true,
+      "both_tensor_kinds_must_match_to_bits": true,
+      "correctness_order_per_fixture": "ABBA",
+      "invalid_raw_selector_must_fail_closed_without_mutating_receipts_or_snapshot": true
+    },
+    "performance_continue_threshold": {
+      "logic": "AND",
+      "pooled_candidate_latency_ratio_of_medians_improvement_percent_at_least": 5.0,
+      "both_counterbalanced_blocks_must_be_positive": true,
+      "clearly_negative_block_definition": "reject if either block has candidate latency improvement at or below -0.5 percent",
+      "result_if_passed": "authorize additive opt-in production-profile plumbing and a separate predeclared end-to-end gate",
+      "result_if_failed": "archive the fixed receipt and summary, then revert candidate implementation while retaining this predeclaration and the rejection evidence"
+    }
+  },
+  "fixed_fixture_and_schedule": {
+    "weight_rows": 18,
+    "correctness_fixtures": 8,
+    "fixture_shape": "one H=1024 seed row plus 18 distinct H=1024 update rows per fixture; 18 distinct H=1024 weight rows shared across fixtures",
+    "generator": "independently seeded deterministic dyadic xorshift64 streams encoded and hashed as little-endian f32 bits",
+    "rms_epsilon": 0.000001,
+    "correctness_order_per_fixture": "ABBA",
+    "trace_rows_per_call": 36,
+    "trace_elements_per_call": 36864,
+    "finite_checks_if_passed": 1179648,
+    "to_bits_comparisons_if_passed": 884736,
+    "to_bits_comparisons_per_tensor_kind_if_passed": 442368,
+    "one_time_weight_upload_bytes": 73728,
+    "fixture_staging_bytes_per_stage_outside_timing": 77824,
+    "fixture_stage_count": 9,
+    "fixture_staging_bytes_total": 700416,
+    "correctness_snapshot_bytes_per_snapshot_outside_timing": 147456,
+    "correctness_snapshot_count": 32,
+    "correctness_snapshot_bytes_total": 4718592,
+    "correctness_trace_poison_bytes_per_call_outside_timing": 147456,
+    "correctness_trace_poison_call_count": 32,
+    "correctness_trace_poison_bytes_total": 4718592,
+    "warmup_block_1": "ABBA with 64 consecutive count-18 aggregate calls per cell",
+    "warmup_block_2": "BAAB with 64 consecutive count-18 aggregate calls per cell",
+    "timed_block_1": "ABBA with 64 consecutive count-18 aggregate calls per cell",
+    "timed_block_2": "BAAB with 64 consecutive count-18 aggregate calls per cell",
+    "successful_runs_per_arm_if_completed": 528,
+    "timed_calls_per_arm_total": 256,
+    "timing": "host monotonic elapsed time around one complete synchronous aggregate GPU call; fixture staging, poisoning, full-trace snapshots, custody checks, and JSON work are outside the timed region",
+    "primary_statistic": "even median of raw call latencies per arm within each block and pooled per arm",
+    "no_resampling_after_a_predeclared_failure": true
+  },
+  "cross_runtime_rule": {
+    "candidate_is_apxinf_specific_not_llama_equivalent": true,
+    "frozen_llama_cpp_comparison_is_unchanged_until_a_full_path_candidate_is_accepted": true,
+    "current_apxinf_tps": 66.33672849846097,
+    "current_llama_cpp_tps": 70.66394293407429,
+    "current_llama_cpp_advantage_percent": 6.52310497300709,
+    "llama_cpp_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0"
+  }
+}
