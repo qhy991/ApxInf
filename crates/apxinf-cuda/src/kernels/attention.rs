@@ -792,6 +792,7 @@ pub(crate) fn sdpa_with_batched_prefill(
         kv_offset,
         use_batched_prefill,
         MIN_CAUSAL_FA2_GQA_KV_LEN,
+        false,
     )
 }
 
@@ -809,6 +810,7 @@ pub(crate) fn sdpa_with_batched_prefill_fa2_min_kv(
     kv_offset: u32,
     use_batched_prefill: bool,
     causal_fa2_min_kv_len: usize,
+    use_scaled_exp_cache: bool,
 ) -> Result<Tensor> {
     if causal_fa2_min_kv_len == 0 {
         return Err(Error::Other(
@@ -891,6 +893,16 @@ pub(crate) fn sdpa_with_batched_prefill_fa2_min_kv(
         && dtype == DType::BF16
         && seq_len > 1
         && kv_len > MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS;
+    if use_scaled_exp_cache
+        && (dtype != DType::BF16
+            || seq_len <= 1
+            || kv_len > MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS
+            || use_flattened_prefill)
+    {
+        return Err(Error::Other(
+            "scaled exp-cache prefill requires non-flattened BF16 with 2..=4096 KV tokens".into(),
+        ));
+    }
     let packed_query = if use_flattened_prefill {
         let packed = uninitialized_buffer(ctx, query.size_in_bytes())?;
         let source = CudaBuffer::from_tensor(query).map_err(Error::Cuda)?;
@@ -969,7 +981,9 @@ pub(crate) fn sdpa_with_batched_prefill_fa2_min_kv(
     let use_inplace_softmax = use_flattened_prefill
         && seq_len <= MAX_INPLACE_SCALE_QUERY_TOKENS
         && softmax_inplace_scale_enabled()?;
-    let attention = if use_inplace_softmax {
+    let attention = if use_scaled_exp_cache {
+        softmax_causal_bf16_scaled_exp_cache(ctx, &scores, kv_offset, n_heads as u32, score_scale)?
+    } else if use_inplace_softmax {
         softmax_causal_bf16_scaled_in_place_gqa_packed(
             ctx,
             scores,
@@ -1674,6 +1688,50 @@ pub(crate) fn softmax_causal_bf16_scaled_plain(
     let output = uninitialized_buffer(ctx, input.size_in_bytes())?;
     unsafe {
         ffi::check_cuda(ffi::apxinf_attention_softmax_bf16(
+            gpu_ptr(input)?,
+            output.ptr(),
+            cols as u32,
+            rows as u32,
+            kv_offset,
+            n_heads,
+            score_scale,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+    Ok(make_gpu_tensor(
+        input.shape().clone(),
+        DType::BF16,
+        ctx.device_id(),
+        output,
+    ))
+}
+
+pub(crate) fn softmax_causal_bf16_scaled_exp_cache(
+    ctx: &CudaContext,
+    input: &Tensor,
+    kv_offset: u32,
+    n_heads: u32,
+    score_scale: f32,
+) -> Result<Tensor> {
+    require_finite("scaled exp-cache attention score", &[score_scale])?;
+    let dims = input.shape().dims();
+    let rows = dims[dims.len() - 2];
+    let cols = dims[dims.len() - 1];
+    if input.dtype() != DType::BF16
+        || rows <= n_heads as usize
+        || rows % n_heads as usize != 0
+        || !(2..=MAX_PREFILL_SOFTMAX_EXP_CACHE_COLS).contains(&cols)
+        || score_scale <= 0.0
+    {
+        return Err(Error::Other(
+            "scaled exp-cache softmax requires positive scale and BF16 prefill rows with 2..=4096 columns"
+                .into(),
+        ));
+    }
+    let output = uninitialized_buffer(ctx, input.size_in_bytes())?;
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_attention_softmax_bf16_scaled_exp_cache(
             gpu_ptr(input)?,
             output.ptr(),
             cols as u32,

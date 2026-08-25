@@ -20,9 +20,9 @@ keeps only the aggregate evidence listed below.
 ## Accepted artifact
 
 - Binary SHA-256:
-  `fdf14934ed564bddf898c694e21d9be5b5e72baa0a9b4b881bdf0e53d7f6a330`
+  `617ecb8c6b519ef88c2bacba1a08bcaf93dc8ad1960072629ab81dc719ef43fc`
 - Immediate rollback SHA-256:
-  `30b3a2b9fc0eade3ac742bb9038d7037bd593a5f394ab5d281a8673202d73680`
+  `fdf14934ed564bddf898c694e21d9be5b5e72baa0a9b4b881bdf0e53d7f6a330`
 - Service owner: runit plus `agent-gpu-broker`
 - Desired state after validation: stopped
 
@@ -53,6 +53,8 @@ The accepted implementation combines:
 - a 32-warp split-K attention geometry in the SM89 short decode graph;
 - one packed-QKV bias/TMRoPE/KV-publish owner in the short decode graph;
 - aligned pack8 global I/O for the exact H=2,048 residual/RMSNorm nodes;
+- exact fused score scaling and numerator-cache softmax for short text and
+  multimodal prefill;
 - grouped variable-length FA2 for windowed vision attention and FA2 for the
   four full-attention vision blocks.
 
@@ -94,11 +96,19 @@ not install the candidate; their wall medians remain within `0.08%` and
 `0.03%`, respectively. Systems attributes 0.192 ms of per-step GPU-busy saving
 to the intended residual/RMSNorm nodes while kernel count remains unchanged.
 
+The latest scaled exp-cache refinement lowers the real-PNG wall median from
+0.58104 s to 0.57302 s and TTFT from 251.81 ms to 244.21 ms. All five paired
+wall and TTFT samples win; the paired wall speedup median is `1.0149x` and the
+slowest pair is `1.0068x`. The frozen 1K text TTFT also wins 5/5 and falls
+`1.65%`. Systems removes exactly 36 scale nodes before the first image token,
+reduces GPU busy by 7.38 ms and reduces the complete first-token GPU envelope
+by 5.18 ms. Request-scoped 12K FA2, 32K, and decode trajectories remain exact.
+
 ## Accepted measurements
 
 | Workload | ApxInf TTFT | ApxInf TPOT | vLLM-Omni 0.26.0 TPOT | Result |
 |---|---:|---:|---:|---|
-| 1,024 + 32 | 65.970 ms | 8.081 ms | 22.617 ms | ApxInf TPOT `2.799x` |
+| 1,024 + 32 | 65.091 ms | 8.088 ms | 22.617 ms | ApxInf TPOT `2.796x` |
 | 1,024 + 128 | 65.668 ms | 8.078 ms | — | paired wall `1.0227x` |
 | 128 + 128 | 16.613 ms | 7.425 ms | 22.681 ms | ApxInf TPOT `3.055x` |
 | 8,192 + 8 | 406.548 ms | 10.694 ms | 19.111 ms | ApxInf TPOT `1.787x` |
@@ -111,9 +121,10 @@ For the latest packed-MLP candidate, five fixed-parent AB/BA pairs at
 minimum pair was `1.0172x`. The 12K eager guard was neutral at about `1.001x`.
 All compared text trajectories were exact.
 
-For real PNG 1,760+16, ApxInf wall p50 is 0.581 s versus 0.565 s for
+For real PNG 1,760+16, ApxInf wall p50 is 0.573 s versus 0.565 s for
 vLLM-Omni: near parity, with vLLM retaining lower TTFT and ApxInf retaining
-`2.110x` lower TPOT. For real WAV 52+16, ApxInf wall is 0.159 s versus 0.619 s.
+`2.426x` lower TPOT. For real WAV 52+16, the final acceptance wall is 0.173 s
+versus vLLM-Omni 0.619 s.
 Both media cases preserve the accepted complete output-token trajectories.
 
 The legal 32,760+8 boundary passes. The final acceptance sample records
@@ -123,11 +134,12 @@ being admitted to OOM.
 
 ## Correctness and regression status
 
-- model CPU tests: 67 passed;
+- model CPU tests: 68 passed;
 - benchmark-script tests: 15 passed;
 - CUDA tests: 94 passed, with two known FP8 cuBLAS status-15 controls outside
   the frozen BF16 Omni contract;
 - pack8 residual/RMSNorm CUDA regression: 1 passed;
+- scaled exp-cache CUDA regression: 1 passed;
 - exact text trajectories: 1K, 128-token decode, 4K, 8K, 12K, and 32K cells;
 - exact media trajectories: real PNG and WAV;
 - typed contract and malformed-media recovery: passed.
@@ -146,6 +158,8 @@ being admitted to OOM.
   producer promotion, long-path guards, cache correctness, and node attribution;
 - `results/promotion-pack8-residual-rmsnorm.json`: current exact H=2,048
   residual/RMSNorm I/O promotion, long-path guards, and Systems attribution;
+- `results/promotion-scaled-exp-cache-prefill.json`: current real-image and
+  short-text prefill promotion, FA2 precedence gate, and Systems attribution;
 - `results/promotion-grouped-varlen-fa2.json`: current real-image promotion and
   complete multimodal controls;
 - `results/omni-packed-mlp-acceptance-summary.json`: final endpoint acceptance

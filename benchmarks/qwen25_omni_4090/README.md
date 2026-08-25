@@ -173,6 +173,13 @@ share each 128-bit global transaction while the square-sum is reconstructed in
 the incumbent thread order, preserving both the rounded residual and normalized
 output bit-for-bit. It requires the fused QKV prelude and the pinned SM89 short
 graph; invalid epsilon, alignment, shape, or selector composition fails closed.
+The scaled exp-cache prefill selector removes the single-consumer BF16 score
+scale materialization for Qwen2.5-Omni prefill with 2 through 4,096 KV tokens.
+One kernel reproduces the same BF16 scale rounding, maximum, cached exponential,
+scalar sum and final division order. Request-scoped causal FA2 retains priority,
+so 8K--12K all-chunk execution and every decode path keep their accepted owners.
+Other longer requests use the candidate only while an individual chunk's KV
+length is at most 4,096; later chunks retain the accepted flattened path.
 `APXINF_QWEN25_PACKED_QKV=1` selects one
 packed QKV owner shared by both paths. `APXINF_QWEN25_FUSED_TMROPE_KV=1`
 publishes rotated K and unchanged V directly to their caches during graph

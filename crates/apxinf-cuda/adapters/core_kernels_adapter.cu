@@ -419,6 +419,25 @@ extern "C" cudaError_t apxinf_attention_softmax_bf16_exp_cache(
     return cudaGetLastError();
 }
 
+extern "C" cudaError_t apxinf_attention_softmax_bf16_scaled_exp_cache(
+    const void* scores, void* output,
+    uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads,
+    float score_scale, void* stream)
+{
+    if (scores == nullptr || output == nullptr || cols == 0 || cols > 4096 ||
+        rows <= n_heads || n_heads == 0 || rows % n_heads != 0 ||
+        !(score_scale > 0.0f))
+        return cudaErrorInvalidConfiguration;
+    dim3 grid = apxinf_row_split_grid(1, rows);
+    dim3 block(BLOCK_SIZE, 1, 1);
+    size_t shared_bytes = static_cast<size_t>(cols) * sizeof(float);
+    attention_softmax_bf16_scaled_exp_cache_kernel<<<
+        grid, block, shared_bytes, (cudaStream_t)stream>>>(
+        (const __nv_bfloat16*)scores, (__nv_bfloat16*)output,
+        cols, rows, kv_offset, n_heads, score_scale);
+    return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_attention_softmax_bf16_global_exp_cache(
     const void* scores, void* output, void* numerators,
     uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads,
