@@ -1,0 +1,246 @@
+{
+  "format": "apxinf-qwen35-rms-simd-tail-exact-v1-rejected-diagnostic-summary-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "REJECTED_BY_PREDECLARED_PRIMITIVE_GATE",
+  "scope": {
+    "stage": "count-matched aggregate RMSNorm mechanism screen only",
+    "model_shape": "Qwen/Qwen3.5-0.8B decode RMSNorm",
+    "hidden_size": 1024,
+    "rms_calls_per_current_decode": 43,
+    "target": "Apple M4 Metal",
+    "production_submission_topology": false,
+    "full_path_plumbing_executed": false,
+    "end_to_end_model_benchmark_executed": false,
+    "cross_runtime_benchmark_executed": false
+  },
+  "source_and_build_binding": {
+    "baseline_parent_commit": "b2e71b529c5bdf5b27b8db4c8672b5e293a432a9",
+    "candidate_commit": "0f019f20f8b4b448e6f5cbb23e501c411d020c11",
+    "candidate_pushed_before_sampling": true,
+    "head_origin_main_and_github_main_equal_candidate_at_start_and_end": true,
+    "origin_url": "https://github.com/qhy991/ApxInf.git",
+    "worktree_clean_at_start_and_end_before_receipt_publication": true,
+    "release_binary_size_bytes": 1527136,
+    "release_binary_sha256": "799559a438e692954ad72342e00483a4c8ec2a4de08cfa36d0a80c3cc6621c35",
+    "raw_receipt_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-rms-simd-tail-exact-primitive-ab-v1-20260825.json",
+    "raw_receipt_size_bytes": 25929,
+    "raw_receipt_sha256": "6b6639ca4a198a13b6df7739b8ba7cb7e88aad1c93aa5599c7b4657d79a58c00",
+    "predeclaration_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-rms-simd-tail-exact-v1-predeclared-primitive-gate-v1-20260825.json",
+    "predeclaration_sha256": "dda083c45cd4759be65b846a194f9ebfb2b2c86cd1050ad0bec6779e3e43e39e",
+    "all_combined_shader_inputs_and_production_mapping_sources_bound": true,
+    "embedded_source_hashes_matched_disk_before_and_after_sampling": true,
+    "binary_and_source_custody_unchanged_during_sampling": true
+  },
+  "host_observation": {
+    "formal_quiet_host_admission_passed": false,
+    "classification": "non-formal diagnostic only",
+    "hardware_model": "Mac16,10",
+    "chip": "Apple M4",
+    "external_preflight_evidence_source": "orchestrator session log; not a separately persisted artifact",
+    "load_averages_immediately_before_launch": [
+      2.65,
+      2.04,
+      1.88
+    ],
+    "largest_external_preflight_background_cpu_percent": [
+      {
+        "process": "logioptionsplus_logivoice",
+        "cpu_percent": 30.3
+      },
+      {
+        "process": "logioptionsplus_agent",
+        "cpu_percent": 25.3
+      },
+      {
+        "process": "syspolicyd",
+        "cpu_percent": 4.7
+      },
+      {
+        "process": "ToDesk_Service",
+        "cpu_percent": 2.2
+      },
+      {
+        "process": "trustd",
+        "cpu_percent": 1.4
+      }
+    ],
+    "embedded_preflight_largest_cpu_observation": {
+      "process": "loginwindow",
+      "cpu_percent": 14.6
+    },
+    "user_or_system_processes_terminated": false,
+    "interpretation": "the fixed schedule was completed once, but the result cannot be classified as formal performance evidence"
+  },
+  "hypothesis": {
+    "A": "legacy 256-lane shared-memory RMS reduction through strides 128,64,32,16,8,4,2,1",
+    "B": "unchanged local sums and shared strides 128,64,32, followed by the exact 16,8,4,2,1 shuffle tail redundantly executed in every 32-lane SIMDgroup",
+    "source_call_mapping": "18 linear-attention layers times two RMS calls, plus five full-attention boundary RMS calls, plus tail post-attention and final RMS",
+    "source_derived_internal_threadgroup_barriers_per_aggregate_run": {
+      "A": 387,
+      "B": 172,
+      "removed": 215
+    },
+    "source_derived_candidate_extra_tail_adds_per_aggregate_run": 9331,
+    "hardware_barrier_counter_measured": false
+  },
+  "quality_gate": {
+    "passed": true,
+    "correctness_inputs": 8,
+    "correctness_order_per_input": [
+      "A",
+      "B",
+      "B",
+      "A"
+    ],
+    "chain_rows_per_call": 43,
+    "finite_checks": 1409024,
+    "compared_output_elements": 1056768,
+    "all_outputs_finite": true,
+    "all_intermediate_rows_match_to_bits": true,
+    "fixture_sha256_f32_le_with_shape_and_epsilon": "625a4e7ce5bf7d350487af3f2395b13c699f9c910d0b25b24376458729c75096"
+  },
+  "runtime_observed_execution_contract": {
+    "successful_runs_per_arm": 528,
+    "successful_kernel_dispatches_per_arm": 22704,
+    "A": {
+      "requested_and_observed_function": "linear_layer_rms_norm",
+      "internal_threadgroup_barriers_per_dispatch_source_derived": 9
+    },
+    "B": {
+      "requested_and_observed_function": "linear_layer_rms_norm_simd_tail_exact_v1",
+      "internal_threadgroup_barriers_per_dispatch_source_derived": 4
+    },
+    "command_buffers_per_run": 1,
+    "compute_encoders_per_run": 1,
+    "kernel_dispatches_per_run": 43,
+    "explicit_buffer_barriers_per_run": 43,
+    "commits_per_run": 1,
+    "waits_per_run": 1,
+    "threads_per_threadgroup": 256,
+    "simdgroups_per_threadgroup": 8,
+    "pipeline_thread_execution_width": 32,
+    "pipeline_max_total_threads_per_threadgroup": 1024,
+    "static_threadgroup_memory_bytes": 1024,
+    "dynamic_threadgroup_memory_bytes": 0,
+    "explicit_bridge_memcpy_bytes_inside_timed_run": 0,
+    "zero_copy_qualification": "zero explicit bridge memcpy inside the timed run, not zero GPU or shared-memory traffic",
+    "actual_call_site_counters_validated_before_every_commit": true,
+    "last_observed_counters_published_only_after_gpu_completion": true
+  },
+  "fixed_schedule": {
+    "warmup_blocks": [
+      "ABBA",
+      "BAAB"
+    ],
+    "timed_blocks": [
+      "ABBA",
+      "BAAB"
+    ],
+    "calls_per_cell": 64,
+    "timed_samples_per_arm_per_block": 128,
+    "timed_samples_per_arm_pooled": 256,
+    "timed_rms_dispatches_per_arm": 11008,
+    "no_resampling_after_failure": true,
+    "resampling_performed": false
+  },
+  "performance_gate": {
+    "continue_threshold_percent": 5.0,
+    "requires_both_blocks_positive": true,
+    "clearly_negative_block_reject_percent": -0.5,
+    "block_1": {
+      "A_median_ns": 318959.0,
+      "B_median_ns": 293062.5,
+      "absolute_gap_ns": 25896.5,
+      "B_improvement_percent": 8.119068595023185,
+      "positive": true
+    },
+    "block_2": {
+      "A_median_ns": 283625.0,
+      "B_median_ns": 269979.0,
+      "absolute_gap_ns": 13646.0,
+      "B_improvement_percent": 4.811282503305421,
+      "positive": true
+    },
+    "pooled": {
+      "A_median_ns": 287812.5,
+      "B_median_ns": 277125.5,
+      "absolute_gap_ns": 10687.0,
+      "B_improvement_percent": 3.7131813246471226,
+      "threshold_miss_percentage_points": 1.2868186753528774
+    },
+    "passed": false,
+    "failed_conditions": [
+      "pooled candidate improvement was 3.713181 percent, below the predeclared 5.0 percent continuation threshold"
+    ],
+    "distribution_note": "pooled medians are order statistics over a nonstationary mixture, not an average of block ratios; the arms' pooled midpoints landed at different overlap quantiles, so the 3.713 percent pooled value is mathematically consistent with both positive block ratios",
+    "drift_note": "A's block median shifted down 35.334 microseconds and B's shifted down 23.084 microseconds; the nonquiet-host drift is reported without resampling"
+  },
+  "validation": {
+    "apxinf_metal_tests": {
+      "passed": 61,
+      "failed": 0,
+      "ignored": 1,
+      "evidence_source": "orchestrator session log; not a separately persisted test log"
+    },
+    "release_gate_build_passed": true,
+    "format_check_passed": true,
+    "diff_check_passed": true,
+    "independent_arithmetic_and_shader_audit": "CLEAN",
+    "independent_api_bridge_and_custody_audit": "CLEAN",
+    "independent_gate_schedule_and_publication_audit": "CLEAN",
+    "independent_raw_receipt_recomputation": "PASS; raw samples, medians, percentiles, improvements, fixture hash, counts, runtime topology, source and binary hashes, git custody, origin URL, and GitHub main independently reconciled without rerunning the benchmark"
+  },
+  "decision": {
+    "accepted": false,
+    "full_path_plumbing_authorized": false,
+    "action": "commit and push the raw receipt and this summary, then explicitly revert the SIMD-tail implementation and primitive harness while retaining the predeclaration and rejection evidence",
+    "reason": "correctness, live identity, topology, and custody passed, and both blocks were directionally positive, but the fixed pooled improvement was 3.713 percent versus the predeclared 5.0 percent continuation threshold; the host was also not quiet",
+    "inference": "this fixed non-formal aggregate mechanism screen did not justify the integration cost under its predeclared rule; do not plumb or promote the candidate",
+    "candidate_performance_resampling_allowed": false,
+    "retained_mechanism_evidence": "target-binary bit identity, live width and topology, source-level 9-to-4 barrier mapping, and a modest directional diagnostic benefit",
+    "unsupported_inferences": [
+      "a stable 3.713 percent production improvement",
+      "an end-to-end or TPS improvement",
+      "a measured hardware barrier-counter effect",
+      "that the mechanism is universally useless"
+    ]
+  },
+  "llama_cpp_comparison_policy": {
+    "candidate_is_not_llama_equivalent": true,
+    "frozen_comparison_unchanged": true,
+    "current_apxinf_tps": 66.33672849846097,
+    "current_llama_cpp_tps": 70.66394293407429,
+    "current_llama_cpp_advantage_percent": 6.52310497300709,
+    "llama_cpp_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+    "reason": "a rejected non-production ApxInf primitive screen is not a replacement llama.cpp or Ollama benchmark"
+  },
+  "next_hypothesis": {
+    "id": "qwen35-post-attention-residual-rms-fusion-v1",
+    "status": "ranked next bounded primitive screen; not yet implemented or sampled",
+    "mechanism": "within each linear-attention layer, fuse the same-encoder attention residual add immediately followed by post-attention RMS; write the required residual tensor, retain four f32 residual values per lane, use the unchanged legacy nine-barrier RMS tree, and publish the normalized tensor",
+    "projected_surface": {
+      "within_linear_layer_attention_seams": 18,
+      "projected_dispatches_per_decode": {
+        "A": 267,
+        "B": 249
+      },
+      "projected_external_buffer_barriers_per_decode": {
+        "A": 243,
+        "B": 225
+      },
+      "compute_encoders_per_decode_unchanged": 24,
+      "command_buffers_per_decode_unchanged": 7,
+      "legacy_rms_logical_reads_of_materialized_residual_row_per_seam": 2,
+      "logical_residual_row_reread_reduction_bytes_per_decode": 147456,
+      "logical_mapping_is_measured_dram_traffic": false
+    },
+    "first_gate": "same-binary, production-H=1024, count-matched 18-seam aggregate ABBA that compares both the residual tensor and normalized tensor to_bits before timing; A has 36 dispatches and 18 pair-local RAW barriers while B has 18 dispatches and no pair-local RAW barrier",
+    "constraints": [
+      "retain the legacy nine-barrier RMS reduction so the rejected SIMD-tail mechanism is not compounded",
+      "treat the primitive as aggregate mechanism evidence rather than production submission topology",
+      "exclude the 17 cross-encoder inter-layer seams and the separate tail seam from the first screen",
+      "do not infer DRAM or end-to-end savings from source mapping",
+      "do not update the frozen llama.cpp comparison until a full-path candidate passes"
+    ]
+  }
+}
