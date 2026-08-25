@@ -13,10 +13,14 @@ namespace {
 constexpr uint32_t kGroupSize = 64;
 constexpr uint32_t kRowsPerThreadgroup = 8;
 constexpr uint32_t kMatVecThreads = kRowsPerThreadgroup * 32;
+constexpr uint32_t kHeadSg16RowsPerThreadgroup = 16;
+constexpr uint32_t kHeadSg16Threads = kHeadSg16RowsPerThreadgroup * 32;
 constexpr uint32_t kElementThreads = 256;
 constexpr uint32_t kTopK = 4;
 constexpr uint32_t kTopKThreads = 256;
 constexpr uint32_t kAllOutputsMask = 0b11;
+constexpr uint32_t kRowsKernelLegacyR8Sg8 = 0;
+constexpr uint32_t kRowsKernelSg16R16 = 1;
 
 struct LinearLayerParams {
     uint32_t hidden_size;
@@ -91,6 +95,7 @@ struct ApxinfMetalW8TailMlpHeadHandleV1 {
     LinearLayerParams layer_params;
     MlpParams mlp_params;
     KernelParams head_params;
+    uint32_t rows_kernel;
     bool terminal_error;
 };
 
@@ -273,7 +278,11 @@ void encode_tail(ApxinfMetalW8TailMlpHeadHandleV1 *handle,
                atIndex:4];
     [encoder dispatchThreadgroups:MTLSizeMake(handle->head_params.partial_count,
                                               1, 1)
-             threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
+             threadsPerThreadgroup:MTLSizeMake(
+                 handle->rows_kernel == kRowsKernelSg16R16
+                     ? kHeadSg16Threads
+                     : kMatVecThreads,
+                 1, 1)];
     buffer_barrier(encoder);
 
     [encoder setComputePipelineState:handle->final_topk_pipeline];
@@ -288,8 +297,8 @@ void encode_tail(ApxinfMetalW8TailMlpHeadHandleV1 *handle,
 
 }  // namespace
 
-extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
-    const TailDescriptorV1 *descriptor, void **output, char *error_output,
+int create_tail_handle(const TailDescriptorV1 *descriptor,
+    uint32_t rows_kernel, void **output, char *error_output,
     size_t error_capacity) {
     @autoreleasepool {
         if (output == nullptr) {
@@ -311,6 +320,7 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
             descriptor->hidden_size % kGroupSize != 0 ||
             descriptor->intermediate_size % kGroupSize != 0 ||
             descriptor->intermediate_size > UINT32_MAX / 2 ||
+            rows_kernel > kRowsKernelSg16R16 ||
             !std::isfinite(descriptor->rms_norm_eps) ||
             descriptor->rms_norm_eps < 0.0f) {
             write_error(error_output, error_capacity,
@@ -386,8 +396,12 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
             handle->device, library, @"w8_mlp_down", &error);
         handle->residual_pipeline = make_pipeline(
             handle->device, library, @"linear_layer_residual_add", &error);
-        handle->rows_topk_pipeline = make_pipeline(
-            handle->device, library, @"w8_rows_topk4", &error);
+        NSString *rows_topk_name =
+            rows_kernel == kRowsKernelSg16R16
+                ? @"w8_rows_topk4_sg16"
+                : @"w8_rows_topk4";
+        handle->rows_topk_pipeline =
+            make_pipeline(handle->device, library, rows_topk_name, &error);
         handle->final_topk_pipeline = make_pipeline(
             handle->device, library, @"w8_final_topk4", &error);
         if (handle->rms_pipeline == nil || handle->gate_up_pipeline == nil ||
@@ -397,6 +411,17 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
             handle->final_topk_pipeline == nil) {
             delete handle;
             write_nserror(error_output, error_capacity, error);
+            return 1;
+        }
+        const uint32_t rows_topk_threads =
+            rows_kernel == kRowsKernelSg16R16
+                ? kHeadSg16Threads
+                : kMatVecThreads;
+        if (handle->rows_topk_pipeline.maxTotalThreadsPerThreadgroup <
+            rows_topk_threads) {
+            delete handle;
+            write_error(error_output, error_capacity,
+                        "selected Metal W8 top-4 rows pipeline does not support the required threadgroup size");
             return 1;
         }
         handle->queue = [handle->device newCommandQueue];
@@ -449,9 +474,12 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
         handle->activated = [handle->device
             newBufferWithLength:intermediate_size * sizeof(float)
                          options:private_storage];
-        const uint32_t partial_count =
-            static_cast<uint32_t>((vocab_size + kRowsPerThreadgroup - 1) /
-                                  kRowsPerThreadgroup);
+        const uint32_t rows_per_threadgroup =
+            rows_kernel == kRowsKernelSg16R16
+                ? kHeadSg16RowsPerThreadgroup
+                : kRowsPerThreadgroup;
+        const uint32_t partial_count = static_cast<uint32_t>(
+            (vocab_size + rows_per_threadgroup - 1) / rows_per_threadgroup);
         handle->partial_topk = [handle->device
             newBufferWithLength:static_cast<size_t>(partial_count) * kTopK * 8
                          options:private_storage];
@@ -475,10 +503,25 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
             descriptor->hidden_size / kGroupSize,
             partial_count,
         };
+        handle->rows_kernel = rows_kernel;
         handle->terminal_error = false;
         *output = handle;
         return 0;
     }
+}
+
+extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
+    const TailDescriptorV1 *descriptor, void **output, char *error_output,
+    size_t error_capacity) {
+    return create_tail_handle(descriptor, kRowsKernelLegacyR8Sg8, output,
+                              error_output, error_capacity);
+}
+
+extern "C" int apxinf_metal_w8_tail_mlp_head_create_with_rows_kernel_v1(
+    const TailDescriptorV1 *descriptor, uint32_t rows_kernel, void **output,
+    char *error_output, size_t error_capacity) {
+    return create_tail_handle(descriptor, rows_kernel, output, error_output,
+                              error_capacity);
 }
 
 extern "C" int apxinf_metal_w8_tail_mlp_head_decode_v1(
