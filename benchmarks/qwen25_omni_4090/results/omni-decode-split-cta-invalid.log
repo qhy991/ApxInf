@@ -1,2 +1,0 @@
-CUDA 0: NVIDIA GeForce RTX 4090 (compute 8.9, sm80-family, 128 SMs)
-Server failed: load native qwen2.5-omni: APXINF_QWEN25_LONG_DECODE_SPLIT_CTA=1 requires APXINF_TMROPE_POSITION_CACHE=1

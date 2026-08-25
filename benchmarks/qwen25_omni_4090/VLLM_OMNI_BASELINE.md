@@ -131,14 +131,14 @@ loading: its Transformers wrapper calls `AutoModel.from_config` on the
 checkpoint's full `Qwen2_5OmniConfig`, which Transformers 5.12.1 does not
 register for `AutoModel`. Consequently no text, image, context or performance
 number is valid for SGLang. It is recorded as a capability failure, while
-vLLM-Omni remains the maintained same-model baseline. See
-`results/sglang-0.5.18-compatibility.json` and the checked-in reproduction
-probe; no checkpoint rewrite or synthetic thinker extraction was used.
+vLLM-Omni remains the maintained same-model baseline. The aggregate comparison
+record and checked-in reproduction probe preserve this versioned observation;
+no checkpoint rewrite or synthetic thinker extraction was used.
 
 ## vLLM deployment and observed defects
 
-The isolated environment is frozen in
-`results/vllm-omni-0.26.0-environment.json`. It uses Python 3.12.14,
+The isolated environment fingerprint is retained with the raw experiment
+evidence on the GPU host. It uses Python 3.12.14,
 vLLM/vLLM-Omni 0.26.0, Torch 2.11.0+cu130, Transformers 5.15.1 and the same
 model files. The system vLLM 0.6.2 installation was not changed.
 

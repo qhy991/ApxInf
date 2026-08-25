@@ -80,6 +80,12 @@ memory-controller utilization, clocks, and power. Context probing stops at the
 first failed case; service recovery is an operator action and must be recorded
 separately rather than hidden by the benchmark.
 
+Raw trials and profiler exports are generated evidence, not repository API.
+Keep them on the experiment host. This directory checks in only the current
+aggregate promotion, acceptance, multimodal and external-engine comparison
+records listed in `BASELINE.md`; `.gitignore` prevents new per-run JSON/CSV
+files from accidentally expanding the PR.
+
 The promoted text-only path uses 512-token causal chunks below 4,096 prompt
 tokens, 256-token chunks from 4,096 through 8,191, and 1,024-token chunks from
 8,192 upward. The 8K crossover is admitted only with causal FA2 enabled; it

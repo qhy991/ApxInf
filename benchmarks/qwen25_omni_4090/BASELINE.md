@@ -1,269 +1,115 @@
 # Native Qwen2.5-Omni RTX 4090 baseline
 
-## Current accepted service
+This file records the current accepted service, not the optimization diary.
+Generated trials and profiler exports remain on the experiment host; the PR
+keeps only the aggregate evidence listed below.
 
-- Model/revision:
-  `Qwen/Qwen2.5-Omni-3B@f75b40e3da2003cdd6e1829b1f420ca70797c34e`
-- GPU: NVIDIA GeForce RTX 4090, 24,564 MiB, single request, BF16
-- Deployed binary SHA-256:
+## Frozen contract
+
+- Model: `Qwen/Qwen2.5-Omni-3B`
+- Revision: `f75b40e3da2003cdd6e1829b1f420ca70797c34e`
+- Hardware: one NVIDIA GeForce RTX 4090, SM89, 24 GiB
+- Precision and scheduling: BF16, one request, greedy, non-streaming,
+  `ignore_eos=true`
+- Output scope: thinker text output; real PNG and WAV inputs are covered, but
+  video and speech generation are not
+- Maximum request: 32,768 combined prompt and output tokens
+- Timing authority: service-emitted TTFT/TPOT plus client wall time, without a
+  profiler attached
+
+## Accepted artifact
+
+- Source commit: `2e09096bd73eb41767bc1ab06eacb09454ce6ef3`
+- Binary SHA-256:
   `af0330a74746e36972a2fd24187d7b73f9d7cf491d644b657590e0ffae39a7f1`
 - Immediate rollback SHA-256:
   `c322a8bb97635f5efaeb79bbbcab88505d53f273b24531d994f55bd7ab4e20be`
-- Deployment owner: runit launches the checked-in Broker service definition;
-  the service is stopped when unused so other queued work can own the GPU.
+- Service owner: runit plus `agent-gpu-broker`
+- Desired state after validation: stopped
 
-The current path composes the prior exact softmax, chunking, CUDA Graph,
-GPU-token-selection and cache optimizations with flattened long-prefill GQA
-and uninitialized allocation for outputs that GEMM, softmax, pointwise,
-normalization, RoPE, embedding or QKV-split producers provably overwrite in
-full. Exact SM89 chunk-shape GEMMs use load-time cuBLASLt tactics from the
-same immutable TacticStore; all unmatched shapes retain vendor cuBLAS.
-Long flattened-GQA softmax with at most 256 query tokens scales its
-single-consumer score buffer once and normalizes that storage in place; larger
-query chunks retain the non-mutating path.
-The shared-memory FP32 numerator cache uses a parallel exact maximum while
-preserving its ordered FP32 sum and normalization.
-The long-decode global FP32 numerator cache uses the same parallel exact
-maximum while preserving its existing ordered global-cache sum.
-Separate Gate SiLU and elementwise multiply launches are replaced by one
-backend primitive that deliberately rounds the SiLU intermediate to BF16
-before multiplication, preserving the removed tensor bit for bit.
-Windowed vision attention caches an ascending group-to-key plan and skips
-masked K/V rows while preserving every original key index, max/sum lane and
-accumulation order in the native reference. The promoted path packs those
-rows into stable group order, executes variable-length BF16 HeadDim96
-FlashAttention-2, and restores the original token layout. The four
-full-attention vision blocks continue to use the same vendored FA2 instance
-for the model's actual head dimension 80; text attention remains on its
-accepted path.
-The service also creates one processor worker at startup and reuses its loaded
-Transformers `AutoProcessor` for every serialized chat request. This removes
-per-request Python startup and model-processor construction without changing
-the processor-owned image/audio tensors or tokenization.
-For BF16 suffix prefill above 4,096 accumulated KV tokens, the exact
-QH/KVH/D=16/2/128 text-attention shape uses a causal SM89 FlashAttention-2
-specialization. It reads the existing head-major KV cache through explicit
-strides and returns the model-owned flattened output without materializing the
-prior score/value path. The selector-off flattened-GQA implementation remains
-the matched rollback path; decode, at-most-4K and multimodal attention are
-unchanged.
-For reset text prompts from 8,192 through 12,288 tokens, the FA2-aware chunk
-selector raises chunk size from 256 to 1,024. This reduces repeated
-projection/MLP GEMMs, FA2 launches, allocation and pointwise work while
-preserving the same complete request and KV-cache semantics. Other prompt
-lengths retain the previous 512/256/1,024 policy.
-Within that same 8K–12K reset-text cell, a request-scoped model policy routes
-the first four chunks through causal FA2 below the default 4,097-KV scheduling
-threshold. The model owns the total-prompt gate, so short, decode, multimodal
-and longer requests keep their previous attention call.
-At the opposite boundary, one persistent split-CTA workspace lets only
-one-token decode at KV 32,761--32,767 groups four adjacent query heads that
-share one KV head and uses split-64 online-softmax attention. Each query head
-retains an independent numerical state; only K/V read ownership is shared.
-The model fails closed unless the deployment is SM89 with QH/KVH/D=16/2/128,
-max context 32,768 and cached TMRoPE position ownership. Every shorter decode,
-prefill and multimodal call retains the previous path.
-The final 32K decode refinement captures that same grouped4 split-64 path,
-packed QKV, fused TMRoPE/KV publication, model layers, output head and GPU
-token selection into a dedicated CUDA Graph. It replays only at positions
-32,760--32,767 and requires every existing decode-graph and long-attention
-prerequisite at model load. Shorter decode and every prefill or multimodal
-request remain on their accepted paths.
-The graph MLP refinement additionally concatenates each layer's Gate and Up
-weights once at load time, executes one exact M=1 cuBLASLt projection, and
-replaces separate SiLU and multiply nodes with their bit-exact fused
-composition. Only captured M=1 decode consumes the packed weights; eager
-decode and prefill retain their existing projection ownership and tactics.
+Build the accepted SM89 artifact with:
 
-| Workload | Repeats | Current TTFT p50/median | Prior causal-FA2 TTFT | Change | TPOT median |
-|---|---:|---:|---:|---:|---:|
-| 1,024 + 32 control | 5 | 65.76 ms | same inactive path | control | 9.363 ms |
-| 4,096 + 8 control | 1 | 0.3960 s | same inactive path | control | 10.038 ms |
-| 7,168 + 8 control | 1 | 0.6252 s | same inactive path | control | 10.392 ms |
-| 8,192 + 8 | 5 paired | 0.4065 s | 0.6140 s | 1.511× median | 10.694 ms |
-| 12,288 + 8 | 5 paired | 0.6552 s | 0.8661 s | 1.322× median | 13.075 ms |
-| 32,760 + 8 | 5 paired | 2.5965 s | 2.5975 s | unchanged | 10.242 ms |
+```bash
+CARGO_TARGET_DIR=/opt/apxinf/qwen25-omni-sm89-target \
+  benchmarks/qwen25_omni_4090/build_sm89.sh
+```
 
-The resident processor improves service wall time independently of model
-execution:
+The checked-in runit definition under `service/` is the launch and environment
+authority. Every optional optimized path is explicit and fails closed when its
+shape, architecture, build feature, or prerequisite does not match.
 
-| Workload | Repeats | Model TTFT p50 | Model TPOT p50 | Prior wall | Current wall p50 | Wall speedup |
-|---|---:|---:|---:|---:|---:|---:|
-| PNG, 1,760 + 16 | 5 | 0.257 s | 10.388 ms | 1.074 s | 0.581 s | 1.85× |
-| WAV, 52 + 16 control | 5 | 20.12 ms | 8.090 ms | 0.151 s | 0.159 s | not a target |
+## Current implementation
 
-All repeated text cases preserve their accepted complete trajectory hashes.
-The exact 32,768-token contract, malformed-media recovery and real PNG/WAV
-exact-token gates pass. All 94 non-FP8 CUDA tests and all 66 model CPU tests
-pass. The same two RTX 4090
-FP8 cuBLAS status-15 failures remain explicit known control failures. See
-`PROFILE.md` and `promotion-m1-packed-mlp.json` for the latest promotion
-evidence.
+The accepted implementation combines:
 
-## Original frozen deployment
+- a persistent image/audio processor with typed malformed-media recovery;
+- exact causal chunked prefill and request-scoped FlashAttention-2 scheduling;
+- packed QKV, cached TMRoPE positions, fused TMRoPE/KV publication, GPU token
+  selection, and short-context decode graphs;
+- an SM89-only long-decode split-CTA attention path and dedicated graph for
+  positions 32,760 through 32,767;
+- a graph-only M=1 packed Gate/Up projection and bit-exact fused SiLU/multiply;
+- grouped variable-length FA2 for windowed vision attention and FA2 for the
+  four full-attention vision blocks.
 
-- Model: `Qwen/Qwen2.5-Omni-3B`
-- Model revision: `f75b40e3da2003cdd6e1829b1f420ca70797c34e`
-- ApxInf candidate: `b8292a30dc0c898918f118c5b1af094f3a26b094`
-- Remote binary SHA-256: `27f8edab296731137a76edfd43af720a5bdaaad1b503e90c89e5c9c332d9c7f0`
-- GPU: NVIDIA GeForce RTX 4090, 24,564 MiB
-- Service: runit + `gpu-run`, exclusive GPU 0, concurrency one
-- Processor: Transformers 4.56.0, huggingface-hub 0.34.4, tokenizers 0.22.0,
-  slow Qwen2VL image processor, offline local snapshot
-- API: `/v1/evaluations/generate`, greedy, non-streaming, pre-tokenized,
-  `ignore_eos=true`
+The latest packed-MLP refinement removes 72 graph nodes per generated token.
+Eager decode and prefill retain their previous projection ownership and GEMM
+tactics. Unsupported shapes do not silently select an unqualified path.
 
-KerSor v6 completed with `deployment_verified=true`; its independent run
-verifier passed with no completion gaps. The service also passed real
-text/image/audio HTTP requests with `fallback_active=false`.
+## Accepted measurements
 
-## Fixed-workload timing
+| Workload | ApxInf TTFT | ApxInf TPOT | vLLM-Omni 0.26.0 TPOT | Result |
+|---|---:|---:|---:|---|
+| 1,024 + 32 | 64.924 ms | 9.358 ms | 22.617 ms | ApxInf TPOT `2.417x` |
+| 128 + 128 | 15.000 ms | 8.255 ms | 22.681 ms | ApxInf TPOT `2.748x` |
+| 8,192 + 8 | 406.548 ms | 10.694 ms | 19.111 ms | ApxInf TPOT `1.787x` |
+| 12,288 + 8 | 655.240 ms | 13.075 ms | 19.094 ms | ApxInf TPOT `1.460x` |
+| 32,760 + 8 | 2,596.522 ms | 10.242 ms | 17.577 ms | ApxInf TPOT `1.716x` |
 
-| Workload | Repeats | TTFT p50 | TPOT p50 | Decode rate p50 | Client wall p50 | CV |
-|---|---:|---:|---:|---:|---:|---:|
-| 1,024 prompt + 32 output | 3 | 2.052 s | 18.90 ms | 52.91 tok/s | 2.746 s | <0.8% |
-| 128 prompt + 128 output | 3 | 183.5 ms | 17.57 ms | 56.93 tok/s | 2.520 s | <0.8% |
+For the latest packed-MLP candidate, five fixed-parent AB/BA pairs at
+32,760+8 all favored the candidate. Baseline and candidate TPOT medians were
+10.432 ms and 10.242 ms; the paired speedup median was `1.0250x` and the
+minimum pair was `1.0172x`. The 12K eager guard was neutral at about `1.001x`.
+All compared text trajectories were exact.
 
-Every repeated workload produced one stable trajectory hash. TTFT is the
-service's first-token interval; the reported prefill tokens/s value is only a
-proxy because TTFT includes first-token work.
+For real PNG 1,760+16, ApxInf wall p50 is 0.581 s versus 0.565 s for
+vLLM-Omni: near parity, with vLLM retaining lower TTFT and ApxInf retaining
+`2.110x` lower TPOT. For real WAV 52+16, ApxInf wall is 0.159 s versus 0.619 s.
+Both media cases preserve the accepted complete output-token trajectories.
 
-## Context gradient and capacity
+The legal 32,760+8 boundary passes. The final acceptance sample records
+15,993 MiB peak memory and at least 8,571 MiB headroom. Requests beyond the
+combined context limit are rejected as typed HTTP 400 responses rather than
+being admitted to OOM.
 
-Each context case requests eight output tokens. Exploratory points use one
-trial because the current quadratic path takes several minutes at the upper
-end.
+## Correctness and regression status
 
-| Prompt | Result | TTFT | TPOT | Peak VRAM | Mean GPU util | Mean power |
-|---:|---|---:|---:|---:|---:|---:|
-| 1,024 | pass | 2.059 s | 18.94 ms | 12,395 MiB | 75.6% | 117.4 W |
-| 2,048 | pass | 4.195 s | 24.85 ms | 12,705 MiB | 79.0% | 237.0 W |
-| 4,096 | pass after grid fix | 18.190 s | 28.78 ms | 13,899 MiB | 96.4% | 357.6 W |
-| 6,144 | pass | 51.311 s | 48.13 ms | 15,865 MiB | 95.8% | 405.4 W |
-| 8,192 | pass | 114.142 s | 61.00 ms | 18,593 MiB | 97.7% | 429.6 W |
-| 10,240 | pass | 216.863 s | 78.29 ms | 22,095 MiB | 97.7% | 430.7 W |
-| 10,752 | pass | 250.451 s | 79.61 ms | 23,089 MiB | 99.1% | 430.6 W |
-| 11,264 | CUDA OOM | n/a | n/a | allocation failed | n/a | n/a |
-| 12,288 | CUDA OOM | n/a | n/a | allocation failed | n/a | n/a |
+- model CPU tests: 66 passed;
+- benchmark-script tests: 15 passed;
+- CUDA tests: 94 passed, with two known FP8 cuBLAS status-15 controls outside
+  the frozen BF16 Omni contract;
+- exact text trajectories: 1K, 128-token decode, 4K, 8K, 12K, and 32K cells;
+- exact media trajectories: real PNG and WAV;
+- typed contract and malformed-media recovery: passed.
 
-The declared model capacity is 32,768 total tokens, but the current native
-implementation's proven 24 GiB operating range is 10,752 prompt + 8 output.
-The first proven failing point is 11,264 prompt + 8 output. Both OOM probes
-were fail-closed; runit relaunched the service and Broker ownership, resident
-VRAM, and `/health` recovered.
+## Checked-in evidence
 
-## Closed launch-boundary defect
+- `results/promotion-m1-packed-mlp.json`: current 32K text promotion,
+  correctness, graph attribution, binaries, and rollback identity;
+- `results/promotion-grouped-varlen-fa2.json`: current real-image promotion and
+  complete multimodal controls;
+- `results/omni-packed-mlp-acceptance-summary.json`: final endpoint acceptance
+  matrix;
+- `results/apxinf-vs-vllm-omni-0.26.0.json`: matched ApxInf/vLLM-Omni text,
+  context, media, capacity, MFU, and BWU summary.
 
-Before commit `b8292a3`, 4,096 tokens failed immediately with CUDA error 9.
-The attention-score tensor has `seq_len * heads = 4,096 * 16 = 65,536` rows,
-while the fused softmax launch placed every logical row in `grid.y`, whose
-limit is 65,535. A minimal 65,536×1 BF16 regression reproduced the same error
-with negligible memory. The fix maps logical rows across `grid.y × grid.z`.
+The promotion summaries retain hashes and provenance names for raw trials and
+profiler reports. Those artifacts are deliberately not part of the source
+contract. Re-run the benchmark scripts when new raw evidence is needed.
 
-Evidence gates:
+## Claim limits
 
-- red boundary test: CUDA error 9, exit 101;
-- green boundary and existing small-reference tests: exit 0;
-- 4,096-token endpoint: changed from error 9 to a complete eight-token
-  trajectory;
-- service health and Broker ownership remained recoverable.
-
-## Accepted successor
-
-The accepted path composes sequential-order softmax with a shape-specialized
-FP32 numerator cache, strided-batched GQA prefill, stream-ordered transient
-allocation, in-place KV reset, decode TMRoPE position caching and a
-single-owner packed QKV layout, plus prefill TMRoPE position reuse and a
-short-KV CUDA Graph with exact
-two-stage GPU token selection and fused TMRoPE K/V cache publication. Text-only
-prompts longer than 1,024 tokens are evaluated as exact causal chunks against
-the same KV owner: 512 tokens through the measured 12,288-token crossover and
-1,024 tokens above it, with a 256-token specialization from 4,096 through
-6,144. Image and audio prefill remain unchunked.
-Decode beyond the 11,264-column exp-cache gate uses an explicit exact scalar
-fallback; leaving that selector unset still fails closed.
-
-The graph and selection path remain restricted to SM89 one-token BF16 decode
-with `start_pos < 3072`; longer-KV decode keeps ordinary compute but uses the
-same exact two-stage GPU selection. The current
-deployed binary SHA-256 is
-`321e8a6db1e932e5138170070ae4bd27183e42cd3143128c75d477f10ccaba5e`.
-The prior accepted fused-KV and chunked binaries remain archived by their
-`dcccfb7b`, `f6ba8836`, `c8e06b41`, `778066a3`, `ac8e2436` and `0fc97f78`
-prefixes, with `881491b0` as the immediate rollback.
-
-Relative to the graph/token-selection service, packed QKV improves 1K+32 TPOT
-from 9.707 ms to 9.485 ms (1.023×) and 128+128 TPOT from 8.582 ms to
-8.363 ms (1.026×). Fused TMRoPE K/V publication then reaches 9.384 and
-8.252 ms (another 1.011× and 1.013×). The
-2,048 and 2,560-token TPOT rows additionally improve by 1.081× and 1.044×
-after extending the graph to its measured crossover; packed ordinary decode
-then improves the 3,072 and 3,584 rows by 1.030× and 1.033×. Against the
-original baseline, deployed decode TPOT improves from 17.567 ms to 8.256 ms
-(2.128×). Decode is statistically unchanged by chunked prefill. At 2,048,
-2,560, 3,072 and 4,096 prompt tokens, chunking lowers TTFT by 12.7%, 14.8%,
-16.5% and 21.6%, respectively. At 10,752+8, TTFT falls from 7.930 s to
-5.525 s (1.435×). See `PROFILE.md` and the structured raw results for the
-complete promotion record.
-
-The adaptive 512-token refinement then lowers the already-chunked TTFT by a
-further 5.85% at 2,048 tokens, 2.68% at 4,096, 3.20% at 8,192 and 1.41% at
-11,264. A constant 512-token policy began regressing at 16K; the 12,288-token
-crossover restores the accepted 1,024-token path above that point. Decode and
-1K prefill remain unchanged.
-
-Removing output normalization, hidden D2H, LM-head projection and logits D2H
-from every non-final chunk lowers the adaptive TTFT by another 3.98% at 2K,
-5.51% at 4K, 3.90% at 8K, 3.87% at 11K and 3.44% at both 16K and 32K. Only
-the final chunk produces logits; KV semantics and complete trajectories remain
-unchanged.
-
-A final chunk-size screen found that 256-token chunks regress 2K/3K and 11K,
-but improve a contiguous 4K–6K interval. Restricting them to 4,096–6,144
-lowers deployed 4K TTFT from 539.121 to 532.223 ms (1.28%) while 2K, 8K,
-11K and the 32K capacity path retain their accepted chunk sizes.
-
-Reusing one device TMRoPE position array per prefill slice then lowers 1K TTFT
-from 80.439 to 76.877 ms (4.43%), 4K from 532.223 to 506.916 ms (4.75%),
-11K from 5.152 to 5.106 s (0.88%) and 32K from 43.784 to 43.491 s (0.67%).
-It preserves the full context boundary and exact text/image/audio trajectories.
-
-Taking a zero-copy GPU view of the final hidden row before output normalization
-then lowers the 10-sample 1K TTFT median from 76.871 to 75.802 ms (1.39%). It
-removes the final whole-slice D2H and hidden-row H2D transfers; 4K/11K timing,
-decode TPOT, 32K capacity and all trajectories remain unchanged.
-
-Extending exact GPU argmax to graph-ineligible eager decode then lowers TPOT
-by 1.80% at 4K, 1.47% at 8K and 1.07% at 11K. It removes one full-logit D2H
-and CPU scan per generated token while retaining the ordinary long-KV compute
-path and complete trajectories.
-
-For decode beyond the 11,264-column shared numerator-cache limit, an exact
-global FP32 cache lowers scalar-path TPOT by about 14.6% at 11K, 15.0% at 12K
-and 8.0% at 32K. One CTA kernel performs fill, ordered sum and normalize with
-block-local synchronization. It preserves scalar max/sum order, all output
-trajectories and the 32K memory boundary.
-
-The former 10,752-token memory ceiling is now historical. Exact trajectories
-pass at 11,264, 12,288, 16,384, 24,576 and 32,760 prompt tokens; the last case
-requests eight outputs and exactly fills the declared 32,768-token contract.
-Its current TTFT is 43.591 s. No legal single request now OOMs in
-the tested gradient. A request exceeding the combined context, a 129-token completion,
-nonzero temperature and evaluation streaming all return typed HTTP 400
-`invalid_request` responses, and `/health` remains ready afterwards.
-
-The actual promoted-binary profile records 127 `cudaGraphLaunch` calls and no
-decode-step logits D2H. The 128-block partial argmax and one-block final
-argmax take 2.69 and 2.40 microseconds in the observable eager prewarm; the
-fused TMRoPE K/V node takes 3.66 microseconds and the complete request profile
-reports 8.276 ms average stream synchronization.
-Gate/Up packing, one-block GPU argmax and combined Q/K/V TMRoPE were retained
-as null or sub-threshold results. Remaining single-request decode latency is
-dominated by GPU graph compute: the BF16 text-weight read lower bound is
-6.172 GB/token, equivalent to about 747.6 GB/s or 74.17% of the RTX 4090's
-1,008 GB/s peak at the accepted 8.256 ms TPOT. In the 11,264-token request
-profile, long-KV scalar softmax accounts for about 1.638 s and small-N GEMV for
-about 2.056 s of summed GPU kernel time, so long-prefill softmax is the next
-bounded target. The evidence still does not include a vLLM baseline or
-multi-request serving; the bandwidth figure is a weight-only lower-bound
-estimate, not a memory-transaction counter.
+These results do not claim multi-request throughput, continuous batching,
+non-SM89 portability, video input, or speech output. MFU and BWU are derived
+from an explicit dense-BF16 peak convention and algorithmic byte lower bounds;
+they are diagnostic estimates, not measured HBM transactions.
