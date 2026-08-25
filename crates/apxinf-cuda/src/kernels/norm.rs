@@ -107,6 +107,50 @@ pub fn residual_add_rms_bf16_into(
     })
 }
 
+/// Bit-exact composition of BF16 residual add followed by BF16 RMSNorm.
+#[allow(clippy::too_many_arguments)]
+pub fn residual_add_rms_exact_bf16_into(
+    ctx: &CudaContext,
+    residual: &CudaBuffer,
+    delta: &CudaBuffer,
+    weight: &CudaBuffer,
+    output: &CudaBuffer,
+    cols: usize,
+    rows: usize,
+    eps: f32,
+) -> Result<()> {
+    require_finite("exact residual RMSNorm", &[eps])?;
+    if eps <= 0.0 {
+        return Err(Error::Other(
+            "exact residual RMSNorm epsilon must be positive".into(),
+        ));
+    }
+    let matrix = checked_bytes(DType::BF16, &[rows, cols], "exact residual RMSNorm")?;
+    let weight_size = checked_bytes(DType::BF16, &[cols], "exact residual RMSNorm")?;
+    require_buffers(
+        ctx,
+        "exact residual RMSNorm",
+        &[
+            ("residual", residual, matrix),
+            ("delta", delta, matrix),
+            ("weight", weight, weight_size),
+            ("output", output, matrix),
+        ],
+    )?;
+    check_cuda(unsafe {
+        ffi::apxinf_rms_norm_add_exact_bf16(
+            residual.ptr(),
+            delta.ptr(),
+            weight.ptr(),
+            output.ptr(),
+            cols as u32,
+            rows as u32,
+            eps,
+            ctx.stream().handle(),
+        )
+    })
+}
+
 /// RMS normalization on CUDA. Dispatches on `input.dtype()`.
 pub fn rms(ctx: &CudaContext, input: &Tensor, weight: &Tensor, eps: f32) -> Result<Tensor> {
     let device_id = ctx.device_id();

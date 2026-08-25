@@ -121,7 +121,8 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_QWEN25_GPU_ARGMAX=1`, `APXINF_QWEN25_EAGER_GPU_ARGMAX=1` and
 `APXINF_QWEN25_GPU_LAST_ROW=1`, plus
 `APXINF_QWEN25_M1_PACKED_MLP=1` and
-`APXINF_QWEN25_M1_GEMV_TACTICS=1`. The decode
+`APXINF_QWEN25_M1_GEMV_TACTICS=1`, plus
+`APXINF_QWEN25_SHORT_DECODE_EXACT_RESIDUAL_NORM=1`. The decode
 graph and exact two-stage GPU token selection are deliberately restricted to
 SM89 one-token decode with `start_pos < 3072`; prefill and longer-KV decode
 keep the accepted ordinary path except for the explicit long-decode selector.
@@ -144,6 +145,13 @@ their prior tactics. The M1 GEMV selector installs exact RTX 4090 cuBLASLt
 tactics for the one-token WO `[1,2048] @ [2048,2048]` and Down
 `[1,11008] @ [11008,2048]` projections. Exact keys prevent those tactics from
 changing prefill or unmatched shapes; unset or `0` retains vendor selection.
+The short-decode exact residual selector replaces each BF16 residual add and
+following RMSNorm with one graph node. It explicitly rounds the updated
+residual to BF16 before the RMS reduction, so both the residual state and norm
+output remain bit-exact. The selector is admitted only for the pinned SM89
+Qwen2.5-Omni-3B composition and only changes the graph used below position
+3,072; eager, prefill, 12K, and the dedicated post-32K graph retain their prior
+nodes. Invalid dependencies or model shapes fail model load.
 `APXINF_QWEN25_PACKED_QKV=1` selects one
 packed QKV owner shared by both paths. `APXINF_QWEN25_FUSED_TMROPE_KV=1`
 publishes rotated K and unchanged V directly to their caches during graph

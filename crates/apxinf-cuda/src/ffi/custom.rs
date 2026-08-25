@@ -767,6 +767,17 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_rms_norm_add_exact_bf16(
+        x_inout: *mut c_void,
+        delta: *const c_void,
+        weight: *const c_void,
+        output: *mut c_void,
+        cols: u32,
+        rows: u32,
+        eps: f32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_softmax_bf16(
         input: *const c_void,
         output: *mut c_void,

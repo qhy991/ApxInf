@@ -20,9 +20,9 @@ keeps only the aggregate evidence listed below.
 ## Accepted artifact
 
 - Binary SHA-256:
-  `f77d1cea2ba62a048405e45221c133ebf0a837d24c79345fbc935b45e6158ac0`
+  `b1a6252930d0312000cceda77c449988e22c17072fc62e930e196b3ad292083c`
 - Immediate rollback SHA-256:
-  `679ff6e9889cf8cf3fe22f410df52451691fdeabbbdffbfb09546f0cbd9e1cb0`
+  `f77d1cea2ba62a048405e45221c133ebf0a837d24c79345fbc935b45e6158ac0`
 - Service owner: runit plus `agent-gpu-broker`
 - Desired state after validation: stopped
 
@@ -49,6 +49,7 @@ The accepted implementation combines:
   positions 32,760 through 32,767;
 - a graph-only M=1 packed Gate/Up projection and bit-exact fused SiLU/multiply;
 - exact SM89 cuBLASLt tactics for the one-token WO and Down projections;
+- BF16-exact residual-add/RMSNorm fusion in the short one-token decode graph;
 - grouped variable-length FA2 for windowed vision attention and FA2 for the
   four full-attention vision blocks.
 
@@ -61,12 +62,19 @@ from 1.03749 s to 1.01698 s across five alternating pairs. All five pairs win,
 the paired wall speedup median is `1.0203x`, and the slowest pair is `1.0188x`.
 The 12K guard remains within 0.22% in every pair; the 32K wall cell wins 5/5.
 
+The latest short-decode residual/RMSNorm refinement lowers the 128-token wall
+median from 1.01910 s to 1.00918 s across five alternating pairs. All five
+pairs win, the paired wall speedup median is `1.0105x`, and the slowest pair is
+`1.0050x`. TPOT falls from 7.871 ms to 7.792 ms. The 12K and 32K graphs do not
+install this selector; their worst paired wall regressions remain bounded at
+0.402% and 0.145%, respectively.
+
 ## Accepted measurements
 
 | Workload | ApxInf TTFT | ApxInf TPOT | vLLM-Omni 0.26.0 TPOT | Result |
 |---|---:|---:|---:|---|
 | 1,024 + 32 | 64.924 ms | 9.358 ms | 22.617 ms | ApxInf TPOT `2.417x` |
-| 128 + 128 | 15.000 ms | 8.255 ms | 22.681 ms | ApxInf TPOT `2.748x` |
+| 128 + 128 | 17.281 ms | 7.792 ms | 22.681 ms | ApxInf TPOT `2.911x` |
 | 8,192 + 8 | 406.548 ms | 10.694 ms | 19.111 ms | ApxInf TPOT `1.787x` |
 | 12,288 + 8 | 655.240 ms | 13.075 ms | 19.094 ms | ApxInf TPOT `1.460x` |
 | 32,760 + 8 | 2,596.522 ms | 10.242 ms | 17.577 ms | ApxInf TPOT `1.716x` |
@@ -103,6 +111,8 @@ being admitted to OOM.
   correctness, graph attribution, binaries, and rollback identity;
 - `results/promotion-m1-gemv-tactics.json`: current 128-token decode promotion,
   guard cells, operator gate, paired wall timing, and profile attribution;
+- `results/promotion-short-exact-residual-norm.json`: current short-decode
+  residual/RMSNorm promotion, long-context guards, and node-level attribution;
 - `results/promotion-grouped-varlen-fa2.json`: current real-image promotion and
   complete multimodal controls;
 - `results/omni-packed-mlp-acceptance-summary.json`: final endpoint acceptance

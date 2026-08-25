@@ -261,7 +261,21 @@ extern "C" cudaError_t apxinf_rms_norm_add_bf16(
     dim3 grid(rows, 1, 1);
     dim3 block(BLOCK_SIZE, 1, 1);
     size_t smem = cols * sizeof(float);
-    rms_norm_add_bf16_kernel<<<grid, block, smem, (cudaStream_t)stream>>>(
+    rms_norm_add_bf16_kernel<false><<<grid, block, smem, (cudaStream_t)stream>>>(
+        (__nv_bfloat16*)x_inout, (const __nv_bfloat16*)delta,
+        (const __nv_bfloat16*)weight, (__nv_bfloat16*)output,
+        cols, rows, eps);
+    return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_rms_norm_add_exact_bf16(
+    void* x_inout, const void* delta, const void* weight, void* output,
+    uint32_t cols, uint32_t rows, float eps, void* stream)
+{
+    dim3 grid(rows, 1, 1);
+    dim3 block(BLOCK_SIZE, 1, 1);
+    size_t smem = cols * sizeof(float);
+    rms_norm_add_bf16_kernel<true><<<grid, block, smem, (cudaStream_t)stream>>>(
         (__nv_bfloat16*)x_inout, (const __nv_bfloat16*)delta,
         (const __nv_bfloat16*)weight, (__nv_bfloat16*)output,
         cols, rows, eps);
