@@ -23,6 +23,7 @@ use crate::kernels::qwen25_omni_attention::{
     grouped2_split_cta_write, grouped4_split_cta_write, packed_qkv_prelude_write,
     short_w32_write, SplitCtaWorkspace,
 };
+use crate::kernels::qwen25_omni_fused::residual_add_rmsnorm_pack8_bf16_into;
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
 use crate::kernels::selection::argmax_bf16_into;
 use crate::CudaKVCache;
@@ -249,6 +250,82 @@ fn residual_add_rms_exact_bf16_is_bit_exact() {
         download_bf16_as_fp32(&candidate_norm).unwrap(),
         download_bf16_as_fp32(&baseline_norm).unwrap()
     );
+}
+
+#[test]
+fn qwen25_pack8_residual_rmsnorm_is_bit_exact() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    if ctx.caps().sm != 89 {
+        return;
+    }
+    let columns = 2048usize;
+    let residual = (0..columns)
+        .map(|index| ((index * 17 % 257) as f32 - 128.0) / 31.0)
+        .collect::<Vec<_>>();
+    let delta = (0..columns)
+        .map(|index| ((index * 29 % 193) as f32 - 96.0) / 47.0)
+        .collect::<Vec<_>>();
+    let weight = (0..columns)
+        .map(|index| 0.75 + (index * 11 % 127) as f32 / 256.0)
+        .collect::<Vec<_>>();
+    let eps = 1.0e-6f32;
+    let baseline_residual = upload_fp32_as_bf16(&ctx, &residual, vec![1, columns]).unwrap();
+    let candidate_residual = upload_fp32_as_bf16(&ctx, &residual, vec![1, columns]).unwrap();
+    let delta = upload_fp32_as_bf16(&ctx, &delta, vec![1, columns]).unwrap();
+    let weight = upload_fp32_as_bf16(&ctx, &weight, vec![columns]).unwrap();
+    let baseline_residual_buffer = CudaBuffer::from_tensor(&baseline_residual).unwrap();
+    let candidate_residual_buffer = CudaBuffer::from_tensor(&candidate_residual).unwrap();
+    let delta_buffer = CudaBuffer::from_tensor(&delta).unwrap();
+    let weight_buffer = CudaBuffer::from_tensor(&weight).unwrap();
+    let output_bytes = columns * DType::BF16.size_in_bytes();
+    let baseline_output = CudaBuffer::alloc_zeros(output_bytes, ctx.device_id()).unwrap();
+    let candidate_output = CudaBuffer::alloc_zeros(output_bytes, ctx.device_id()).unwrap();
+    residual_add_rms_exact_bf16_into(
+        &ctx,
+        &baseline_residual_buffer,
+        &delta_buffer,
+        &weight_buffer,
+        &baseline_output,
+        columns,
+        1,
+        eps,
+    )
+    .unwrap();
+    residual_add_rmsnorm_pack8_bf16_into(
+        &ctx,
+        &candidate_residual_buffer,
+        &delta_buffer,
+        &weight_buffer,
+        &candidate_output,
+        columns,
+        1,
+        eps,
+    )
+    .unwrap();
+    ctx.synchronize().unwrap();
+    let baseline_output = baseline_output.into_tensor(Shape::new(vec![1, columns]), DType::BF16);
+    let candidate_output = candidate_output.into_tensor(Shape::new(vec![1, columns]), DType::BF16);
+    assert_eq!(
+        download_bf16_as_fp32(&candidate_residual).unwrap(),
+        download_bf16_as_fp32(&baseline_residual).unwrap()
+    );
+    assert_eq!(
+        download_bf16_as_fp32(&candidate_output).unwrap(),
+        download_bf16_as_fp32(&baseline_output).unwrap()
+    );
+    assert!(residual_add_rmsnorm_pack8_bf16_into(
+        &ctx,
+        &candidate_residual_buffer,
+        &delta_buffer,
+        &weight_buffer,
+        &CudaBuffer::alloc_zeros(output_bytes, ctx.device_id()).unwrap(),
+        columns,
+        1,
+        1.0e-5,
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("pack8 residual RMSNorm contract mismatch"));
 }
 
 // ── Reduction: softmax ────────────────────────────────────────────

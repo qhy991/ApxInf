@@ -39,6 +39,17 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_static_qwen25_omni_residual_rmsnorm_pack8_bf16(
+        residual: *mut c_void,
+        delta: *const c_void,
+        weight: *const c_void,
+        output: *mut c_void,
+        rows: i32,
+        columns: i32,
+        eps: f32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_static_qwen25_omni_attention_flash_split_cta_bf16(
         query: *const c_void,
         key_cache: *const c_void,

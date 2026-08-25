@@ -10,3 +10,4 @@ results/*
 !results/promotion-short-exact-residual-norm.json
 !results/promotion-short-w32-attention.json
 !results/promotion-fused-qkv-prelude.json
+!results/promotion-pack8-residual-rmsnorm.json
