@@ -1,55 +1,5 @@
 use crate::{MetalW8Error, PackedW8MlpBlock, PackedW8Rows, W8GroupSize, W8_TOP_K};
 
-/// Storage policy for the immutable vocabulary projection buffers.
-#[repr(u32)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TailMlpHeadVocabStorageV1 {
-    /// Legacy behavior: initialize and retain the vocabulary buffers in shared storage.
-    #[default]
-    Shared = 0,
-    /// Upload once through shared staging buffers and retain the vocabulary in private storage.
-    PrivateUpload = 1,
-}
-
-impl TailMlpHeadVocabStorageV1 {
-    pub const fn receipt_label(self) -> &'static str {
-        match self {
-            Self::Shared => "shared",
-            Self::PrivateUpload => "private-upload",
-        }
-    }
-
-    const fn abi_value(self) -> u32 {
-        self as u32
-    }
-
-    const fn from_abi_value(value: u32) -> Option<Self> {
-        match value {
-            0 => Some(Self::Shared),
-            1 => Some(Self::PrivateUpload),
-            _ => None,
-        }
-    }
-}
-
-/// Runtime-observed storage and one-time upload receipt for the vocabulary buffers.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct TailMlpHeadVocabStorageReceiptV1 {
-    pub storage: TailMlpHeadVocabStorageV1,
-    pub vocab_weights_storage: TailMlpHeadVocabStorageV1,
-    pub vocab_scales_storage: TailMlpHeadVocabStorageV1,
-    pub vocab_weight_bytes: usize,
-    pub vocab_scale_bytes: usize,
-    pub transient_staging_buffers: u32,
-    pub transient_staging_bytes: usize,
-    pub init_blit_bytes: usize,
-    pub init_command_buffers: u32,
-    pub init_blit_encoders: u32,
-    pub init_copy_commands: u32,
-    pub init_commits: u32,
-    pub init_waits: u32,
-}
-
 /// Exact resident-buffer and per-decode transaction contract for tail v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TailMlpHeadBufferLedgerV1 {
@@ -83,20 +33,6 @@ impl TailMlpHeadBufferLedgerV1 {
         hidden_size: usize,
         intermediate_size: usize,
         vocab_size: usize,
-    ) -> Result<Self, MetalW8Error> {
-        Self::from_dimensions_with_vocab_storage(
-            hidden_size,
-            intermediate_size,
-            vocab_size,
-            TailMlpHeadVocabStorageV1::Shared,
-        )
-    }
-
-    pub fn from_dimensions_with_vocab_storage(
-        hidden_size: usize,
-        intermediate_size: usize,
-        vocab_size: usize,
-        vocab_storage: TailMlpHeadVocabStorageV1,
     ) -> Result<Self, MetalW8Error> {
         if hidden_size == 0
             || intermediate_size == 0
@@ -169,17 +105,13 @@ impl TailMlpHeadBufferLedgerV1 {
             .ok_or_else(|| {
                 MetalW8Error::new("Metal W8 tail MLP+head v1 transfer ledger overflow")
             })?;
-        let (shared_buffers, private_buffers) = match vocab_storage {
-            TailMlpHeadVocabStorageV1::Shared => (10, 3),
-            TailMlpHeadVocabStorageV1::PrivateUpload => (8, 5),
-        };
         Ok(Self {
             scope: "resident-mtlbuffer-only",
             exclusions: "CPU packed weights, host F32 tied embedding and exact four-candidate rerank, host allocations, Metal pipelines/libraries/queues, command objects, driver allocations, attention/KV, model loader, and all earlier model layers",
             abi_version: 1,
             allocated_buffers: 13,
-            shared_buffers,
-            private_buffers,
+            shared_buffers: 10,
+            private_buffers: 3,
             packed_weight_bytes,
             packed_scale_bytes,
             f32_parameter_bytes,
@@ -253,7 +185,6 @@ pub struct MetalW8TailMlpHeadV1 {
     terminal_error: bool,
     stats: TailMlpHeadMetalStatsV1,
     buffer_ledger: TailMlpHeadBufferLedgerV1,
-    vocab_storage_receipt: TailMlpHeadVocabStorageReceiptV1,
 }
 
 impl PackedW8TailMlpHeadV1 {
@@ -394,29 +325,14 @@ fn require_finite(values: &[f32], label: &str) -> Result<(), MetalW8Error> {
 
 impl MetalW8TailMlpHeadV1 {
     pub fn from_packed(weights: &PackedW8TailMlpHeadV1) -> Result<Self, MetalW8Error> {
-        Self::from_packed_with_vocab_storage(weights, TailMlpHeadVocabStorageV1::Shared)
-    }
-
-    pub fn from_packed_with_vocab_storage(
-        weights: &PackedW8TailMlpHeadV1,
-        vocab_storage: TailMlpHeadVocabStorageV1,
-    ) -> Result<Self, MetalW8Error> {
-        let buffer_ledger = TailMlpHeadBufferLedgerV1::from_dimensions_with_vocab_storage(
-            weights.hidden_size(),
-            weights.intermediate_size(),
-            weights.vocab_size(),
-            vocab_storage,
-        )?;
-        let inner = platform::TailHandleV1::new(weights, vocab_storage, buffer_ledger)?;
-        let vocab_storage_receipt = inner.vocab_storage_receipt();
+        let buffer_ledger = weights.buffer_ledger()?;
         Ok(Self {
-            inner,
+            inner: platform::TailHandleV1::new(weights)?,
             normalized_hidden: vec![0.0; weights.hidden_size()],
             candidate_token_ids: [u32::MAX; W8_TOP_K],
             terminal_error: false,
             stats: TailMlpHeadMetalStatsV1::default(),
             buffer_ledger,
-            vocab_storage_receipt,
         })
     }
 
@@ -459,14 +375,6 @@ impl MetalW8TailMlpHeadV1 {
 
     pub fn buffer_ledger(&self) -> TailMlpHeadBufferLedgerV1 {
         self.buffer_ledger
-    }
-
-    pub fn vocab_storage(&self) -> TailMlpHeadVocabStorageV1 {
-        self.vocab_storage_receipt.storage
-    }
-
-    pub fn vocab_storage_receipt(&self) -> TailMlpHeadVocabStorageReceiptV1 {
-        self.vocab_storage_receipt
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -690,10 +598,7 @@ fn rms_norm(input: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{
-        MetalW8Error, PackedW8TailMlpHeadV1, TailMlpHeadBufferLedgerV1,
-        TailMlpHeadVocabStorageReceiptV1, TailMlpHeadVocabStorageV1, W8_TOP_K,
-    };
+    use super::{MetalW8Error, PackedW8TailMlpHeadV1, W8_TOP_K};
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
 
@@ -717,24 +622,6 @@ mod platform {
 
     #[repr(C)]
     #[derive(Clone, Copy, Debug, Default)]
-    struct RawVocabStorageReceiptV1 {
-        vocab_storage: u32,
-        vocab_weights_storage: u32,
-        vocab_scales_storage: u32,
-        transient_staging_buffers: u32,
-        vocab_weight_bytes: u64,
-        vocab_scale_bytes: u64,
-        transient_staging_bytes: u64,
-        init_blit_bytes: u64,
-        init_command_buffers: u32,
-        init_blit_encoders: u32,
-        init_copy_commands: u32,
-        init_commits: u32,
-        init_waits: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default)]
     pub(super) struct TailExecutionReceiptV1 {
         pub(super) host_to_device_bytes: u64,
         pub(super) device_to_host_bytes: u64,
@@ -754,16 +641,9 @@ mod platform {
     }
 
     extern "C" {
-        fn apxinf_metal_w8_tail_mlp_head_create_with_vocab_storage_v1(
+        fn apxinf_metal_w8_tail_mlp_head_create_v1(
             descriptor: *const TailDescriptorV1,
-            vocab_storage: u32,
             output: *mut *mut c_void,
-            error: *mut c_char,
-            error_capacity: usize,
-        ) -> c_int;
-        fn apxinf_metal_w8_tail_mlp_head_vocab_storage_receipt_v1(
-            handle: *mut c_void,
-            receipt: *mut RawVocabStorageReceiptV1,
             error: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
@@ -791,15 +671,10 @@ mod platform {
     pub(super) struct TailHandleV1 {
         handle: NonNull<c_void>,
         vocab_size: usize,
-        vocab_storage_receipt: TailMlpHeadVocabStorageReceiptV1,
     }
 
     impl TailHandleV1 {
-        pub(super) fn new(
-            weights: &PackedW8TailMlpHeadV1,
-            requested_storage: TailMlpHeadVocabStorageV1,
-            buffer_ledger: TailMlpHeadBufferLedgerV1,
-        ) -> Result<Self, MetalW8Error> {
+        pub(super) fn new(weights: &PackedW8TailMlpHeadV1) -> Result<Self, MetalW8Error> {
             let descriptor = TailDescriptorV1 {
                 gate_up_weights: weights.mlp.gate_up.values().as_ptr(),
                 gate_up_scales: weights.mlp.gate_up.scales().as_ptr(),
@@ -817,60 +692,22 @@ mod platform {
             let mut output = std::ptr::null_mut();
             let mut error = [0 as c_char; ERROR_CAPACITY];
             let status = unsafe {
-                apxinf_metal_w8_tail_mlp_head_create_with_vocab_storage_v1(
+                apxinf_metal_w8_tail_mlp_head_create_v1(
                     &descriptor,
-                    requested_storage.abi_value(),
                     &mut output,
                     error.as_mut_ptr(),
                     error.len(),
                 )
             };
             if status != 0 {
-                if let Some(handle) = NonNull::new(output) {
-                    unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                }
                 return Err(bridge_error("create Metal W8 tail MLP+head v1", &error));
             }
             let handle = NonNull::new(output).ok_or_else(|| {
                 MetalW8Error::new("create Metal W8 tail MLP+head v1 returned a null handle")
             })?;
-
-            let mut raw_receipt = RawVocabStorageReceiptV1::default();
-            error.fill(0);
-            let receipt_status = unsafe {
-                apxinf_metal_w8_tail_mlp_head_vocab_storage_receipt_v1(
-                    handle.as_ptr(),
-                    &mut raw_receipt,
-                    error.as_mut_ptr(),
-                    error.len(),
-                )
-            };
-            if receipt_status != 0 {
-                let receipt_error = bridge_error(
-                    "read Metal W8 tail MLP+head v1 vocabulary storage receipt",
-                    &error,
-                );
-                unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                return Err(receipt_error);
-            }
-
-            let receipt = validate_vocab_storage_receipt(
-                raw_receipt,
-                requested_storage,
-                weights,
-                buffer_ledger,
-            );
-            let vocab_storage_receipt = match receipt {
-                Ok(receipt) => receipt,
-                Err(error) => {
-                    unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                    return Err(error);
-                }
-            };
             Ok(Self {
                 handle,
                 vocab_size: weights.vocab_size(),
-                vocab_storage_receipt,
             })
         }
 
@@ -925,155 +762,12 @@ mod platform {
         pub(super) fn vocab_size(&self) -> usize {
             self.vocab_size
         }
-
-        pub(super) fn vocab_storage_receipt(&self) -> TailMlpHeadVocabStorageReceiptV1 {
-            self.vocab_storage_receipt
-        }
     }
 
     impl Drop for TailHandleV1 {
         fn drop(&mut self) {
             unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(self.handle.as_ptr()) };
         }
-    }
-
-    fn validate_vocab_storage_receipt(
-        raw: RawVocabStorageReceiptV1,
-        requested_storage: TailMlpHeadVocabStorageV1,
-        weights: &PackedW8TailMlpHeadV1,
-        buffer_ledger: TailMlpHeadBufferLedgerV1,
-    ) -> Result<TailMlpHeadVocabStorageReceiptV1, MetalW8Error> {
-        let storage =
-            TailMlpHeadVocabStorageV1::from_abi_value(raw.vocab_storage).ok_or_else(|| {
-                MetalW8Error::new(format!(
-                    "Metal W8 tail MLP+head v1 returned unknown vocabulary storage selector {}",
-                    raw.vocab_storage
-                ))
-            })?;
-        let vocab_weights_storage = TailMlpHeadVocabStorageV1::from_abi_value(
-            raw.vocab_weights_storage,
-        )
-        .ok_or_else(|| {
-            MetalW8Error::new(format!(
-                "Metal W8 tail MLP+head v1 returned unknown vocabulary-weight storage mode {}",
-                raw.vocab_weights_storage
-            ))
-        })?;
-        let vocab_scales_storage = TailMlpHeadVocabStorageV1::from_abi_value(
-            raw.vocab_scales_storage,
-        )
-        .ok_or_else(|| {
-            MetalW8Error::new(format!(
-                "Metal W8 tail MLP+head v1 returned unknown vocabulary-scale storage mode {}",
-                raw.vocab_scales_storage
-            ))
-        })?;
-        let checked_usize = |value: u64, label: &str| {
-            usize::try_from(value).map_err(|_| {
-                MetalW8Error::new(format!(
-                    "Metal W8 tail MLP+head v1 {label} exceeds the host usize"
-                ))
-            })
-        };
-        let receipt = TailMlpHeadVocabStorageReceiptV1 {
-            storage,
-            vocab_weights_storage,
-            vocab_scales_storage,
-            vocab_weight_bytes: checked_usize(raw.vocab_weight_bytes, "vocabulary weight bytes")?,
-            vocab_scale_bytes: checked_usize(raw.vocab_scale_bytes, "vocabulary scale bytes")?,
-            transient_staging_buffers: raw.transient_staging_buffers,
-            transient_staging_bytes: checked_usize(
-                raw.transient_staging_bytes,
-                "transient staging bytes",
-            )?,
-            init_blit_bytes: checked_usize(raw.init_blit_bytes, "initialization blit bytes")?,
-            init_command_buffers: raw.init_command_buffers,
-            init_blit_encoders: raw.init_blit_encoders,
-            init_copy_commands: raw.init_copy_commands,
-            init_commits: raw.init_commits,
-            init_waits: raw.init_waits,
-        };
-        let expected_weight_bytes = weights.vocab.values().len();
-        let expected_scale_bytes = weights
-            .vocab
-            .scales()
-            .len()
-            .checked_mul(std::mem::size_of::<f32>())
-            .ok_or_else(|| {
-                MetalW8Error::new("Metal W8 tail MLP+head v1 vocabulary scale byte count overflow")
-            })?;
-        let expected_upload_bytes = expected_weight_bytes
-            .checked_add(expected_scale_bytes)
-            .ok_or_else(|| {
-                MetalW8Error::new("Metal W8 tail MLP+head v1 vocabulary upload byte overflow")
-            })?;
-        if receipt.storage != requested_storage
-            || receipt.vocab_weights_storage != requested_storage
-            || receipt.vocab_scales_storage != requested_storage
-        {
-            return Err(MetalW8Error::new(format!(
-                "Metal W8 tail MLP+head v1 vocabulary storage receipt mismatch: requested {}, observed selector {}, weights {}, scales {}",
-                requested_storage.receipt_label(),
-                receipt.storage.receipt_label(),
-                receipt.vocab_weights_storage.receipt_label(),
-                receipt.vocab_scales_storage.receipt_label()
-            )));
-        }
-        if receipt.vocab_weight_bytes != expected_weight_bytes
-            || receipt.vocab_scale_bytes != expected_scale_bytes
-        {
-            return Err(MetalW8Error::new(format!(
-                "Metal W8 tail MLP+head v1 vocabulary byte receipt mismatch: observed weights {} scales {}, expected weights {} scales {}",
-                receipt.vocab_weight_bytes,
-                receipt.vocab_scale_bytes,
-                expected_weight_bytes,
-                expected_scale_bytes
-            )));
-        }
-        let expected_init = match requested_storage {
-            TailMlpHeadVocabStorageV1::Shared => (0, 0, 0, 0, 0, 0, 0, 0),
-            TailMlpHeadVocabStorageV1::PrivateUpload => (
-                2,
-                expected_upload_bytes,
-                expected_upload_bytes,
-                1,
-                1,
-                2,
-                1,
-                1,
-            ),
-        };
-        let observed_init = (
-            receipt.transient_staging_buffers,
-            receipt.transient_staging_bytes,
-            receipt.init_blit_bytes,
-            receipt.init_command_buffers,
-            receipt.init_blit_encoders,
-            receipt.init_copy_commands,
-            receipt.init_commits,
-            receipt.init_waits,
-        );
-        if observed_init != expected_init {
-            return Err(MetalW8Error::new(format!(
-                "Metal W8 tail MLP+head v1 vocabulary initialization receipt mismatch: observed {observed_init:?}, expected {expected_init:?}"
-            )));
-        }
-        let expected_buffer_split = match requested_storage {
-            TailMlpHeadVocabStorageV1::Shared => (10, 3),
-            TailMlpHeadVocabStorageV1::PrivateUpload => (8, 5),
-        };
-        if buffer_ledger.allocated_buffers != 13
-            || (buffer_ledger.shared_buffers, buffer_ledger.private_buffers)
-                != expected_buffer_split
-        {
-            return Err(MetalW8Error::new(format!(
-                "Metal W8 tail MLP+head v1 vocabulary storage ledger mismatch: allocated {}, shared {}, private {}",
-                buffer_ledger.allocated_buffers,
-                buffer_ledger.shared_buffers,
-                buffer_ledger.private_buffers
-            )));
-        }
-        Ok(receipt)
     }
 
     fn bridge_error(context: &str, buffer: &[c_char]) -> MetalW8Error {
@@ -1090,10 +784,7 @@ mod platform {
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
-    use super::{
-        MetalW8Error, PackedW8TailMlpHeadV1, TailMlpHeadBufferLedgerV1,
-        TailMlpHeadVocabStorageReceiptV1, TailMlpHeadVocabStorageV1, W8_TOP_K,
-    };
+    use super::{MetalW8Error, PackedW8TailMlpHeadV1, W8_TOP_K};
 
     #[derive(Clone, Copy, Debug, Default)]
     pub(super) struct TailExecutionReceiptV1 {
@@ -1117,11 +808,7 @@ mod platform {
     pub(super) struct TailHandleV1;
 
     impl TailHandleV1 {
-        pub(super) fn new(
-            _weights: &PackedW8TailMlpHeadV1,
-            _requested_storage: TailMlpHeadVocabStorageV1,
-            _buffer_ledger: TailMlpHeadBufferLedgerV1,
-        ) -> Result<Self, MetalW8Error> {
+        pub(super) fn new(_weights: &PackedW8TailMlpHeadV1) -> Result<Self, MetalW8Error> {
             Err(MetalW8Error::new(
                 "Metal W8 tail MLP+head v1 requires macOS",
             ))
@@ -1150,10 +837,6 @@ mod platform {
 
         pub(super) fn vocab_size(&self) -> usize {
             0
-        }
-
-        pub(super) fn vocab_storage_receipt(&self) -> TailMlpHeadVocabStorageReceiptV1 {
-            TailMlpHeadVocabStorageReceiptV1::default()
         }
     }
 }

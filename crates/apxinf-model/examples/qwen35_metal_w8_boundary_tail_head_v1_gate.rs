@@ -26,8 +26,6 @@ use apxinf_model::qwen35::general::{
     Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats,
 };
 use apxinf_model::{GeneralQwen35, LlmInput, LlmTrait, Qwen35Config, Qwen35LayerType};
-
-type TailVocabStorage = apxinf_metal::TailMlpHeadVocabStorageV1;
 use apxinf_tokenizer::{ChatMessage, Tokenizer};
 
 const CPU_TEACHER_FORMAT: &str = "apxinf-qwen35-metal-w8-boundary-tail-head-v1-cpu-teacher-v2";
@@ -113,80 +111,6 @@ impl Mode {
     const fn is_candidate(self) -> bool {
         self.requires_input_receipt()
     }
-}
-
-fn parse_tail_vocab_storage(value: &str) -> Result<TailVocabStorage, String> {
-    match value {
-        "shared" => Ok(TailVocabStorage::Shared),
-        "private-upload" => Ok(TailVocabStorage::PrivateUpload),
-        other => Err(format!("invalid --tail-vocab-storage {other:?}")),
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ExpectedTailVocabStorageReceipt {
-    storage: TailVocabStorage,
-    vocab_weight_bytes: usize,
-    vocab_scale_bytes: usize,
-    transient_staging_buffers: u32,
-    transient_staging_bytes: usize,
-    init_blit_bytes: usize,
-    init_command_buffers: u32,
-    init_blit_encoders: u32,
-    init_copy_commands: u32,
-    init_commits: u32,
-    init_waits: u32,
-}
-
-fn expected_tail_vocab_storage_receipt(
-    storage: TailVocabStorage,
-) -> ExpectedTailVocabStorageReceipt {
-    let (
-        transient_staging_buffers,
-        transient_staging_bytes,
-        init_blit_bytes,
-        init_command_buffers,
-        init_blit_encoders,
-        init_copy_commands,
-        init_commits,
-        init_waits,
-    ) = match storage {
-        TailVocabStorage::Shared => (0, 0, 0, 0, 0, 0, 0, 0),
-        TailVocabStorage::PrivateUpload => (2, 270_172_160, 270_172_160, 1, 1, 2, 1, 1),
-    };
-    ExpectedTailVocabStorageReceipt {
-        storage,
-        vocab_weight_bytes: 254_279_680,
-        vocab_scale_bytes: 15_892_480,
-        transient_staging_buffers,
-        transient_staging_bytes,
-        init_blit_bytes,
-        init_command_buffers,
-        init_blit_encoders,
-        init_copy_commands,
-        init_commits,
-        init_waits,
-    }
-}
-
-fn tail_vocab_storage_receipt_is_exact(
-    receipt: apxinf_metal::TailMlpHeadVocabStorageReceiptV1,
-    storage: TailVocabStorage,
-) -> bool {
-    let expected = expected_tail_vocab_storage_receipt(storage);
-    receipt.storage == expected.storage
-        && receipt.vocab_weights_storage == expected.storage
-        && receipt.vocab_scales_storage == expected.storage
-        && receipt.vocab_weight_bytes == expected.vocab_weight_bytes
-        && receipt.vocab_scale_bytes == expected.vocab_scale_bytes
-        && receipt.transient_staging_buffers == expected.transient_staging_buffers
-        && receipt.transient_staging_bytes == expected.transient_staging_bytes
-        && receipt.init_blit_bytes == expected.init_blit_bytes
-        && receipt.init_command_buffers == expected.init_command_buffers
-        && receipt.init_blit_encoders == expected.init_blit_encoders
-        && receipt.init_copy_commands == expected.init_copy_commands
-        && receipt.init_commits == expected.init_commits
-        && receipt.init_waits == expected.init_waits
 }
 
 const STEPS: usize = 128;
@@ -321,21 +245,14 @@ fn official_boundary_ledger_is_exact(
         && ledger.final_output_finite_checks_per_decode == 1
 }
 
-fn official_tail_ledger_is_exact(
-    ledger: apxinf_metal::TailMlpHeadBufferLedgerV1,
-    vocab_storage: TailVocabStorage,
-) -> bool {
-    let (shared_buffers, private_buffers) = match vocab_storage {
-        TailVocabStorage::Shared => (10, 3),
-        TailVocabStorage::PrivateUpload => (8, 5),
-    };
+fn official_tail_ledger_is_exact(ledger: apxinf_metal::TailMlpHeadBufferLedgerV1) -> bool {
     ledger.scope == "resident-mtlbuffer-only"
         && ledger.exclusions
             == "CPU packed weights, host F32 tied embedding and exact four-candidate rerank, host allocations, Metal pipelines/libraries/queues, command objects, driver allocations, attention/KV, model loader, and all earlier model layers"
         && ledger.abi_version == 1
         && ledger.allocated_buffers == 13
-        && ledger.shared_buffers == shared_buffers
-        && ledger.private_buffers == private_buffers
+        && ledger.shared_buffers == 10
+        && ledger.private_buffers == 3
         && ledger.packed_weight_bytes == 265_289_728
         && ledger.packed_scale_bytes == 16_580_608
         && ledger.f32_parameter_bytes == 8_192
@@ -357,12 +274,7 @@ fn official_tail_ledger_is_exact(
 
 fn official_aggregate_ledger_is_exact(
     aggregate: &Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger,
-    vocab_storage: TailVocabStorage,
 ) -> bool {
-    let (shared_buffers, private_buffers) = match vocab_storage {
-        TailVocabStorage::Shared => (443, 51),
-        TailVocabStorage::PrivateUpload => (441, 53),
-    };
     if aggregate.scope != "resident-mtlbuffer-only"
         || aggregate.exclusions
             != "CPU F32 weights, host F32 tied embedding and exact four-candidate rerank, host allocations, Metal pipelines/libraries/queues, command objects, driver allocations, full attention/KV, model loader, and prefill CPU head"
@@ -370,7 +282,7 @@ fn official_aggregate_ledger_is_exact(
         || aggregate.initial_stack.layer_indices != [0, 1, 2]
         || !official_initial_stack_ledger_is_exact(aggregate.initial_stack.ledger)
         || aggregate.tail_layer_index != 23
-        || !official_tail_ledger_is_exact(aggregate.tail, vocab_storage)
+        || !official_tail_ledger_is_exact(aggregate.tail)
         || aggregate.boundaries.len() != BOUNDARY_REGIONS.len()
         || !aggregate
             .boundaries
@@ -412,10 +324,8 @@ fn official_aggregate_ledger_is_exact(
         .unwrap_or(0)
         && aggregate.allocated_buffers
             == sum!(allocated_buffers, allocated_buffers, allocated_buffers).unwrap_or(0)
-        && aggregate.shared_buffers == shared_buffers
         && aggregate.shared_buffers
             == sum!(shared_buffers, shared_buffers, shared_buffers).unwrap_or(0)
-        && aggregate.private_buffers == private_buffers
         && aggregate.private_buffers
             == sum!(private_buffers, private_buffers, private_buffers).unwrap_or(0)
         && aggregate.host_to_device_bytes_per_decode
@@ -460,8 +370,8 @@ fn official_aggregate_ledger_is_exact(
             == sum!(waits_per_decode, waits_per_decode, waits_per_decode).unwrap_or(0)
         && aggregate.total_persistent_mtlbuffer_bytes == 799_543_312
         && aggregate.allocated_buffers == 494
-        && aggregate.shared_buffers == shared_buffers
-        && aggregate.private_buffers == private_buffers
+        && aggregate.shared_buffers == 443
+        && aggregate.private_buffers == 51
         && aggregate.host_to_device_bytes_per_decode == 28_672
         && aggregate.device_to_host_bytes_per_decode == 28_688
         && aggregate.state_host_transfer_bytes_per_decode == 0
@@ -555,7 +465,6 @@ fn tail_ledger_json(ledger: apxinf_metal::TailMlpHeadBufferLedgerV1) -> Value {
 
 fn aggregate_ledger_json(
     ledger: &Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger,
-    vocab_storage: TailVocabStorage,
 ) -> Value {
     json!({
         "scope": ledger.scope,
@@ -584,7 +493,7 @@ fn aggregate_ledger_json(
         "kernel_dispatches_per_decode": ledger.kernel_dispatches_per_decode,
         "commits_per_decode": ledger.commits_per_decode,
         "waits_per_decode": ledger.waits_per_decode,
-        "component_sum_recomputed_and_exact": official_aggregate_ledger_is_exact(ledger, vocab_storage),
+        "component_sum_recomputed_and_exact": official_aggregate_ledger_is_exact(ledger),
     })
 }
 
@@ -617,7 +526,6 @@ fn boundary_tail_generation_receipt_is_exact(
     receipt: &Value,
     body_tail_calls: usize,
     phase: TailPhaseCounts,
-    vocab_storage: TailVocabStorage,
 ) -> bool {
     if phase.prefill != 0
         || phase.decode.checked_add(phase.teacher) != Some(body_tail_calls)
@@ -742,36 +650,7 @@ fn boundary_tail_generation_receipt_is_exact(
     let Some(tail) = receipt.get("decode_head") else {
         return false;
     };
-    let expected_vocab = expected_tail_vocab_storage_receipt(vocab_storage);
     let tail_valid = tail.get("mechanism").and_then(Value::as_str) == Some("metal-w8-tail-v1")
-        && tail.get("vocab_storage").and_then(Value::as_str)
-            == Some(expected_vocab.storage.receipt_label())
-        && tail.get("vocab_weights_storage").and_then(Value::as_str)
-            == Some(expected_vocab.storage.receipt_label())
-        && tail.get("vocab_scales_storage").and_then(Value::as_str)
-            == Some(expected_vocab.storage.receipt_label())
-        && tail.get("vocab_weight_bytes").and_then(Value::as_u64)
-            == Some(expected_vocab.vocab_weight_bytes as u64)
-        && tail.get("vocab_scale_bytes").and_then(Value::as_u64)
-            == Some(expected_vocab.vocab_scale_bytes as u64)
-        && tail
-            .get("transient_staging_buffers")
-            .and_then(Value::as_u64)
-            == Some(expected_vocab.transient_staging_buffers as u64)
-        && tail.get("transient_staging_bytes").and_then(Value::as_u64)
-            == Some(expected_vocab.transient_staging_bytes as u64)
-        && tail.get("init_blit_bytes").and_then(Value::as_u64)
-            == Some(expected_vocab.init_blit_bytes as u64)
-        && tail.get("init_command_buffers").and_then(Value::as_u64)
-            == Some(expected_vocab.init_command_buffers as u64)
-        && tail.get("init_blit_encoders").and_then(Value::as_u64)
-            == Some(expected_vocab.init_blit_encoders as u64)
-        && tail.get("init_copy_commands").and_then(Value::as_u64)
-            == Some(expected_vocab.init_copy_commands as u64)
-        && tail.get("init_commits").and_then(Value::as_u64)
-            == Some(expected_vocab.init_commits as u64)
-        && tail.get("init_waits").and_then(Value::as_u64) == Some(expected_vocab.init_waits as u64)
-        && tail.get("runtime_observed").and_then(Value::as_bool) == Some(true)
         && tail.get("layer_index").and_then(Value::as_u64) == Some(23)
         && tail.get("calls").and_then(Value::as_u64) == Some(phase.decode as u64)
         && tail.get("teacher_calls").and_then(Value::as_u64) == Some(phase.teacher as u64)
@@ -795,10 +674,6 @@ fn boundary_tail_generation_receipt_is_exact(
     let Some(aggregate) = receipt.get("aggregate") else {
         return false;
     };
-    let (shared_buffers, private_buffers) = match vocab_storage {
-        TailVocabStorage::Shared => (443, 51),
-        TailVocabStorage::PrivateUpload => (441, 53),
-    };
     let aggregate_valid = aggregate.get("scope").and_then(Value::as_str)
         == Some("resident-mtlbuffer-only")
         && aggregate.get("includes_lm_head").and_then(Value::as_bool) == Some(true)
@@ -807,8 +682,8 @@ fn boundary_tail_generation_receipt_is_exact(
             .and_then(Value::as_u64)
             == Some(799_543_312)
         && aggregate.get("allocated_buffers").and_then(Value::as_u64) == Some(494)
-        && aggregate.get("shared_buffers").and_then(Value::as_u64) == Some(shared_buffers)
-        && aggregate.get("private_buffers").and_then(Value::as_u64) == Some(private_buffers)
+        && aggregate.get("shared_buffers").and_then(Value::as_u64) == Some(443)
+        && aggregate.get("private_buffers").and_then(Value::as_u64) == Some(51)
         && aggregate
             .get("host_to_device_bytes_per_decode")
             .and_then(Value::as_u64)
@@ -888,7 +763,6 @@ fn boundary_tail_path_checks(
     generation_receipt: &Value,
     body_tail_calls: usize,
     phase: TailPhaseCounts,
-    vocab_storage: TailVocabStorage,
 ) -> BoundaryTailPathChecks {
     let calls = body_tail_calls;
     let triple = calls.checked_mul(3);
@@ -957,8 +831,6 @@ fn boundary_tail_path_checks(
         && tail.waits == calls
         && tail.output_commits == calls.checked_mul(2).unwrap_or(usize::MAX)
         && tail.last_output_commit_mask == if calls == 0 { 0 } else { 0b11 }
-        && stats.tail_vocab_storage == vocab_storage
-        && tail_vocab_storage_receipt_is_exact(stats.tail_vocab_storage_receipt, vocab_storage)
         && !tail.terminal_error;
     let stats_boundaries = stats
         .boundaries
@@ -988,12 +860,11 @@ fn boundary_tail_path_checks(
             }),
         six_region_execution_valid: initial_valid && boundaries_valid,
         tail_execution_and_phase_valid: tail_valid,
-        aggregate_ledger_valid: official_aggregate_ledger_is_exact(aggregate, vocab_storage),
+        aggregate_ledger_valid: official_aggregate_ledger_is_exact(aggregate),
         generation_receipt_valid: boundary_tail_generation_receipt_is_exact(
             generation_receipt,
             body_tail_calls,
             phase,
-            vocab_storage,
         ),
         terminal_clear: !stats.terminal_error
             && generation_receipt
@@ -1321,7 +1192,6 @@ struct Args {
     model_dir: PathBuf,
     source_lock: PathBuf,
     mode: Mode,
-    tail_vocab_storage: TailVocabStorage,
     input_receipt: Option<PathBuf>,
     output: PathBuf,
 }
@@ -1331,7 +1201,6 @@ fn usage() -> &'static str {
   --model-dir OFFICIAL_LOCAL_QWEN35_0_8B \
   --source-lock SOURCE_LOCK.json \
   --mode cpu-teacher|boundary-tail-v1-teacher|cpu-free|boundary-tail-v1-free \
-  [--tail-vocab-storage shared|private-upload] \
   [--input-receipt CPU_RECEIPT.json] \
   --output NEW_RECEIPT.json"
 }
@@ -1344,7 +1213,6 @@ where
     let mut model_dir = None;
     let mut source_lock = None;
     let mut mode = None;
-    let mut tail_vocab_storage = None;
     let mut input_receipt = None;
     let mut output = None;
     let mut iter = args.into_iter().map(Into::into).skip(1);
@@ -1370,12 +1238,6 @@ where
                     return Err("duplicate --mode".into());
                 }
             }
-            "--tail-vocab-storage" => {
-                let parsed = parse_tail_vocab_storage(&value.to_string_lossy())?;
-                if tail_vocab_storage.replace(parsed).is_some() {
-                    return Err("duplicate --tail-vocab-storage".into());
-                }
-            }
             "--input-receipt" => {
                 if input_receipt.replace(PathBuf::from(value)).is_some() {
                     return Err("duplicate --input-receipt".into());
@@ -1394,7 +1256,6 @@ where
         source_lock: source_lock
             .ok_or_else(|| format!("--source-lock is required\n{}", usage()))?,
         mode: mode.ok_or_else(|| format!("--mode is required\n{}", usage()))?,
-        tail_vocab_storage: tail_vocab_storage.unwrap_or(TailVocabStorage::Shared),
         input_receipt,
         output: output.ok_or_else(|| format!("--output is required\n{}", usage()))?,
     };
@@ -1417,9 +1278,6 @@ where
         } else {
             "CPU modes reject --input-receipt".into()
         });
-    }
-    if !args.mode.is_candidate() && args.tail_vocab_storage != TailVocabStorage::Shared {
-        return Err("CPU modes reject non-shared --tail-vocab-storage".into());
     }
     Ok(args)
 }
@@ -1781,12 +1639,11 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
     let same_process_cpu_oracle_ms = same_process_oracle_started.elapsed().as_secs_f64() * 1_000.0;
     let construct_started = Instant::now();
     let mut model = if args.mode.is_candidate() {
-        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_vocab_storage_v1(
+        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
             config,
             tensors,
             Device::Cpu,
             max_context,
-            args.tail_vocab_storage,
         )?
     } else {
         GeneralQwen35::from_weights(config, tensors, Device::Cpu, max_context)?
@@ -1811,7 +1668,7 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
             "identity_fields": ["device", "inode", "size", "nlink", "ctime", "sha256"],
         },
         "cpu_reference_constructor": "GeneralQwen35::from_weights",
-        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_vocab_storage_v1",
+        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1",
         "custody": custody.receipt_json(),
     });
     let setup = json!({
@@ -1819,7 +1676,6 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
         "model_construct_ms": model_construct_ms,
         "same_process_cpu_oracle_ms": same_process_cpu_oracle_ms,
         "same_process_cpu_oracle": args.mode.is_candidate(),
-        "tail_vocab_storage": args.tail_vocab_storage.receipt_label(),
         "timing_classification": "single-pass diagnostic timing only; never formal promotion evidence",
     });
     let result = match args.mode {
@@ -1923,7 +1779,6 @@ fn run_teacher(
         &prefill_generation,
         0,
         TailPhaseCounts::teacher(0),
-        args.tail_vocab_storage,
     );
     let input_path = args
         .input_receipt
@@ -1990,7 +1845,6 @@ fn run_teacher(
         &final_generation,
         STEPS,
         TailPhaseCounts::teacher(STEPS),
-        args.tail_vocab_storage,
     );
     let passed = evaluation.passed && prefill_checks.all_valid() && final_checks.all_valid();
     gate_evidence::verify_file_unchanged(
@@ -2040,7 +1894,7 @@ fn run_teacher(
                 "f32_rerank_input": "tail-normalized-hidden-direct",
                 "hidden_tensor_exactness_claimed": false,
             },
-            "aggregate_buffer_ledger": aggregate_ledger_json(&aggregate, args.tail_vocab_storage),
+            "aggregate_buffer_ledger": aggregate_ledger_json(&aggregate),
             "path_checks": {
                 "prefill": prefill_checks.receipt_json(),
                 "final": final_checks.receipt_json(),
@@ -2157,7 +2011,6 @@ fn run_free(
         &generation,
         body_tail_calls,
         TailPhaseCounts::free(body_tail_calls),
-        args.tail_vocab_storage,
     );
     let passed = mismatches.is_empty() && checks.all_valid();
     gate_evidence::verify_file_unchanged(
@@ -2193,7 +2046,7 @@ fn run_free(
                 "tail_teacher_calls": 0,
                 "f32_rerank_input": "tail-normalized-hidden-direct",
             },
-            "aggregate_buffer_ledger": aggregate_ledger_json(&aggregate, args.tail_vocab_storage),
+            "aggregate_buffer_ledger": aggregate_ledger_json(&aggregate),
             "path_checks": checks.receipt_json(),
             "profile": generation_profile_json(
                 &profile,
@@ -2280,9 +2133,7 @@ mod tests {
         });
     }
 
-    fn official_aggregate_fixture(
-        vocab_storage: TailVocabStorage,
-    ) -> Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
+    fn official_aggregate_fixture() -> Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
         let initial_stack = Qwen35MetalW8LinearLayerStack3BufferLedger {
             layer_indices: [0, 1, 2],
             ledger: apxinf_metal::LinearLayerStack3BufferLedger {
@@ -2348,23 +2199,14 @@ mod tests {
                 })
                 .to_vec(),
             tail_layer_index: 23,
-            tail: apxinf_metal::TailMlpHeadBufferLedgerV1::from_dimensions_with_vocab_storage(
-                1_024,
-                3_584,
-                248_320,
-                vocab_storage,
+            tail: apxinf_metal::TailMlpHeadBufferLedgerV1::from_dimensions(
+                1_024, 3_584, 248_320,
             )
             .unwrap(),
             total_persistent_mtlbuffer_bytes: 799_543_312,
             allocated_buffers: 494,
-            shared_buffers: match vocab_storage {
-                TailVocabStorage::Shared => 443,
-                TailVocabStorage::PrivateUpload => 441,
-            },
-            private_buffers: match vocab_storage {
-                TailVocabStorage::Shared => 51,
-                TailVocabStorage::PrivateUpload => 53,
-            },
+            shared_buffers: 443,
+            private_buffers: 51,
             host_to_device_bytes_per_decode: 28_672,
             device_to_host_bytes_per_decode: 28_688,
             state_host_transfer_bytes_per_decode: 0,
@@ -2376,68 +2218,8 @@ mod tests {
         }
     }
 
-    fn generation_receipt_fixture(
-        calls: usize,
-        phase: TailPhaseCounts,
-        vocab_storage: TailVocabStorage,
-    ) -> Value {
+    fn generation_receipt_fixture(calls: usize, phase: TailPhaseCounts) -> Value {
         let transfer = calls * 4_096;
-        let vocab = expected_tail_vocab_storage_receipt(vocab_storage);
-        let decode_head = json!({
-            "mechanism": "metal-w8-tail-v1",
-            "vocab_storage": vocab.storage.receipt_label(),
-            "vocab_weights_storage": vocab.storage.receipt_label(),
-            "vocab_scales_storage": vocab.storage.receipt_label(),
-            "vocab_weight_bytes": vocab.vocab_weight_bytes,
-            "vocab_scale_bytes": vocab.vocab_scale_bytes,
-            "transient_staging_buffers": vocab.transient_staging_buffers,
-            "transient_staging_bytes": vocab.transient_staging_bytes,
-            "init_blit_bytes": vocab.init_blit_bytes,
-            "init_command_buffers": vocab.init_command_buffers,
-            "init_blit_encoders": vocab.init_blit_encoders,
-            "init_copy_commands": vocab.init_copy_commands,
-            "init_commits": vocab.init_commits,
-            "init_waits": vocab.init_waits,
-            "runtime_observed": true,
-            "layer_index": 23,
-            "calls": phase.decode,
-            "teacher_calls": phase.teacher,
-            "tail_transactions": calls,
-            "successful_transactions": calls,
-            "failed_transactions": 0,
-            "command_buffers": calls,
-            "compute_encoders": calls,
-            "kernel_dispatches": calls * 8,
-            "commits": calls,
-            "waits": calls,
-            "host_to_device_bytes": transfer,
-            "device_to_host_bytes": calls * 4_112,
-            "output_commits": calls * 2,
-            "last_output_commit_mask": if calls == 0 { 0 } else { 0b11 },
-            "terminal_error": false,
-        });
-        let aggregate = json!({
-            "scope": "resident-mtlbuffer-only",
-            "includes_lm_head": true,
-            "persistent_mtlbuffer_bytes": 799_543_312usize,
-            "allocated_buffers": 494,
-            "shared_buffers": match vocab_storage {
-                TailVocabStorage::Shared => 443,
-                TailVocabStorage::PrivateUpload => 441,
-            },
-            "private_buffers": match vocab_storage {
-                TailVocabStorage::Shared => 51,
-                TailVocabStorage::PrivateUpload => 53,
-            },
-            "host_to_device_bytes_per_decode": 28_672,
-            "device_to_host_bytes_per_decode": 28_688,
-            "state_host_transfer_bytes_per_decode": 0,
-            "command_buffers_per_decode": 7,
-            "compute_encoders_per_decode": 24,
-            "kernel_dispatches_per_decode": 267,
-            "commits_per_decode": 7,
-            "waits_per_decode": 7,
-        });
         json!({
             "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
             "mechanism": "metal-w8-mlp-stack3-boundary-tail-head-v1",
@@ -2492,8 +2274,41 @@ mod tests {
                 "calls": 1,
                 "tail_transactions": 0,
             },
-            "decode_head": decode_head,
-            "aggregate": aggregate,
+            "decode_head": {
+                "mechanism": "metal-w8-tail-v1",
+                "layer_index": 23,
+                "calls": phase.decode,
+                "teacher_calls": phase.teacher,
+                "tail_transactions": calls,
+                "successful_transactions": calls,
+                "failed_transactions": 0,
+                "command_buffers": calls,
+                "compute_encoders": calls,
+                "kernel_dispatches": calls * 8,
+                "commits": calls,
+                "waits": calls,
+                "host_to_device_bytes": transfer,
+                "device_to_host_bytes": calls * 4_112,
+                "output_commits": calls * 2,
+                "last_output_commit_mask": if calls == 0 { 0 } else { 0b11 },
+                "terminal_error": false,
+            },
+            "aggregate": {
+                "scope": "resident-mtlbuffer-only",
+                "includes_lm_head": true,
+                "persistent_mtlbuffer_bytes": 799_543_312usize,
+                "allocated_buffers": 494,
+                "shared_buffers": 443,
+                "private_buffers": 51,
+                "host_to_device_bytes_per_decode": 28_672,
+                "device_to_host_bytes_per_decode": 28_688,
+                "state_host_transfer_bytes_per_decode": 0,
+                "command_buffers_per_decode": 7,
+                "compute_encoders_per_decode": 24,
+                "kernel_dispatches_per_decode": 267,
+                "commits_per_decode": 7,
+                "waits_per_decode": 7,
+            },
             "terminal_error": false,
         })
     }
@@ -2549,7 +2364,6 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(args.mode, Mode::BoundaryTailV1Free);
-        assert_eq!(args.tail_vocab_storage, TailVocabStorage::Shared);
         assert_eq!(
             args.input_receipt.unwrap(),
             std::path::PathBuf::from("/cpu-free.json")
@@ -2564,37 +2378,6 @@ mod tests {
             "boundary-tail-v1-teacher",
             "--output",
             "/new.json",
-        ])
-        .is_err());
-        let private = parse_args_from([
-            "gate",
-            "--model-dir",
-            "/model",
-            "--source-lock",
-            "/lock",
-            "--mode",
-            "boundary-tail-v1-free",
-            "--tail-vocab-storage",
-            "private-upload",
-            "--input-receipt",
-            "/cpu-free.json",
-            "--output",
-            "/private.json",
-        ])
-        .unwrap();
-        assert_eq!(private.tail_vocab_storage, TailVocabStorage::PrivateUpload);
-        assert!(parse_args_from([
-            "gate",
-            "--model-dir",
-            "/model",
-            "--source-lock",
-            "/lock",
-            "--mode",
-            "cpu-free",
-            "--tail-vocab-storage",
-            "private-upload",
-            "--output",
-            "/cpu.json",
         ])
         .is_err());
         assert!(parse_args_from([
@@ -2778,144 +2561,59 @@ mod tests {
 
     #[test]
     fn component_ledgers_and_recomputed_aggregate_are_strictly_frozen() {
-        let aggregate = official_aggregate_fixture(TailVocabStorage::Shared);
-        assert!(official_aggregate_ledger_is_exact(
-            &aggregate,
-            TailVocabStorage::Shared
-        ));
-
-        let private = official_aggregate_fixture(TailVocabStorage::PrivateUpload);
-        assert!(official_aggregate_ledger_is_exact(
-            &private,
-            TailVocabStorage::PrivateUpload
-        ));
-        assert_eq!(private.total_persistent_mtlbuffer_bytes, 799_543_312);
-        assert_eq!((private.shared_buffers, private.private_buffers), (441, 53));
+        let aggregate = official_aggregate_fixture();
+        assert!(official_aggregate_ledger_is_exact(&aggregate));
 
         let mut wrong = aggregate.clone();
         wrong.boundaries[2].ledger.total_persistent_bytes -= 1;
-        assert!(!official_aggregate_ledger_is_exact(
-            &wrong,
-            TailVocabStorage::Shared
-        ));
+        assert!(!official_aggregate_ledger_is_exact(&wrong));
         let mut wrong = aggregate.clone();
         wrong.tail.host_output_bytes_per_decode -= 1;
-        assert!(!official_aggregate_ledger_is_exact(
-            &wrong,
-            TailVocabStorage::Shared
-        ));
+        assert!(!official_aggregate_ledger_is_exact(&wrong));
         let mut wrong = aggregate.clone();
         wrong.total_persistent_mtlbuffer_bytes -= 1;
-        assert!(!official_aggregate_ledger_is_exact(
-            &wrong,
-            TailVocabStorage::Shared
-        ));
+        assert!(!official_aggregate_ledger_is_exact(&wrong));
         let mut wrong = aggregate;
         wrong.kernel_dispatches_per_decode -= 1;
-        assert!(!official_aggregate_ledger_is_exact(
-            &wrong,
-            TailVocabStorage::Shared
-        ));
+        assert!(!official_aggregate_ledger_is_exact(&wrong));
     }
 
     #[test]
     fn generation_receipt_locks_six_regions_tail_phases_and_commit_masks() {
         let phase = TailPhaseCounts::teacher(7);
-        let receipt = generation_receipt_fixture(7, phase, TailVocabStorage::Shared);
+        let receipt = generation_receipt_fixture(7, phase);
         assert!(boundary_tail_generation_receipt_is_exact(
-            &receipt,
-            7,
-            phase,
-            TailVocabStorage::Shared
-        ));
-
-        let private = generation_receipt_fixture(7, phase, TailVocabStorage::PrivateUpload);
-        assert!(boundary_tail_generation_receipt_is_exact(
-            &private,
-            7,
-            phase,
-            TailVocabStorage::PrivateUpload
-        ));
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &private,
-            7,
-            phase,
-            TailVocabStorage::Shared
-        ));
-        let mut wrong_private = private.clone();
-        wrong_private["decode_head"]["runtime_observed"] = json!(false);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong_private,
-            7,
-            phase,
-            TailVocabStorage::PrivateUpload
-        ));
-        let mut wrong_private = private;
-        wrong_private["decode_head"]["init_copy_commands"] = json!(1);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong_private,
-            7,
-            phase,
-            TailVocabStorage::PrivateUpload
+            &receipt, 7, phase
         ));
 
         let mut wrong = receipt.clone();
         wrong["initial_stack"]["last_state_commit_mask"] = json!(0b011);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            phase,
-            TailVocabStorage::Shared
-        ));
+        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
         let mut wrong = receipt.clone();
         wrong["boundaries"][3]["last_state_commit_mask"] = json!(0b110);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            phase,
-            TailVocabStorage::Shared
-        ));
+        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
         let mut wrong = receipt.clone();
         wrong["decode_head"]["teacher_calls"] = json!(6);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            phase,
-            TailVocabStorage::Shared
-        ));
+        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
 
         let mut wrong = receipt.clone();
         wrong["terminal_error"] = json!(true);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            phase,
-            TailVocabStorage::Shared
-        ));
+        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
         let mut wrong = receipt;
         wrong["decode_head"]["terminal_error"] = json!(true);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            phase,
-            TailVocabStorage::Shared
-        ));
+        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
 
         let free_phase = TailPhaseCounts::free(7);
-        let free_receipt = generation_receipt_fixture(7, free_phase, TailVocabStorage::Shared);
+        let free_receipt = generation_receipt_fixture(7, free_phase);
         assert!(boundary_tail_generation_receipt_is_exact(
             &free_receipt,
             7,
-            free_phase,
-            TailVocabStorage::Shared
+            free_phase
         ));
         let mut wrong = free_receipt;
         wrong["prefill_head"]["tail_transactions"] = json!(1);
         assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            free_phase,
-            TailVocabStorage::Shared
+            &wrong, 7, free_phase
         ));
     }
 
