@@ -69,3 +69,23 @@ __global__ void qwen25_omni_vision_bias_residual_exact_bf16_kernel(
   output[index] = __float2bfloat16(
       __bfloat162float(rounded_projection) + __bfloat162float(residual[index]));
 }
+
+template <int kIntermediate>
+__global__ void qwen25_omni_vision_gate_up_bias_silu_mul_exact_bf16_kernel(
+    const __nv_bfloat16* gate, const __nv_bfloat16* gate_bias,
+    const __nv_bfloat16* up, const __nv_bfloat16* up_bias,
+    __nv_bfloat16* output, int sequence) {
+  const int item = blockIdx.x * blockDim.x + threadIdx.x;
+  const int token = blockIdx.y;
+  if (token >= sequence || item >= kIntermediate) return;
+  const int64_t index = static_cast<int64_t>(token) * kIntermediate + item;
+  const __nv_bfloat16 rounded_gate = __float2bfloat16(
+      __bfloat162float(gate[index]) + __bfloat162float(gate_bias[item]));
+  const __nv_bfloat16 rounded_up = __float2bfloat16(
+      __bfloat162float(up[index]) + __bfloat162float(up_bias[item]));
+  const float gate_value = __bfloat162float(rounded_gate);
+  const __nv_bfloat16 activated = __float2bfloat16(
+      gate_value / (1.0f + expf(-gate_value)));
+  output[index] = __float2bfloat16(
+      __bfloat162float(activated) * __bfloat162float(rounded_up));
+}

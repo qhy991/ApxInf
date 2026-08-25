@@ -211,6 +211,29 @@ extern "C" cudaError_t apxinf_static_qwen25_omni_vision_bias_residual_exact_bf16
   return cudaGetLastError();
 }
 
+extern "C" cudaError_t
+apxinf_static_qwen25_omni_vision_gate_up_bias_silu_mul_exact_bf16(
+    const void* gate, const void* gate_bias, const void* up,
+    const void* up_bias, void* output, int sequence, int intermediate,
+    cudaStream_t stream) {
+  if (gate == nullptr || gate_bias == nullptr || up == nullptr ||
+      up_bias == nullptr || output == nullptr || sequence <= 0 ||
+      sequence > 65535 || intermediate != 3420) {
+    return cudaErrorInvalidValue;
+  }
+  constexpr int kIntermediate = 3420;
+  constexpr int kThreads = 256;
+  dim3 grid((kIntermediate + kThreads - 1) / kThreads, sequence, 1);
+  qwen25_omni_vision_gate_up_bias_silu_mul_exact_bf16_kernel<kIntermediate><<<
+      grid, kThreads, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(gate),
+      static_cast<const __nv_bfloat16*>(gate_bias),
+      static_cast<const __nv_bfloat16*>(up),
+      static_cast<const __nv_bfloat16*>(up_bias),
+      static_cast<__nv_bfloat16*>(output), sequence);
+  return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_static_qwen25_omni_attention_flash_split_cta_bf16(
     const void* query, const void* key_cache, const void* value_cache,
     void* partial_max, void* partial_sum, void* partial_accumulator,

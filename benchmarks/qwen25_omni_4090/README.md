@@ -127,7 +127,8 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_QWEN25_SHORT_DECODE_FUSED_QKV_PRELUDE=1`, plus
 `APXINF_QWEN25_VISION_QKV_BIAS_ROPE=1` and
 `APXINF_QWEN25_VISION_FUSED_SILU_MUL=1`, plus
-`APXINF_QWEN25_VISION_BIAS_RESIDUAL=1`. The decode
+`APXINF_QWEN25_VISION_BIAS_RESIDUAL=1` and
+`APXINF_QWEN25_VISION_GATE_UP_BIAS_SILU_MUL=1`. The decode
 graph and exact two-stage GPU token selection are deliberately restricted to
 SM89 one-token decode with `start_pos < 3072`; prefill and longer-KV decode
 keep the accepted ordinary path except for the explicit long-decode selector.
@@ -211,7 +212,11 @@ vision bias/residual selector replaces projection bias and following residual
 add at the attention-output and MLP-down sites. It explicitly rounds
 projection+bias to BF16 before the residual add, preserving both incumbent
 rounding seams. It requires the vision fused-SiLU selector; invalid composition
-fails at load. The prefill position-cache selector uploads one
+fails at load. The vision Gate/Up selector replaces both projection bias nodes
+and the following exact SiLU/multiply node with one owner per vision block. It
+retains independent BF16 rounding after each bias add, after SiLU, and after
+the final multiply. It requires the exact vision bias/residual selector;
+invalid composition fails at load. The prefill position-cache selector uploads one
 TMRoPE position array
 per text or multimodal prefill slice instead of once per Q/K layer call. The
 batched-GQA selector additionally packs BF16 prefill query rows by KV head

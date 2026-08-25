@@ -236,6 +236,22 @@ impl CudaBackend {
         )
     }
 
+    pub fn qwen25_omni_vision_gate_up_bias_silu_mul_exact(
+        &self,
+        gate: &Tensor,
+        gate_bias: &Tensor,
+        up: &Tensor,
+        up_bias: &Tensor,
+    ) -> Result<Tensor> {
+        kernels::qwen25_omni_vision::gate_up_bias_silu_mul_exact(
+            &self.ctx,
+            gate,
+            gate_bias,
+            up,
+            up_bias,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn qwen25_omni_vision_qkv_bias_rope(
         &self,

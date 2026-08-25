@@ -27,6 +27,7 @@ use crate::kernels::qwen25_omni_attention::{
 use crate::kernels::qwen25_omni_fused::residual_add_rmsnorm_pack8_bf16_into;
 use crate::kernels::qwen25_omni_vision::{
     bias_residual_exact as qwen25_vision_bias_residual_exact,
+    gate_up_bias_silu_mul_exact as qwen25_vision_gate_up_bias_silu_mul_exact,
     qkv_bias_rope as qwen25_vision_qkv_bias_rope,
 };
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
@@ -2338,6 +2339,51 @@ fn qwen25_vision_bias_residual_is_bit_exact() {
     let candidate = download_bf16_as_fp32(&candidate).unwrap();
     assert_eq!(candidate, baseline);
     assert_eq!(candidate[0], 1.0);
+}
+
+#[test]
+fn qwen25_vision_gate_up_bias_silu_mul_is_bit_exact() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    if ctx.caps().sm != 89 {
+        return;
+    }
+    let (sequence, intermediate) = (64usize, 3_420usize);
+    let mut gate_values = (0..sequence * intermediate)
+        .map(|index| ((index as f32 * 0.017) - 3.0).sin() * 4.0)
+        .collect::<Vec<_>>();
+    let mut up_values = (0..sequence * intermediate)
+        .map(|index| ((index as f32 * 0.011) + 0.5).cos() * 3.0)
+        .collect::<Vec<_>>();
+    let mut gate_bias_values = (0..intermediate)
+        .map(|index| ((index as f32 * 0.013) - 1.0).cos() * 0.25)
+        .collect::<Vec<_>>();
+    let mut up_bias_values = (0..intermediate)
+        .map(|index| ((index as f32 * 0.019) + 0.25).sin() * 0.25)
+        .collect::<Vec<_>>();
+    gate_values[0] = 1.0;
+    up_values[0] = 1.0;
+    gate_bias_values[0] = 2.0f32.powi(-8);
+    up_bias_values[0] = 2.0f32.powi(-8);
+    let gate = upload_fp32_as_bf16(&ctx, &gate_values, vec![sequence, intermediate]).unwrap();
+    let up = upload_fp32_as_bf16(&ctx, &up_values, vec![sequence, intermediate]).unwrap();
+    let gate_bias = upload_fp32_as_bf16(&ctx, &gate_bias_values, vec![intermediate]).unwrap();
+    let up_bias = upload_fp32_as_bf16(&ctx, &up_bias_values, vec![intermediate]).unwrap();
+    let rounded_gate = add_bias(&ctx, &gate, &gate_bias).unwrap();
+    let rounded_up = add_bias(&ctx, &up, &up_bias).unwrap();
+    let baseline = silu_mul(&ctx, &rounded_gate, &rounded_up).unwrap();
+    let candidate = qwen25_vision_gate_up_bias_silu_mul_exact(
+        &ctx,
+        &gate,
+        &gate_bias,
+        &up,
+        &up_bias,
+    )
+    .unwrap();
+    ctx.synchronize().unwrap();
+    assert_eq!(
+        download_bf16_as_fp32(&candidate).unwrap(),
+        download_bf16_as_fp32(&baseline).unwrap()
+    );
 }
 
 // ── Vision SDPA (non-causal full attention) ──────────────────────
