@@ -65,6 +65,22 @@ struct TailExecutionReceiptV1 {
     uint32_t output_commit_mask;
 };
 
+struct TailVocabStorageReceiptV1 {
+    uint32_t vocab_storage;
+    uint32_t vocab_weights_storage;
+    uint32_t vocab_scales_storage;
+    uint32_t transient_staging_buffers;
+    uint64_t vocab_weight_bytes;
+    uint64_t vocab_scale_bytes;
+    uint64_t transient_staging_bytes;
+    uint64_t init_blit_bytes;
+    uint32_t init_command_buffers;
+    uint32_t init_blit_encoders;
+    uint32_t init_copy_commands;
+    uint32_t init_commits;
+    uint32_t init_waits;
+};
+
 struct ApxinfMetalW8TailMlpHeadHandleV1 {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
@@ -91,6 +107,15 @@ struct ApxinfMetalW8TailMlpHeadHandleV1 {
     LinearLayerParams layer_params;
     MlpParams mlp_params;
     KernelParams head_params;
+    uint32_t vocab_storage;
+    uint32_t transient_staging_buffers;
+    uint64_t transient_staging_bytes;
+    uint64_t init_blit_bytes;
+    uint32_t init_command_buffers;
+    uint32_t init_blit_encoders;
+    uint32_t init_copy_commands;
+    uint32_t init_commits;
+    uint32_t init_waits;
     bool terminal_error;
 };
 
@@ -117,6 +142,28 @@ bool checked_product(size_t left, size_t right, size_t *output) {
     }
     *output = left * right;
     return true;
+}
+
+bool checked_sum(size_t left, size_t right, size_t *output) {
+    if (output == nullptr || left > std::numeric_limits<size_t>::max() - right) {
+        return false;
+    }
+    *output = left + right;
+    return true;
+}
+
+uint32_t normalized_vocab_storage(id<MTLBuffer> buffer) {
+    if (buffer == nil) {
+        return UINT32_MAX;
+    }
+    switch (buffer.storageMode) {
+        case MTLStorageModeShared:
+            return 0;
+        case MTLStorageModePrivate:
+            return 1;
+        default:
+            return UINT32_MAX;
+    }
 }
 
 bool all_finite(const float *values, size_t count) {
@@ -286,197 +333,369 @@ void encode_tail(ApxinfMetalW8TailMlpHeadHandleV1 *handle,
              threadsPerThreadgroup:MTLSizeMake(kTopKThreads, 1, 1)];
 }
 
-}  // namespace
-
-extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
+int create_tail_mlp_head_v1(
     const TailDescriptorV1 *descriptor, void **output, char *error_output,
-    size_t error_capacity) {
-    @autoreleasepool {
-        if (output == nullptr) {
-            write_error(error_output, error_capacity,
-                        "Metal W8 tail MLP+head v1 output handle is null");
-            return 1;
-        }
-        *output = nullptr;
-        if (descriptor == nullptr || descriptor->gate_up_weights == nullptr ||
-            descriptor->gate_up_scales == nullptr ||
-            descriptor->down_weights == nullptr ||
-            descriptor->down_scales == nullptr ||
-            descriptor->post_attention_rms_weight == nullptr ||
-            descriptor->final_rms_weight == nullptr ||
-            descriptor->vocab_weights == nullptr ||
-            descriptor->vocab_scales == nullptr || descriptor->hidden_size == 0 ||
-            descriptor->intermediate_size == 0 ||
-            descriptor->vocab_size < kTopK ||
-            descriptor->hidden_size % kGroupSize != 0 ||
-            descriptor->intermediate_size % kGroupSize != 0 ||
-            descriptor->intermediate_size > UINT32_MAX / 2 ||
-            !std::isfinite(descriptor->rms_norm_eps) ||
-            descriptor->rms_norm_eps < 0.0f) {
-            write_error(error_output, error_capacity,
-                        "invalid Metal W8 tail MLP+head v1 packed contract");
-            return 1;
-        }
+    size_t error_capacity, uint32_t vocab_storage) {
+    if (output == nullptr) {
+        write_error(error_output, error_capacity,
+                    "Metal W8 tail MLP+head v1 output handle is null");
+        return 1;
+    }
+    *output = nullptr;
+    if (vocab_storage > 1) {
+        write_error(error_output, error_capacity,
+                    "invalid Metal W8 tail MLP+head v1 vocab storage selector");
+        return 1;
+    }
+    if (descriptor == nullptr || descriptor->gate_up_weights == nullptr ||
+        descriptor->gate_up_scales == nullptr ||
+        descriptor->down_weights == nullptr ||
+        descriptor->down_scales == nullptr ||
+        descriptor->post_attention_rms_weight == nullptr ||
+        descriptor->final_rms_weight == nullptr ||
+        descriptor->vocab_weights == nullptr ||
+        descriptor->vocab_scales == nullptr || descriptor->hidden_size == 0 ||
+        descriptor->intermediate_size == 0 || descriptor->vocab_size < kTopK ||
+        descriptor->hidden_size % kGroupSize != 0 ||
+        descriptor->intermediate_size % kGroupSize != 0 ||
+        descriptor->intermediate_size > UINT32_MAX / 2 ||
+        !std::isfinite(descriptor->rms_norm_eps) ||
+        descriptor->rms_norm_eps < 0.0f) {
+        write_error(error_output, error_capacity,
+                    "invalid Metal W8 tail MLP+head v1 packed contract");
+        return 1;
+    }
 
-        const size_t hidden_size = descriptor->hidden_size;
-        const size_t intermediate_size = descriptor->intermediate_size;
-        const size_t vocab_size = descriptor->vocab_size;
-        size_t hidden_intermediate = 0;
-        size_t gate_up_weight_bytes = 0;
-        size_t gate_up_scale_count = 0;
-        size_t down_scale_count = 0;
-        size_t vocab_weight_bytes = 0;
-        size_t vocab_scale_count = 0;
-        if (!checked_product(hidden_size, intermediate_size,
-                             &hidden_intermediate) ||
-            !checked_product(hidden_intermediate, 2, &gate_up_weight_bytes) ||
-            !checked_product(2 * intermediate_size, hidden_size / kGroupSize,
-                             &gate_up_scale_count) ||
-            !checked_product(hidden_size, intermediate_size / kGroupSize,
-                             &down_scale_count) ||
-            !checked_product(vocab_size, hidden_size, &vocab_weight_bytes) ||
-            !checked_product(vocab_size, hidden_size / kGroupSize,
-                             &vocab_scale_count)) {
-            write_error(error_output, error_capacity,
-                        "Metal W8 tail MLP+head v1 buffer dimensions overflow");
-            return 1;
-        }
-        if (!all_finite(descriptor->post_attention_rms_weight, hidden_size) ||
-            !all_finite(descriptor->final_rms_weight, hidden_size) ||
-            !all_positive_finite(descriptor->gate_up_scales,
-                                 gate_up_scale_count) ||
-            !all_positive_finite(descriptor->down_scales, down_scale_count) ||
-            !all_positive_finite(descriptor->vocab_scales, vocab_scale_count)) {
-            write_error(error_output, error_capacity,
-                        "Metal W8 tail MLP+head v1 parameters are non-finite or invalid");
-            return 1;
-        }
+    const size_t hidden_size = descriptor->hidden_size;
+    const size_t intermediate_size = descriptor->intermediate_size;
+    const size_t vocab_size = descriptor->vocab_size;
+    size_t hidden_intermediate = 0;
+    size_t gate_up_weight_bytes = 0;
+    size_t gate_up_scale_count = 0;
+    size_t down_scale_count = 0;
+    size_t vocab_weight_bytes = 0;
+    size_t vocab_scale_count = 0;
+    size_t vocab_scale_bytes = 0;
+    size_t vocab_init_bytes = 0;
+    if (!checked_product(hidden_size, intermediate_size,
+                         &hidden_intermediate) ||
+        !checked_product(hidden_intermediate, 2, &gate_up_weight_bytes) ||
+        !checked_product(2 * intermediate_size, hidden_size / kGroupSize,
+                         &gate_up_scale_count) ||
+        !checked_product(hidden_size, intermediate_size / kGroupSize,
+                         &down_scale_count) ||
+        !checked_product(vocab_size, hidden_size, &vocab_weight_bytes) ||
+        !checked_product(vocab_size, hidden_size / kGroupSize,
+                         &vocab_scale_count) ||
+        !checked_product(vocab_scale_count, sizeof(float),
+                         &vocab_scale_bytes) ||
+        !checked_sum(vocab_weight_bytes, vocab_scale_bytes,
+                     &vocab_init_bytes)) {
+        write_error(error_output, error_capacity,
+                    "Metal W8 tail MLP+head v1 buffer dimensions overflow");
+        return 1;
+    }
+    if (!all_finite(descriptor->post_attention_rms_weight, hidden_size) ||
+        !all_finite(descriptor->final_rms_weight, hidden_size) ||
+        !all_positive_finite(descriptor->gate_up_scales,
+                             gate_up_scale_count) ||
+        !all_positive_finite(descriptor->down_scales, down_scale_count) ||
+        !all_positive_finite(descriptor->vocab_scales, vocab_scale_count)) {
+        write_error(error_output, error_capacity,
+                    "Metal W8 tail MLP+head v1 parameters are non-finite or invalid");
+        return 1;
+    }
 
-        auto handle =
-            new (std::nothrow) ApxinfMetalW8TailMlpHeadHandleV1{};
-        if (handle == nullptr) {
-            write_error(error_output, error_capacity,
-                        "allocate Metal W8 tail MLP+head v1 handle failed");
-            return 1;
+    auto handle = new (std::nothrow) ApxinfMetalW8TailMlpHeadHandleV1{};
+    if (handle == nullptr) {
+        write_error(error_output, error_capacity,
+                    "allocate Metal W8 tail MLP+head v1 handle failed");
+        return 1;
+    }
+    const auto fail = [&](const char *message, NSError *failure_error) -> int {
+        delete handle;
+        if (message != nullptr) {
+            write_error(error_output, error_capacity, message);
+        } else {
+            write_nserror(error_output, error_capacity, failure_error);
         }
-        handle->device = MTLCreateSystemDefaultDevice();
-        if (handle->device == nil) {
-            delete handle;
-            write_error(error_output, error_capacity,
-                        "no system Metal device is available");
-            return 1;
-        }
-        NSError *error = nil;
-        NSString *source =
-            [NSString stringWithUTF8String:kMetalTailMlpHeadSourceV1];
-        id<MTLLibrary> library =
-            [handle->device newLibraryWithSource:source options:nil error:&error];
-        if (library == nil) {
-            delete handle;
-            write_nserror(error_output, error_capacity, error);
-            return 1;
-        }
-        handle->rms_pipeline = make_pipeline(
-            handle->device, library, @"linear_layer_rms_norm", &error);
-        handle->gate_up_pipeline = make_pipeline(
-            handle->device, library, @"w8_mlp_gate_up", &error);
-        handle->activation_pipeline = make_pipeline(
-            handle->device, library, @"w8_mlp_silu_mul", &error);
-        handle->down_pipeline = make_pipeline(
-            handle->device, library, @"w8_mlp_down", &error);
-        handle->residual_pipeline = make_pipeline(
-            handle->device, library, @"linear_layer_residual_add", &error);
-        handle->rows_topk_pipeline = make_pipeline(
-            handle->device, library, @"w8_rows_topk4", &error);
-        handle->final_topk_pipeline = make_pipeline(
-            handle->device, library, @"w8_final_topk4", &error);
-        if (handle->rms_pipeline == nil || handle->gate_up_pipeline == nil ||
-            handle->activation_pipeline == nil || handle->down_pipeline == nil ||
-            handle->residual_pipeline == nil ||
-            handle->rows_topk_pipeline == nil ||
-            handle->final_topk_pipeline == nil) {
-            delete handle;
-            write_nserror(error_output, error_capacity, error);
-            return 1;
-        }
-        handle->queue = [handle->device newCommandQueue];
-        const MTLResourceOptions shared = MTLResourceStorageModeShared;
-        const MTLResourceOptions private_storage = MTLResourceStorageModePrivate;
-        const size_t hidden_bytes = hidden_size * sizeof(float);
-        handle->rms_weights =
-            [handle->device newBufferWithLength:2 * hidden_bytes options:shared];
-        if (handle->rms_weights != nil) {
-            std::memcpy(handle->rms_weights.contents,
-                        descriptor->post_attention_rms_weight, hidden_bytes);
-            std::memcpy(static_cast<uint8_t *>(handle->rms_weights.contents) +
-                            hidden_bytes,
-                        descriptor->final_rms_weight, hidden_bytes);
-        }
-        handle->gate_up_weights =
-            [handle->device newBufferWithBytes:descriptor->gate_up_weights
-                                        length:gate_up_weight_bytes
-                                       options:shared];
-        handle->gate_up_scales =
-            [handle->device newBufferWithBytes:descriptor->gate_up_scales
-                                        length:gate_up_scale_count * sizeof(float)
-                                       options:shared];
-        handle->down_weights =
-            [handle->device newBufferWithBytes:descriptor->down_weights
-                                        length:hidden_intermediate
-                                       options:shared];
-        handle->down_scales =
-            [handle->device newBufferWithBytes:descriptor->down_scales
-                                        length:down_scale_count * sizeof(float)
-                                       options:shared];
+        return 1;
+    };
+
+    handle->device = MTLCreateSystemDefaultDevice();
+    if (handle->device == nil) {
+        return fail("no system Metal device is available", nil);
+    }
+    NSError *error = nil;
+    NSString *source =
+        [NSString stringWithUTF8String:kMetalTailMlpHeadSourceV1];
+    id<MTLLibrary> library =
+        [handle->device newLibraryWithSource:source options:nil error:&error];
+    if (library == nil) {
+        return fail(nullptr, error);
+    }
+    handle->rms_pipeline = make_pipeline(
+        handle->device, library, @"linear_layer_rms_norm", &error);
+    handle->gate_up_pipeline = make_pipeline(
+        handle->device, library, @"w8_mlp_gate_up", &error);
+    handle->activation_pipeline = make_pipeline(
+        handle->device, library, @"w8_mlp_silu_mul", &error);
+    handle->down_pipeline = make_pipeline(handle->device, library,
+                                          @"w8_mlp_down", &error);
+    handle->residual_pipeline = make_pipeline(
+        handle->device, library, @"linear_layer_residual_add", &error);
+    handle->rows_topk_pipeline = make_pipeline(
+        handle->device, library, @"w8_rows_topk4", &error);
+    handle->final_topk_pipeline = make_pipeline(
+        handle->device, library, @"w8_final_topk4", &error);
+    if (handle->rms_pipeline == nil || handle->gate_up_pipeline == nil ||
+        handle->activation_pipeline == nil || handle->down_pipeline == nil ||
+        handle->residual_pipeline == nil || handle->rows_topk_pipeline == nil ||
+        handle->final_topk_pipeline == nil) {
+        return fail(nullptr, error);
+    }
+
+    handle->queue = [handle->device newCommandQueue];
+    const MTLResourceOptions shared = MTLResourceStorageModeShared;
+    const MTLResourceOptions private_storage = MTLResourceStorageModePrivate;
+    const size_t hidden_bytes = hidden_size * sizeof(float);
+    handle->rms_weights =
+        [handle->device newBufferWithLength:2 * hidden_bytes options:shared];
+    if (handle->rms_weights != nil) {
+        std::memcpy(handle->rms_weights.contents,
+                    descriptor->post_attention_rms_weight, hidden_bytes);
+        std::memcpy(static_cast<uint8_t *>(handle->rms_weights.contents) +
+                        hidden_bytes,
+                    descriptor->final_rms_weight, hidden_bytes);
+    }
+    handle->gate_up_weights =
+        [handle->device newBufferWithBytes:descriptor->gate_up_weights
+                                    length:gate_up_weight_bytes
+                                   options:shared];
+    handle->gate_up_scales =
+        [handle->device newBufferWithBytes:descriptor->gate_up_scales
+                                    length:gate_up_scale_count * sizeof(float)
+                                   options:shared];
+    handle->down_weights =
+        [handle->device newBufferWithBytes:descriptor->down_weights
+                                    length:hidden_intermediate
+                                   options:shared];
+    handle->down_scales =
+        [handle->device newBufferWithBytes:descriptor->down_scales
+                                    length:down_scale_count * sizeof(float)
+                                   options:shared];
+
+    id<MTLBuffer> vocab_weights_staging = nil;
+    id<MTLBuffer> vocab_scales_staging = nil;
+    if (vocab_storage == 0) {
         handle->vocab_weights =
             [handle->device newBufferWithBytes:descriptor->vocab_weights
                                         length:vocab_weight_bytes
                                        options:shared];
         handle->vocab_scales =
             [handle->device newBufferWithBytes:descriptor->vocab_scales
-                                        length:vocab_scale_count * sizeof(float)
+                                        length:vocab_scale_bytes
                                        options:shared];
-        handle->hidden_a =
-            [handle->device newBufferWithLength:hidden_bytes options:shared];
-        handle->hidden_b =
-            [handle->device newBufferWithLength:hidden_bytes options:shared];
-        handle->output_tokens = [handle->device
-            newBufferWithLength:kTopK * sizeof(uint32_t)
-                         options:shared];
-        handle->gate_up = [handle->device
-            newBufferWithLength:2 * intermediate_size * sizeof(float)
-                         options:private_storage];
-        handle->activated = [handle->device
-            newBufferWithLength:intermediate_size * sizeof(float)
-                         options:private_storage];
-        const uint32_t partial_count =
-            static_cast<uint32_t>((vocab_size + kRowsPerThreadgroup - 1) /
-                                  kRowsPerThreadgroup);
-        handle->partial_topk = [handle->device
-            newBufferWithLength:static_cast<size_t>(partial_count) * kTopK * 8
-                         options:private_storage];
-        if (handle->queue == nil || !buffers_valid(handle)) {
-            delete handle;
+    } else {
+        handle->vocab_weights =
+            [handle->device newBufferWithLength:vocab_weight_bytes
+                                         options:private_storage];
+        handle->vocab_scales =
+            [handle->device newBufferWithLength:vocab_scale_bytes
+                                         options:private_storage];
+        vocab_weights_staging =
+            [handle->device newBufferWithBytes:descriptor->vocab_weights
+                                        length:vocab_weight_bytes
+                                       options:shared];
+        vocab_scales_staging =
+            [handle->device newBufferWithBytes:descriptor->vocab_scales
+                                        length:vocab_scale_bytes
+                                       options:shared];
+    }
+
+    handle->hidden_a =
+        [handle->device newBufferWithLength:hidden_bytes options:shared];
+    handle->hidden_b =
+        [handle->device newBufferWithLength:hidden_bytes options:shared];
+    handle->output_tokens =
+        [handle->device newBufferWithLength:kTopK * sizeof(uint32_t)
+                                     options:shared];
+    handle->gate_up = [handle->device
+        newBufferWithLength:2 * intermediate_size * sizeof(float)
+                     options:private_storage];
+    handle->activated = [handle->device
+        newBufferWithLength:intermediate_size * sizeof(float)
+                     options:private_storage];
+    const uint32_t partial_count =
+        static_cast<uint32_t>((vocab_size + kRowsPerThreadgroup - 1) /
+                              kRowsPerThreadgroup);
+    handle->partial_topk = [handle->device
+        newBufferWithLength:static_cast<size_t>(partial_count) * kTopK * 8
+                     options:private_storage];
+    if (handle->queue == nil || !buffers_valid(handle)) {
+        return fail(
+            "allocate persistent Metal W8 tail MLP+head v1 buffers failed",
+            nil);
+    }
+
+    const uint32_t vocab_weights_storage =
+        normalized_vocab_storage(handle->vocab_weights);
+    const uint32_t vocab_scales_storage =
+        normalized_vocab_storage(handle->vocab_scales);
+    if (vocab_weights_storage != vocab_storage ||
+        vocab_scales_storage != vocab_storage) {
+        return fail(
+            "Metal W8 tail MLP+head v1 vocab destination storage mode mismatch",
+            nil);
+    }
+    handle->vocab_storage = vocab_weights_storage;
+
+    if (vocab_storage == 1) {
+        if (vocab_weights_staging == nil || vocab_scales_staging == nil) {
+            return fail(
+                "allocate transient Metal W8 tail MLP+head v1 vocab staging buffers failed",
+                nil);
+        }
+        if (normalized_vocab_storage(vocab_weights_staging) != 0 ||
+            normalized_vocab_storage(vocab_scales_staging) != 0) {
+            return fail(
+                "Metal W8 tail MLP+head v1 vocab staging storage mode mismatch",
+                nil);
+        }
+        if (vocab_weights_staging.length != vocab_weight_bytes ||
+            vocab_scales_staging.length != vocab_scale_bytes) {
+            return fail(
+                "Metal W8 tail MLP+head v1 vocab staging length mismatch",
+                nil);
+        }
+
+        id<MTLCommandBuffer> init_command = [handle->queue commandBuffer];
+        if (init_command == nil) {
+            return fail(
+                "create Metal W8 tail MLP+head v1 vocab init command buffer failed",
+                nil);
+        }
+        id<MTLBlitCommandEncoder> init_blit =
+            [init_command blitCommandEncoder];
+        if (init_blit == nil) {
+            return fail(
+                "create Metal W8 tail MLP+head v1 vocab init blit encoder failed",
+                nil);
+        }
+        [init_blit copyFromBuffer:vocab_weights_staging
+                     sourceOffset:0
+                         toBuffer:handle->vocab_weights
+                destinationOffset:0
+                             size:vocab_weight_bytes];
+        [init_blit copyFromBuffer:vocab_scales_staging
+                     sourceOffset:0
+                         toBuffer:handle->vocab_scales
+                destinationOffset:0
+                             size:vocab_scale_bytes];
+        [init_blit endEncoding];
+        [init_command commit];
+        [init_command waitUntilCompleted];
+        if (init_command.status != MTLCommandBufferStatusCompleted) {
+            NSError *init_error = init_command.error;
+            if (init_error != nil) {
+                return fail(nullptr, init_error);
+            }
+            return fail(
+                "Metal W8 tail MLP+head v1 vocab init command did not complete",
+                nil);
+        }
+
+        handle->transient_staging_buffers = 2;
+        handle->transient_staging_bytes =
+            static_cast<uint64_t>(vocab_init_bytes);
+        handle->init_blit_bytes = static_cast<uint64_t>(vocab_init_bytes);
+        handle->init_command_buffers = 1;
+        handle->init_blit_encoders = 1;
+        handle->init_copy_commands = 2;
+        handle->init_commits = 1;
+        handle->init_waits = 1;
+    }
+
+    handle->layer_params = LinearLayerParams{
+        descriptor->hidden_size, descriptor->rms_norm_eps};
+    handle->mlp_params = MlpParams{
+        descriptor->hidden_size,
+        descriptor->intermediate_size,
+        descriptor->hidden_size / kGroupSize,
+        descriptor->intermediate_size / kGroupSize,
+    };
+    handle->head_params = KernelParams{
+        descriptor->hidden_size,
+        descriptor->vocab_size,
+        descriptor->hidden_size / kGroupSize,
+        partial_count,
+    };
+    handle->terminal_error = false;
+    *output = handle;
+    return 0;
+}
+
+}  // namespace
+
+extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
+    const TailDescriptorV1 *descriptor, void **output, char *error_output,
+    size_t error_capacity) {
+    @autoreleasepool {
+        return create_tail_mlp_head_v1(descriptor, output, error_output,
+                                       error_capacity, 0);
+    }
+}
+
+extern "C" int apxinf_metal_w8_tail_mlp_head_create_with_vocab_storage_v1(
+    const TailDescriptorV1 *descriptor, uint32_t vocab_storage, void **output,
+    char *error_output, size_t error_capacity) {
+    @autoreleasepool {
+        return create_tail_mlp_head_v1(descriptor, output, error_output,
+                                       error_capacity, vocab_storage);
+    }
+}
+
+extern "C" int apxinf_metal_w8_tail_mlp_head_vocab_storage_receipt_v1(
+    void *opaque_handle, TailVocabStorageReceiptV1 *receipt,
+    char *error_output, size_t error_capacity) {
+    @autoreleasepool {
+        if (receipt == nullptr) {
             write_error(error_output, error_capacity,
-                        "allocate persistent Metal W8 tail MLP+head v1 buffers failed");
+                        "Metal W8 tail MLP+head v1 vocab storage receipt is null");
             return 1;
         }
-        handle->layer_params = LinearLayerParams{
-            descriptor->hidden_size, descriptor->rms_norm_eps};
-        handle->mlp_params = MlpParams{
-            descriptor->hidden_size,
-            descriptor->intermediate_size,
-            descriptor->hidden_size / kGroupSize,
-            descriptor->intermediate_size / kGroupSize,
-        };
-        handle->head_params = KernelParams{
-            descriptor->hidden_size,
-            descriptor->vocab_size,
-            descriptor->hidden_size / kGroupSize,
-            partial_count,
-        };
-        handle->terminal_error = false;
-        *output = handle;
+        *receipt = TailVocabStorageReceiptV1{};
+        auto handle =
+            static_cast<ApxinfMetalW8TailMlpHeadHandleV1 *>(opaque_handle);
+        if (handle == nullptr || handle->vocab_weights == nil ||
+            handle->vocab_scales == nil) {
+            write_error(error_output, error_capacity,
+                        "Metal W8 tail MLP+head v1 vocab storage receipt handle is invalid");
+            return 1;
+        }
+
+        receipt->vocab_weights_storage =
+            normalized_vocab_storage(handle->vocab_weights);
+        receipt->vocab_scales_storage =
+            normalized_vocab_storage(handle->vocab_scales);
+        receipt->vocab_storage =
+            receipt->vocab_weights_storage == receipt->vocab_scales_storage &&
+                    receipt->vocab_weights_storage == handle->vocab_storage
+                ? handle->vocab_storage
+                : UINT32_MAX;
+        receipt->transient_staging_buffers =
+            handle->transient_staging_buffers;
+        receipt->vocab_weight_bytes =
+            static_cast<uint64_t>(handle->vocab_weights.length);
+        receipt->vocab_scale_bytes =
+            static_cast<uint64_t>(handle->vocab_scales.length);
+        receipt->transient_staging_bytes = handle->transient_staging_bytes;
+        receipt->init_blit_bytes = handle->init_blit_bytes;
+        receipt->init_command_buffers = handle->init_command_buffers;
+        receipt->init_blit_encoders = handle->init_blit_encoders;
+        receipt->init_copy_commands = handle->init_copy_commands;
+        receipt->init_commits = handle->init_commits;
+        receipt->init_waits = handle->init_waits;
         return 0;
     }
 }

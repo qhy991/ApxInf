@@ -456,6 +456,8 @@ pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
     pub boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionV1Stats>,
     pub tail_layer_index: usize,
     pub tail: apxinf_metal::TailMlpHeadMetalStatsV1,
+    pub tail_vocab_storage: apxinf_metal::TailMlpHeadVocabStorageV1,
+    pub tail_vocab_storage_receipt: apxinf_metal::TailMlpHeadVocabStorageReceiptV1,
     pub prefill_body_calls: usize,
     pub prefill_cpu_head_calls: usize,
     pub decode_calls: usize,
@@ -915,6 +917,27 @@ impl GeneralQwen35 {
         device: Device,
         max_context: usize,
     ) -> Result<Self> {
+        Self::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_vocab_storage_v1(
+            config,
+            tensors,
+            device,
+            max_context,
+            apxinf_metal::TailMlpHeadVocabStorageV1::Shared,
+        )
+    }
+
+    /// Diagnostic-only selector for comparing shared versus private Metal
+    /// storage for the packed tied-vocabulary weights and scales inside the
+    /// otherwise identical boundary + tail-head v1 lane. The ordinary v1
+    /// constructor remains pinned to shared storage.
+    #[cfg(feature = "metal-w8")]
+    pub fn from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_vocab_storage_v1(
+        config: Qwen35Config,
+        tensors: HashMap<String, Tensor>,
+        device: Device,
+        max_context: usize,
+        vocab_storage: apxinf_metal::TailMlpHeadVocabStorageV1,
+    ) -> Result<Self> {
         if !config.text.tie_word_embeddings {
             return Err(Error::Other(
                 "qwen3.5 Metal W8 boundary + tail-head v1 requires tied word embeddings".into(),
@@ -923,7 +946,8 @@ impl GeneralQwen35 {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(&config.text)?;
         let backend = create_backend(device)?;
         let weights = Qwen35TextWeights::from_map(&config, tensors)?;
-        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack(&weights, &config.text)?;
+        let lane =
+            Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack(&weights, &config.text, vocab_storage)?;
         let mut model =
             Self::new_with_metal_options(config, weights, backend, max_context, false, None, None)?;
         model.metal_w8_mlp_stack3_boundary_tail_head_v1 = Some(lane);
@@ -3097,6 +3121,57 @@ impl LlmTrait for GeneralQwen35 {
                         })
                     })
                     .collect::<Vec<_>>();
+                let vocab_storage = lane.tail_vocab_storage_receipt;
+                let decode_head = serde_json::json!({
+                    "mechanism": "metal-w8-tail-v1",
+                    "vocab_storage": vocab_storage.storage.receipt_label(),
+                    "vocab_weights_storage": vocab_storage.vocab_weights_storage.receipt_label(),
+                    "vocab_scales_storage": vocab_storage.vocab_scales_storage.receipt_label(),
+                    "vocab_weight_bytes": vocab_storage.vocab_weight_bytes,
+                    "vocab_scale_bytes": vocab_storage.vocab_scale_bytes,
+                    "transient_staging_buffers": vocab_storage.transient_staging_buffers,
+                    "transient_staging_bytes": vocab_storage.transient_staging_bytes,
+                    "init_blit_bytes": vocab_storage.init_blit_bytes,
+                    "init_command_buffers": vocab_storage.init_command_buffers,
+                    "init_blit_encoders": vocab_storage.init_blit_encoders,
+                    "init_copy_commands": vocab_storage.init_copy_commands,
+                    "init_commits": vocab_storage.init_commits,
+                    "init_waits": vocab_storage.init_waits,
+                    "runtime_observed": true,
+                    "layer_index": lane.tail_layer_index,
+                    "calls": lane.decode_calls,
+                    "teacher_calls": lane.teacher_calls,
+                    "tail_transactions": lane.tail.decode_calls,
+                    "successful_transactions": lane.tail.successful_decodes,
+                    "failed_transactions": lane.tail.failed_decodes,
+                    "command_buffers": lane.tail.command_buffers,
+                    "compute_encoders": lane.tail.compute_encoders,
+                    "kernel_dispatches": lane.tail.kernel_dispatches,
+                    "commits": lane.tail.commits,
+                    "waits": lane.tail.waits,
+                    "host_to_device_bytes": lane.tail.host_to_device_bytes,
+                    "device_to_host_bytes": lane.tail.device_to_host_bytes,
+                    "output_commits": lane.tail.output_commits,
+                    "last_output_commit_mask": lane.tail.last_output_commit_mask,
+                    "rerank_elapsed_ns": lane.rerank_elapsed_ns,
+                    "terminal_error": lane.tail.terminal_error,
+                });
+                let aggregate_receipt = serde_json::json!({
+                    "scope": aggregate.scope,
+                    "includes_lm_head": aggregate.includes_lm_head,
+                    "persistent_mtlbuffer_bytes": aggregate.total_persistent_mtlbuffer_bytes,
+                    "allocated_buffers": aggregate.allocated_buffers,
+                    "shared_buffers": aggregate.shared_buffers,
+                    "private_buffers": aggregate.private_buffers,
+                    "host_to_device_bytes_per_decode": aggregate.host_to_device_bytes_per_decode,
+                    "device_to_host_bytes_per_decode": aggregate.device_to_host_bytes_per_decode,
+                    "state_host_transfer_bytes_per_decode": aggregate.state_host_transfer_bytes_per_decode,
+                    "command_buffers_per_decode": aggregate.command_buffers_per_decode,
+                    "compute_encoders_per_decode": aggregate.compute_encoders_per_decode,
+                    "kernel_dispatches_per_decode": aggregate.kernel_dispatches_per_decode,
+                    "commits_per_decode": aggregate.commits_per_decode,
+                    "waits_per_decode": aggregate.waits_per_decode,
+                });
                 return Some(serde_json::json!({
                     "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
                     "mechanism": lane.mechanism,
@@ -3134,42 +3209,8 @@ impl LlmTrait for GeneralQwen35 {
                         "calls": lane.prefill_cpu_head_calls,
                         "tail_transactions": 0,
                     },
-                    "decode_head": {
-                        "mechanism": "metal-w8-tail-v1",
-                        "layer_index": lane.tail_layer_index,
-                        "calls": lane.decode_calls,
-                        "teacher_calls": lane.teacher_calls,
-                        "tail_transactions": lane.tail.decode_calls,
-                        "successful_transactions": lane.tail.successful_decodes,
-                        "failed_transactions": lane.tail.failed_decodes,
-                        "command_buffers": lane.tail.command_buffers,
-                        "compute_encoders": lane.tail.compute_encoders,
-                        "kernel_dispatches": lane.tail.kernel_dispatches,
-                        "commits": lane.tail.commits,
-                        "waits": lane.tail.waits,
-                        "host_to_device_bytes": lane.tail.host_to_device_bytes,
-                        "device_to_host_bytes": lane.tail.device_to_host_bytes,
-                        "output_commits": lane.tail.output_commits,
-                        "last_output_commit_mask": lane.tail.last_output_commit_mask,
-                        "rerank_elapsed_ns": lane.rerank_elapsed_ns,
-                        "terminal_error": lane.tail.terminal_error,
-                    },
-                    "aggregate": {
-                        "scope": aggregate.scope,
-                        "includes_lm_head": aggregate.includes_lm_head,
-                        "persistent_mtlbuffer_bytes": aggregate.total_persistent_mtlbuffer_bytes,
-                        "allocated_buffers": aggregate.allocated_buffers,
-                        "shared_buffers": aggregate.shared_buffers,
-                        "private_buffers": aggregate.private_buffers,
-                        "host_to_device_bytes_per_decode": aggregate.host_to_device_bytes_per_decode,
-                        "device_to_host_bytes_per_decode": aggregate.device_to_host_bytes_per_decode,
-                        "state_host_transfer_bytes_per_decode": aggregate.state_host_transfer_bytes_per_decode,
-                        "command_buffers_per_decode": aggregate.command_buffers_per_decode,
-                        "compute_encoders_per_decode": aggregate.compute_encoders_per_decode,
-                        "kernel_dispatches_per_decode": aggregate.kernel_dispatches_per_decode,
-                        "commits_per_decode": aggregate.commits_per_decode,
-                        "waits_per_decode": aggregate.waits_per_decode,
-                    },
+                    "decode_head": decode_head,
+                    "aggregate": aggregate_receipt,
                     "terminal_error": lane.terminal_error,
                 }));
             }
@@ -5185,7 +5226,11 @@ impl Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 
 #[cfg(feature = "metal-w8")]
 impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
-    fn pack(weights: &Qwen35TextWeights, config: &Qwen35TextConfig) -> Result<Self> {
+    fn pack(
+        weights: &Qwen35TextWeights,
+        config: &Qwen35TextConfig,
+        vocab_storage: apxinf_metal::TailMlpHeadVocabStorageV1,
+    ) -> Result<Self> {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(config)?;
         if weights.layers.len() != 24 || weights.lm_head_weight.is_some() {
             return Err(Error::Other(
@@ -5261,7 +5306,11 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                 "qwen3.5 Metal W8 tail-head v1 assembly failed: {error}"
             ))
         })?;
-        let tail = apxinf_metal::MetalW8TailMlpHeadV1::from_packed(&packed).map_err(|error| {
+        let tail = apxinf_metal::MetalW8TailMlpHeadV1::from_packed_with_vocab_storage(
+            &packed,
+            vocab_storage,
+        )
+        .map_err(|error| {
             Error::Other(format!(
                 "qwen3.5 Metal W8 tail-head v1 construction failed: {error}"
             ))
@@ -5291,6 +5340,8 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                 .collect(),
             tail_layer_index: self.tail_layer_index,
             tail: self.tail.stats(),
+            tail_vocab_storage: self.tail.vocab_storage(),
+            tail_vocab_storage_receipt: self.tail.vocab_storage_receipt(),
             prefill_body_calls: self.prefill_body_calls,
             prefill_cpu_head_calls: self.prefill_cpu_head_calls,
             decode_calls: self.decode_calls,
@@ -7609,12 +7660,65 @@ mod tests {
         assert_eq!(stats.boundaries.len(), 5);
         assert_eq!(stats.tail_layer_index, 23);
         assert_eq!(stats.tail, Default::default());
+        assert_eq!(
+            stats.tail_vocab_storage,
+            apxinf_metal::TailMlpHeadVocabStorageV1::Shared
+        );
+        assert_eq!(
+            stats.tail_vocab_storage_receipt.storage,
+            apxinf_metal::TailMlpHeadVocabStorageV1::Shared
+        );
+        assert_eq!(
+            stats.tail_vocab_storage_receipt.transient_staging_buffers,
+            0
+        );
+        assert_eq!(stats.tail_vocab_storage_receipt.init_blit_bytes, 0);
         assert!(diagnostic
             .metal_w8_mlp_stack3_boundary_body_v1_stats()
             .is_none());
         assert!(diagnostic.metal_w8_linear_layer_stacks_v1_stats().is_none());
         assert!(diagnostic.metal_w8_mlp_block_layer_stats().is_empty());
         assert!(diagnostic.metal_w8_lm_head_stats().is_none());
+
+        let private = GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_vocab_storage_v1(
+            config.clone(),
+            tensors.clone(),
+            Device::Cpu,
+            16,
+            apxinf_metal::TailMlpHeadVocabStorageV1::PrivateUpload,
+        )
+        .unwrap();
+        let private_stats = private
+            .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
+            .unwrap();
+        let private_receipt = private_stats.tail_vocab_storage_receipt;
+        assert_eq!(
+            private_stats.tail_vocab_storage,
+            apxinf_metal::TailMlpHeadVocabStorageV1::PrivateUpload
+        );
+        assert_eq!(
+            private_receipt.storage,
+            apxinf_metal::TailMlpHeadVocabStorageV1::PrivateUpload
+        );
+        assert_eq!(private_receipt.transient_staging_buffers, 2);
+        assert_eq!(
+            private_receipt.transient_staging_bytes,
+            private_receipt.vocab_weight_bytes + private_receipt.vocab_scale_bytes
+        );
+        assert_eq!(
+            private_receipt.init_blit_bytes,
+            private_receipt.transient_staging_bytes
+        );
+        assert_eq!(
+            (
+                private_receipt.init_command_buffers,
+                private_receipt.init_blit_encoders,
+                private_receipt.init_copy_commands,
+                private_receipt.init_commits,
+                private_receipt.init_waits,
+            ),
+            (1, 1, 2, 1, 1)
+        );
 
         let mut untied_config = config;
         untied_config.text.tie_word_embeddings = false;

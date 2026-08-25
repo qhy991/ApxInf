@@ -1,6 +1,6 @@
 use apxinf_metal::{
     MetalW8TailMlpHeadV1, PackedW8MlpBlock, PackedW8Rows, PackedW8TailMlpHeadV1,
-    TailMlpHeadBufferLedgerV1,
+    TailMlpHeadBufferLedgerV1, TailMlpHeadVocabStorageReceiptV1, TailMlpHeadVocabStorageV1,
 };
 
 fn values(elements: usize, multiplier: usize, modulus: usize, scale: f32) -> Vec<f32> {
@@ -127,6 +127,19 @@ fn tail_v1_ledger_is_exact_for_tiny_and_qwen35_official_dimensions() {
     assert_eq!(qwen.total_persistent_bytes, 282_923_024);
     assert_eq!(qwen.host_input_bytes_per_decode, 4_096);
     assert_eq!(qwen.host_output_bytes_per_decode, 4_112);
+    let qwen_private = TailMlpHeadBufferLedgerV1::from_dimensions_with_vocab_storage(
+        1_024,
+        3_584,
+        248_320,
+        TailMlpHeadVocabStorageV1::PrivateUpload,
+    )
+    .unwrap();
+    assert_eq!(qwen_private.allocated_buffers, 13);
+    assert_eq!(qwen_private.shared_buffers, 8);
+    assert_eq!(qwen_private.private_buffers, 5);
+    assert_eq!(qwen_private.total_persistent_bytes, 282_923_024);
+    assert_eq!(qwen_private.host_input_bytes_per_decode, 4_096);
+    assert_eq!(qwen_private.host_output_bytes_per_decode, 4_112);
 }
 
 #[cfg(target_os = "macos")]
@@ -172,6 +185,25 @@ fn metal_tail_v1_matches_packed_hidden_and_top4_in_one_transaction() {
     let mut metal = MetalW8TailMlpHeadV1::from_packed(&packed).unwrap();
 
     assert_eq!(metal.buffer_ledger(), expected_ledger);
+    assert_eq!(metal.vocab_storage(), TailMlpHeadVocabStorageV1::Shared);
+    assert_eq!(
+        metal.vocab_storage_receipt(),
+        TailMlpHeadVocabStorageReceiptV1 {
+            storage: TailMlpHeadVocabStorageV1::Shared,
+            vocab_weights_storage: TailMlpHeadVocabStorageV1::Shared,
+            vocab_scales_storage: TailMlpHeadVocabStorageV1::Shared,
+            vocab_weight_bytes: vocab_size * hidden_size,
+            vocab_scale_bytes: vocab_size * (hidden_size / 64) * 4,
+            transient_staging_buffers: 0,
+            transient_staging_bytes: 0,
+            init_blit_bytes: 0,
+            init_command_buffers: 0,
+            init_blit_encoders: 0,
+            init_copy_commands: 0,
+            init_commits: 0,
+            init_waits: 0,
+        }
+    );
     let actual = metal.decode(&input).unwrap();
     assert_close(
         actual.normalized_hidden,
@@ -195,6 +227,49 @@ fn metal_tail_v1_matches_packed_hidden_and_top4_in_one_transaction() {
     assert_eq!(stats.output_commits, 2);
     assert_eq!(stats.last_output_commit_mask, 0b11);
     assert!(!stats.terminal_error);
+
+    let mut private = MetalW8TailMlpHeadV1::from_packed_with_vocab_storage(
+        &packed,
+        TailMlpHeadVocabStorageV1::PrivateUpload,
+    )
+    .unwrap();
+    assert_eq!(
+        private.vocab_storage(),
+        TailMlpHeadVocabStorageV1::PrivateUpload
+    );
+    assert_eq!(private.buffer_ledger().allocated_buffers, 13);
+    assert_eq!(private.buffer_ledger().shared_buffers, 8);
+    assert_eq!(private.buffer_ledger().private_buffers, 5);
+    assert_eq!(
+        private.vocab_storage_receipt(),
+        TailMlpHeadVocabStorageReceiptV1 {
+            storage: TailMlpHeadVocabStorageV1::PrivateUpload,
+            vocab_weights_storage: TailMlpHeadVocabStorageV1::PrivateUpload,
+            vocab_scales_storage: TailMlpHeadVocabStorageV1::PrivateUpload,
+            vocab_weight_bytes: vocab_size * hidden_size,
+            vocab_scale_bytes: vocab_size * (hidden_size / 64) * 4,
+            transient_staging_buffers: 2,
+            transient_staging_bytes: vocab_size * hidden_size + vocab_size * (hidden_size / 64) * 4,
+            init_blit_bytes: vocab_size * hidden_size + vocab_size * (hidden_size / 64) * 4,
+            init_command_buffers: 1,
+            init_blit_encoders: 1,
+            init_copy_commands: 2,
+            init_commits: 1,
+            init_waits: 1,
+        }
+    );
+    let private_actual = private.decode(&input).unwrap();
+    assert_close(
+        private_actual.normalized_hidden,
+        &expected.normalized_hidden,
+        3.0e-3,
+        "private-upload Metal tail normalized hidden",
+    );
+    assert_eq!(
+        private_actual.candidate_token_ids,
+        expected.candidate_token_ids
+    );
+    assert_eq!(private.stats(), stats);
 }
 
 #[cfg(all(target_os = "macos", debug_assertions))]
@@ -567,6 +642,8 @@ fn tail_v1_bridge_shape_and_shader_custody_match_the_public_contract() {
     let bridge = include_str!("../src/metal_w8_tail_mlp_head_v1_bridge.mm");
     for symbol in [
         "apxinf_metal_w8_tail_mlp_head_create_v1(",
+        "apxinf_metal_w8_tail_mlp_head_create_with_vocab_storage_v1(",
+        "apxinf_metal_w8_tail_mlp_head_vocab_storage_receipt_v1(",
         "apxinf_metal_w8_tail_mlp_head_decode_v1(",
         "apxinf_metal_w8_tail_mlp_head_reset_v1(",
         "apxinf_metal_w8_tail_mlp_head_destroy_v1(",
@@ -588,8 +665,44 @@ fn tail_v1_bridge_shape_and_shader_custody_match_the_public_contract() {
         .split("handle->layer_params =")
         .next()
         .unwrap();
-    assert_eq!(allocation.matches("options:shared").count(), 10);
-    assert_eq!(allocation.matches("options:private_storage").count(), 3);
+    assert_eq!(allocation.matches("options:shared").count(), 12);
+    assert_eq!(allocation.matches("options:private_storage").count(), 5);
+    let shared_vocab_branch = allocation
+        .split("if (vocab_storage == 0) {")
+        .nth(1)
+        .unwrap()
+        .split("} else {")
+        .next()
+        .unwrap();
+    assert_eq!(shared_vocab_branch.matches("options:shared").count(), 2);
+    assert_eq!(
+        shared_vocab_branch
+            .matches("options:private_storage")
+            .count(),
+        0
+    );
+    let private_vocab_branch = allocation
+        .split("} else {")
+        .nth(1)
+        .unwrap()
+        .split("handle->hidden_a =")
+        .next()
+        .unwrap();
+    assert_eq!(private_vocab_branch.matches("options:shared").count(), 2);
+    assert_eq!(
+        private_vocab_branch
+            .matches("options:private_storage")
+            .count(),
+        2
+    );
+    assert!(bridge.contains("buffer.storageMode"));
+    assert!(bridge.contains("handle->vocab_weights.length"));
+    assert!(bridge.contains("handle->vocab_scales.length"));
+    assert_eq!(bridge.matches("copyFromBuffer:").count(), 2);
+    assert_eq!(
+        bridge.matches("[init_command blitCommandEncoder]").count(),
+        1
+    );
     let encoder = bridge
         .split("void encode_tail(")
         .nth(1)
@@ -599,8 +712,13 @@ fn tail_v1_bridge_shape_and_shader_custody_match_the_public_contract() {
         .unwrap();
     assert_eq!(encoder.matches("dispatchThread").count(), 8);
     assert_eq!(encoder.matches("buffer_barrier(encoder);").count(), 7);
-    assert_eq!(bridge.matches("[handle->queue commandBuffer]").count(), 1);
+    assert_eq!(bridge.matches("[handle->queue commandBuffer]").count(), 2);
     assert_eq!(bridge.matches("[command computeCommandEncoder]").count(), 1);
+    assert_eq!(bridge.matches("[init_command commit]").count(), 1);
+    assert_eq!(
+        bridge.matches("[init_command waitUntilCompleted]").count(),
+        1
+    );
     assert_eq!(bridge.matches("[command commit]").count(), 1);
     assert_eq!(bridge.matches("[command waitUntilCompleted]").count(), 1);
     assert!(!bridge.contains("kernel void w8_mlp_gate_up("));
