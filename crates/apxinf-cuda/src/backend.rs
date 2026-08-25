@@ -28,6 +28,7 @@ impl Graph for CudaGraph {
 /// extension methods via `CudaBackend` directly.
 pub struct CudaBackend {
     tmrope_positions: Mutex<Option<TmropePositionCache>>,
+    vision_positions: Mutex<Option<TmropePositionCache>>,
     vision_groups: Mutex<Option<VisionGroupCache>>,
     ctx: CudaContext,
 }
@@ -198,6 +199,7 @@ impl CudaBackend {
         );
         Ok(Self {
             tmrope_positions: Mutex::new(None),
+            vision_positions: Mutex::new(None),
             vision_groups: Mutex::new(None),
             ctx,
         })
@@ -218,6 +220,62 @@ impl CudaBackend {
     /// Get the device ID.
     pub fn device_id(&self) -> usize {
         self.ctx.device_id()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn qwen25_omni_vision_qkv_bias_rope(
+        &self,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        query_bias: &Tensor,
+        key_bias: &Tensor,
+        value_bias: &Tensor,
+        theta: f32,
+        positions: &[u32],
+    ) -> Result<(Tensor, Tensor, Tensor)> {
+        let sequence = query.shape().dims().first().copied().unwrap_or(0);
+        if positions.len() != sequence * 2 {
+            return Err(Error::Other(format!(
+                "Qwen2.5-Omni vision position length {} != {sequence} * 2",
+                positions.len()
+            )));
+        }
+        let mut cache = self
+            .vision_positions
+            .lock()
+            .map_err(|_| Error::Other("vision position cache lock poisoned".into()))?;
+        if cache
+            .as_ref()
+            .is_none_or(|cached| cached.values.as_slice() != positions)
+        {
+            let bytes = u32_bytes(positions);
+            let buffer = CudaBuffer::alloc_stream_ordered(
+                bytes.len(),
+                self.ctx.device_id(),
+                self.ctx.stream(),
+            )
+            .map_err(Error::Cuda)?;
+            buffer
+                .copy_from_host_async(&bytes, self.ctx.stream())
+                .map_err(Error::Cuda)?;
+            *cache = Some(TmropePositionCache {
+                values: positions.to_vec(),
+                _source_bytes: bytes,
+                buffer,
+            });
+        }
+        kernels::qwen25_omni_vision::qkv_bias_rope(
+            &self.ctx,
+            query,
+            key,
+            value,
+            query_bias,
+            key_bias,
+            value_bias,
+            theta,
+            &cache.as_ref().expect("vision position cache populated").buffer,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]

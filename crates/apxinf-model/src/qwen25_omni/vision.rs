@@ -6,6 +6,8 @@ use apxinf_core::{Backend, Error, Result, Tensor};
 
 use super::config::Qwen25OmniConfig;
 use super::weights::{flatten_and_transpose, transpose_2d};
+#[cfg(feature = "cuda")]
+use crate::accelerator::cuda::downcast as cuda_backend;
 
 pub struct Qwen25OmniVisionWeights {
     patch_embed: Tensor,
@@ -126,6 +128,7 @@ pub fn forward(
     backend: &dyn Backend,
     pixel_values: &Tensor,
     grid_thw: &[[u32; 3]],
+    use_fused_qkv_bias_rope: bool,
 ) -> Result<Tensor> {
     let vision = &config.vision;
     let raw_tokens = validate_input(config, pixel_values, grid_thw)?;
@@ -140,16 +143,48 @@ pub fn forward(
     let groups = vision_window_groups(config, grid_thw)?;
     for (index, block) in weights.blocks.iter().enumerate() {
         let normalized = backend.rms_norm(&hidden, &block.norm1, 1e-6)?;
-        let q = backend.add_bias(&backend.matmul(&normalized, &block.wq)?, &block.bq)?;
-        let k = backend.add_bias(&backend.matmul(&normalized, &block.wk)?, &block.bk)?;
-        let v = backend.add_bias(&backend.matmul(&normalized, &block.wv)?, &block.bv)?;
-        let q = q.reshape(vec![raw_tokens, vision.n_heads, vision.head_dim])?;
-        let k = k.reshape(vec![raw_tokens, vision.n_heads, vision.head_dim])?;
-        let v = v.reshape(vec![raw_tokens, vision.n_heads, vision.head_dim])?;
-        let q =
-            backend.rope_vision_2d(&q, vision.n_heads, vision.head_dim, 10_000.0, &positions)?;
-        let k =
-            backend.rope_vision_2d(&k, vision.n_heads, vision.head_dim, 10_000.0, &positions)?;
+        let (q, k, v) = if use_fused_qkv_bias_rope {
+            #[cfg(feature = "cuda")]
+            {
+                let query = backend.matmul(&normalized, &block.wq)?;
+                let key = backend.matmul(&normalized, &block.wk)?;
+                let value = backend.matmul(&normalized, &block.wv)?;
+                let cuda = cuda_backend(backend).ok_or_else(|| {
+                    Error::Other("vision QKV bias/RoPE fusion requires CudaBackend".into())
+                })?;
+                cuda.qwen25_omni_vision_qkv_bias_rope(
+                    &query, &key, &value, &block.bq, &block.bk, &block.bv, 10_000.0, &positions,
+                )?
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                return Err(Error::Other(
+                    "vision QKV bias/RoPE fusion requires CUDA".into(),
+                ));
+            }
+        } else {
+            let q = backend.add_bias(&backend.matmul(&normalized, &block.wq)?, &block.bq)?;
+            let k = backend.add_bias(&backend.matmul(&normalized, &block.wk)?, &block.bk)?;
+            let v = backend.add_bias(&backend.matmul(&normalized, &block.wv)?, &block.bv)?;
+            let q = q.reshape(vec![raw_tokens, vision.n_heads, vision.head_dim])?;
+            let k = k.reshape(vec![raw_tokens, vision.n_heads, vision.head_dim])?;
+            let v = v.reshape(vec![raw_tokens, vision.n_heads, vision.head_dim])?;
+            let q = backend.rope_vision_2d(
+                &q,
+                vision.n_heads,
+                vision.head_dim,
+                10_000.0,
+                &positions,
+            )?;
+            let k = backend.rope_vision_2d(
+                &k,
+                vision.n_heads,
+                vision.head_dim,
+                10_000.0,
+                &positions,
+            )?;
+            (q, k, v)
+        };
         let attention = if vision.full_attention_blocks.contains(&index) {
             backend.vision_sdpa(&q, &k, &v, raw_tokens, vision.n_heads, vision.head_dim)?
         } else {

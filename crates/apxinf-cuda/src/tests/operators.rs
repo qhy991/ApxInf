@@ -25,6 +25,7 @@ use crate::kernels::qwen25_omni_attention::{
     short_w32_write, SplitCtaWorkspace,
 };
 use crate::kernels::qwen25_omni_fused::residual_add_rmsnorm_pack8_bf16_into;
+use crate::kernels::qwen25_omni_vision::qkv_bias_rope as qwen25_vision_qkv_bias_rope;
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
 use crate::kernels::selection::argmax_bf16_into;
 use crate::CudaKVCache;
@@ -2213,6 +2214,93 @@ fn qwen25_tmrope_bf16_matches_contiguous_section_reference() {
     )
     .unwrap();
     assert_bf16_close_reduction(&download_bf16_as_fp32(&output).unwrap(), &expected);
+}
+
+#[test]
+fn qwen25_vision_qkv_bias_rope_is_bit_exact() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    if ctx.caps().sm != 89 {
+        return;
+    }
+    let (sequence, heads, head_dim) = (64usize, 16usize, 80usize);
+    let hidden = heads * head_dim;
+    let values = (0..sequence * hidden)
+        .map(|index| ((index as f32 * 0.017) - 3.0).sin())
+        .collect::<Vec<_>>();
+    let bias_values = (0..hidden)
+        .map(|index| ((index as f32 * 0.013) - 1.0).cos() * 0.25)
+        .collect::<Vec<_>>();
+    let query = upload_fp32_as_bf16(&ctx, &values, vec![sequence, hidden]).unwrap();
+    let key = upload_fp32_as_bf16(&ctx, &values, vec![sequence, hidden]).unwrap();
+    let value = upload_fp32_as_bf16(&ctx, &values, vec![sequence, hidden]).unwrap();
+    let query_bias = upload_fp32_as_bf16(&ctx, &bias_values, vec![hidden]).unwrap();
+    let key_bias = upload_fp32_as_bf16(&ctx, &bias_values, vec![hidden]).unwrap();
+    let value_bias = upload_fp32_as_bf16(&ctx, &bias_values, vec![hidden]).unwrap();
+    let positions = (0..sequence)
+        .flat_map(|token| [u32::try_from(token / 8).unwrap(), u32::try_from(token % 8).unwrap()])
+        .collect::<Vec<_>>();
+    let position_bytes = positions
+        .iter()
+        .flat_map(|position| position.to_ne_bytes())
+        .collect::<Vec<_>>();
+    let position_buffer = CudaBuffer::alloc(position_bytes.len(), ctx.device_id()).unwrap();
+    position_buffer.copy_from_host(&position_bytes).unwrap();
+
+    let baseline_query = add_bias(&ctx, &query, &query_bias).unwrap();
+    let baseline_key = add_bias(&ctx, &key, &key_bias).unwrap();
+    let baseline_value = add_bias(&ctx, &value, &value_bias).unwrap();
+    let baseline_query = baseline_query
+        .reshape(vec![sequence, heads, head_dim])
+        .unwrap();
+    let baseline_key = baseline_key
+        .reshape(vec![sequence, heads, head_dim])
+        .unwrap();
+    let baseline_value = baseline_value
+        .reshape(vec![sequence, heads, head_dim])
+        .unwrap();
+    let baseline_query =
+        apply_vision_2d(&ctx, &baseline_query, heads, head_dim, 10_000.0, &position_buffer)
+            .unwrap();
+    let baseline_key =
+        apply_vision_2d(&ctx, &baseline_key, heads, head_dim, 10_000.0, &position_buffer)
+            .unwrap();
+    let (candidate_query, candidate_key, candidate_value) = qwen25_vision_qkv_bias_rope(
+        &ctx,
+        &query,
+        &key,
+        &value,
+        &query_bias,
+        &key_bias,
+        &value_bias,
+        10_000.0,
+        &position_buffer,
+    )
+    .unwrap();
+    ctx.synchronize().unwrap();
+    for (candidate, baseline) in [
+        (&candidate_query, &baseline_query),
+        (&candidate_key, &baseline_key),
+        (&candidate_value, &baseline_value),
+    ] {
+        assert_eq!(
+            download_bf16_as_fp32(candidate).unwrap(),
+            download_bf16_as_fp32(baseline).unwrap()
+        );
+    }
+    assert!(qwen25_vision_qkv_bias_rope(
+        &ctx,
+        &query,
+        &key,
+        &value,
+        &query_bias,
+        &key_bias,
+        &value_bias,
+        1_000_000.0,
+        &position_buffer,
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("vision QKV bias/RoPE contract mismatch"));
 }
 
 // ── Vision SDPA (non-causal full attention) ──────────────────────

@@ -124,7 +124,8 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_QWEN25_M1_GEMV_TACTICS=1`, plus
 `APXINF_QWEN25_SHORT_DECODE_EXACT_RESIDUAL_NORM=1` and
 `APXINF_QWEN25_SHORT_DECODE_W32_ATTENTION=1`, plus
-`APXINF_QWEN25_SHORT_DECODE_FUSED_QKV_PRELUDE=1`. The decode
+`APXINF_QWEN25_SHORT_DECODE_FUSED_QKV_PRELUDE=1`, plus
+`APXINF_QWEN25_VISION_QKV_BIAS_ROPE=1`. The decode
 graph and exact two-stage GPU token selection are deliberately restricted to
 SM89 one-token decode with `start_pos < 3072`; prefill and longer-KV decode
 keep the accepted ordinary path except for the explicit long-decode selector.
@@ -196,7 +197,11 @@ an FA2 build and head dimension at most 96; otherwise it fails closed.
 `APXINF_VISION_FULL_FA2=1` selects the bundled BF16 HeadDim96 FA2 kernel for
 the four full-attention vision blocks at actual head dimension 80. It requires
 an SM80-family `core-fa2` or `full` build and otherwise fails closed; it does
-not alter text attention. The prefill position-cache selector uploads one
+not alter text attention. The vision-QKV selector replaces three BF16 bias
+adds and two 2-D RoPE launches per vision block with one exact fused epilogue.
+It requires the pinned SM89 depth-32, hidden-1,280, 16-head, head-dimension-80
+vision architecture and all three accepted vision selectors; unmatched models
+or selector compositions fail at load. The prefill position-cache selector uploads one
 TMRoPE position array
 per text or multimodal prefill slice instead of once per Q/K layer call. The
 batched-GQA selector additionally packs BF16 prefill query rows by KV head

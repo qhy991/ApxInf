@@ -20,9 +20,9 @@ keeps only the aggregate evidence listed below.
 ## Accepted artifact
 
 - Binary SHA-256:
-  `617ecb8c6b519ef88c2bacba1a08bcaf93dc8ad1960072629ab81dc719ef43fc`
+  `e53fd4cb9a3e3e00e321c1742d81785904ce23c45cf3982a79a383b306569516`
 - Immediate rollback SHA-256:
-  `fdf14934ed564bddf898c694e21d9be5b5e72baa0a9b4b881bdf0e53d7f6a330`
+  `617ecb8c6b519ef88c2bacba1a08bcaf93dc8ad1960072629ab81dc719ef43fc`
 - Service owner: runit plus `agent-gpu-broker`
 - Desired state after validation: stopped
 
@@ -56,7 +56,8 @@ The accepted implementation combines:
 - exact fused score scaling and numerator-cache softmax for short text and
   multimodal prefill;
 - grouped variable-length FA2 for windowed vision attention and FA2 for the
-  four full-attention vision blocks.
+  four full-attention vision blocks;
+- one BF16-exact Q/K/V bias and Q/K 2-D RoPE owner in each vision block.
 
 The latest packed-MLP refinement removes 72 graph nodes per generated token.
 Eager decode and prefill retain their previous projection ownership and GEMM
@@ -104,6 +105,14 @@ slowest pair is `1.0068x`. The frozen 1K text TTFT also wins 5/5 and falls
 reduces GPU busy by 7.38 ms and reduces the complete first-token GPU envelope
 by 5.18 ms. Request-scoped 12K FA2, 32K, and decode trajectories remain exact.
 
+The latest vision-QKV refinement lowers the same real-PNG wall median from
+0.56924 s to 0.56559 s and TTFT from 243.87 ms to 239.05 ms. TTFT wins all five
+alternating pairs and complete wall time wins four of five; paired TTFT speedup
+is at least `1.0193x`. Systems replaces 160 Q/K/V-bias and Q/K-RoPE nodes with
+32 fused nodes, reduces first-token GPU busy by 2.92 ms, and shortens the
+first-token envelope by 5.88 ms. The complete PNG trajectory is exact and the
+text, audio, 12K, 32K, HTTP-error, and malformed-media guards remain unchanged.
+
 ## Accepted measurements
 
 | Workload | ApxInf TTFT | ApxInf TPOT | vLLM-Omni 0.26.0 TPOT | Result |
@@ -121,9 +130,9 @@ For the latest packed-MLP candidate, five fixed-parent AB/BA pairs at
 minimum pair was `1.0172x`. The 12K eager guard was neutral at about `1.001x`.
 All compared text trajectories were exact.
 
-For real PNG 1,760+16, ApxInf wall p50 is 0.573 s versus 0.565 s for
+For real PNG 1,760+16, ApxInf wall p50 is 0.566 s versus 0.565 s for
 vLLM-Omni: near parity, with vLLM retaining lower TTFT and ApxInf retaining
-`2.426x` lower TPOT. For real WAV 52+16, the final acceptance wall is 0.173 s
+`2.444x` lower TPOT. For real WAV 52+16, the final acceptance wall is 0.164 s
 versus vLLM-Omni 0.619 s.
 Both media cases preserve the accepted complete output-token trajectories.
 
@@ -140,6 +149,7 @@ being admitted to OOM.
   the frozen BF16 Omni contract;
 - pack8 residual/RMSNorm CUDA regression: 1 passed;
 - scaled exp-cache CUDA regression: 1 passed;
+- vision QKV bias/RoPE CUDA regression: 1 passed;
 - exact text trajectories: 1K, 128-token decode, 4K, 8K, 12K, and 32K cells;
 - exact media trajectories: real PNG and WAV;
 - typed contract and malformed-media recovery: passed.
@@ -160,6 +170,8 @@ being admitted to OOM.
   residual/RMSNorm I/O promotion, long-path guards, and Systems attribution;
 - `results/promotion-scaled-exp-cache-prefill.json`: current real-image and
   short-text prefill promotion, FA2 precedence gate, and Systems attribution;
+- `results/promotion-vision-qkv-bias-rope.json`: current real-image vision
+  projection-epilogue promotion, strict model gate, and Systems attribution;
 - `results/promotion-grouped-varlen-fa2.json`: current real-image promotion and
   complete multimodal controls;
 - `results/omni-packed-mlp-acceptance-summary.json`: final endpoint acceptance
