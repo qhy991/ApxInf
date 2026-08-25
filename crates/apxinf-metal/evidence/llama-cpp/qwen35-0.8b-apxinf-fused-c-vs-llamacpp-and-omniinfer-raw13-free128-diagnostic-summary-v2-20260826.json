@@ -1,0 +1,202 @@
+{
+  "format": "apxinf-qwen35-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-diagnostic-summary-v2",
+  "schema_version": 2,
+  "campaign_id": "qwen35-0.8b-raw13-free128-omniinfer-diagnostic-v2-20260826",
+  "created_at_utc": "2026-08-25T18:28:21Z",
+  "created_at_local": "2026-08-26T02:28:21+0800",
+  "status": "COMPLETED_DIAGNOSTIC_EVIDENCE_NO_SAME_WORKLOAD_COMPARATIVE_WINNER",
+  "decision": {
+    "publish_independently_labeled_side_by_side_observations": true,
+    "same_workload_performance_comparison_allowed": false,
+    "speed_ratio_delta_winner_or_ranking_allowed": false,
+    "formal_result": false,
+    "promotion_or_default_activation_allowed": false
+  },
+  "evidence_chain": {
+    "driver": {
+      "path": "benchmarks/cross_runtime/fixed_raw13_free128_driver.py",
+      "commit": "a3f06958b4e4e14aa9f74f2cafa63e05d8c0dae6",
+      "size_bytes": 37687,
+      "sha256": "30597a003a4de62b7b227b1a6249504fe3f5cbe79bf726e2dbd902c6a724d99a"
+    },
+    "predeclaration": {
+      "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-predeclared-diagnostic-v2-20260826.json",
+      "commit": "14287eb00631824cb57c6a0e7ce3348b1e9446f4",
+      "size_bytes": 22721,
+      "sha256": "a38d2f62de8f7cac13bff57baf77c2f64c9a845572d7c2fb3430140615c20a27"
+    },
+    "campaign_start": {
+      "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-campaign-start-diagnostic-v2-20260826.json",
+      "commit": "cc39d5c16ce5899cc699bfe1288982efaa0e63d8",
+      "size_bytes": 17901,
+      "sha256": "c4b0f80284f5fa9174df7d053b2f547c3b0420396e7d6ea38fdfbddfbfbcd2ca"
+    },
+    "raw_campaign": {
+      "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-raw-campaign-diagnostic-v2-20260826.json",
+      "commit": "7770c844dc754fec9bb5c94985ee01e65c2718cf",
+      "size_bytes": 143043,
+      "sha256": "ed922fa770f387c5bfa3811617e1d1e4f60135ef7d86a9957096ac9754f91772"
+    },
+    "v1_failure_preserved": {
+      "summary_commit": "73e1d9e06807d168b22bd04f0f36bf5b25272b01",
+      "v1_consumed": true,
+      "v1_generation_requests": 0,
+      "v1_performance_samples": 0,
+      "v2_is_not_a_v1_retry_resume_replacement_or_supersession": true
+    }
+  },
+  "fixed_workload": {
+    "model_revision": "Qwen/Qwen3.5-0.8B@2fc06364715b967f1860aea9cf38778875588b17",
+    "semantic_prompt": "Hello",
+    "prompt_token_count": 13,
+    "prompt_token_ids_sha256": "4b890fa15ee3d7db4e9dd18bd79c6362d40e9e016ae4f9f74cb7fc420ef3b6d3",
+    "returned_token_count": 128,
+    "concurrency": 1,
+    "schedule": ["D_warmup", "D1", "D2", "D3", "N_warmup", "N1", "N2", "N3"],
+    "measured_samples_per_fresh_runtime": 3,
+    "warmups_per_fresh_runtime": 1,
+    "retry_resample_replacement_or_outlier_removal": false
+  },
+  "artifact_and_sampling_boundaries": {
+    "D_and_N_exact_same_serialized_GGUF": true,
+    "external_GGUF": {
+      "path": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+      "size_bytes": 811843072,
+      "sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c",
+      "quantization": "Q8_0"
+    },
+    "ApxInf_sidecar_same_serialized_artifact": false,
+    "ApxInf_sidecar_weight_regime": "custom G32/G64 W8 hybrid with CPU F32 remainder",
+    "D_and_N_same_llama_cpp_commit": false,
+    "D_and_N_same_generated_trajectory_or_sampling_semantics": false,
+    "sampling_difference": {
+      "D": "unbiased greedy argmax selects EOG tokens and continues feeding them back because termination is disabled",
+      "N": "temperature zero with ignore_eos true suppresses EOG logits to force 128 returned tokens",
+      "effect": "token trajectories and downstream compute paths differ, so D/N is not a same-workload speed comparison"
+    },
+    "D_and_N_same_timing_boundary": false,
+    "N_raw_output_token_ids_available": false
+  },
+  "results": {
+    "ApxInf_sidecar": {
+      "fresh_v2_sample": false,
+      "source_campaign_arm": "C_gdn_core_fused_v1",
+      "same_HF_revision": true,
+      "same_serialized_artifact_as_D_or_N": false,
+      "tpot_samples_ms": [14.244145669291338, 14.215104984251967, 14.628695866141731, 14.381256228346457],
+      "pooled_even_median_tpot_ms": 14.312700948818897,
+      "derived_generation_tps": 69.86801467982333,
+      "timing_boundary": "127 token-ready intervals from first to 128th generated token"
+    },
+    "D_direct_llama_cpp": {
+      "fresh_v2_sample": true,
+      "runtime": "repository-specific raw-token runner on llama.cpp f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+      "execution_model": "fresh process/model/context/KV per slot",
+      "generation_tps": {
+        "samples": [88.09075428575393, 88.0968674363962, 87.87132151906276],
+        "median": 88.09075428575393,
+        "mean": 88.01964774707096,
+        "population_cv": 0.0011919176295664866,
+        "min": 87.87132151906276,
+        "max": 88.0968674363962
+      },
+      "tpot_ms": {
+        "samples": [11.351929133858267, 11.351141409448818, 11.380277236220472],
+        "median": 11.351929133858267,
+        "mean": 11.361115926509186,
+        "population_cv": 0.0011929204853132573
+      },
+      "ttft_ms_median": 29.245041,
+      "total_latency_ms_median": 1474.391209,
+      "process_wall_ms_median": 1906.215292,
+      "timing_boundary": "127 token-ready intervals from first to 128th generated token; model load excluded",
+      "all_four_slots_exact_canonical_trajectory": true,
+      "canonical_trajectory_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"
+    },
+    "N_omniinfer": {
+      "fresh_v2_sample": true,
+      "runtime": "OmniInfer v0.3.26 with llama.cpp-mac b10280/61881b1f7",
+      "execution_model": "resident model, one slot, acknowledged exact all-slot KV clear before each request",
+      "native_predicted_tps": {
+        "samples": [88.72942239918812, 88.50762998002355, 88.24263415293275],
+        "median": 88.50762998002355,
+        "mean": 88.49322884404813,
+        "population_cv": 0.002248660128018782,
+        "min": 88.24263415293275,
+        "max": 88.72942239918812
+      },
+      "native_predicted_ms": {
+        "samples": [1442.588, 1446.203, 1450.546],
+        "median": 1446.203,
+        "mean": 1446.4456666666667,
+        "population_cv": 0.0022492155841271106
+      },
+      "native_prompt_ms": {
+        "samples": [42.955, 50.634, 41.279],
+        "median": 42.955,
+        "mean": 44.955999999999996,
+        "population_cv": 0.09059608110322291
+      },
+      "client_gateway_wall_ms": {
+        "samples": [1490.905542, 1502.482958, 1497.152666],
+        "median": 1497.152666,
+        "mean": 1496.8470553333334,
+        "population_cv": 0.003160909362134714,
+        "min": 1490.905542,
+        "max": 1502.482958
+      },
+      "native_timing_boundary": "llama-server timings.predicted_per_second checked as 128000 / predicted_ms",
+      "client_wall_boundary": "full non-stream HTTP helper call including serialization, connection, gateway/backend, response transfer, and JSON decode",
+      "all_four_slots_usage_prompt_completion_total": [13, 128, 141],
+      "all_four_slots_native_prompt_predicted_cache_counts": [13, 128, 0],
+      "all_four_slots_cache_clear_exact": [0],
+      "all_four_slots_finish_reason": "length",
+      "all_four_response_content_sha256": "c65d3fd8040fc05441d86adf0965a9f3c12bd801e965fae9cd2aa87d444df7ad"
+    },
+    "O_ollama": {
+      "status": "EXCLUDED_BEFORE_SAMPLING",
+      "performance_requests": 0,
+      "reason": "local 0.4.1 service/build cannot satisfy raw token ID, ignore-EOS, generated-token-ID, and demonstrated qwen3_5 admission requirements"
+    }
+  },
+  "stability_gate": {
+    "threshold_population_cv": 0.05,
+    "D_generation_tps_cv": 0.0011919176295664866,
+    "N_native_predicted_tps_cv": 0.002248660128018782,
+    "N_client_gateway_wall_ms_cv": 0.003160909362134714,
+    "passed": true,
+    "note": "D TTFT and N prompt timing were reported but were not predeclared stability-gate metrics"
+  },
+  "custody_and_environment": {
+    "all_bound_immutable_artifacts_equal_start": true,
+    "runtime_closure": "44 regular files plus 18 symbolic links, 62 entries, canonical SHA256 fa89c0d9f35ec2fb69694a027cb8457be976f480b3c20a60d54b1d2e2187c853",
+    "runtime_log_mutation_expected_and_separately_recorded": true,
+    "gateway_and_llama_server_stopped_after_campaign": true,
+    "power_source_start_and_end": "AC Power",
+    "thermal_or_performance_warning_start_or_end": false,
+    "quiet_host_attested": false,
+    "quiet_host_reason": "WebKit GPU and other non-runtime processes had material CPU load; values remain diagnostic",
+    "user_or_system_processes_terminated": false
+  },
+  "audit": {
+    "raw_statistics_independently_recomputed": true,
+    "raw_schedule_flags_counts_and_warmup_exclusion_independently_verified": true,
+    "OmniInfer_preflight_receipts_state_cache_usage_timing_and_shutdown_independently_verified": true,
+    "runtime_regular_files_and_symbolic_links_closure_independently_recomputed": true,
+    "blockers_remaining": 0
+  },
+  "interpretation": {
+    "what_is_supported": "On this noisy Apple M4 host, under the fixed artifact/prompt/count setup and each runtime's separately labeled timing boundary, the recorded D and N observations are stable enough to publish diagnostically.",
+    "what_is_not_supported": "No D-versus-N or ApxInf-versus-external speed ratio, delta, winner, ranking, formal significance, quality parity, production superiority, or default-activation decision is supported.",
+    "strict_apples_to_apples_follow_up": "For an engine/gateway overhead comparison, use the same b10280 backend, the same EOG policy, identical generated token trajectory, and paired direct-backend versus OmniInfer gateway requests; for ApxInf parity, first provide an equivalent serialized weight artifact or explicitly matched quantization semantics."
+  },
+  "official_sources": {
+    "OmniInfer_repository_at_release_commit": "https://github.com/omnimind-ai/OmniInfer/tree/79af77228f329a79ac665014089e23983e69e79f",
+    "OmniInfer_release": "https://github.com/omnimind-ai/OmniInfer/releases/tag/v0.3.26",
+    "OmniInfer_benchmark_documentation_at_release_commit": "https://github.com/omnimind-ai/OmniInfer/blob/79af77228f329a79ac665014089e23983e69e79f/docs/benchmark.md",
+    "OmniInfer_CLI_documentation_at_release_commit": "https://github.com/omnimind-ai/OmniInfer/blob/79af77228f329a79ac665014089e23983e69e79f/docs/CLI.md",
+    "OmniInfer_build_documentation_at_release_commit": "https://github.com/omnimind-ai/OmniInfer/blob/79af77228f329a79ac665014089e23983e69e79f/docs/build.md",
+    "llama_cpp_backend_release": "https://github.com/ggml-org/llama.cpp/releases/tag/b10280",
+    "llama_cpp_backend_source_commit": "https://github.com/ggml-org/llama.cpp/commit/61881b1f7f0b13d9e46d561fc25afcd6bbaec479"
+  }
+}
