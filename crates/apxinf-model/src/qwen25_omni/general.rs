@@ -973,7 +973,7 @@ impl GeneralQwen25Omni {
                     "Qwen2.5-Omni GPU last-row path requires CUDA".into(),
                 ));
             }
-            return self.logits_last_row_cuda(hidden);
+            return self.logits_last_row_cuda_device(hidden);
         }
         let hidden = self.backend.rms_norm(
             hidden,
@@ -1006,14 +1006,6 @@ impl GeneralQwen25Omni {
         };
         let row = self.backend.to_device(&row)?;
         let logits = self.backend.matmul(&row, &self.text.lm_head)?;
-        self.backend.synchronize()?;
-        let logits = self.backend.to_cpu(&logits)?;
-        Tensor::from_f32(vec![1, self.config.text.vocab_size], &logits.to_f32_vec()?)
-    }
-
-    #[cfg(feature = "cuda")]
-    fn logits_last_row_cuda(&self, hidden: &Tensor) -> Result<Tensor> {
-        let logits = self.logits_last_row_cuda_device(hidden)?;
         self.backend.synchronize()?;
         let logits = self.backend.to_cpu(&logits)?;
         Tensor::from_f32(vec![1, self.config.text.vocab_size], &logits.to_f32_vec()?)
