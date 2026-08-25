@@ -1,0 +1,170 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "candidate": "vision_fused_silu_mul",
+  "completed_on": "2026-08-26",
+  "contract": {
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "hardware": "NVIDIA GeForce RTX 4090",
+    "sm": 89,
+    "cuda": "12.3",
+    "precision": "bf16",
+    "concurrency": 1,
+    "sampling": "greedy",
+    "primary_request": "real PNG 1760+16 with 6912 vision tokens",
+    "guard_requests": ["1024+32", "12288+8", "32760+8", "real WAV 52+16"],
+    "timing_authority": "no-profiler service wall time and service-emitted TTFT/TPOT"
+  },
+  "implementation": {
+    "base_commit": "fedde4dea4045e8fca18e50f501b029c084504b4",
+    "selector": "APXINF_QWEN25_VISION_FUSED_SILU_MUL=1",
+    "default_enabled_in_runtime": false,
+    "deployment_enabled": true,
+    "classification": "source/runtime graph single-consumer activation fusion",
+    "eligible_path": "pinned SM89 Qwen2.5-Omni vision stack admitted by the accepted vision QKV bias/RoPE selector",
+    "baseline_nodes_per_block": ["BF16 SiLU", "BF16 multiply"],
+    "candidate_node": "BF16-exact SiLU and multiply",
+    "numerical_order": "The fused primitive rounds SiLU(gate) to BF16 before multiplying by the BF16 up projection and rounds the product to BF16, matching the two-node baseline.",
+    "required_selector": "APXINF_QWEN25_VISION_QKV_BIAS_ROPE=1",
+    "excluded_paths": [
+      "text-only prefill and decode",
+      "audio encoder",
+      "non-SM89 hardware",
+      "unmatched vision architecture",
+      "video input and speech output"
+    ],
+    "candidate_binary_sha256": "31727ac7a33b70290cb5065ea78d90eca249ad8245d2aabd0cd5c847aa69d268",
+    "rollback_binary_sha256": "e53fd4cb9a3e3e00e321c1742d81785904ce23c45cf3982a79a383b306569516"
+  },
+  "operator_gate": {
+    "existing_primitive": "silu_mul_separate_bf16",
+    "correctness_shape": [4, 257],
+    "bit_exact_against_separate_silu_then_mul": true,
+    "focused_cuda_test": "1 passed",
+    "production_shape_covered_by_complete_model_trajectory": true
+  },
+  "no_profiler": {
+    "binary_control": "one immutable SM89 binary with only the vision fused SiLU/multiply selector changed from 0 to 1",
+    "order": ["A", "B", "B", "A", "A", "B", "B", "A", "A", "B"],
+    "pairs": 5,
+    "real_png_1760_16": {
+      "baseline_wall_seconds": [
+        0.5654257908463478,
+        0.5651241913437843,
+        0.5661071166396141,
+        0.5640199035406113,
+        0.5706601217389107
+      ],
+      "candidate_wall_seconds": [
+        0.5626871734857559,
+        0.5650614202022552,
+        0.5591160729527473,
+        0.5664381831884384,
+        0.5608191713690758
+      ],
+      "paired_wall_wins": 4,
+      "baseline_wall_median_seconds": 0.5654257908463478,
+      "candidate_wall_median_seconds": 0.5626871734857559,
+      "wall_reduction_pct": 0.4843460282369927,
+      "paired_wall_speedup_median": 1.0048670335661405,
+      "paired_wall_speedup_min": 0.9957307262829374,
+      "baseline_ttft_seconds": [
+        0.239150943,
+        0.23943447699999998,
+        0.239238851,
+        0.239024915,
+        0.23926213999999998
+      ],
+      "candidate_ttft_seconds": [
+        0.234844087,
+        0.235920035,
+        0.235356037,
+        0.236545608,
+        0.235276549
+      ],
+      "paired_ttft_wins": 5,
+      "baseline_ttft_median_seconds": 0.239238851,
+      "candidate_ttft_median_seconds": 0.235356037,
+      "ttft_reduction_pct": 1.6229863936271793,
+      "paired_ttft_speedup_median": 1.0164976180322072,
+      "paired_ttft_speedup_min": 1.0104813064210434,
+      "baseline_tpot_median_seconds": 0.009023105666666668,
+      "candidate_tpot_median_seconds": 0.008966621933333332,
+      "candidate_tpot_change_pct": -0.625989935394411,
+      "paired_tpot_wins": 5,
+      "complete_output_tokens_exact": true
+    }
+  },
+  "systems_profile": {
+    "workload": "real PNG 1760+16 after one unprofiled image warmup",
+    "capture": "one measured request with CUDA graph node tracing",
+    "baseline": {
+      "first_token_envelope_ms": 239.234654,
+      "first_token_gpu_busy_ms": 223.190674,
+      "vision_silu_plus_mul_ms": 8.29449,
+      "kernels_to_first_token": 1397,
+      "raw_sha256": "45a326a6cc81bfbdd925b6a59afeec0d8b08fce0163ce851dcd409c1a8d92ed0"
+    },
+    "candidate": {
+      "first_token_envelope_ms": 231.928575,
+      "first_token_gpu_busy_ms": 219.403139,
+      "vision_fused_silu_mul_ms": 4.883603,
+      "kernels_to_first_token": 1365,
+      "raw_sha256": "42eacd46625b904bbde808417320c913cb179572b09ced2f3b81d61e646ed816"
+    },
+    "fused_boundary_speedup": 1.6984365846281935,
+    "fused_boundary_saved_ms": 3.410887,
+    "first_token_gpu_busy_saved_ms": 3.787535,
+    "first_token_envelope_saved_ms": 7.306079,
+    "kernel_instances_removed": 32,
+    "node_accounting": "Across 32 vision blocks, one SiLU node and one multiply node become one exact fused node.",
+    "attribution": "The intended vision MLP boundary shrinks, the first-token critical path shortens, and no unrelated model path is selected.",
+    "raw_trace_deleted_after_derivation": true
+  },
+  "correctness": {
+    "strict_selector_negative": true,
+    "all_screen_trajectories_exact": true,
+    "screen_cases": 10,
+    "path_markers": {
+      "baseline_installs": 0,
+      "candidate_installs": 5
+    },
+    "acceptance": {
+      "quick_three_of_three": true,
+      "quick_trajectory_sha256": "bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea",
+      "context_12288_trajectory_sha256": "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832",
+      "context_32760_trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9",
+      "http_contract": true,
+      "real_png": true,
+      "real_wav": true,
+      "malformed_media_recovery": true
+    },
+    "tests": {
+      "model_cpu": "68 passed",
+      "benchmark_scripts": "15 passed",
+      "focused_cuda": "1 passed"
+    }
+  },
+  "external_comparison": {
+    "vllm_omni_version": "0.26.0",
+    "vllm_real_png_wall_seconds": 0.5647583678364754,
+    "apxinf_candidate_real_png_wall_seconds": 0.5626871734857559,
+    "vllm_real_png_ttft_seconds": 0.2319645881652832,
+    "apxinf_candidate_real_png_ttft_seconds": 0.235356037,
+    "vllm_real_png_tpot_seconds": 0.021917180716991425,
+    "apxinf_candidate_real_png_tpot_seconds": 0.008966621933333332,
+    "apxinf_tpot_speedup": 2.444307441525388
+  },
+  "decision": {
+    "status": "promote",
+    "scope": "single-request BF16 Qwen2.5-Omni real-image prefill on one RTX 4090",
+    "reason": "The existing fused primitive is bit-exact, all five PNG TTFT pairs and four of five complete-wall pairs win with lower medians, Systems attributes 32 removed nodes and a 7.31 ms first-token envelope reduction to the intended boundary, and complete text, image, audio, context and recovery acceptance passes.",
+    "non_claims": [
+      "multi-request throughput",
+      "continuous batching",
+      "non-SM89 hardware",
+      "video input",
+      "speech generation"
+    ]
+  }
+}

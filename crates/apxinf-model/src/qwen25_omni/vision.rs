@@ -129,6 +129,7 @@ pub fn forward(
     pixel_values: &Tensor,
     grid_thw: &[[u32; 3]],
     use_fused_qkv_bias_rope: bool,
+    use_fused_silu_mul: bool,
 ) -> Result<Tensor> {
     let vision = &config.vision;
     let raw_tokens = validate_input(config, pixel_values, grid_thw)?;
@@ -202,9 +203,12 @@ pub fn forward(
         hidden = backend.add(&hidden, &attention)?;
         let normalized = backend.rms_norm(&hidden, &block.norm2, 1e-6)?;
         let gate = backend.add_bias(&backend.matmul(&normalized, &block.w_gate)?, &block.b_gate)?;
-        let gate = backend.silu(&gate)?;
         let up = backend.add_bias(&backend.matmul(&normalized, &block.w_up)?, &block.b_up)?;
-        let mlp = backend.mul(&gate, &up)?;
+        let mlp = if use_fused_silu_mul {
+            backend.silu_mul(&gate, &up)?
+        } else {
+            backend.mul(&backend.silu(&gate)?, &up)?
+        };
         let mlp = backend.add_bias(&backend.matmul(&mlp, &block.w_down)?, &block.b_down)?;
         hidden = backend.add(&hidden, &mlp)?;
     }
