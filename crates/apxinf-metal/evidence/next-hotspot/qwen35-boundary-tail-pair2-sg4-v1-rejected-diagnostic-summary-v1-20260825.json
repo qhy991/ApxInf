@@ -1,0 +1,284 @@
+{
+  "format": "apxinf-qwen35-boundary-tail-pair2-sg4-rejected-diagnostic-summary-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "STOP_REVERTED",
+  "classification": {
+    "formal_performance_result": false,
+    "promotion_evidence": false,
+    "use": "diagnostic hypothesis rejection only",
+    "limitations": [
+      "only one legacy/candidate teacher pair and three fixed-order A-then-B free-run pairs were collected",
+      "the fixed A-then-B order was not counterbalanced and the baseline TPS drifted downward across pairs",
+      "the host was not quiet and had active swap plus background activity",
+      "the formal six-block ABBA/BAAB and twelve-samples-per-version contract was not run"
+    ]
+  },
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "prompt": "Hello",
+    "prompt_tokens": 13,
+    "output_tokens": 128,
+    "decode_path": "ApxInf Metal W8 boundary-tail-v1",
+    "quantization": "ApxInf native W8 group-64 with native-F32 top-4 rerank",
+    "target": "Apple M4 Metal"
+  },
+  "hypothesis": {
+    "id": "boundary-tail-head-pair2-sg4-v1",
+    "legacy_kernel": "w8_rows_topk4",
+    "candidate_kernel": "w8_rows_topk4_pair2_sg4",
+    "change": "process two consecutive vocabulary rows per SIMDgroup and use four SIMDgroups per threadgroup, preserving eight rows per threadgroup while reducing the dispatch width from 256 to 128 threads",
+    "expected_mechanism": "reuse each hidden float4 load for two rows and reduce inactive scheduling overhead in the first-stage top-4 row kernel",
+    "predeclared_keep_threshold": {
+      "logic": "AND",
+      "tail_median_improvement_percent_at_least": 10.0,
+      "end_to_end_improvement_percent_at_least": 2.0,
+      "teacher_and_free_exactness_required": true
+    },
+    "llama_cpp_equivalence_claimed": false,
+    "llama_cpp_note": "llama.cpp's NR0=2 and NSG=4 arrangement has four SIMDgroups cooperate on two rows; this candidate assigns two independent rows to each SIMDgroup and is not the same execution layout"
+  },
+  "build": {
+    "baseline_parent_commit": "3fde933ca78d1537bca9757f0363c13cb12f22f3",
+    "candidate_source_commit": "4e22799f55c147947ee9b51efbb5a57fa836e6c0",
+    "candidate_source_disposition": "preserved as an explicitly diagnostic commit and removed from the final runtime tree by a later revert commit",
+    "binary": {
+      "path_at_measurement": "/Users/haiyan-mini/Agent4Kernel/ApxInf/target/pair2-sg4-v1/release/examples/qwen35_metal_w8_boundary_tail_head_v1_gate",
+      "sha256": "59f0554f49a678d73f5ad1e0cc6b1cfc6d33f8d7732cce78627a1ccf62589933",
+      "size_bytes": 9576824,
+      "profile": "release",
+      "features": [
+        "accelerate",
+        "metal-w8"
+      ]
+    },
+    "build_command": "cargo build --release -p apxinf-model --features accelerate,metal-w8 --example qwen35_metal_w8_boundary_tail_head_v1_gate --target-dir target/pair2-sg4-v1",
+    "toolchain": "stable-aarch64-apple-darwin from /Users/haiyan-mini/Agent4Kernel/.apxinf-toolchains"
+  },
+  "execution_shapes": {
+    "legacy": {
+      "kernel": "w8_rows_topk4",
+      "rows_per_threadgroup": 8,
+      "rows_per_simdgroup": 1,
+      "simdgroups_per_threadgroup": 8,
+      "threads_per_threadgroup": 256,
+      "cooperative_across_simdgroups": false
+    },
+    "candidate": {
+      "kernel": "w8_rows_topk4_pair2_sg4",
+      "rows_per_threadgroup": 8,
+      "rows_per_simdgroup": 2,
+      "simdgroups_per_threadgroup": 4,
+      "threads_per_threadgroup": 128,
+      "cooperative_across_simdgroups": false
+    },
+    "unchanged_per_decode": {
+      "tail_kernel_dispatches": 8,
+      "tail_compute_encoders": 1,
+      "tail_command_buffers": 1,
+      "tail_commits": 1,
+      "tail_waits": 1,
+      "tail_partial_topk_bytes": 993280
+    }
+  },
+  "quality_gate": {
+    "legacy_teacher_128_passed": true,
+    "candidate_teacher_128_passed": true,
+    "teacher_top4_mismatch_count": 0,
+    "legacy_and_candidate_top4_compact_json_sha256": "ab6049a5fe86456d31d8c08d27c219b5bf7f07aace90261a51900d33a5dceb85",
+    "cpu_free_128_passed": true,
+    "all_six_interleaved_free_receipts_passed": true,
+    "all_six_interleaved_free_mismatch_counts": 0,
+    "canonical_free128_token_ids_compact_json_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"
+  },
+  "teacher_tail_diagnostic": {
+    "samples_per_variant": 128,
+    "median_definition": "arithmetic mean of the two central sorted values for an even sample count",
+    "legacy": {
+      "tail_transaction_total_ms": 439.794082,
+      "tail_transaction_median_ns": 3367500
+    },
+    "candidate": {
+      "tail_transaction_total_ms": 443.994294,
+      "tail_transaction_median_ns": 3400021
+    },
+    "candidate_total_time_improvement_percent": -0.9550405910191446,
+    "candidate_ratio_of_medians_improvement_percent": -0.9657312546399406,
+    "median_paired_token_improvement_percent": -1.3363745424918672,
+    "candidate_faster_token_count": 42,
+    "candidate_equal_token_count": 0,
+    "candidate_slower_token_count": 86,
+    "tail_keep_threshold_passed": false
+  },
+  "paired_free_diagnostic": {
+    "order": [
+      "A1",
+      "B1",
+      "A2",
+      "B2",
+      "A3",
+      "B3"
+    ],
+    "A": "legacy w8_rows_topk4",
+    "B": "candidate w8_rows_topk4_pair2_sg4",
+    "pairs": [
+      {
+        "pair": 1,
+        "baseline": {
+          "tps": 65.9702748185241,
+          "tpot_ms": 15.158342188976377,
+          "ttft_ms": 125.269625,
+          "generation_total_latency_ms": 2050.379083
+        },
+        "candidate": {
+          "tps": 66.1326527167619,
+          "tpot_ms": 15.121123362204726,
+          "ttft_ms": 148.722375,
+          "generation_total_latency_ms": 2069.105042
+        },
+        "candidate_tps_improvement_percent": 0.24613797454151598,
+        "candidate_tpot_improvement_percent": 0.24553362305488816,
+        "candidate_total_latency_improvement_percent": -0.9132925299160561
+      },
+      {
+        "pair": 2,
+        "baseline": {
+          "tps": 64.5936047050942,
+          "tpot_ms": 15.481408795275591,
+          "ttft_ms": 127.172916,
+          "generation_total_latency_ms": 2093.311833
+        },
+        "candidate": {
+          "tps": 66.08071199625734,
+          "tpot_ms": 15.133008858267717,
+          "ttft_ms": 173.04875,
+          "generation_total_latency_ms": 2094.940875
+        },
+        "candidate_tps_improvement_percent": 2.3022515896931495,
+        "candidate_tpot_improvement_percent": 2.2504407810366365,
+        "candidate_total_latency_improvement_percent": -0.07782127699841708
+      },
+      {
+        "pair": 3,
+        "baseline": {
+          "tps": 63.22604156191224,
+          "tpot_ms": 15.816267716535432,
+          "ttft_ms": 133.8725,
+          "generation_total_latency_ms": 2142.5385
+        },
+        "candidate": {
+          "tps": 64.96675441441423,
+          "tpot_ms": 15.392488188976378,
+          "ttft_ms": 173.98725,
+          "generation_total_latency_ms": 2128.83325
+        },
+        "candidate_tps_improvement_percent": 2.753158049278537,
+        "candidate_tpot_improvement_percent": 2.679390202253628,
+        "candidate_total_latency_improvement_percent": 0.63967345277576
+      }
+    ],
+    "reduction": {
+      "legacy_mean_tps": 64.59664036184351,
+      "candidate_mean_tps": 65.72670637581116,
+      "ratio_of_mean_tps_improvement_percent": 1.7494191766591616,
+      "mean_paired_tps_improvement_percent": 1.7671825378377406,
+      "legacy_median_tps": 64.5936047050942,
+      "candidate_median_tps": 66.08071199625734,
+      "pooled_median_tps_improvement_percent": 2.3022515896931495,
+      "median_paired_tps_improvement_percent": 2.3022515896931495,
+      "median_paired_tpot_improvement_percent": 2.2504407810366365,
+      "median_paired_total_latency_improvement_percent": -0.07782127699841708,
+      "median_paired_ttft_improvement_percent": -29.96489196810397
+    },
+    "interpretation": "TPS and TPOT paired medians barely cross the ambiguous two-percent wording, while ratio-of-means TPS and total-latency medians do not. Fixed ordering and downward drift prevent promotion. The independent tail threshold fails decisively, so the predeclared AND gate rejects the candidate under every end-to-end interpretation."
+  },
+  "validation": {
+    "commands": [
+      "cargo test -p apxinf-metal --test tail_mlp_head_v1",
+      "cargo test -p apxinf-model --features accelerate,metal-w8 --example qwen35_metal_w8_boundary_tail_head_v1_gate",
+      "cargo fmt --all -- --check",
+      "git diff --check"
+    ],
+    "results": [
+      "apxinf-metal tail_mlp_head_v1: 13 passed",
+      "boundary-tail gate example: 23 passed, 1 ignored",
+      "release build completed",
+      "format and whitespace checks passed"
+    ],
+    "independent_review": "clean for correctness, ABI compatibility, selector wiring, receipt binding, and target Apple M4 execution semantics"
+  },
+  "receipt_integrity": [
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-sg4-v1-cpu-teacher-v1-20260825.json",
+      "sha256": "021ade9ddd54cf60385c04022353b4ba37008b133376ed4d82d4eb9dce2c0640",
+      "size_bytes": 44616
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-sg4-v1-legacy-teacher-v1-20260825.json",
+      "sha256": "0065234a682400f17646e680a3153987936622371786d35b196cc1ade4c5cfa8",
+      "size_bytes": 68294
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-sg4-v1-candidate-teacher-v1-20260825.json",
+      "sha256": "ca5a993de1655fd1ea6db7ad97b315eeadd64a730c30a6a1c189abe55118fd3c",
+      "size_bytes": 68315
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-sg4-v1-cpu-free-v1-20260825.json",
+      "sha256": "98d7811b485201b4330a9ca88a826acbd85ff9da60850d56efda94bbc7000da7",
+      "size_bytes": 44057
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-sg4-v1-legacy-free-a1-v1-20260825.json",
+      "sha256": "e2fb7019b6565656f7b873663f9aaf59a8312ae535315a4252f0de9dac96665e",
+      "size_bytes": 57504
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-sg4-v1-candidate-free-b1-v1-20260825.json",
+      "sha256": "f84b9d5141375e3a55afbccef1aec114f8daaa5848db1ccc897344ef8a892211",
+      "size_bytes": 57536
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-sg4-v1-legacy-free-a2-v1-20260825.json",
+      "sha256": "b6fbe89ccb2c2342b30e7d3e9c927877c7489d92cb71b2ac310eb8bef7ba696c",
+      "size_bytes": 57520
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-sg4-v1-candidate-free-b2-v1-20260825.json",
+      "sha256": "91daabeaabf5a2ee2de43502482a4786784b7f7af8dd710f52132f2e498e08cb",
+      "size_bytes": 57550
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-sg4-v1-legacy-free-a3-v1-20260825.json",
+      "sha256": "e76ff2279dbff5a11c1a604a5a77edec22f34ef7f195a38bb39ccf85fd53d59e",
+      "size_bytes": 57504
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-pair2-sg4-v1-candidate-free-b3-v1-20260825.json",
+      "sha256": "c8c4449ad21558082f7644bcb1522e304b75e1e73b3c216bbf30319e756a272a",
+      "size_bytes": 57536
+    }
+  ],
+  "host_observation": {
+    "quiet_gate_passed": false,
+    "swap_used_mb_observed_after_screen": 2822.12,
+    "fixed_order_drift": "legacy TPS declined 65.970275 -> 64.593605 -> 63.226042 while every candidate sample followed its baseline",
+    "background_activity": [
+      "Codex orchestration activity was present",
+      "other desktop background processes were not quiesced"
+    ]
+  },
+  "decision": {
+    "accepted": false,
+    "action": "preserve the exact candidate source commit and all raw receipts, then revert the candidate runtime/source changes",
+    "reason": "tail ratio-of-medians improvement was -0.966 percent and 86 of 128 paired tail samples were slower, far below the required positive 10 percent tail improvement; noisy fixed-order end-to-end results were internally mixed",
+    "next_hypothesis": "profile and screen a distinct tail bottleneck without treating this pair2 layout as llama.cpp-equivalent"
+  },
+  "llama_cpp_comparison_policy": {
+    "updates_published_comparison": false,
+    "reason": "a rejected, uncontrolled intra-ApxInf screen is not a replacement llama.cpp benchmark",
+    "published_apxinf_metal_w8_tps_remains": 66.336728,
+    "published_llama_cpp_metal_q8_0_tps_remains": 70.663943
+  }
+}
+
