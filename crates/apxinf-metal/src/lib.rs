@@ -10,7 +10,6 @@ use std::fmt::{Display, Formatter};
 
 mod gdn;
 mod linear_layer;
-mod residual_rms_profile_v1;
 mod tail_mlp_head_v1;
 
 pub use gdn::{
@@ -23,11 +22,6 @@ pub use linear_layer::{
     MetalW8LinearLayerBlock, MetalW8LinearLayerStack3, MetalW8MlpStack3BoundaryV1,
     MlpStack3BoundaryBufferLedgerV1, MlpStack3BoundaryDecodeResultV1,
     MlpStack3BoundaryMetalStatsV1, PackedW8LinearLayerBlock, PackedW8MlpStack3BoundaryV1,
-};
-pub use residual_rms_profile_v1::{
-    MetalResidualRmsCount18PrimitiveV1, ResidualRmsCount18RuntimeReceiptV1,
-    ResidualRmsCount18SnapshotV1, ResidualRmsProfileV1, QWEN35_RESIDUAL_RMS_HIDDEN_SIZE_V1,
-    QWEN35_RESIDUAL_RMS_SEAMS_PER_DECODE_V1,
 };
 pub use tail_mlp_head_v1::{
     MetalW8TailMlpHeadV1, PackedW8TailMlpHeadV1, TailMlpHeadBufferLedgerV1,
