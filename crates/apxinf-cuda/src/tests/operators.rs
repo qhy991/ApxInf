@@ -25,7 +25,10 @@ use crate::kernels::qwen25_omni_attention::{
     short_w32_write, SplitCtaWorkspace,
 };
 use crate::kernels::qwen25_omni_fused::residual_add_rmsnorm_pack8_bf16_into;
-use crate::kernels::qwen25_omni_vision::qkv_bias_rope as qwen25_vision_qkv_bias_rope;
+use crate::kernels::qwen25_omni_vision::{
+    bias_residual_exact as qwen25_vision_bias_residual_exact,
+    qkv_bias_rope as qwen25_vision_qkv_bias_rope,
+};
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
 use crate::kernels::selection::argmax_bf16_into;
 use crate::CudaKVCache;
@@ -2301,6 +2304,40 @@ fn qwen25_vision_qkv_bias_rope_is_bit_exact() {
     .unwrap_err()
     .to_string()
     .contains("vision QKV bias/RoPE contract mismatch"));
+}
+
+#[test]
+fn qwen25_vision_bias_residual_is_bit_exact() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    if ctx.caps().sm != 89 {
+        return;
+    }
+    let (sequence, hidden) = (64usize, 1_280usize);
+    let mut projection_values = (0..sequence * hidden)
+        .map(|index| ((index as f32 * 0.017) - 3.0).sin())
+        .collect::<Vec<_>>();
+    let mut bias_values = (0..hidden)
+        .map(|index| ((index as f32 * 0.013) - 1.0).cos() * 0.25)
+        .collect::<Vec<_>>();
+    let mut residual_values = (0..sequence * hidden)
+        .map(|index| ((index as f32 * 0.011) + 0.5).cos())
+        .collect::<Vec<_>>();
+    projection_values[0] = 1.0;
+    bias_values[0] = 2.0f32.powi(-8);
+    residual_values[0] = 2.0f32.powi(-8);
+    let projection =
+        upload_fp32_as_bf16(&ctx, &projection_values, vec![sequence, hidden]).unwrap();
+    let bias = upload_fp32_as_bf16(&ctx, &bias_values, vec![hidden]).unwrap();
+    let residual = upload_fp32_as_bf16(&ctx, &residual_values, vec![sequence, hidden]).unwrap();
+    let rounded_projection = add_bias(&ctx, &projection, &bias).unwrap();
+    let baseline = add(&ctx, &rounded_projection, &residual).unwrap();
+    let candidate =
+        qwen25_vision_bias_residual_exact(&ctx, &projection, &bias, &residual).unwrap();
+    ctx.synchronize().unwrap();
+    let baseline = download_bf16_as_fp32(&baseline).unwrap();
+    let candidate = download_bf16_as_fp32(&candidate).unwrap();
+    assert_eq!(candidate, baseline);
+    assert_eq!(candidate[0], 1.0);
 }
 
 // ── Vision SDPA (non-causal full attention) ──────────────────────

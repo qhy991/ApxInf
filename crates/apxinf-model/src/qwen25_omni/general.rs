@@ -105,6 +105,7 @@ pub struct GeneralQwen25Omni {
     rope_delta: i64,
     vision_qkv_bias_rope: bool,
     vision_fused_silu_mul: bool,
+    vision_bias_residual: bool,
     #[cfg(feature = "cuda")]
     decode_graph: Option<Qwen25OmniDecodeGraph>,
     #[cfg(feature = "cuda")]
@@ -369,6 +370,23 @@ impl GeneralQwen25Omni {
         #[cfg(not(feature = "cuda"))]
         let vision_fused_silu_mul = false;
         #[cfg(feature = "cuda")]
+        let vision_bias_residual = {
+            let enabled = parse_binary_env("APXINF_QWEN25_VISION_BIAS_RESIDUAL")
+                .map_err(Error::Other)?;
+            if enabled {
+                if !vision_fused_silu_mul {
+                    return Err(Error::Other(
+                        "APXINF_QWEN25_VISION_BIAS_RESIDUAL=1 requires APXINF_QWEN25_VISION_FUSED_SILU_MUL=1"
+                            .into(),
+                    ));
+                }
+                eprintln!("ApxInf Qwen2.5-Omni vision exact bias/residual: two-round epilogue");
+            }
+            enabled
+        };
+        #[cfg(not(feature = "cuda"))]
+        let vision_bias_residual = false;
+        #[cfg(feature = "cuda")]
         let long_decode_split_cta = if long_decode_split_cta_enabled()? {
             if !parse_binary_env("APXINF_TMROPE_POSITION_CACHE").map_err(Error::Other)? {
                 return Err(Error::Other(
@@ -603,6 +621,7 @@ impl GeneralQwen25Omni {
             rope_delta: 0,
             vision_qkv_bias_rope,
             vision_fused_silu_mul,
+            vision_bias_residual,
             #[cfg(feature = "cuda")]
             decode_graph,
             #[cfg(feature = "cuda")]
@@ -908,6 +927,7 @@ impl GeneralQwen25Omni {
                 image.grid_thw,
                 self.vision_qkv_bias_rope,
                 self.vision_fused_silu_mul,
+                self.vision_bias_residual,
             )?;
             hidden = scatter_replace(&hidden, &positions, &encoded, &*self.backend)?;
         }

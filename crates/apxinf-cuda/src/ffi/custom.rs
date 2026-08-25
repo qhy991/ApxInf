@@ -68,6 +68,16 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_static_qwen25_omni_vision_bias_residual_exact_bf16(
+        projection: *const c_void,
+        bias: *const c_void,
+        residual: *const c_void,
+        output: *mut c_void,
+        sequence: i32,
+        hidden: i32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_static_qwen25_omni_attention_flash_split_cta_bf16(
         query: *const c_void,
         key_cache: *const c_void,
