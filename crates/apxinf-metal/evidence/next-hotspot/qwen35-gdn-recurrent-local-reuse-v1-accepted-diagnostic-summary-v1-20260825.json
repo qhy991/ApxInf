@@ -1,0 +1,229 @@
+{
+  "format": "apxinf-qwen35-gdn-recurrent-local-reuse-v1-accepted-diagnostic-summary-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "PASSED_PREDECLARED_PRIMITIVE_CONTINUE_GATE",
+  "scope": {
+    "stage": "count-matched aggregate GDN recurrent mechanism screen only",
+    "model_shape": "Qwen/Qwen3.5-0.8B decode, key_heads=16, value_heads=16, key_dim=128, value_dim=128",
+    "same_encoder_recurrent_dispatches_per_projected_decode": 18,
+    "target": "Apple M4 Metal",
+    "classification": "non-formal diagnostic evidence",
+    "production_submission_topology": false,
+    "production_default_modified": false,
+    "full_path_plumbing_executed": false,
+    "end_to_end_model_benchmark_executed": false,
+    "cross_runtime_benchmark_executed": false
+  },
+  "source_and_build_binding": {
+    "baseline_parent_commit": "2213e1977102cea53edffdaf4a4c10ea7ddf4666",
+    "candidate_commit": "aa71175d003bfa6aa404647dd86b7a3e86f15cd5",
+    "candidate_pushed_before_sampling": true,
+    "head_origin_main_and_github_main_equal_candidate_at_start_and_end": true,
+    "origin_url": "https://github.com/qhy991/ApxInf.git",
+    "worktree_clean_at_start_and_end_before_receipt_publication": true,
+    "release_binary_size_bytes": 1875216,
+    "release_binary_sha256": "de6f6d0acba3b5d399b76a792d7dd0e6e35430ff45c391ef5b020ee7713653a8",
+    "gate_source_size_bytes": 75841,
+    "gate_source_sha256": "259dc2363e198efd941773ff8ec10f33e099296ac1183835eaab5eec52781b98",
+    "raw_receipt_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-recurrent-local-reuse-primitive-abc-v1-20260825.json",
+    "raw_receipt_size_bytes": 54791,
+    "raw_receipt_sha256": "a9a2c6d8556451e28a95e5efd1e549bbeb7762148587282ba1e889f658098e4e",
+    "predeclaration_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-recurrent-local-reuse-v1-predeclared-primitive-gate-v1-20260825.json",
+    "predeclaration_size_bytes": 14904,
+    "predeclaration_sha256": "8b34b6bbecd0312ef7ff0f1640a9fa651853fb3d75d7f88ba7828805867d4358",
+    "all_bound_source_and_binary_hashes_matched_disk": true,
+    "embedded_source_hashes_matched_disk_before_and_after_sampling": true,
+    "binary_and_source_custody_unchanged_during_sampling": true,
+    "receipt_publication_note": "the raw receipt was published after the end-custody snapshot, so its subsequently untracked state does not contradict the captured clean worktree"
+  },
+  "host_observation": {
+    "formal_quiet_host_admission_passed": false,
+    "hardware_model": "Mac16,10",
+    "chip": "Apple M4",
+    "quiet_host_attested": false,
+    "user_or_system_processes_terminated": false,
+    "interpretation": "the fixed diagnostic schedule completed exactly once; the primitive continue decision is valid under its non-formal contract, but the timings are not formal promotion evidence"
+  },
+  "arms": {
+    "A": {
+      "name": "legacy-256",
+      "function": "gdn_recurrent_update",
+      "threads_per_threadgroup": 256,
+      "source_declared_threadgroup_memory_bytes": 0,
+      "pipeline_static_threadgroup_memory_bytes": 0
+    },
+    "B": {
+      "name": "leader-broadcast-128",
+      "function": "gdn_recurrent_update_leader_broadcast_v1",
+      "threads_per_threadgroup": 128,
+      "source_declared_threadgroup_memory_bytes": 8,
+      "pipeline_static_threadgroup_memory_bytes": 16
+    },
+    "C": {
+      "name": "qk-staged-128",
+      "function": "gdn_recurrent_update_qk_staged_v1",
+      "threads_per_threadgroup": 128,
+      "source_declared_threadgroup_memory_bytes": 1032,
+      "pipeline_static_threadgroup_memory_bytes": 1040
+    }
+  },
+  "quality_gate": {
+    "passed": true,
+    "correctness_fixtures": 8,
+    "order_per_fixture": [
+      "A",
+      "B",
+      "C",
+      "C",
+      "B",
+      "A"
+    ],
+    "calls_per_arm": 16,
+    "calls_total": 48,
+    "finite_checks": 228261888,
+    "explicit_A_oracle_to_bits_comparisons": 190218240,
+    "invalid_selector_snapshot_to_bits_comparisons": 4755456,
+    "all_to_bits_comparisons": 194973696,
+    "all_outputs_finite": true,
+    "all_outputs_match_first_A_to_bits": true,
+    "outputs_poisoned_before_every_correctness_call": true,
+    "staged_inputs_verified_bitwise_unchanged_after_each_fixture": true,
+    "invalid_raw_selector_failed_closed_with_absent_and_present_snapshot_states": true,
+    "performance_authorized": true
+  },
+  "runtime_observed_execution_contract": {
+    "successful_runs_per_arm": 784,
+    "successful_run_decomposition_per_arm": {
+      "correctness": 16,
+      "warmup": 384,
+      "timed": 384
+    },
+    "kernel_dispatches_per_run_all_arms": 18,
+    "explicit_buffer_barriers_per_run_all_arms": 18,
+    "threadgroups_per_run_all_arms": 288,
+    "command_buffers_per_run_all_arms": 1,
+    "compute_encoders_per_run_all_arms": 1,
+    "commits_per_run_all_arms": 1,
+    "waits_per_run_all_arms": 1,
+    "launched_threads_per_run": {
+      "A": 73728,
+      "B": 36864,
+      "C": 36864
+    },
+    "idle_threads_per_run": {
+      "A": 36864,
+      "B": 0,
+      "C": 0
+    },
+    "runtime_receipts_valid": true,
+    "sampled_attempt_failures": 0
+  },
+  "fixed_schedule": {
+    "warmup_orders": [
+      "ABCCBA",
+      "BCAACB",
+      "CABBAC"
+    ],
+    "timed_orders": [
+      "ABCCBA",
+      "BCAACB",
+      "CABBAC"
+    ],
+    "calls_per_cell": 64,
+    "timed_samples_per_arm_per_block": 128,
+    "timed_samples_per_arm_pooled": 384,
+    "no_outlier_removal": true,
+    "no_retry": true,
+    "no_resampling": true
+  },
+  "performance_gate": {
+    "selection_rule": "select C iff pooled C-over-B is at least 0.5 percent, otherwise select B; never fall back after selection",
+    "selected_arm": "C_qk_staged_128",
+    "unselected_candidate_arm": "B_leader_broadcast_128",
+    "pooled": {
+      "A_median_ns": 1210833.0,
+      "B_median_ns": 1210896.0,
+      "C_median_ns": 1126021.0,
+      "C_over_A_percent": 7.004434137490471,
+      "C_over_B_percent": 7.00927247261532,
+      "B_over_A_percent": -0.005203029649836105
+    },
+    "C_over_A_by_block_percent": [
+      7.1838762886597936,
+      6.8558334079357035,
+      7.689005210604913
+    ],
+    "C_over_B_by_block_percent": [
+      6.693294641931806,
+      6.844598199130281,
+      9.43214339620958
+    ],
+    "criteria": {
+      "pooled_C_over_B_at_least_0_5_percent": true,
+      "pooled_selected_over_A_at_least_5_percent": true,
+      "selected_over_A_strictly_positive_in_all_three_blocks": true,
+      "selected_vs_unselected_strictly_above_negative_0_5_percent_in_all_three_blocks": true,
+      "C_over_B_positive_in_at_least_two_blocks": true
+    },
+    "passed": true,
+    "interpretation": "C passed every conjunctive condition fixed before sampling and therefore advances to a separately implemented opt-in production-topology gate"
+  },
+  "source_derived_mechanism": {
+    "C_over_A_selected_device_read_reduction_bytes_per_projected_decode": 57503232,
+    "A_uniform_prefix_reads_bytes": 1179648,
+    "C_uniform_prefix_reads_bytes": 4608,
+    "A_Q_K_reads_bytes": 56623104,
+    "C_staged_Q_K_device_reads_bytes": 294912,
+    "qualification": "source-expression ledger only; no physical cache, DRAM, spill, or bandwidth claim"
+  },
+  "validation": {
+    "apxinf_metal_tests": {
+      "passed": 62,
+      "failed": 0,
+      "ignored": 1,
+      "evidence_source": "orchestrator session log; not a separately persisted test log"
+    },
+    "release_gate_build_passed": true,
+    "format_check_passed": true,
+    "diff_check_passed": true,
+    "workspace_test_limitation": "cargo test --workspace reached unrelated apxinf-cuda link failures because this Apple host has no CUDA/cuBLAS symbols",
+    "clippy_attempted_but_component_unavailable": true,
+    "independent_exactness_custody_and_ledger_audit": "CLEAN",
+    "independent_raw_sample_statistics_and_selection_audit": "CLEAN"
+  },
+  "decision": {
+    "primitive_screen_accepted": true,
+    "primitive_continue_gate_passed": true,
+    "selected_arm": "C_qk_staged_128",
+    "separate_opt_in_full_path_plumbing_authorized": true,
+    "production_default_activation_authorized": false,
+    "end_to_end_performance_claim_authorized": false,
+    "cross_runtime_update_authorized": false,
+    "action": "commit and push the raw receipt and this acceptance summary, then add a separately reviewable opt-in C route while retaining legacy A as every ordinary/default constructor; predeclare and run a production-topology correctness and performance gate before any promotion",
+    "unsupported_inferences": [
+      "a 7.004434 percent end-to-end or TPS improvement",
+      "a stable formal production improvement",
+      "a measured DRAM-traffic reduction",
+      "that C should become a default before the full-path gate passes",
+      "that the frozen llama.cpp comparison has changed"
+    ]
+  },
+  "llama_cpp_comparison_policy": {
+    "candidate_is_apxinf_specific_not_llama_equivalent": true,
+    "frozen_comparison_unchanged": true,
+    "current_apxinf_metal_W8_tps": 66.33672849846097,
+    "current_llama_cpp_metal_Q8_0_tps": 70.66394293407429,
+    "current_llama_cpp_advantage_percent": 6.52310497300709,
+    "llama_cpp_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+    "frozen_summary": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-vs-llamacpp-raw13-free128-diagnostic-summary-v2-20260825.json",
+    "reason": "an accepted non-production primitive screen is not a replacement ApxInf, llama.cpp, or Ollama end-to-end benchmark"
+  },
+  "next_gate": {
+    "status": "authorized_but_not_yet_implemented_or_sampled",
+    "route": "explicit diagnostic-only Qwen3.5 boundary + tail-head v1 constructor selecting gdn_recurrent_update_qk_staged_v1 in the initial Stack3 and five MLP-to-Stack3 boundary transactions",
+    "legacy_default_requirement": "all ordinary, Auto, registry, and existing diagnostic constructors remain on gdn_recurrent_update",
+    "required_correctness": "same model, revision, raw-token prompt, CPU teacher-forced 128 and free-run 128 trajectories; exact token identity plus source-frozen path, state, execution-ledger, and custody checks",
+    "required_performance": "predeclared interleaved legacy-A versus opt-in-C production-topology gate with fixed runs, no retries, no resampling, and a minimum practical effect threshold",
+    "cross_runtime_rule": "only an accepted full-path candidate may update the frozen llama.cpp comparison or justify a new llama.cpp/Ollama run"
+  }
+}
