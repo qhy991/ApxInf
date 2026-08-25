@@ -11,12 +11,24 @@
 namespace {
 
 constexpr uint32_t kGroupSize = 64;
+constexpr uint32_t kSimdWidth = 32;
 constexpr uint32_t kRowsPerThreadgroup = 8;
-constexpr uint32_t kMatVecThreads = kRowsPerThreadgroup * 32;
+constexpr uint32_t kMatVecThreads = kRowsPerThreadgroup * kSimdWidth;
+constexpr uint32_t kHeadPair2R32RowsPerThreadgroup = 32;
+constexpr uint32_t kHeadPair2R32RowsPerSimdgroup = 2;
+constexpr uint32_t kHeadPair2R32SimdgroupsPerThreadgroup = 16;
+constexpr uint32_t kHeadPair2R32Threads =
+    kHeadPair2R32SimdgroupsPerThreadgroup * kSimdWidth;
+static_assert(kHeadPair2R32RowsPerThreadgroup ==
+              kHeadPair2R32RowsPerSimdgroup *
+                  kHeadPair2R32SimdgroupsPerThreadgroup);
+static_assert(kHeadPair2R32Threads == 512);
 constexpr uint32_t kElementThreads = 256;
 constexpr uint32_t kTopK = 4;
 constexpr uint32_t kTopKThreads = 256;
 constexpr uint32_t kAllOutputsMask = 0b11;
+constexpr uint32_t kRowsKernelLegacyR8Sg8 = 0;
+constexpr uint32_t kRowsKernelPair2R32Sg16 = 1;
 
 struct LinearLayerParams {
     uint32_t hidden_size;
@@ -65,6 +77,18 @@ struct TailExecutionReceiptV1 {
     uint32_t output_commit_mask;
 };
 
+struct TailRowsKernelReceiptV1 {
+    uint32_t rows_kernel;
+    uint32_t rows_per_threadgroup;
+    uint32_t rows_per_simdgroup;
+    uint32_t simdgroups_per_threadgroup;
+    uint32_t threads_per_threadgroup;
+    uint32_t partial_count;
+    uint64_t partial_topk_bytes;
+    uint32_t pipeline_max_total_threads_per_threadgroup;
+    uint32_t pipeline_thread_execution_width;
+};
+
 struct ApxinfMetalW8TailMlpHeadHandleV1 {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
@@ -91,6 +115,7 @@ struct ApxinfMetalW8TailMlpHeadHandleV1 {
     LinearLayerParams layer_params;
     MlpParams mlp_params;
     KernelParams head_params;
+    uint32_t rows_kernel;
     bool terminal_error;
 };
 
@@ -273,7 +298,11 @@ void encode_tail(ApxinfMetalW8TailMlpHeadHandleV1 *handle,
                atIndex:4];
     [encoder dispatchThreadgroups:MTLSizeMake(handle->head_params.partial_count,
                                               1, 1)
-             threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
+             threadsPerThreadgroup:MTLSizeMake(
+                 handle->rows_kernel == kRowsKernelPair2R32Sg16
+                     ? kHeadPair2R32Threads
+                     : kMatVecThreads,
+                 1, 1)];
     buffer_barrier(encoder);
 
     [encoder setComputePipelineState:handle->final_topk_pipeline];
@@ -288,8 +317,8 @@ void encode_tail(ApxinfMetalW8TailMlpHeadHandleV1 *handle,
 
 }  // namespace
 
-extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
-    const TailDescriptorV1 *descriptor, void **output, char *error_output,
+int create_tail_handle(const TailDescriptorV1 *descriptor,
+    uint32_t rows_kernel, void **output, char *error_output,
     size_t error_capacity) {
     @autoreleasepool {
         if (output == nullptr) {
@@ -311,6 +340,7 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
             descriptor->hidden_size % kGroupSize != 0 ||
             descriptor->intermediate_size % kGroupSize != 0 ||
             descriptor->intermediate_size > UINT32_MAX / 2 ||
+            rows_kernel > kRowsKernelPair2R32Sg16 ||
             !std::isfinite(descriptor->rms_norm_eps) ||
             descriptor->rms_norm_eps < 0.0f) {
             write_error(error_output, error_capacity,
@@ -386,8 +416,27 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
             handle->device, library, @"w8_mlp_down", &error);
         handle->residual_pipeline = make_pipeline(
             handle->device, library, @"linear_layer_residual_add", &error);
-        handle->rows_topk_pipeline = make_pipeline(
-            handle->device, library, @"w8_rows_topk4", &error);
+        NSString *rows_topk_name =
+            rows_kernel == kRowsKernelPair2R32Sg16
+                ? @"w8_rows_topk4_pair2_r32_sg16"
+                : @"w8_rows_topk4";
+        id<MTLFunction> rows_topk_function =
+            [library newFunctionWithName:rows_topk_name];
+        if (rows_topk_function != nil) {
+            NSString *observed_rows_topk_name = rows_topk_function.name;
+            if ([observed_rows_topk_name isEqualToString:@"w8_rows_topk4"]) {
+                handle->rows_kernel = kRowsKernelLegacyR8Sg8;
+            } else if ([observed_rows_topk_name
+                           isEqualToString:@"w8_rows_topk4_pair2_r32_sg16"]) {
+                handle->rows_kernel = kRowsKernelPair2R32Sg16;
+            } else {
+                handle->rows_kernel = UINT32_MAX;
+            }
+            handle->rows_topk_pipeline =
+                [handle->device newComputePipelineStateWithFunction:
+                                    rows_topk_function
+                                                          error:&error];
+        }
         handle->final_topk_pipeline = make_pipeline(
             handle->device, library, @"w8_final_topk4", &error);
         if (handle->rms_pipeline == nil || handle->gate_up_pipeline == nil ||
@@ -397,6 +446,29 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
             handle->final_topk_pipeline == nil) {
             delete handle;
             write_nserror(error_output, error_capacity, error);
+            return 1;
+        }
+        if (handle->rows_kernel != rows_kernel) {
+            delete handle;
+            write_error(error_output, error_capacity,
+                        "selected Metal W8 top-4 rows function identity drifted from the requested selector");
+            return 1;
+        }
+        const uint32_t rows_topk_threads =
+            handle->rows_kernel == kRowsKernelPair2R32Sg16
+                ? kHeadPair2R32Threads
+                : kMatVecThreads;
+        if (handle->rows_topk_pipeline.maxTotalThreadsPerThreadgroup <
+            rows_topk_threads) {
+            delete handle;
+            write_error(error_output, error_capacity,
+                        "selected Metal W8 top-4 rows pipeline does not support the required threadgroup size");
+            return 1;
+        }
+        if (handle->rows_topk_pipeline.threadExecutionWidth != kSimdWidth) {
+            delete handle;
+            write_error(error_output, error_capacity,
+                        "selected Metal W8 top-4 rows pipeline does not expose the required SIMD width");
             return 1;
         }
         handle->queue = [handle->device newCommandQueue];
@@ -449,9 +521,12 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
         handle->activated = [handle->device
             newBufferWithLength:intermediate_size * sizeof(float)
                          options:private_storage];
-        const uint32_t partial_count =
-            static_cast<uint32_t>((vocab_size + kRowsPerThreadgroup - 1) /
-                                  kRowsPerThreadgroup);
+        const uint32_t rows_per_threadgroup =
+            handle->rows_kernel == kRowsKernelPair2R32Sg16
+                ? kHeadPair2R32RowsPerThreadgroup
+                : kRowsPerThreadgroup;
+        const uint32_t partial_count = static_cast<uint32_t>(
+            (vocab_size + rows_per_threadgroup - 1) / rows_per_threadgroup);
         handle->partial_topk = [handle->device
             newBufferWithLength:static_cast<size_t>(partial_count) * kTopK * 8
                          options:private_storage];
@@ -477,6 +552,64 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
         };
         handle->terminal_error = false;
         *output = handle;
+        return 0;
+    }
+}
+
+extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
+    const TailDescriptorV1 *descriptor, void **output, char *error_output,
+    size_t error_capacity) {
+    return create_tail_handle(descriptor, kRowsKernelLegacyR8Sg8, output,
+                              error_output, error_capacity);
+}
+
+extern "C" int apxinf_metal_w8_tail_mlp_head_create_with_rows_kernel_v1(
+    const TailDescriptorV1 *descriptor, uint32_t rows_kernel, void **output,
+    char *error_output, size_t error_capacity) {
+    return create_tail_handle(descriptor, rows_kernel, output, error_output,
+                              error_capacity);
+}
+
+extern "C" int apxinf_metal_w8_tail_mlp_head_rows_kernel_receipt_v1(
+    void *opaque_handle, TailRowsKernelReceiptV1 *receipt,
+    char *error_output, size_t error_capacity) {
+    @autoreleasepool {
+        if (receipt == nullptr) {
+            write_error(error_output, error_capacity,
+                        "Metal W8 tail MLP+head v1 rows-kernel receipt is null");
+            return 1;
+        }
+        *receipt = TailRowsKernelReceiptV1{};
+        auto handle =
+            static_cast<ApxinfMetalW8TailMlpHeadHandleV1 *>(opaque_handle);
+        if (handle == nullptr || handle->rows_topk_pipeline == nil ||
+            handle->partial_topk == nil) {
+            write_error(error_output, error_capacity,
+                        "Metal W8 tail MLP+head v1 handle is invalid for rows-kernel receipt");
+            return 1;
+        }
+        const bool pair2_r32_sg16 =
+            handle->rows_kernel == kRowsKernelPair2R32Sg16;
+        const uint32_t rows_per_threadgroup =
+            pair2_r32_sg16 ? kHeadPair2R32RowsPerThreadgroup
+                          : kRowsPerThreadgroup;
+        receipt->rows_kernel = handle->rows_kernel;
+        receipt->rows_per_threadgroup = rows_per_threadgroup;
+        receipt->rows_per_simdgroup =
+            pair2_r32_sg16 ? kHeadPair2R32RowsPerSimdgroup : 1;
+        receipt->simdgroups_per_threadgroup =
+            pair2_r32_sg16 ? kHeadPair2R32SimdgroupsPerThreadgroup
+                          : kRowsPerThreadgroup;
+        receipt->threads_per_threadgroup =
+            pair2_r32_sg16 ? kHeadPair2R32Threads : kMatVecThreads;
+        receipt->partial_count = handle->head_params.partial_count;
+        receipt->partial_topk_bytes =
+            static_cast<uint64_t>(handle->partial_topk.length);
+        receipt->pipeline_max_total_threads_per_threadgroup =
+            static_cast<uint32_t>(
+                handle->rows_topk_pipeline.maxTotalThreadsPerThreadgroup);
+        receipt->pipeline_thread_execution_width = static_cast<uint32_t>(
+            handle->rows_topk_pipeline.threadExecutionWidth);
         return 0;
     }
 }
