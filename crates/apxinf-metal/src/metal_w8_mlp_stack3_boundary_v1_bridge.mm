@@ -17,6 +17,11 @@ constexpr uint32_t kRowsPerThreadgroup = 8;
 constexpr uint32_t kMatVecThreads = kRowsPerThreadgroup * 32;
 constexpr uint32_t kElementThreads = 256;
 constexpr uint32_t kAllSeededMask = (1u << kStackDepth) - 1;
+constexpr uint32_t kBodyInputStagingLegacyDevice = 0;
+constexpr uint32_t kBodyInputStagingThreadgroupShared = 1;
+constexpr uint32_t kUnknownBodyInputStaging = UINT32_MAX;
+constexpr uint32_t kExpectedThreadExecutionWidth = 32;
+constexpr size_t kBodyInputFunctionNameCapacity = 64;
 
 struct GdnParams {
     uint32_t hidden_size;
@@ -116,6 +121,22 @@ struct BoundaryExecutionReceiptV1 {
     uint32_t state_commit_mask;
 };
 
+struct BodyInputStagingRuntimeReceiptV1 {
+    uint32_t requested_profile;
+    uint32_t observed_profile;
+    uint32_t threads_per_threadgroup;
+    uint32_t gdn_input_dynamic_threadgroup_memory_bytes;
+    uint32_t gdn_output_dynamic_threadgroup_memory_bytes;
+    uint32_t mlp_gate_up_dynamic_threadgroup_memory_bytes;
+    uint32_t mlp_down_dynamic_threadgroup_memory_bytes;
+    uint32_t thread_execution_width;
+    uint32_t threadgroup_barriers_per_projection;
+    char gdn_input_function_name[kBodyInputFunctionNameCapacity];
+    char gdn_output_function_name[kBodyInputFunctionNameCapacity];
+    char mlp_gate_up_function_name[kBodyInputFunctionNameCapacity];
+    char mlp_down_function_name[kBodyInputFunctionNameCapacity];
+};
+
 static_assert(sizeof(GdnParams) == 52, "Metal W8 GDN parameter ABI changed");
 static_assert(sizeof(MlpParams) == 16, "Metal W8 MLP parameter ABI changed");
 static_assert(sizeof(LinearLayerParams) == 8,
@@ -130,6 +151,8 @@ static_assert(sizeof(BoundaryMutableStateDescriptorV1) == 64,
               "Metal W8 stack3 mutable state descriptor ABI changed");
 static_assert(sizeof(BoundaryExecutionReceiptV1) == 40,
               "Metal W8 stack3 execution receipt ABI changed");
+static_assert(sizeof(BodyInputStagingRuntimeReceiptV1) == 292,
+              "Metal W8 body-input-staging runtime receipt ABI changed");
 
 struct BoundaryStackShape {
     uint32_t hidden_size;
@@ -216,6 +239,10 @@ struct ApxinfMetalW8MlpStack3BoundaryHandleV1 {
     id<MTLComputePipelineState> mlp_gate_up_pipeline;
     id<MTLComputePipelineState> mlp_activation_pipeline;
     id<MTLComputePipelineState> mlp_down_pipeline;
+    id<MTLFunction> gdn_input_function;
+    id<MTLFunction> gdn_output_function;
+    id<MTLFunction> mlp_gate_up_function;
+    id<MTLFunction> mlp_down_function;
 
     // Five immutable full-attention boundary MLP/RMS buffers. They extend the
     // Stack3 resident set without allocating another hidden or scratch row.
@@ -243,6 +270,13 @@ struct ApxinfMetalW8MlpStack3BoundaryHandleV1 {
     id<MTLBuffer> mlp_gate_up;
     id<MTLBuffer> mlp_activated;
 
+    uint32_t requested_body_input_staging;
+    uint32_t gdn_input_dynamic_threadgroup_memory_bytes;
+    uint32_t gdn_output_dynamic_threadgroup_memory_bytes;
+    uint32_t mlp_gate_up_dynamic_threadgroup_memory_bytes;
+    uint32_t mlp_down_dynamic_threadgroup_memory_bytes;
+    uint32_t boundary_mlp_down_dynamic_threadgroup_memory_bytes;
+    uint32_t stack_mlp_down_dynamic_threadgroup_memory_bytes;
     uint32_t seeded_mask;
     bool terminal_error;
 };
@@ -275,6 +309,153 @@ id<MTLComputePipelineState> make_pipeline(
     id<MTLFunction> function = [library newFunctionWithName:name];
     return function == nil ? nil
                            : [device newComputePipelineStateWithFunction:function error:error];
+}
+
+bool valid_body_input_staging_selector(uint32_t profile) {
+    return profile == kBodyInputStagingLegacyDevice ||
+           profile == kBodyInputStagingThreadgroupShared;
+}
+
+bool function_has_name(id<MTLFunction> function, NSString *name) {
+    return function != nil && function.name != nil &&
+           [function.name isEqualToString:name];
+}
+
+uint32_t observed_body_input_staging(
+    const ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle) {
+    if (handle == nullptr) {
+        return kUnknownBodyInputStaging;
+    }
+    if (function_has_name(handle->gdn_input_function,
+                          @"gdn_w8_input_projection") &&
+        function_has_name(handle->gdn_output_function,
+                          @"gdn_w8_output_projection_g32") &&
+        function_has_name(handle->mlp_gate_up_function,
+                          @"w8_mlp_gate_up") &&
+        function_has_name(handle->mlp_down_function, @"w8_mlp_down")) {
+        return kBodyInputStagingLegacyDevice;
+    }
+    if (function_has_name(handle->gdn_input_function,
+                          @"gdn_w8_input_projection_tg_shared") &&
+        function_has_name(handle->gdn_output_function,
+                          @"gdn_w8_output_projection_g32_tg_shared") &&
+        function_has_name(handle->mlp_gate_up_function,
+                          @"w8_mlp_gate_up_tg_shared") &&
+        function_has_name(handle->mlp_down_function,
+                          @"w8_mlp_down_tg_shared")) {
+        return kBodyInputStagingThreadgroupShared;
+    }
+    return kUnknownBodyInputStaging;
+}
+
+bool checked_f32_threadgroup_bytes(uint32_t columns, uint32_t *output) {
+    size_t bytes = 0;
+    if (output == nullptr ||
+        !checked_product(static_cast<size_t>(columns), sizeof(float), &bytes) ||
+        bytes > UINT32_MAX) {
+        return false;
+    }
+    *output = static_cast<uint32_t>(bytes);
+    return true;
+}
+
+bool pipeline_supports_threadgroup_input(
+    id<MTLDevice> device, id<MTLComputePipelineState> pipeline,
+    uint32_t dynamic_bytes) {
+    if (device == nil || pipeline == nil ||
+        pipeline.maxTotalThreadsPerThreadgroup < kMatVecThreads ||
+        pipeline.threadExecutionWidth != kExpectedThreadExecutionWidth) {
+        return false;
+    }
+    const NSUInteger maximum = device.maxThreadgroupMemoryLength;
+    const NSUInteger static_bytes = pipeline.staticThreadgroupMemoryLength;
+    return static_bytes <= maximum &&
+           static_cast<NSUInteger>(dynamic_bytes) <= maximum - static_bytes;
+}
+
+bool live_body_input_staging_matches(
+    const ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle) {
+    if (handle == nullptr ||
+        observed_body_input_staging(handle) !=
+            handle->requested_body_input_staging) {
+        return false;
+    }
+    const bool staged = handle->requested_body_input_staging ==
+                        kBodyInputStagingThreadgroupShared;
+    return pipeline_supports_threadgroup_input(
+               handle->device, handle->gdn_input_pipeline,
+               staged ? handle->gdn_input_dynamic_threadgroup_memory_bytes : 0) &&
+           pipeline_supports_threadgroup_input(
+               handle->device, handle->gdn_output_pipeline,
+               staged ? handle->gdn_output_dynamic_threadgroup_memory_bytes : 0) &&
+           pipeline_supports_threadgroup_input(
+               handle->device, handle->mlp_gate_up_pipeline,
+               staged ? handle->mlp_gate_up_dynamic_threadgroup_memory_bytes : 0) &&
+           pipeline_supports_threadgroup_input(
+               handle->device, handle->mlp_down_pipeline,
+               staged ? handle->mlp_down_dynamic_threadgroup_memory_bytes : 0);
+}
+
+bool copy_function_name(id<MTLFunction> function, char *output,
+                        size_t capacity) {
+    const char *name = function == nil || function.name == nil
+                           ? nullptr
+                           : function.name.UTF8String;
+    if (name == nullptr || output == nullptr || capacity == 0 ||
+        std::strlen(name) >= capacity) {
+        return false;
+    }
+    std::snprintf(output, capacity, "%s", name);
+    return true;
+}
+
+bool write_body_input_staging_receipt(
+    const ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
+    BodyInputStagingRuntimeReceiptV1 *receipt) {
+    if (handle == nullptr || receipt == nullptr ||
+        !live_body_input_staging_matches(handle)) {
+        return false;
+    }
+    *receipt = BodyInputStagingRuntimeReceiptV1{};
+    receipt->requested_profile = handle->requested_body_input_staging;
+    receipt->observed_profile = observed_body_input_staging(handle);
+    receipt->threads_per_threadgroup = kMatVecThreads;
+    const bool staged = receipt->observed_profile ==
+                        kBodyInputStagingThreadgroupShared;
+    if (staged) {
+        receipt->gdn_input_dynamic_threadgroup_memory_bytes =
+            handle->gdn_input_dynamic_threadgroup_memory_bytes;
+        receipt->gdn_output_dynamic_threadgroup_memory_bytes =
+            handle->gdn_output_dynamic_threadgroup_memory_bytes;
+        receipt->mlp_gate_up_dynamic_threadgroup_memory_bytes =
+            handle->mlp_gate_up_dynamic_threadgroup_memory_bytes;
+        receipt->mlp_down_dynamic_threadgroup_memory_bytes =
+            handle->mlp_down_dynamic_threadgroup_memory_bytes;
+        receipt->threadgroup_barriers_per_projection = 1;
+    }
+    receipt->thread_execution_width = static_cast<uint32_t>(
+        handle->gdn_input_pipeline.threadExecutionWidth);
+    return copy_function_name(handle->gdn_input_function,
+                              receipt->gdn_input_function_name,
+                              sizeof(receipt->gdn_input_function_name)) &&
+           copy_function_name(handle->gdn_output_function,
+                              receipt->gdn_output_function_name,
+                              sizeof(receipt->gdn_output_function_name)) &&
+           copy_function_name(handle->mlp_gate_up_function,
+                              receipt->mlp_gate_up_function_name,
+                              sizeof(receipt->mlp_gate_up_function_name)) &&
+           copy_function_name(handle->mlp_down_function,
+                              receipt->mlp_down_function_name,
+                              sizeof(receipt->mlp_down_function_name));
+}
+
+void set_body_input_threadgroup_memory(
+    const ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
+    id<MTLComputeCommandEncoder> encoder, uint32_t bytes) {
+    if (handle->requested_body_input_staging ==
+        kBodyInputStagingThreadgroupShared) {
+        [encoder setThreadgroupMemoryLength:bytes atIndex:0];
+    }
 }
 
 id<MTLBuffer> make_shared_f32(id<MTLDevice> device, size_t count) {
@@ -569,6 +750,8 @@ void encode_boundary_mlp(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     buffer_barrier(encoder);
 
     [encoder setComputePipelineState:handle->mlp_gate_up_pipeline];
+    set_body_input_threadgroup_memory(
+        handle, encoder, handle->mlp_gate_up_dynamic_threadgroup_memory_bytes);
     [encoder setBuffer:handle->boundary_gate_up_weights offset:0 atIndex:0];
     [encoder setBuffer:handle->boundary_gate_up_scales offset:0 atIndex:1];
     [encoder setBuffer:handle->normalized offset:0 atIndex:2];
@@ -595,6 +778,9 @@ void encode_boundary_mlp(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     buffer_barrier(encoder);
 
     [encoder setComputePipelineState:handle->mlp_down_pipeline];
+    set_body_input_threadgroup_memory(
+        handle, encoder,
+        handle->boundary_mlp_down_dynamic_threadgroup_memory_bytes);
     [encoder setBuffer:handle->boundary_down_weights offset:0 atIndex:0];
     [encoder setBuffer:handle->boundary_down_scales offset:0 atIndex:1];
     [encoder setBuffer:handle->mlp_activated offset:0 atIndex:2];
@@ -635,6 +821,8 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     buffer_barrier(encoder);
 
     [encoder setComputePipelineState:handle->gdn_input_pipeline];
+    set_body_input_threadgroup_memory(
+        handle, encoder, handle->gdn_input_dynamic_threadgroup_memory_bytes);
     [encoder setBuffer:layer.gdn_input_weights offset:0 atIndex:0];
     [encoder setBuffer:layer.gdn_input_scales offset:0 atIndex:1];
     [encoder setBuffer:handle->normalized offset:0 atIndex:2];
@@ -695,6 +883,8 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     buffer_barrier(encoder);
 
     [encoder setComputePipelineState:handle->gdn_output_pipeline];
+    set_body_input_threadgroup_memory(
+        handle, encoder, handle->gdn_output_dynamic_threadgroup_memory_bytes);
     [encoder setBuffer:layer.gdn_output_weights offset:0 atIndex:0];
     [encoder setBuffer:layer.gdn_output_scales offset:0 atIndex:1];
     [encoder setBuffer:handle->gated offset:0 atIndex:2];
@@ -726,6 +916,8 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     buffer_barrier(encoder);
 
     [encoder setComputePipelineState:handle->mlp_gate_up_pipeline];
+    set_body_input_threadgroup_memory(
+        handle, encoder, handle->mlp_gate_up_dynamic_threadgroup_memory_bytes);
     [encoder setBuffer:layer.mlp_gate_up_weights offset:0 atIndex:0];
     [encoder setBuffer:layer.mlp_gate_up_scales offset:0 atIndex:1];
     [encoder setBuffer:handle->normalized offset:0 atIndex:2];
@@ -746,6 +938,8 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     buffer_barrier(encoder);
 
     [encoder setComputePipelineState:handle->mlp_down_pipeline];
+    set_body_input_threadgroup_memory(
+        handle, encoder, handle->stack_mlp_down_dynamic_threadgroup_memory_bytes);
     [encoder setBuffer:layer.mlp_down_weights offset:0 atIndex:0];
     [encoder setBuffer:layer.mlp_down_scales offset:0 atIndex:1];
     [encoder setBuffer:handle->mlp_activated offset:0 atIndex:2];
@@ -769,10 +963,11 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
 
 }  // namespace
 
-extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
+int create_mlp_stack3_boundary_gdn_out_g32_impl(
     const BoundaryMlpDescriptorV1 *boundary,
     const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
-    void **output, char *error_output, size_t error_capacity) {
+    uint32_t body_input_staging, void **output, char *error_output,
+    size_t error_capacity) {
     @autoreleasepool {
         if (output == nullptr) {
             write_error(error_output, error_capacity,
@@ -780,6 +975,11 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
             return 1;
         }
         *output = nullptr;
+        if (!valid_body_input_staging_selector(body_input_staging)) {
+            write_error(error_output, error_capacity,
+                        "invalid Metal W8 MLP-to-Stack3 boundary v1 body-input-staging selector");
+            return 1;
+        }
         if (boundary == nullptr || layers == nullptr ||
             layer_count != kStackDepth) {
             write_error(error_output, error_capacity,
@@ -808,6 +1008,29 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
                         "invalid Metal W8 MLP-to-Stack3 boundary v1 prefix contract");
             return 1;
         }
+        uint32_t gdn_input_dynamic_bytes = 0;
+        uint32_t gdn_output_dynamic_bytes = 0;
+        uint32_t mlp_gate_up_dynamic_bytes = 0;
+        uint32_t boundary_mlp_down_dynamic_bytes = 0;
+        uint32_t stack_mlp_down_dynamic_bytes = 0;
+        if (!checked_f32_threadgroup_bytes(shape.hidden_size,
+                                           &gdn_input_dynamic_bytes) ||
+            !checked_f32_threadgroup_bytes(shape.value_width,
+                                           &gdn_output_dynamic_bytes) ||
+            !checked_f32_threadgroup_bytes(shape.hidden_size,
+                                           &mlp_gate_up_dynamic_bytes) ||
+            !checked_f32_threadgroup_bytes(
+                boundary_shape.intermediate_size,
+                &boundary_mlp_down_dynamic_bytes) ||
+            !checked_f32_threadgroup_bytes(shape.intermediate_size,
+                                           &stack_mlp_down_dynamic_bytes)) {
+            write_error(error_output, error_capacity,
+                        "Metal W8 MLP-to-Stack3 boundary v1 dynamic threadgroup byte count overflows");
+            return 1;
+        }
+        const uint32_t maximum_mlp_down_dynamic_bytes =
+            std::max(boundary_mlp_down_dynamic_bytes,
+                     stack_mlp_down_dynamic_bytes);
 
         auto handle =
             new (std::nothrow) ApxinfMetalW8MlpStack3BoundaryHandleV1{};
@@ -836,8 +1059,18 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
             make_pipeline(handle->device, library, @"linear_layer_rms_norm", &error);
         handle->residual_pipeline =
             make_pipeline(handle->device, library, @"linear_layer_residual_add", &error);
+        const bool staged = body_input_staging ==
+                            kBodyInputStagingThreadgroupShared;
+        handle->gdn_input_function = [library
+            newFunctionWithName:staged
+                                    ? @"gdn_w8_input_projection_tg_shared"
+                                    : @"gdn_w8_input_projection"];
         handle->gdn_input_pipeline =
-            make_pipeline(handle->device, library, @"gdn_w8_input_projection", &error);
+            handle->gdn_input_function == nil
+                ? nil
+                : [handle->device
+                      newComputePipelineStateWithFunction:handle->gdn_input_function
+                                                   error:&error];
         handle->gdn_depthwise_pipeline =
             make_pipeline(handle->device, library, @"gdn_depthwise_preprocess", &error);
         handle->gdn_normalize_pipeline =
@@ -846,14 +1079,49 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
             make_pipeline(handle->device, library, @"gdn_recurrent_update", &error);
         handle->gdn_norm_gate_pipeline =
             make_pipeline(handle->device, library, @"gdn_norm_gate", &error);
+        handle->gdn_output_function = [library
+            newFunctionWithName:staged
+                                    ? @"gdn_w8_output_projection_g32_tg_shared"
+                                    : @"gdn_w8_output_projection_g32"];
         handle->gdn_output_pipeline =
-            make_pipeline(handle->device, library, @"gdn_w8_output_projection_g32", &error);
+            handle->gdn_output_function == nil
+                ? nil
+                : [handle->device
+                      newComputePipelineStateWithFunction:handle->gdn_output_function
+                                                   error:&error];
+        handle->mlp_gate_up_function =
+            [library newFunctionWithName:staged ? @"w8_mlp_gate_up_tg_shared"
+                                                 : @"w8_mlp_gate_up"];
         handle->mlp_gate_up_pipeline =
-            make_pipeline(handle->device, library, @"w8_mlp_gate_up", &error);
+            handle->mlp_gate_up_function == nil
+                ? nil
+                : [handle->device
+                      newComputePipelineStateWithFunction:handle->mlp_gate_up_function
+                                                   error:&error];
         handle->mlp_activation_pipeline =
             make_pipeline(handle->device, library, @"w8_mlp_silu_mul", &error);
+        handle->mlp_down_function =
+            [library newFunctionWithName:staged ? @"w8_mlp_down_tg_shared"
+                                                 : @"w8_mlp_down"];
         handle->mlp_down_pipeline =
-            make_pipeline(handle->device, library, @"w8_mlp_down", &error);
+            handle->mlp_down_function == nil
+                ? nil
+                : [handle->device
+                      newComputePipelineStateWithFunction:handle->mlp_down_function
+                                                   error:&error];
+        handle->requested_body_input_staging = body_input_staging;
+        handle->gdn_input_dynamic_threadgroup_memory_bytes =
+            gdn_input_dynamic_bytes;
+        handle->gdn_output_dynamic_threadgroup_memory_bytes =
+            gdn_output_dynamic_bytes;
+        handle->mlp_gate_up_dynamic_threadgroup_memory_bytes =
+            mlp_gate_up_dynamic_bytes;
+        handle->mlp_down_dynamic_threadgroup_memory_bytes =
+            maximum_mlp_down_dynamic_bytes;
+        handle->boundary_mlp_down_dynamic_threadgroup_memory_bytes =
+            boundary_mlp_down_dynamic_bytes;
+        handle->stack_mlp_down_dynamic_threadgroup_memory_bytes =
+            stack_mlp_down_dynamic_bytes;
         if (handle->layer_rms_pipeline == nil || handle->residual_pipeline == nil ||
             handle->gdn_input_pipeline == nil ||
             handle->gdn_depthwise_pipeline == nil ||
@@ -866,6 +1134,12 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
             handle->mlp_down_pipeline == nil) {
             delete handle;
             write_nserror(error_output, error_capacity, error);
+            return 1;
+        }
+        if (!live_body_input_staging_matches(handle)) {
+            delete handle;
+            write_error(error_output, error_capacity,
+                        "Metal W8 MLP-to-Stack3 boundary v1 live body-input-staging pipelines or threadgroup resources do not match the requested selector");
             return 1;
         }
         handle->queue = [handle->device newCommandQueue];
@@ -950,6 +1224,45 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
     }
 }
 
+extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
+    const BoundaryMlpDescriptorV1 *boundary,
+    const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
+    void **output, char *error_output, size_t error_capacity) {
+    return create_mlp_stack3_boundary_gdn_out_g32_impl(
+        boundary, layers, layer_count, kBodyInputStagingLegacyDevice, output,
+        error_output, error_capacity);
+}
+
+extern "C" int
+apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_with_body_input_staging_v1(
+    const BoundaryMlpDescriptorV1 *boundary,
+    const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
+    uint32_t body_input_staging, void **output, char *error_output,
+    size_t error_capacity) {
+    return create_mlp_stack3_boundary_gdn_out_g32_impl(
+        boundary, layers, layer_count, body_input_staging, output,
+        error_output, error_capacity);
+}
+
+extern "C" int
+apxinf_metal_w8_mlp_stack3_boundary_body_input_staging_receipt_v1(
+    void *opaque_handle, BodyInputStagingRuntimeReceiptV1 *receipt,
+    char *error_output, size_t error_capacity) {
+    @autoreleasepool {
+        if (receipt != nullptr) {
+            *receipt = BodyInputStagingRuntimeReceiptV1{};
+        }
+        auto handle = static_cast<ApxinfMetalW8MlpStack3BoundaryHandleV1 *>(
+            opaque_handle);
+        if (!write_body_input_staging_receipt(handle, receipt)) {
+            write_error(error_output, error_capacity,
+                        "Metal W8 MLP-to-Stack3 boundary v1 live body-input-staging receipt is invalid");
+            return 1;
+        }
+        return 0;
+    }
+}
+
 extern "C" int apxinf_metal_w8_mlp_stack3_boundary_seed_states_v1(
     void *opaque_handle, const BoundaryStateDescriptorV1 *states,
     uint32_t state_count, char *error_output, size_t error_capacity) {
@@ -1030,6 +1343,12 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_decode_v1(
         if (handle->terminal_error) {
             write_error(error_output, error_capacity,
                         "Metal W8 MLP-to-Stack3 boundary v1 is terminal until reset");
+            return 1;
+        }
+        if (!live_body_input_staging_matches(handle)) {
+            handle->terminal_error = true;
+            write_error(error_output, error_capacity,
+                        "Metal W8 MLP-to-Stack3 boundary v1 live body-input-staging selection changed after create");
             return 1;
         }
         if (handle->seeded_mask != kAllSeededMask) {

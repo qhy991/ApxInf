@@ -18,7 +18,7 @@ const PROFILE_BYTES: &[u8] =
     include_bytes!("../../../../configs/hf-onboarding/qwen35-0.8b-macos-cpu.json");
 const GENERAL_SOURCE_BYTES: &[u8] = include_bytes!("../../src/qwen35/general.rs");
 const FROZEN_GENERAL_SOURCE_SHA256: &str =
-    "2c58b87df49cc483915f87ad7607c5b537f34516cfc264552b989fe976bb6f7a";
+    "9f141fe1ae98bd27441569304a9e48ba5dcbb5ea8271c969a4ac5001245a7135";
 const LLM_TRAIT_SOURCE_BYTES: &[u8] = include_bytes!("../../src/llm_trait.rs");
 const APXINF_MODEL_LIB_SOURCE_BYTES: &[u8] = include_bytes!("../../src/lib.rs");
 const APXINF_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!("../../Cargo.toml");
@@ -89,8 +89,10 @@ const METAL_W8_LINEAR_LAYER_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_linear_layer.metal");
 const METAL_W8_GDN_OUT_G32_SOURCE_BYTES: &[u8] =
     include_bytes!("../../../apxinf-metal/src/metal_w8_gdn_out_g32.metal");
+const METAL_W8_BODY_INPUT_STAGING_SOURCE_BYTES: &[u8] =
+    include_bytes!("../../../apxinf-metal/src/metal_w8_body_input_staging.metal");
 const MAX_CACHE_ENTRIES: usize = 4096;
-const SOURCE_SET_ID: &str = "boundary-tail-head-v1-explicit-audited-source-set-v3";
+const SOURCE_SET_ID: &str = "boundary-tail-head-v1-explicit-audited-source-set-v4";
 const SOURCE_SET_COVERAGE: &str = "explicit-non-transitive-source-set-v1";
 
 #[derive(Clone, Copy)]
@@ -102,7 +104,7 @@ struct BuildSourceSpec {
     metal_shader: bool,
 }
 
-fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 47] {
+fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 48] {
     [
         BuildSourceSpec {
             receipt_name: "gate_evidence",
@@ -428,6 +430,13 @@ fn boundary_tail_head_v1_source_set_specs() -> [BuildSourceSpec; 47] {
             metal_shader: true,
         },
         BuildSourceSpec {
+            receipt_name: "metal_w8_body_input_staging",
+            label: "Metal W8 body input-staging shader source",
+            manifest_relative_path: "../apxinf-metal/src/metal_w8_body_input_staging.metal",
+            embedded_bytes: METAL_W8_BODY_INPUT_STAGING_SOURCE_BYTES,
+            metal_shader: true,
+        },
+        BuildSourceSpec {
             receipt_name: "metal_w8_linear_layer",
             label: "Metal W8 linear-layer shader source",
             manifest_relative_path: "../apxinf-metal/src/metal_w8_linear_layer.metal",
@@ -449,7 +458,7 @@ fn source_specs_for_set(source_set_id: &str) -> Result<Vec<BuildSourceSpec>, Box
 }
 
 fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>> {
-    const EXPECTED_NAMES: [&str; 47] = [
+    const EXPECTED_NAMES: [&str; 48] = [
         "gate_evidence",
         "apxinf_model_lib",
         "apxinf_model_manifest",
@@ -496,6 +505,7 @@ fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>
         "metal_w8_mlp",
         "metal_w8_gdn",
         "metal_w8_gdn_out_g32",
+        "metal_w8_body_input_staging",
         "metal_w8_linear_layer",
     ];
     let observed_names = specs
@@ -529,7 +539,7 @@ fn validate_source_specs(specs: &[BuildSourceSpec]) -> Result<(), Box<dyn Error>
         })
         .map(|spec| spec.manifest_relative_path.to_string())
         .collect::<BTreeSet<_>>();
-    if declared_build_inputs.len() != 13 || attested_build_inputs != declared_build_inputs {
+    if declared_build_inputs.len() != 14 || attested_build_inputs != declared_build_inputs {
         return Err(invalid(
             "boundary-tail v1 explicit source set does not exactly cover apxinf-metal build inputs",
         ));
@@ -1488,7 +1498,7 @@ mod tests {
             .iter()
             .map(|spec| spec.receipt_name)
             .collect::<Vec<_>>();
-        assert_eq!(names.len(), 47);
+        assert_eq!(names.len(), 48);
         assert_eq!(
             names.iter().copied().collect::<BTreeSet<_>>().len(),
             names.len()
@@ -1539,6 +1549,7 @@ mod tests {
             "metal_w8_mlp",
             "metal_w8_linear_layer",
             "metal_w8_gdn_out_g32",
+            "metal_w8_body_input_staging",
             "metal_w8_head",
             "metal_w8_matvec",
         ] {

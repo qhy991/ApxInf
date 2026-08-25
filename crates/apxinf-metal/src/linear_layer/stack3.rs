@@ -2,6 +2,7 @@ use super::{
     checked_sum, f32_bytes, GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock,
     W8GroupSize,
 };
+use crate::{BodyInputStagingRuntimeReceiptV1, BodyInputStagingV1};
 
 const STACK_DEPTH: usize = 3;
 
@@ -62,6 +63,7 @@ pub struct MetalW8LinearLayerStack3 {
     terminal_error: bool,
     stats: LinearLayerStack3MetalStats,
     buffer_ledger: LinearLayerStack3BufferLedger,
+    body_input_staging_receipt: BodyInputStagingRuntimeReceiptV1,
 }
 
 impl MetalW8LinearLayerStack3 {
@@ -69,6 +71,19 @@ impl MetalW8LinearLayerStack3 {
     /// All three layers must have exactly equal dimensions and RMS epsilons.
     pub fn from_packed_gdn_out_g32_v1(
         weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+    ) -> Result<Self, MetalW8Error> {
+        Self::from_packed_gdn_out_g32_with_body_input_staging_v1(
+            weights,
+            BodyInputStagingV1::LegacyDevice,
+        )
+    }
+
+    /// Additive diagnostic selector for staging the four W8 projection inputs
+    /// in threadgroup memory. The legacy constructor above always selects
+    /// device-memory input reads.
+    pub fn from_packed_gdn_out_g32_with_body_input_staging_v1(
+        weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+        body_input_staging: BodyInputStagingV1,
     ) -> Result<Self, MetalW8Error> {
         for (index, weights) in weights.iter().enumerate() {
             validate_precision_v1(index, weights)?;
@@ -104,14 +119,29 @@ impl MetalW8LinearLayerStack3 {
         }
         validate_stack3_state_abi(dims)?;
         let buffer_ledger = stack_buffer_ledger(weights)?;
+        let expected_threadgroup_bytes = expected_body_input_threadgroup_bytes(
+            body_input_staging,
+            dims.hidden_size,
+            dims.value_width(),
+            intermediate_size,
+        )?;
+        let inner = platform::LinearLayerStack3Handle::new(weights, body_input_staging)?;
+        let body_input_staging_receipt =
+            inner.body_input_staging_receipt(expected_threadgroup_bytes)?;
+        if body_input_staging_receipt.requested_profile != body_input_staging {
+            return Err(MetalW8Error::new(
+                "Metal W8 stack3 v1 runtime receipt changed the requested body input staging",
+            ));
+        }
         Ok(Self {
             dims,
-            inner: platform::LinearLayerStack3Handle::new(weights)?,
+            inner,
             output: vec![0.0; dims.hidden_size],
             seeded: false,
             terminal_error: false,
             stats: LinearLayerStack3MetalStats::default(),
             buffer_ledger,
+            body_input_staging_receipt,
         })
     }
 
@@ -173,6 +203,10 @@ impl MetalW8LinearLayerStack3 {
 
     pub fn buffer_ledger(&self) -> LinearLayerStack3BufferLedger {
         self.buffer_ledger
+    }
+
+    pub fn body_input_staging_runtime_receipt_v1(&self) -> BodyInputStagingRuntimeReceiptV1 {
+        self.body_input_staging_receipt
     }
 
     fn validate_decode_input(&self, hidden: &[f32]) -> Result<(), MetalW8Error> {
@@ -433,6 +467,36 @@ fn stack_buffer_ledger(
     })
 }
 
+fn expected_body_input_threadgroup_bytes(
+    profile: BodyInputStagingV1,
+    hidden_size: usize,
+    value_width: usize,
+    intermediate_size: usize,
+) -> Result<[usize; 4], MetalW8Error> {
+    if profile == BodyInputStagingV1::LegacyDevice {
+        return Ok([0; 4]);
+    }
+    let elements = [
+        ("GDN input", hidden_size),
+        ("GDN output", value_width),
+        ("MLP gate/up", hidden_size),
+        ("MLP down", intermediate_size),
+    ];
+    let mut bytes = [0; 4];
+    for (index, (label, count)) in elements.into_iter().enumerate() {
+        bytes[index] = f32_bytes(
+            count,
+            &format!("stack3 v1 {label} dynamic threadgroup-memory byte contract"),
+        )?;
+        if bytes[index] > u32::MAX as usize {
+            return Err(MetalW8Error::new(format!(
+                "Metal W8 stack3 v1 {label} dynamic threadgroup-memory bytes exceed the u32 receipt ABI"
+            )));
+        }
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{validate_stack3_state_abi, GdnDimensions};
@@ -441,6 +505,12 @@ mod tests {
     fn stack3_v1_bridge_source_matches_the_versioned_transaction_and_buffer_ledger() {
         let bridge = include_str!("../metal_w8_linear_layer_stack3_bridge.mm");
         assert!(bridge.contains("apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1("));
+        assert!(bridge.contains(
+            "apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_with_body_input_staging_v1("
+        ));
+        assert!(
+            bridge.contains("apxinf_metal_w8_linear_layer_stack3_body_input_staging_receipt_v1(")
+        );
         assert!(bridge.contains("apxinf_metal_w8_linear_layer_stack3_seed_states_v1("));
         assert!(bridge.contains("apxinf_metal_w8_linear_layer_stack3_decode_v1("));
         assert!(bridge.contains("apxinf_metal_w8_linear_layer_stack3_snapshot_state_v1("));
@@ -473,6 +543,16 @@ mod tests {
         assert!(bridge.contains("receipt->state_commits = kStackDepth;"));
         assert!(bridge.contains("receipt->state_commit_mask = kAllSeededMask;"));
         assert!(bridge.contains("Only the final hidden_b row is checked"));
+        assert!(bridge.contains("sizeof(BodyInputStagingRuntimeReceiptV1) == 292"));
+        for function_name in [
+            "@\"gdn_w8_input_projection_tg_shared\"",
+            "@\"gdn_w8_output_projection_g32_tg_shared\"",
+            "@\"w8_mlp_gate_up_tg_shared\"",
+            "@\"w8_mlp_down_tg_shared\"",
+        ] {
+            assert!(bridge.contains(function_name));
+        }
+        assert!(bridge.contains("[encoder setThreadgroupMemoryLength:bytes atIndex:0]"));
     }
 
     #[test]
@@ -498,12 +578,14 @@ mod tests {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock, STACK_DEPTH,
+        BodyInputStagingRuntimeReceiptV1, BodyInputStagingV1, GdnDecodeState, GdnDimensions,
+        MetalW8Error, PackedW8LinearLayerBlock, STACK_DEPTH,
     };
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
 
     const ERROR_CAPACITY: usize = 1024;
+    const FUNCTION_NAME_CAPACITY: usize = 64;
 
     #[repr(C)]
     struct Stack3LayerDescriptorV1 {
@@ -605,11 +687,118 @@ mod platform {
         pub(super) result: Result<(), MetalW8Error>,
     }
 
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct RawBodyInputStagingRuntimeReceiptV1 {
+        requested_profile: u32,
+        observed_profile: u32,
+        threads_per_threadgroup: u32,
+        gdn_input_dynamic_threadgroup_memory_bytes: u32,
+        gdn_output_dynamic_threadgroup_memory_bytes: u32,
+        mlp_gate_up_dynamic_threadgroup_memory_bytes: u32,
+        mlp_down_dynamic_threadgroup_memory_bytes: u32,
+        thread_execution_width: u32,
+        threadgroup_barriers_per_projection: u32,
+        gdn_input_function_name: [c_char; FUNCTION_NAME_CAPACITY],
+        gdn_output_function_name: [c_char; FUNCTION_NAME_CAPACITY],
+        mlp_gate_up_function_name: [c_char; FUNCTION_NAME_CAPACITY],
+        mlp_down_function_name: [c_char; FUNCTION_NAME_CAPACITY],
+    }
+
+    const _: () = {
+        assert!(std::mem::size_of::<RawBodyInputStagingRuntimeReceiptV1>() == 292);
+        assert!(std::mem::offset_of!(RawBodyInputStagingRuntimeReceiptV1, requested_profile) == 0);
+        assert!(std::mem::offset_of!(RawBodyInputStagingRuntimeReceiptV1, observed_profile) == 4);
+        assert!(
+            std::mem::offset_of!(RawBodyInputStagingRuntimeReceiptV1, threads_per_threadgroup) == 8
+        );
+        assert!(
+            std::mem::offset_of!(
+                RawBodyInputStagingRuntimeReceiptV1,
+                gdn_input_dynamic_threadgroup_memory_bytes
+            ) == 12
+        );
+        assert!(
+            std::mem::offset_of!(
+                RawBodyInputStagingRuntimeReceiptV1,
+                gdn_output_dynamic_threadgroup_memory_bytes
+            ) == 16
+        );
+        assert!(
+            std::mem::offset_of!(
+                RawBodyInputStagingRuntimeReceiptV1,
+                mlp_gate_up_dynamic_threadgroup_memory_bytes
+            ) == 20
+        );
+        assert!(
+            std::mem::offset_of!(
+                RawBodyInputStagingRuntimeReceiptV1,
+                mlp_down_dynamic_threadgroup_memory_bytes
+            ) == 24
+        );
+        assert!(
+            std::mem::offset_of!(RawBodyInputStagingRuntimeReceiptV1, thread_execution_width) == 28
+        );
+        assert!(
+            std::mem::offset_of!(
+                RawBodyInputStagingRuntimeReceiptV1,
+                threadgroup_barriers_per_projection
+            ) == 32
+        );
+        assert!(
+            std::mem::offset_of!(RawBodyInputStagingRuntimeReceiptV1, gdn_input_function_name)
+                == 36
+        );
+        assert!(
+            std::mem::offset_of!(
+                RawBodyInputStagingRuntimeReceiptV1,
+                gdn_output_function_name
+            ) == 100
+        );
+        assert!(
+            std::mem::offset_of!(
+                RawBodyInputStagingRuntimeReceiptV1,
+                mlp_gate_up_function_name
+            ) == 164
+        );
+        assert!(
+            std::mem::offset_of!(RawBodyInputStagingRuntimeReceiptV1, mlp_down_function_name)
+                == 228
+        );
+    };
+
+    impl Default for RawBodyInputStagingRuntimeReceiptV1 {
+        fn default() -> Self {
+            Self {
+                requested_profile: 0,
+                observed_profile: 0,
+                threads_per_threadgroup: 0,
+                gdn_input_dynamic_threadgroup_memory_bytes: 0,
+                gdn_output_dynamic_threadgroup_memory_bytes: 0,
+                mlp_gate_up_dynamic_threadgroup_memory_bytes: 0,
+                mlp_down_dynamic_threadgroup_memory_bytes: 0,
+                thread_execution_width: 0,
+                threadgroup_barriers_per_projection: 0,
+                gdn_input_function_name: [0; FUNCTION_NAME_CAPACITY],
+                gdn_output_function_name: [0; FUNCTION_NAME_CAPACITY],
+                mlp_gate_up_function_name: [0; FUNCTION_NAME_CAPACITY],
+                mlp_down_function_name: [0; FUNCTION_NAME_CAPACITY],
+            }
+        }
+    }
+
     extern "C" {
-        fn apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1(
+        fn apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_with_body_input_staging_v1(
             layers: *const Stack3LayerDescriptorV1,
             layer_count: u32,
+            body_input_staging: u32,
             output: *mut *mut c_void,
+            error: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn apxinf_metal_w8_linear_layer_stack3_body_input_staging_receipt_v1(
+            handle: *mut c_void,
+            receipt: *mut RawBodyInputStagingRuntimeReceiptV1,
             error: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
@@ -646,14 +835,16 @@ mod platform {
     impl LinearLayerStack3Handle {
         pub(super) fn new(
             weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+            body_input_staging: BodyInputStagingV1,
         ) -> Result<Self, MetalW8Error> {
             let descriptors = weights.map(Stack3LayerDescriptorV1::from_packed);
             let mut output = std::ptr::null_mut();
             let mut error = [0 as c_char; ERROR_CAPACITY];
             let status = unsafe {
-                apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1(
+                apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_with_body_input_staging_v1(
                     descriptors.as_ptr(),
                     descriptors.len() as u32,
+                    body_input_staging.selector(),
                     &mut output,
                     error.as_mut_ptr(),
                     error.len(),
@@ -665,6 +856,29 @@ mod platform {
             NonNull::new(output).map(Self).ok_or_else(|| {
                 MetalW8Error::new("create Metal W8 stack3 v1 returned a null handle")
             })
+        }
+
+        pub(super) fn body_input_staging_receipt(
+            &self,
+            expected_threadgroup_bytes: [usize; 4],
+        ) -> Result<BodyInputStagingRuntimeReceiptV1, MetalW8Error> {
+            let mut receipt = RawBodyInputStagingRuntimeReceiptV1::default();
+            let mut error = [0 as c_char; ERROR_CAPACITY];
+            let status = unsafe {
+                apxinf_metal_w8_linear_layer_stack3_body_input_staging_receipt_v1(
+                    self.0.as_ptr(),
+                    &mut receipt,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                return Err(bridge_error(
+                    "read Metal W8 stack3 v1 body input staging receipt",
+                    &error,
+                ));
+            }
+            decode_body_input_staging_receipt(receipt, expected_threadgroup_bytes)
         }
 
         pub(super) fn seed(
@@ -779,12 +993,87 @@ mod platform {
             MetalW8Error::new(format!("{context}: {detail}"))
         }
     }
+
+    fn decode_body_input_staging_receipt(
+        receipt: RawBodyInputStagingRuntimeReceiptV1,
+        expected_threadgroup_bytes: [usize; 4],
+    ) -> Result<BodyInputStagingRuntimeReceiptV1, MetalW8Error> {
+        let requested = BodyInputStagingV1::try_from(receipt.requested_profile)?;
+        let observed = BodyInputStagingV1::try_from(receipt.observed_profile)?;
+        if observed != requested {
+            return Err(MetalW8Error::new(
+                "Metal W8 stack3 v1 requested and observed body input staging profiles differ",
+            ));
+        }
+        let function_names = [
+            decode_function_name(&receipt.gdn_input_function_name, "GDN input")?,
+            decode_function_name(&receipt.gdn_output_function_name, "GDN output")?,
+            decode_function_name(&receipt.mlp_gate_up_function_name, "MLP gate/up")?,
+            decode_function_name(&receipt.mlp_down_function_name, "MLP down")?,
+        ];
+        let expected_names = [
+            requested.expected_gdn_input_function_name(),
+            requested.expected_gdn_output_function_name(),
+            requested.expected_mlp_gate_up_function_name(),
+            requested.expected_mlp_down_function_name(),
+        ];
+        let observed_threadgroup_bytes = [
+            receipt.gdn_input_dynamic_threadgroup_memory_bytes as usize,
+            receipt.gdn_output_dynamic_threadgroup_memory_bytes as usize,
+            receipt.mlp_gate_up_dynamic_threadgroup_memory_bytes as usize,
+            receipt.mlp_down_dynamic_threadgroup_memory_bytes as usize,
+        ];
+        let expected_barriers = usize::from(requested == BodyInputStagingV1::ThreadgroupShared);
+        if function_names != expected_names
+            || receipt.threads_per_threadgroup != 256
+            || receipt.thread_execution_width != 32
+            || observed_threadgroup_bytes != expected_threadgroup_bytes
+            || receipt.threadgroup_barriers_per_projection as usize != expected_barriers
+        {
+            return Err(MetalW8Error::new(
+                "Metal W8 stack3 v1 live body input staging receipt does not match its profile",
+            ));
+        }
+        Ok(BodyInputStagingRuntimeReceiptV1 {
+            requested_profile: requested,
+            observed_profile: observed,
+            threads_per_threadgroup: receipt.threads_per_threadgroup as usize,
+            gdn_input_threadgroup_bytes: observed_threadgroup_bytes[0],
+            gdn_output_threadgroup_bytes: observed_threadgroup_bytes[1],
+            mlp_gate_up_threadgroup_bytes: observed_threadgroup_bytes[2],
+            mlp_down_threadgroup_bytes: observed_threadgroup_bytes[3],
+            pipeline_thread_execution_width: receipt.thread_execution_width as usize,
+            threadgroup_barriers_per_projection: expected_barriers,
+            gdn_input_function_name: expected_names[0],
+            gdn_output_function_name: expected_names[1],
+            mlp_gate_up_function_name: expected_names[2],
+            mlp_down_function_name: expected_names[3],
+        })
+    }
+
+    fn decode_function_name<'a>(
+        bytes: &'a [c_char; FUNCTION_NAME_CAPACITY],
+        label: &str,
+    ) -> Result<&'a str, MetalW8Error> {
+        let length = bytes.iter().position(|&byte| byte == 0).ok_or_else(|| {
+            MetalW8Error::new(format!(
+                "Metal W8 stack3 v1 {label} function name is not terminated"
+            ))
+        })?;
+        let bytes = unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), length) };
+        std::str::from_utf8(bytes).map_err(|_| {
+            MetalW8Error::new(format!(
+                "Metal W8 stack3 v1 {label} function name is not UTF-8"
+            ))
+        })
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
     use super::{
-        GdnDecodeState, GdnDimensions, MetalW8Error, PackedW8LinearLayerBlock, STACK_DEPTH,
+        BodyInputStagingRuntimeReceiptV1, BodyInputStagingV1, GdnDecodeState, GdnDimensions,
+        MetalW8Error, PackedW8LinearLayerBlock, STACK_DEPTH,
     };
 
     #[derive(Clone, Copy, Debug, Default)]
@@ -809,7 +1098,15 @@ mod platform {
     impl LinearLayerStack3Handle {
         pub(super) fn new(
             _weights: [&PackedW8LinearLayerBlock; STACK_DEPTH],
+            _body_input_staging: BodyInputStagingV1,
         ) -> Result<Self, MetalW8Error> {
+            Err(MetalW8Error::new("Metal W8 stack3 v1 requires macOS"))
+        }
+
+        pub(super) fn body_input_staging_receipt(
+            &self,
+            _expected_threadgroup_bytes: [usize; 4],
+        ) -> Result<BodyInputStagingRuntimeReceiptV1, MetalW8Error> {
             Err(MetalW8Error::new("Metal W8 stack3 v1 requires macOS"))
         }
 

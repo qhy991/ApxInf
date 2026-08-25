@@ -72,6 +72,35 @@ enum Qwen35BoundaryTailHeadFaultV1ForTest {
     TailOutOfRangeCandidate,
 }
 
+#[cfg(feature = "metal-w8")]
+const fn body_input_staging_v1_label(value: apxinf_metal::BodyInputStagingV1) -> &'static str {
+    match value {
+        apxinf_metal::BodyInputStagingV1::LegacyDevice => "legacy-device",
+        apxinf_metal::BodyInputStagingV1::ThreadgroupShared => "threadgroup-shared",
+    }
+}
+
+#[cfg(feature = "metal-w8")]
+fn body_input_staging_runtime_json(
+    receipt: apxinf_metal::BodyInputStagingRuntimeReceiptV1,
+) -> serde_json::Value {
+    serde_json::json!({
+        "requested_profile": body_input_staging_v1_label(receipt.requested_profile),
+        "observed_profile": body_input_staging_v1_label(receipt.observed_profile),
+        "threads_per_threadgroup": receipt.threads_per_threadgroup,
+        "gdn_input_threadgroup_bytes": receipt.gdn_input_threadgroup_bytes,
+        "gdn_output_threadgroup_bytes": receipt.gdn_output_threadgroup_bytes,
+        "mlp_gate_up_threadgroup_bytes": receipt.mlp_gate_up_threadgroup_bytes,
+        "mlp_down_threadgroup_bytes": receipt.mlp_down_threadgroup_bytes,
+        "pipeline_thread_execution_width": receipt.pipeline_thread_execution_width,
+        "threadgroup_barriers_per_projection": receipt.threadgroup_barriers_per_projection,
+        "gdn_input_function_name": receipt.gdn_input_function_name,
+        "gdn_output_function_name": receipt.gdn_output_function_name,
+        "mlp_gate_up_function_name": receipt.mlp_gate_up_function_name,
+        "mlp_down_function_name": receipt.mlp_down_function_name,
+    })
+}
+
 /// Observable receipt for one explicitly selected, decode-only Metal W8 GDN
 /// attention block. One successful decode is one command buffer and one wait.
 #[cfg(feature = "metal-w8")]
@@ -348,6 +377,7 @@ pub struct Qwen35MetalW8MlpStack3BoundaryRegionV1Stats {
     pub boundary_mlp_layer_index: usize,
     pub stack_layer_indices: [usize; 3],
     pub mechanism: &'static str,
+    pub body_input_staging_runtime: apxinf_metal::BodyInputStagingRuntimeReceiptV1,
     pub quantization: [apxinf_metal::LinearLayerQuantizationLedger; 3],
     pub prefill_seed_calls: [usize; 3],
     pub execution: apxinf_metal::MlpStack3BoundaryMetalStatsV1,
@@ -452,6 +482,8 @@ struct Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
     pub mechanism: &'static str,
+    pub body_input_staging: apxinf_metal::BodyInputStagingV1,
+    pub initial_body_input_staging_runtime: apxinf_metal::BodyInputStagingRuntimeReceiptV1,
     pub initial_stack: Qwen35MetalW8LinearLayerStack3V1Stats,
     pub boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionV1Stats>,
     pub tail_layer_index: usize,
@@ -466,6 +498,7 @@ pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
 
 #[cfg(feature = "metal-w8")]
 struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
+    body_input_staging: apxinf_metal::BodyInputStagingV1,
     initial_stack: Qwen35MetalW8LinearLayerStack3V1,
     boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionV1>,
     tail_layer_index: usize,
@@ -915,6 +948,27 @@ impl GeneralQwen35 {
         device: Device,
         max_context: usize,
     ) -> Result<Self> {
+        Self::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_body_input_staging(
+            config,
+            tensors,
+            device,
+            max_context,
+            apxinf_metal::BodyInputStagingV1::LegacyDevice,
+        )
+    }
+
+    /// Diagnostic-only composite lane with an explicit body matvec input
+    /// staging selector. The legacy constructor above remains fixed to device
+    /// input reads; this additive route is used only by same-binary gates. The
+    /// layer-23 tail/head transaction is intentionally unaffected.
+    #[cfg(feature = "metal-w8")]
+    pub fn from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_body_input_staging(
+        config: Qwen35Config,
+        tensors: HashMap<String, Tensor>,
+        device: Device,
+        max_context: usize,
+        body_input_staging: apxinf_metal::BodyInputStagingV1,
+    ) -> Result<Self> {
         if !config.text.tie_word_embeddings {
             return Err(Error::Other(
                 "qwen3.5 Metal W8 boundary + tail-head v1 requires tied word embeddings".into(),
@@ -923,7 +977,11 @@ impl GeneralQwen35 {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(&config.text)?;
         let backend = create_backend(device)?;
         let weights = Qwen35TextWeights::from_map(&config, tensors)?;
-        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack(&weights, &config.text)?;
+        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack_with_body_input_staging(
+            &weights,
+            &config.text,
+            body_input_staging,
+        )?;
         let mut model =
             Self::new_with_metal_options(config, weights, backend, max_context, false, None, None)?;
         model.metal_w8_mlp_stack3_boundary_tail_head_v1 = Some(lane);
@@ -3079,6 +3137,9 @@ impl LlmTrait for GeneralQwen35 {
                             "boundary_mlp_layer_index": region.boundary_mlp_layer_index,
                             "stack_layer_indices": region.stack_layer_indices,
                             "mechanism": region.mechanism,
+                            "body_input_staging_runtime": body_input_staging_runtime_json(
+                                region.body_input_staging_runtime,
+                            ),
                             "prefill_seed_calls": region.prefill_seed_calls,
                             "decode_calls": execution.decode_calls,
                             "successful_decodes": execution.successful_decodes,
@@ -3100,6 +3161,7 @@ impl LlmTrait for GeneralQwen35 {
                 return Some(serde_json::json!({
                     "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
                     "mechanism": lane.mechanism,
+                    "body_input_staging": body_input_staging_v1_label(lane.body_input_staging),
                     "cpu_full_attention_and_kv": true,
                     "cpu_prefill_all_24_layers": true,
                     "metal_w8_initial_complete_linear_layer_stack3": true,
@@ -3108,9 +3170,27 @@ impl LlmTrait for GeneralQwen35 {
                     "standalone_layer23_mlp": false,
                     "standalone_metal_lm_head": false,
                     "f32_tied_four_candidate_rerank": true,
+                    "body_input_staging_scope": {
+                        "initial_stack_and_five_boundaries_only": true,
+                        "tail_layer23_mlp_final_rms_top4_unchanged": true,
+                        "projection_count": 82,
+                    },
+                    "body_input_staging_logical_mapping": {
+                        "scope": "initial-stack-plus-five-boundaries-only",
+                        "projection_count": 82,
+                        "legacy_device_input_bytes_per_decode": 1_770_258_432usize,
+                        "threadgroup_shared_device_input_bytes_per_decode": 221_282_304usize,
+                        "threadgroup_shared_threadgroup_input_bytes_per_decode": 1_770_258_432usize,
+                        "logical_device_input_reduction_bytes_per_decode": 1_548_976_128usize,
+                        "measured_dram_traffic": false,
+                        "interpretation": "static logical input-read mapping; not a measured DRAM-traffic claim",
+                    },
                     "initial_stack": {
                         "layer_indices": lane.initial_stack.layer_indices,
                         "mechanism": lane.initial_stack.mechanism,
+                        "body_input_staging_runtime": body_input_staging_runtime_json(
+                            lane.initial_body_input_staging_runtime,
+                        ),
                         "prefill_seed_calls": lane.initial_stack.prefill_seed_calls,
                         "decode_calls": initial_execution.decode_calls,
                         "successful_decodes": initial_execution.successful_decodes,
@@ -3167,6 +3247,7 @@ impl LlmTrait for GeneralQwen35 {
                         "command_buffers_per_decode": aggregate.command_buffers_per_decode,
                         "compute_encoders_per_decode": aggregate.compute_encoders_per_decode,
                         "kernel_dispatches_per_decode": aggregate.kernel_dispatches_per_decode,
+                        "buffer_barriers_per_decode": 243,
                         "commits_per_decode": aggregate.commits_per_decode,
                         "waits_per_decode": aggregate.waits_per_decode,
                     },
@@ -4355,6 +4436,20 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         config: &Qwen35TextConfig,
         layer_indices: [usize; 3],
     ) -> Result<Self> {
+        Self::pack_with_body_input_staging(
+            weights,
+            config,
+            layer_indices,
+            apxinf_metal::BodyInputStagingV1::LegacyDevice,
+        )
+    }
+
+    fn pack_with_body_input_staging(
+        weights: &Qwen35TextWeights,
+        config: &Qwen35TextConfig,
+        layer_indices: [usize; 3],
+        body_input_staging: apxinf_metal::BodyInputStagingV1,
+    ) -> Result<Self> {
         let packed = layer_indices
             .into_iter()
             .map(|layer_index| {
@@ -4384,11 +4479,10 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         })?
         .try_into()
         .map_err(|_| Error::Other("qwen3.5 Metal W8 stack3-v1 ledger depth changed".into()))?;
-        let block = apxinf_metal::MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1([
-            &packed[0].packed,
-            &packed[1].packed,
-            &packed[2].packed,
-        ])
+        let block = apxinf_metal::MetalW8LinearLayerStack3::from_packed_gdn_out_g32_with_body_input_staging_v1(
+            [&packed[0].packed, &packed[1].packed, &packed[2].packed],
+            body_input_staging,
+        )
         .map_err(|error| {
             Error::Other(format!(
                 "qwen3.5 Metal W8 stack3-v1 layers {layer_indices:?} construction failed: {error}"
@@ -4743,6 +4837,22 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
         boundary_mlp_layer_index: usize,
         stack_layer_indices: [usize; 3],
     ) -> Result<Self> {
+        Self::pack_with_body_input_staging(
+            weights,
+            config,
+            boundary_mlp_layer_index,
+            stack_layer_indices,
+            apxinf_metal::BodyInputStagingV1::LegacyDevice,
+        )
+    }
+
+    fn pack_with_body_input_staging(
+        weights: &Qwen35TextWeights,
+        config: &Qwen35TextConfig,
+        boundary_mlp_layer_index: usize,
+        stack_layer_indices: [usize; 3],
+        body_input_staging: apxinf_metal::BodyInputStagingV1,
+    ) -> Result<Self> {
         if config.layer_types.get(boundary_mlp_layer_index) != Some(&Qwen35LayerType::FullAttention)
             || !matches!(
                 weights
@@ -4823,13 +4933,15 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
                 "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} assembly failed: {error}"
             ))
         })?;
-        let block = apxinf_metal::MetalW8MlpStack3BoundaryV1::from_packed(&packed).map_err(
-            |error| {
-                Error::Other(format!(
-                    "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} construction failed: {error}"
-                ))
-            },
-        )?;
+        let block = apxinf_metal::MetalW8MlpStack3BoundaryV1::from_packed_with_body_input_staging_v1(
+            &packed,
+            body_input_staging,
+        )
+        .map_err(|error| {
+            Error::Other(format!(
+                "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} construction failed: {error}"
+            ))
+        })?;
         Ok(Self {
             boundary_mlp_layer_index,
             stack_layer_indices,
@@ -4851,6 +4963,7 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
             boundary_mlp_layer_index: self.boundary_mlp_layer_index,
             stack_layer_indices: self.stack_layer_indices,
             mechanism: "metal-w8-mlp-stack3-boundary-v1",
+            body_input_staging_runtime: self.block.body_input_staging_runtime_receipt_v1(),
             quantization: self.quantization,
             prefill_seed_calls: self.prefill_seed_calls,
             execution: self.block.stats(),
@@ -5185,7 +5298,11 @@ impl Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 
 #[cfg(feature = "metal-w8")]
 impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
-    fn pack(weights: &Qwen35TextWeights, config: &Qwen35TextConfig) -> Result<Self> {
+    fn pack_with_body_input_staging(
+        weights: &Qwen35TextWeights,
+        config: &Qwen35TextConfig,
+        body_input_staging: apxinf_metal::BodyInputStagingV1,
+    ) -> Result<Self> {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(config)?;
         if weights.layers.len() != 24 || weights.lm_head_weight.is_some() {
             return Err(Error::Other(
@@ -5193,19 +5310,21 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                     .into(),
             ));
         }
-        let initial_stack = Qwen35MetalW8LinearLayerStack3V1::pack(
+        let initial_stack = Qwen35MetalW8LinearLayerStack3V1::pack_with_body_input_staging(
             weights,
             config,
             QWEN35_MLP_STACK3_BOUNDARY_INITIAL_STACK_V1,
+            body_input_staging,
         )?;
         let boundaries = QWEN35_MLP_STACK3_BOUNDARY_REGIONS_V1
             .into_iter()
             .map(|(boundary_mlp_layer_index, stack_layer_indices)| {
-                Qwen35MetalW8MlpStack3BoundaryRegionV1::pack(
+                Qwen35MetalW8MlpStack3BoundaryRegionV1::pack_with_body_input_staging(
                     weights,
                     config,
                     boundary_mlp_layer_index,
                     stack_layer_indices,
+                    body_input_staging,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -5267,6 +5386,7 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
             ))
         })?;
         Ok(Self {
+            body_input_staging,
             initial_stack,
             boundaries,
             tail_layer_index: QWEN35_MLP_STACK3_BOUNDARY_FINAL_MLP_V1,
@@ -5283,6 +5403,11 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
     fn stats(&self) -> Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
         Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
             mechanism: "metal-w8-mlp-stack3-boundary-tail-head-v1",
+            body_input_staging: self.body_input_staging,
+            initial_body_input_staging_runtime: self
+                .initial_stack
+                .block
+                .body_input_staging_runtime_receipt_v1(),
             initial_stack: self.initial_stack.stats(),
             boundaries: self
                 .boundaries
@@ -7605,6 +7730,18 @@ mod tests {
             .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
             .unwrap();
         assert_eq!(stats.mechanism, "metal-w8-mlp-stack3-boundary-tail-head-v1");
+        assert_eq!(
+            stats.body_input_staging,
+            apxinf_metal::BodyInputStagingV1::LegacyDevice
+        );
+        assert_eq!(
+            stats.initial_body_input_staging_runtime.requested_profile,
+            apxinf_metal::BodyInputStagingV1::LegacyDevice
+        );
+        assert_eq!(
+            stats.initial_body_input_staging_runtime.observed_profile,
+            apxinf_metal::BodyInputStagingV1::LegacyDevice
+        );
         assert_eq!(stats.initial_stack.layer_indices, [0, 1, 2]);
         assert_eq!(stats.boundaries.len(), 5);
         assert_eq!(stats.tail_layer_index, 23);
@@ -7632,6 +7769,66 @@ mod tests {
         .err()
         .expect("tail-head v1 must reject untied output weights");
         assert!(error.to_string().contains("tied word embeddings"));
+    }
+
+    #[cfg(all(feature = "metal-w8", target_os = "macos"))]
+    #[test]
+    fn metal_boundary_tail_head_v1_threadgroup_body_staging_is_live_in_all_six_regions() {
+        let (config, tensors) = metal_all_linear_layers_fixture();
+        let diagnostic = GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_body_input_staging(
+            config,
+            tensors,
+            Device::Cpu,
+            16,
+            apxinf_metal::BodyInputStagingV1::ThreadgroupShared,
+        )
+        .unwrap();
+        let stats = diagnostic
+            .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
+            .unwrap();
+        let initial = stats.initial_body_input_staging_runtime;
+        assert_eq!(
+            stats.body_input_staging,
+            apxinf_metal::BodyInputStagingV1::ThreadgroupShared
+        );
+        assert_eq!(initial.requested_profile, stats.body_input_staging);
+        assert_eq!(initial.observed_profile, stats.body_input_staging);
+        assert_eq!(initial.threads_per_threadgroup, 256);
+        assert_eq!(initial.pipeline_thread_execution_width, 32);
+        assert_eq!(initial.threadgroup_barriers_per_projection, 1);
+        assert_eq!(
+            [
+                initial.gdn_input_threadgroup_bytes,
+                initial.gdn_output_threadgroup_bytes,
+                initial.mlp_gate_up_threadgroup_bytes,
+                initial.mlp_down_threadgroup_bytes,
+            ],
+            [256, 256, 256, 256]
+        );
+        assert!(stats.boundaries.iter().all(|region| {
+            let runtime = region.body_input_staging_runtime;
+            runtime.requested_profile == stats.body_input_staging
+                && runtime.observed_profile == stats.body_input_staging
+                && runtime.threads_per_threadgroup == 256
+                && runtime.pipeline_thread_execution_width == 32
+                && runtime.threadgroup_barriers_per_projection == 1
+                && runtime.gdn_input_function_name == "gdn_w8_input_projection_tg_shared"
+                && runtime.gdn_output_function_name == "gdn_w8_output_projection_g32_tg_shared"
+                && runtime.mlp_gate_up_function_name == "w8_mlp_gate_up_tg_shared"
+                && runtime.mlp_down_function_name == "w8_mlp_down_tg_shared"
+        }));
+        assert_eq!(stats.tail, Default::default());
+
+        let receipt = diagnostic.generation_path_receipt().unwrap();
+        assert_eq!(receipt["body_input_staging"], "threadgroup-shared");
+        assert_eq!(receipt["body_input_staging_scope"]["projection_count"], 82);
+        assert_eq!(
+            receipt["body_input_staging_logical_mapping"]
+                ["logical_device_input_reduction_bytes_per_decode"],
+            1_548_976_128usize
+        );
+        assert_eq!(receipt["aggregate"]["kernel_dispatches_per_decode"], 267);
+        assert_eq!(receipt["aggregate"]["buffer_barriers_per_decode"], 243);
     }
 
     #[cfg(all(feature = "metal-w8", target_os = "macos"))]

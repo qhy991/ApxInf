@@ -75,6 +75,150 @@ enum Mode {
     BoundaryTailV1Free,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BodyInputStaging {
+    LegacyDevice,
+    ThreadgroupShared,
+}
+
+impl BodyInputStaging {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "legacy-device" => Ok(Self::LegacyDevice),
+            "threadgroup-shared" => Ok(Self::ThreadgroupShared),
+            other => Err(format!("invalid --body-input-staging {other:?}")),
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::LegacyDevice => "legacy-device",
+            Self::ThreadgroupShared => "threadgroup-shared",
+        }
+    }
+
+    const fn metal(self) -> apxinf_metal::BodyInputStagingV1 {
+        match self {
+            Self::LegacyDevice => apxinf_metal::BodyInputStagingV1::LegacyDevice,
+            Self::ThreadgroupShared => apxinf_metal::BodyInputStagingV1::ThreadgroupShared,
+        }
+    }
+
+    const fn expected_threadgroup_bytes(self) -> [usize; 4] {
+        match self {
+            Self::LegacyDevice => [0, 0, 0, 0],
+            Self::ThreadgroupShared => [4_096, 8_192, 4_096, 14_336],
+        }
+    }
+
+    const fn expected_function_names(self) -> [&'static str; 4] {
+        match self {
+            Self::LegacyDevice => [
+                "gdn_w8_input_projection",
+                "gdn_w8_output_projection_g32",
+                "w8_mlp_gate_up",
+                "w8_mlp_down",
+            ],
+            Self::ThreadgroupShared => [
+                "gdn_w8_input_projection_tg_shared",
+                "gdn_w8_output_projection_g32_tg_shared",
+                "w8_mlp_gate_up_tg_shared",
+                "w8_mlp_down_tg_shared",
+            ],
+        }
+    }
+
+    const fn expected_threadgroup_barriers_per_projection(self) -> usize {
+        match self {
+            Self::LegacyDevice => 0,
+            Self::ThreadgroupShared => 1,
+        }
+    }
+}
+
+fn body_input_staging_runtime_is_exact(
+    receipt: apxinf_metal::BodyInputStagingRuntimeReceiptV1,
+    profile: BodyInputStaging,
+) -> bool {
+    let [gdn_input_bytes, gdn_output_bytes, mlp_gate_up_bytes, mlp_down_bytes] =
+        profile.expected_threadgroup_bytes();
+    let [gdn_input_name, gdn_output_name, mlp_gate_up_name, mlp_down_name] =
+        profile.expected_function_names();
+    receipt.requested_profile == profile.metal()
+        && receipt.observed_profile == profile.metal()
+        && receipt.threads_per_threadgroup == 256
+        && receipt.gdn_input_threadgroup_bytes == gdn_input_bytes
+        && receipt.gdn_output_threadgroup_bytes == gdn_output_bytes
+        && receipt.mlp_gate_up_threadgroup_bytes == mlp_gate_up_bytes
+        && receipt.mlp_down_threadgroup_bytes == mlp_down_bytes
+        && receipt.pipeline_thread_execution_width == 32
+        && receipt.threadgroup_barriers_per_projection
+            == profile.expected_threadgroup_barriers_per_projection()
+        && receipt.gdn_input_function_name == gdn_input_name
+        && receipt.gdn_output_function_name == gdn_output_name
+        && receipt.mlp_gate_up_function_name == mlp_gate_up_name
+        && receipt.mlp_down_function_name == mlp_down_name
+}
+
+fn body_input_staging_runtime_json_is_exact(
+    receipt: Option<&Value>,
+    profile: BodyInputStaging,
+) -> bool {
+    let Some(receipt) = receipt else {
+        return false;
+    };
+    let [gdn_input_bytes, gdn_output_bytes, mlp_gate_up_bytes, mlp_down_bytes] =
+        profile.expected_threadgroup_bytes();
+    let [gdn_input_name, gdn_output_name, mlp_gate_up_name, mlp_down_name] =
+        profile.expected_function_names();
+    receipt.get("requested_profile").and_then(Value::as_str) == Some(profile.label())
+        && receipt.get("observed_profile").and_then(Value::as_str) == Some(profile.label())
+        && receipt
+            .get("threads_per_threadgroup")
+            .and_then(Value::as_u64)
+            == Some(256)
+        && receipt
+            .get("gdn_input_threadgroup_bytes")
+            .and_then(Value::as_u64)
+            == Some(gdn_input_bytes as u64)
+        && receipt
+            .get("gdn_output_threadgroup_bytes")
+            .and_then(Value::as_u64)
+            == Some(gdn_output_bytes as u64)
+        && receipt
+            .get("mlp_gate_up_threadgroup_bytes")
+            .and_then(Value::as_u64)
+            == Some(mlp_gate_up_bytes as u64)
+        && receipt
+            .get("mlp_down_threadgroup_bytes")
+            .and_then(Value::as_u64)
+            == Some(mlp_down_bytes as u64)
+        && receipt
+            .get("pipeline_thread_execution_width")
+            .and_then(Value::as_u64)
+            == Some(32)
+        && receipt
+            .get("threadgroup_barriers_per_projection")
+            .and_then(Value::as_u64)
+            == Some(profile.expected_threadgroup_barriers_per_projection() as u64)
+        && receipt
+            .get("gdn_input_function_name")
+            .and_then(Value::as_str)
+            == Some(gdn_input_name)
+        && receipt
+            .get("gdn_output_function_name")
+            .and_then(Value::as_str)
+            == Some(gdn_output_name)
+        && receipt
+            .get("mlp_gate_up_function_name")
+            .and_then(Value::as_str)
+            == Some(mlp_gate_up_name)
+        && receipt
+            .get("mlp_down_function_name")
+            .and_then(Value::as_str)
+            == Some(mlp_down_name)
+}
+
 impl Mode {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
@@ -125,6 +269,13 @@ const BOUNDARY_REGIONS: [(usize, [usize; 3]); 5] = [
     (15, [16, 17, 18]),
     (19, [20, 21, 22]),
 ];
+const BODY_STAGED_PROJECTIONS_PER_DECODE: usize = 82;
+const LEGACY_LOGICAL_DEVICE_INPUT_BYTES_PER_DECODE: usize = 1_770_258_432;
+const THREADGROUP_SHARED_LOGICAL_DEVICE_INPUT_BYTES_PER_DECODE: usize = 221_282_304;
+const THREADGROUP_SHARED_LOGICAL_THREADGROUP_INPUT_BYTES_PER_DECODE: usize = 1_770_258_432;
+const LOGICAL_DEVICE_INPUT_REDUCTION_BYTES_PER_DECODE: usize = 1_548_976_128;
+const EXTERNAL_KERNEL_DISPATCHES_PER_DECODE: usize = 267;
+const EXTERNAL_BUFFER_BARRIERS_PER_DECODE: usize = 243;
 
 fn validate_official_schedule(layer_types: &[Qwen35LayerType]) -> Result<(), String> {
     if layer_types.len() != 24 {
@@ -463,6 +614,19 @@ fn tail_ledger_json(ledger: apxinf_metal::TailMlpHeadBufferLedgerV1) -> Value {
     })
 }
 
+fn body_input_staging_logical_mapping_json() -> Value {
+    json!({
+        "scope": "initial-stack-plus-five-boundaries-only",
+        "projection_count": BODY_STAGED_PROJECTIONS_PER_DECODE,
+        "legacy_device_input_bytes_per_decode": LEGACY_LOGICAL_DEVICE_INPUT_BYTES_PER_DECODE,
+        "threadgroup_shared_device_input_bytes_per_decode": THREADGROUP_SHARED_LOGICAL_DEVICE_INPUT_BYTES_PER_DECODE,
+        "threadgroup_shared_threadgroup_input_bytes_per_decode": THREADGROUP_SHARED_LOGICAL_THREADGROUP_INPUT_BYTES_PER_DECODE,
+        "logical_device_input_reduction_bytes_per_decode": LOGICAL_DEVICE_INPUT_REDUCTION_BYTES_PER_DECODE,
+        "measured_dram_traffic": false,
+        "interpretation": "static logical input-read mapping; not a measured DRAM-traffic claim",
+    })
+}
+
 fn aggregate_ledger_json(
     ledger: &Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger,
 ) -> Value {
@@ -491,6 +655,7 @@ fn aggregate_ledger_json(
         "command_buffers_per_decode": ledger.command_buffers_per_decode,
         "compute_encoders_per_decode": ledger.compute_encoders_per_decode,
         "kernel_dispatches_per_decode": ledger.kernel_dispatches_per_decode,
+        "buffer_barriers_per_decode": EXTERNAL_BUFFER_BARRIERS_PER_DECODE,
         "commits_per_decode": ledger.commits_per_decode,
         "waits_per_decode": ledger.waits_per_decode,
         "component_sum_recomputed_and_exact": official_aggregate_ledger_is_exact(ledger),
@@ -526,6 +691,7 @@ fn boundary_tail_generation_receipt_is_exact(
     receipt: &Value,
     body_tail_calls: usize,
     phase: TailPhaseCounts,
+    body_input_staging: BodyInputStaging,
 ) -> bool {
     if phase.prefill != 0
         || phase.decode.checked_add(phase.teacher) != Some(body_tail_calls)
@@ -533,6 +699,8 @@ fn boundary_tail_generation_receipt_is_exact(
             != Some("apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1")
         || receipt.get("mechanism").and_then(Value::as_str)
             != Some("metal-w8-mlp-stack3-boundary-tail-head-v1")
+        || receipt.get("body_input_staging").and_then(Value::as_str)
+            != Some(body_input_staging.label())
         || receipt
             .get("cpu_full_attention_and_kv")
             .and_then(Value::as_bool)
@@ -565,6 +733,20 @@ fn boundary_tail_generation_receipt_is_exact(
             .get("f32_tied_four_candidate_rerank")
             .and_then(Value::as_bool)
             != Some(true)
+        || receipt
+            .pointer("/body_input_staging_scope/initial_stack_and_five_boundaries_only")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || receipt
+            .pointer("/body_input_staging_scope/tail_layer23_mlp_final_rms_top4_unchanged")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || receipt
+            .pointer("/body_input_staging_scope/projection_count")
+            .and_then(Value::as_u64)
+            != Some(BODY_STAGED_PROJECTIONS_PER_DECODE as u64)
+        || receipt.get("body_input_staging_logical_mapping")
+            != Some(&body_input_staging_logical_mapping_json())
         || receipt.get("prefill_body_calls").and_then(Value::as_u64) != Some(1)
         || receipt.get("terminal_error").and_then(Value::as_bool) != Some(false)
     {
@@ -587,6 +769,10 @@ fn boundary_tail_generation_receipt_is_exact(
     let initial_valid = initial.get("layer_indices") == Some(&json!([0, 1, 2]))
         && initial.get("mechanism").and_then(Value::as_str)
             == Some("metal-w8-linear-layer-stack3-v1")
+        && body_input_staging_runtime_json_is_exact(
+            initial.get("body_input_staging_runtime"),
+            body_input_staging,
+        )
         && initial.get("prefill_seed_calls") == Some(&json!([1, 1, 1]))
         && initial.get("decode_calls").and_then(Value::as_u64) == Some(calls)
         && initial.get("successful_decodes").and_then(Value::as_u64) == Some(calls)
@@ -620,6 +806,10 @@ fn boundary_tail_generation_receipt_is_exact(
                     && entry.get("stack_layer_indices") == Some(&json!(stack_layer_indices))
                     && entry.get("mechanism").and_then(Value::as_str)
                         == Some("metal-w8-mlp-stack3-boundary-v1")
+                    && body_input_staging_runtime_json_is_exact(
+                        entry.get("body_input_staging_runtime"),
+                        body_input_staging,
+                    )
                     && entry.get("prefill_seed_calls") == Some(&json!([1, 1, 1]))
                     && entry.get("decode_calls").and_then(Value::as_u64) == Some(calls)
                     && entry.get("successful_decodes").and_then(Value::as_u64) == Some(calls)
@@ -707,7 +897,11 @@ fn boundary_tail_generation_receipt_is_exact(
         && aggregate
             .get("kernel_dispatches_per_decode")
             .and_then(Value::as_u64)
-            == Some(267)
+            == Some(EXTERNAL_KERNEL_DISPATCHES_PER_DECODE as u64)
+        && aggregate
+            .get("buffer_barriers_per_decode")
+            .and_then(Value::as_u64)
+            == Some(EXTERNAL_BUFFER_BARRIERS_PER_DECODE as u64)
         && aggregate.get("commits_per_decode").and_then(Value::as_u64) == Some(7)
         && aggregate.get("waits_per_decode").and_then(Value::as_u64) == Some(7);
     initial_valid && boundaries_valid && prefill_valid && tail_valid && aggregate_valid
@@ -763,6 +957,7 @@ fn boundary_tail_path_checks(
     generation_receipt: &Value,
     body_tail_calls: usize,
     phase: TailPhaseCounts,
+    body_input_staging: BodyInputStaging,
 ) -> BoundaryTailPathChecks {
     let calls = body_tail_calls;
     let triple = calls.checked_mul(3);
@@ -843,6 +1038,11 @@ fn boundary_tail_path_checks(
             && stats.tail_layer_index == 23,
         mechanism_and_precision_valid: stats.mechanism
             == "metal-w8-mlp-stack3-boundary-tail-head-v1"
+            && stats.body_input_staging == body_input_staging.metal()
+            && body_input_staging_runtime_is_exact(
+                stats.initial_body_input_staging_runtime,
+                body_input_staging,
+            )
             && stats.initial_stack.mechanism == "metal-w8-linear-layer-stack3-v1"
             && stats
                 .initial_stack
@@ -852,6 +1052,10 @@ fn boundary_tail_path_checks(
                 .all(quantization_profile_is_exact)
             && stats.boundaries.iter().all(|region| {
                 region.mechanism == "metal-w8-mlp-stack3-boundary-v1"
+                    && body_input_staging_runtime_is_exact(
+                        region.body_input_staging_runtime,
+                        body_input_staging,
+                    )
                     && region
                         .quantization
                         .iter()
@@ -865,6 +1069,7 @@ fn boundary_tail_path_checks(
             generation_receipt,
             body_tail_calls,
             phase,
+            body_input_staging,
         ),
         terminal_clear: !stats.terminal_error
             && generation_receipt
@@ -973,6 +1178,8 @@ fn validate_cpu_teacher_receipt(
     validate_finalized_cpu_receipt_custody(receipt, expected_identity)?;
     if receipt.get("format").and_then(Value::as_str) != Some(CPU_TEACHER_FORMAT)
         || receipt.get("mode").and_then(Value::as_str) != Some(Mode::CpuTeacher.label())
+        || receipt.get("body_input_staging").and_then(Value::as_str)
+            != Some(BodyInputStaging::LegacyDevice.label())
         || receipt.get("passed").and_then(Value::as_bool) != Some(true)
         || receipt.get("identity") != Some(expected_identity)
         || receipt.get("comparisons").and_then(Value::as_u64) != Some(STEPS as u64)
@@ -1150,6 +1357,8 @@ fn validate_cpu_free_receipt(
     validate_finalized_cpu_receipt_custody(receipt, expected_identity)?;
     if receipt.get("format").and_then(Value::as_str) != Some(CPU_FREE_FORMAT)
         || receipt.get("mode").and_then(Value::as_str) != Some(Mode::CpuFree.label())
+        || receipt.get("body_input_staging").and_then(Value::as_str)
+            != Some(BodyInputStaging::LegacyDevice.label())
         || receipt.get("passed").and_then(Value::as_bool) != Some(true)
         || receipt.get("identity") != Some(expected_identity)
         || receipt.get("max_new_tokens").and_then(Value::as_u64) != Some(STEPS as u64)
@@ -1192,6 +1401,7 @@ struct Args {
     model_dir: PathBuf,
     source_lock: PathBuf,
     mode: Mode,
+    body_input_staging: BodyInputStaging,
     input_receipt: Option<PathBuf>,
     output: PathBuf,
 }
@@ -1201,6 +1411,7 @@ fn usage() -> &'static str {
   --model-dir OFFICIAL_LOCAL_QWEN35_0_8B \
   --source-lock SOURCE_LOCK.json \
   --mode cpu-teacher|boundary-tail-v1-teacher|cpu-free|boundary-tail-v1-free \
+  [--body-input-staging legacy-device|threadgroup-shared] \
   [--input-receipt CPU_RECEIPT.json] \
   --output NEW_RECEIPT.json"
 }
@@ -1213,6 +1424,7 @@ where
     let mut model_dir = None;
     let mut source_lock = None;
     let mut mode = None;
+    let mut body_input_staging = None;
     let mut input_receipt = None;
     let mut output = None;
     let mut iter = args.into_iter().map(Into::into).skip(1);
@@ -1238,6 +1450,12 @@ where
                     return Err("duplicate --mode".into());
                 }
             }
+            "--body-input-staging" => {
+                let parsed = BodyInputStaging::parse(&value.to_string_lossy())?;
+                if body_input_staging.replace(parsed).is_some() {
+                    return Err("duplicate --body-input-staging".into());
+                }
+            }
             "--input-receipt" => {
                 if input_receipt.replace(PathBuf::from(value)).is_some() {
                     return Err("duplicate --input-receipt".into());
@@ -1256,6 +1474,7 @@ where
         source_lock: source_lock
             .ok_or_else(|| format!("--source-lock is required\n{}", usage()))?,
         mode: mode.ok_or_else(|| format!("--mode is required\n{}", usage()))?,
+        body_input_staging: body_input_staging.unwrap_or(BodyInputStaging::LegacyDevice),
         input_receipt,
         output: output.ok_or_else(|| format!("--output is required\n{}", usage()))?,
     };
@@ -1278,6 +1497,9 @@ where
         } else {
             "CPU modes reject --input-receipt".into()
         });
+    }
+    if !args.mode.is_candidate() && args.body_input_staging != BodyInputStaging::LegacyDevice {
+        return Err("CPU modes require --body-input-staging legacy-device".into());
     }
     Ok(args)
 }
@@ -1639,11 +1861,12 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
     let same_process_cpu_oracle_ms = same_process_oracle_started.elapsed().as_secs_f64() * 1_000.0;
     let construct_started = Instant::now();
     let mut model = if args.mode.is_candidate() {
-        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
+        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_body_input_staging(
             config,
             tensors,
             Device::Cpu,
             max_context,
+            args.body_input_staging.metal(),
         )?
     } else {
         GeneralQwen35::from_weights(config, tensors, Device::Cpu, max_context)?
@@ -1668,7 +1891,7 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
             "identity_fields": ["device", "inode", "size", "nlink", "ctime", "sha256"],
         },
         "cpu_reference_constructor": "GeneralQwen35::from_weights",
-        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1",
+        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_body_input_staging",
         "custody": custody.receipt_json(),
     });
     let setup = json!({
@@ -1677,6 +1900,7 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
         "same_process_cpu_oracle_ms": same_process_cpu_oracle_ms,
         "same_process_cpu_oracle": args.mode.is_candidate(),
         "timing_classification": "single-pass diagnostic timing only; never formal promotion evidence",
+        "body_input_staging_logical_mapping": body_input_staging_logical_mapping_json(),
     });
     let result = match args.mode {
         Mode::CpuTeacher | Mode::BoundaryTailV1Teacher => run_teacher(
@@ -1741,6 +1965,7 @@ fn run_teacher(
             receipt: json!({
                 "format": args.mode.receipt_format(),
                 "mode": args.mode.label(),
+                "body_input_staging": args.body_input_staging.label(),
                 "identity": identity,
                 "prompt": PROMPT,
                 "prompt_token_ids": prompt_tokens,
@@ -1779,6 +2004,7 @@ fn run_teacher(
         &prefill_generation,
         0,
         TailPhaseCounts::teacher(0),
+        args.body_input_staging,
     );
     let input_path = args
         .input_receipt
@@ -1845,6 +2071,7 @@ fn run_teacher(
         &final_generation,
         STEPS,
         TailPhaseCounts::teacher(STEPS),
+        args.body_input_staging,
     );
     let passed = evaluation.passed && prefill_checks.all_valid() && final_checks.all_valid();
     gate_evidence::verify_file_unchanged(
@@ -1858,6 +2085,7 @@ fn run_teacher(
         receipt: json!({
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
+            "body_input_staging": args.body_input_staging.label(),
             "identity": identity,
             "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
@@ -1887,6 +2115,19 @@ fn run_teacher(
             "generation_path_contract": {
                 "schema": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
                 "binds_initial_stack_five_boundaries_and_fused_tail": true,
+                "body_input_staging": args.body_input_staging.label(),
+                "body_input_staging_scope": "initial-stack-plus-five-boundaries-only",
+                "body_projection_count": BODY_STAGED_PROJECTIONS_PER_DECODE,
+                "tail_layer23_mlp_final_rms_top4_staging": "legacy-unmodified",
+                "external_schedule_unchanged": {
+                    "kernel_dispatches_per_decode": EXTERNAL_KERNEL_DISPATCHES_PER_DECODE,
+                    "buffer_barriers_per_decode": EXTERNAL_BUFFER_BARRIERS_PER_DECODE,
+                    "compute_encoders_per_decode": 24,
+                    "command_buffers_per_decode": 7,
+                    "commits_per_decode": 7,
+                    "waits_per_decode": 7,
+                },
+                "logical_input_mapping": body_input_staging_logical_mapping_json(),
                 "cpu_f32_prefill": true,
                 "tail_prefill_calls": 0,
                 "tail_decode_calls": 0,
@@ -1972,6 +2213,7 @@ fn run_free(
             receipt: json!({
                 "format": args.mode.receipt_format(),
                 "mode": args.mode.label(),
+                "body_input_staging": args.body_input_staging.label(),
                 "identity": identity,
                 "prompt": PROMPT,
                 "prompt_token_ids": prompt_tokens,
@@ -2011,6 +2253,7 @@ fn run_free(
         &generation,
         body_tail_calls,
         TailPhaseCounts::free(body_tail_calls),
+        args.body_input_staging,
     );
     let passed = mismatches.is_empty() && checks.all_valid();
     gate_evidence::verify_file_unchanged(
@@ -2022,6 +2265,7 @@ fn run_free(
         receipt: json!({
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
+            "body_input_staging": args.body_input_staging.label(),
             "identity": identity,
             "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
@@ -2039,6 +2283,19 @@ fn run_free(
                 "schema": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
                 "shared_generate_streaming": true,
                 "binds_initial_stack_five_boundaries_and_fused_tail": true,
+                "body_input_staging": args.body_input_staging.label(),
+                "body_input_staging_scope": "initial-stack-plus-five-boundaries-only",
+                "body_projection_count": BODY_STAGED_PROJECTIONS_PER_DECODE,
+                "tail_layer23_mlp_final_rms_top4_staging": "legacy-unmodified",
+                "external_schedule_unchanged": {
+                    "kernel_dispatches_per_decode": EXTERNAL_KERNEL_DISPATCHES_PER_DECODE,
+                    "buffer_barriers_per_decode": EXTERNAL_BUFFER_BARRIERS_PER_DECODE,
+                    "compute_encoders_per_decode": 24,
+                    "command_buffers_per_decode": 7,
+                    "commits_per_decode": 7,
+                    "waits_per_decode": 7,
+                },
+                "logical_input_mapping": body_input_staging_logical_mapping_json(),
                 "body_tail_calls": body_tail_calls,
                 "cpu_f32_prefill_head_calls": 1,
                 "tail_prefill_calls": 0,
@@ -2218,11 +2475,38 @@ mod tests {
         }
     }
 
-    fn generation_receipt_fixture(calls: usize, phase: TailPhaseCounts) -> Value {
+    fn body_input_staging_runtime_fixture(profile: BodyInputStaging) -> Value {
+        let [gdn_input_bytes, gdn_output_bytes, mlp_gate_up_bytes, mlp_down_bytes] =
+            profile.expected_threadgroup_bytes();
+        let [gdn_input_name, gdn_output_name, mlp_gate_up_name, mlp_down_name] =
+            profile.expected_function_names();
+        json!({
+            "requested_profile": profile.label(),
+            "observed_profile": profile.label(),
+            "threads_per_threadgroup": 256,
+            "gdn_input_threadgroup_bytes": gdn_input_bytes,
+            "gdn_output_threadgroup_bytes": gdn_output_bytes,
+            "mlp_gate_up_threadgroup_bytes": mlp_gate_up_bytes,
+            "mlp_down_threadgroup_bytes": mlp_down_bytes,
+            "pipeline_thread_execution_width": 32,
+            "threadgroup_barriers_per_projection": profile.expected_threadgroup_barriers_per_projection(),
+            "gdn_input_function_name": gdn_input_name,
+            "gdn_output_function_name": gdn_output_name,
+            "mlp_gate_up_function_name": mlp_gate_up_name,
+            "mlp_down_function_name": mlp_down_name,
+        })
+    }
+
+    fn generation_receipt_fixture(
+        calls: usize,
+        phase: TailPhaseCounts,
+        body_input_staging: BodyInputStaging,
+    ) -> Value {
         let transfer = calls * 4_096;
         json!({
             "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
             "mechanism": "metal-w8-mlp-stack3-boundary-tail-head-v1",
+            "body_input_staging": body_input_staging.label(),
             "cpu_full_attention_and_kv": true,
             "cpu_prefill_all_24_layers": true,
             "metal_w8_initial_complete_linear_layer_stack3": true,
@@ -2231,9 +2515,16 @@ mod tests {
             "standalone_layer23_mlp": false,
             "standalone_metal_lm_head": false,
             "f32_tied_four_candidate_rerank": true,
+            "body_input_staging_scope": {
+                "initial_stack_and_five_boundaries_only": true,
+                "tail_layer23_mlp_final_rms_top4_unchanged": true,
+                "projection_count": BODY_STAGED_PROJECTIONS_PER_DECODE,
+            },
+            "body_input_staging_logical_mapping": body_input_staging_logical_mapping_json(),
             "initial_stack": {
                 "layer_indices": [0, 1, 2],
                 "mechanism": "metal-w8-linear-layer-stack3-v1",
+                "body_input_staging_runtime": body_input_staging_runtime_fixture(body_input_staging),
                 "prefill_seed_calls": [1, 1, 1],
                 "decode_calls": calls,
                 "successful_decodes": calls,
@@ -2253,6 +2544,7 @@ mod tests {
                 "boundary_mlp_layer_index": boundary_mlp_layer_index,
                 "stack_layer_indices": stack_layer_indices,
                 "mechanism": "metal-w8-mlp-stack3-boundary-v1",
+                "body_input_staging_runtime": body_input_staging_runtime_fixture(body_input_staging),
                 "prefill_seed_calls": [1, 1, 1],
                 "decode_calls": calls,
                 "successful_decodes": calls,
@@ -2305,7 +2597,8 @@ mod tests {
                 "state_host_transfer_bytes_per_decode": 0,
                 "command_buffers_per_decode": 7,
                 "compute_encoders_per_decode": 24,
-                "kernel_dispatches_per_decode": 267,
+                "kernel_dispatches_per_decode": EXTERNAL_KERNEL_DISPATCHES_PER_DECODE,
+                "buffer_barriers_per_decode": EXTERNAL_BUFFER_BARRIERS_PER_DECODE,
                 "commits_per_decode": 7,
                 "waits_per_decode": 7,
             },
@@ -2364,10 +2657,45 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(args.mode, Mode::BoundaryTailV1Free);
+        assert_eq!(args.body_input_staging, BodyInputStaging::LegacyDevice);
         assert_eq!(
             args.input_receipt.unwrap(),
             std::path::PathBuf::from("/cpu-free.json")
         );
+        let staged = parse_args_from([
+            "gate",
+            "--model-dir",
+            "/model",
+            "--source-lock",
+            "/source-lock.json",
+            "--mode",
+            "boundary-tail-v1-free",
+            "--body-input-staging",
+            "threadgroup-shared",
+            "--input-receipt",
+            "/cpu-free.json",
+            "--output",
+            "/new-staged-receipt.json",
+        ])
+        .unwrap();
+        assert_eq!(
+            staged.body_input_staging,
+            BodyInputStaging::ThreadgroupShared
+        );
+        assert!(parse_args_from([
+            "gate",
+            "--model-dir",
+            "/model",
+            "--source-lock",
+            "/source-lock.json",
+            "--mode",
+            "cpu-free",
+            "--body-input-staging",
+            "threadgroup-shared",
+            "--output",
+            "/new-cpu-receipt.json",
+        ])
+        .is_err());
         assert!(parse_args_from([
             "gate",
             "--model-dir",
@@ -2417,6 +2745,7 @@ mod tests {
         let mut receipt = json!({
             "format": CPU_TEACHER_FORMAT,
             "mode": Mode::CpuTeacher.label(),
+            "body_input_staging": BodyInputStaging::LegacyDevice.label(),
             "passed": true,
             "identity": identity,
             "prompt_token_ids": [1, 2],
@@ -2496,6 +2825,7 @@ mod tests {
         let mut receipt = json!({
             "format": CPU_FREE_FORMAT,
             "mode": Mode::CpuFree.label(),
+            "body_input_staging": BodyInputStaging::LegacyDevice.label(),
             "passed": true,
             "identity": identity,
             "prompt_token_ids": [1, 2],
@@ -2581,39 +2911,90 @@ mod tests {
     #[test]
     fn generation_receipt_locks_six_regions_tail_phases_and_commit_masks() {
         let phase = TailPhaseCounts::teacher(7);
-        let receipt = generation_receipt_fixture(7, phase);
+        let receipt = generation_receipt_fixture(7, phase, BodyInputStaging::LegacyDevice);
         assert!(boundary_tail_generation_receipt_is_exact(
-            &receipt, 7, phase
+            &receipt,
+            7,
+            phase,
+            BodyInputStaging::LegacyDevice,
         ));
 
         let mut wrong = receipt.clone();
         wrong["initial_stack"]["last_state_commit_mask"] = json!(0b011);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong,
+            7,
+            phase,
+            BodyInputStaging::LegacyDevice,
+        ));
         let mut wrong = receipt.clone();
         wrong["boundaries"][3]["last_state_commit_mask"] = json!(0b110);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong,
+            7,
+            phase,
+            BodyInputStaging::LegacyDevice,
+        ));
         let mut wrong = receipt.clone();
         wrong["decode_head"]["teacher_calls"] = json!(6);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong,
+            7,
+            phase,
+            BodyInputStaging::LegacyDevice,
+        ));
 
         let mut wrong = receipt.clone();
         wrong["terminal_error"] = json!(true);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong,
+            7,
+            phase,
+            BodyInputStaging::LegacyDevice,
+        ));
         let mut wrong = receipt;
         wrong["decode_head"]["terminal_error"] = json!(true);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong,
+            7,
+            phase,
+            BodyInputStaging::LegacyDevice,
+        ));
 
         let free_phase = TailPhaseCounts::free(7);
-        let free_receipt = generation_receipt_fixture(7, free_phase);
+        let free_receipt =
+            generation_receipt_fixture(7, free_phase, BodyInputStaging::ThreadgroupShared);
         assert!(boundary_tail_generation_receipt_is_exact(
             &free_receipt,
             7,
-            free_phase
+            free_phase,
+            BodyInputStaging::ThreadgroupShared,
+        ));
+        let mut wrong_runtime = free_receipt.clone();
+        wrong_runtime["boundaries"][2]["body_input_staging_runtime"]["observed_profile"] =
+            json!(BodyInputStaging::LegacyDevice.label());
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong_runtime,
+            7,
+            free_phase,
+            BodyInputStaging::ThreadgroupShared,
+        ));
+        let mut wrong_mapping = free_receipt.clone();
+        wrong_mapping["body_input_staging_logical_mapping"]
+            ["logical_device_input_reduction_bytes_per_decode"] = json!(1_548_976_127usize);
+        assert!(!boundary_tail_generation_receipt_is_exact(
+            &wrong_mapping,
+            7,
+            free_phase,
+            BodyInputStaging::ThreadgroupShared,
         ));
         let mut wrong = free_receipt;
         wrong["prefill_head"]["tail_transactions"] = json!(1);
         assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong, 7, free_phase
+            &wrong,
+            7,
+            free_phase,
+            BodyInputStaging::ThreadgroupShared,
         ));
     }
 
