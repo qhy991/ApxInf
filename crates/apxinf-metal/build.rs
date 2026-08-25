@@ -12,7 +12,6 @@ fn main() {
     println!("cargo:rerun-if-changed=src/metal_w8_gdn.metal");
     println!("cargo:rerun-if-changed=src/metal_w8_gdn_out_g32.metal");
     println!("cargo:rerun-if-changed=src/metal_w8_linear_layer.metal");
-    println!("cargo:rerun-if-changed=src/metal_w8_body_input_staging.metal");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
@@ -79,20 +78,12 @@ fn main() {
         .expect("read the Metal W8 linear-layer shader source");
     let gdn_out_g32_shader = std::fs::read_to_string("src/metal_w8_gdn_out_g32.metal")
         .expect("read the Metal W8 GDN-output-G32 shader source");
-    let body_input_staging_shader =
-        std::fs::read_to_string("src/metal_w8_body_input_staging.metal")
-            .expect("read the Metal W8 body-input-staging shader source");
     assert!(
         !linear_layer_shader.contains(&format!("){}\"", DELIMITER)),
         "Metal linear-layer shader contains the generated C++ raw-string delimiter"
     );
-    assert!(
-        !body_input_staging_shader.contains(&format!("){}\"", DELIMITER)),
-        "Metal body-input-staging shader contains the generated C++ raw-string delimiter"
-    );
-    let combined_linear_layer_shader = format!(
-        "{gdn_shader}\n{mlp_shader}\n{linear_layer_shader}\n{gdn_out_g32_shader}\n{body_input_staging_shader}"
-    );
+    let combined_linear_layer_shader =
+        format!("{gdn_shader}\n{mlp_shader}\n{linear_layer_shader}\n{gdn_out_g32_shader}");
     std::fs::write(
         output_dir.join("metal_w8_linear_layer_source.inc"),
         format!(

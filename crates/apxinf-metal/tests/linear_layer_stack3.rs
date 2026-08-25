@@ -1,6 +1,6 @@
 use apxinf_metal::{
-    BodyInputStagingV1, GdnDecodeState, GdnDimensions, GdnF32Weights, MetalW8LinearLayerStack3,
-    PackedW8GdnBlock, PackedW8LinearLayerBlock, PackedW8MlpBlock, W8GroupSize,
+    GdnDecodeState, GdnDimensions, GdnF32Weights, MetalW8LinearLayerStack3, PackedW8GdnBlock,
+    PackedW8LinearLayerBlock, PackedW8MlpBlock, W8GroupSize,
 };
 
 fn values(elements: usize, multiplier: usize, modulus: usize, scale: f32) -> Vec<f32> {
@@ -104,55 +104,6 @@ fn nonzero_state(dims: GdnDimensions, seed: usize) -> GdnDecodeState {
     .unwrap()
 }
 
-#[test]
-fn body_input_staging_v1_selector_and_function_name_contract_is_stable() {
-    assert_eq!(
-        BodyInputStagingV1::default(),
-        BodyInputStagingV1::LegacyDevice
-    );
-    assert_eq!(BodyInputStagingV1::LegacyDevice.selector(), 0);
-    assert_eq!(BodyInputStagingV1::ThreadgroupShared.selector(), 1);
-    assert_eq!(
-        BodyInputStagingV1::try_from(0).unwrap(),
-        BodyInputStagingV1::LegacyDevice
-    );
-    assert_eq!(
-        BodyInputStagingV1::try_from(1).unwrap(),
-        BodyInputStagingV1::ThreadgroupShared
-    );
-    assert!(BodyInputStagingV1::try_from(2).is_err());
-    assert!(BodyInputStagingV1::try_from(u32::MAX).is_err());
-
-    assert_eq!(
-        [
-            BodyInputStagingV1::LegacyDevice.expected_gdn_input_function_name(),
-            BodyInputStagingV1::LegacyDevice.expected_gdn_output_function_name(),
-            BodyInputStagingV1::LegacyDevice.expected_mlp_gate_up_function_name(),
-            BodyInputStagingV1::LegacyDevice.expected_mlp_down_function_name(),
-        ],
-        [
-            "gdn_w8_input_projection",
-            "gdn_w8_output_projection_g32",
-            "w8_mlp_gate_up",
-            "w8_mlp_down",
-        ]
-    );
-    assert_eq!(
-        [
-            BodyInputStagingV1::ThreadgroupShared.expected_gdn_input_function_name(),
-            BodyInputStagingV1::ThreadgroupShared.expected_gdn_output_function_name(),
-            BodyInputStagingV1::ThreadgroupShared.expected_mlp_gate_up_function_name(),
-            BodyInputStagingV1::ThreadgroupShared.expected_mlp_down_function_name(),
-        ],
-        [
-            "gdn_w8_input_projection_tg_shared",
-            "gdn_w8_output_projection_g32_tg_shared",
-            "w8_mlp_gate_up_tg_shared",
-            "w8_mlp_down_tg_shared",
-        ]
-    );
-}
-
 #[cfg(target_os = "macos")]
 #[test]
 fn stack3_v1_matches_three_sequential_packed_cpu_layers_in_one_transaction() {
@@ -218,119 +169,6 @@ fn stack3_v1_matches_three_sequential_packed_cpu_layers_in_one_transaction() {
     assert_eq!(stats.committed_stack_version, 1);
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn stack3_v1_threadgroup_input_staging_is_bit_exact_state_exact_and_live_receipted() {
-    let (dims, layer0) = fixture(0);
-    let (_, layer1) = fixture(1);
-    let (_, layer2) = fixture(2);
-    let layers = [&layer0, &layer1, &layer2];
-    let initial = std::array::from_fn(|slot| nonzero_state(dims, slot));
-    let mut hidden = values(dims.hidden_size, 53, 211, 0.8);
-
-    let mut legacy = MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1(layers).unwrap();
-    let mut candidate =
-        MetalW8LinearLayerStack3::from_packed_gdn_out_g32_with_body_input_staging_v1(
-            layers,
-            BodyInputStagingV1::ThreadgroupShared,
-        )
-        .unwrap();
-
-    let legacy_receipt = legacy.body_input_staging_runtime_receipt_v1();
-    assert_eq!(
-        legacy_receipt.requested_profile,
-        BodyInputStagingV1::LegacyDevice
-    );
-    assert_eq!(
-        legacy_receipt.observed_profile,
-        legacy_receipt.requested_profile
-    );
-    assert_eq!(legacy_receipt.threads_per_threadgroup, 256);
-    assert_eq!(
-        [
-            legacy_receipt.gdn_input_threadgroup_bytes,
-            legacy_receipt.gdn_output_threadgroup_bytes,
-            legacy_receipt.mlp_gate_up_threadgroup_bytes,
-            legacy_receipt.mlp_down_threadgroup_bytes,
-        ],
-        [0, 0, 0, 0]
-    );
-    assert_eq!(legacy_receipt.pipeline_thread_execution_width, 32);
-    assert_eq!(legacy_receipt.threadgroup_barriers_per_projection, 0);
-    assert_eq!(
-        legacy_receipt.gdn_input_function_name,
-        "gdn_w8_input_projection"
-    );
-    assert_eq!(
-        legacy_receipt.gdn_output_function_name,
-        "gdn_w8_output_projection_g32"
-    );
-    assert_eq!(legacy_receipt.mlp_gate_up_function_name, "w8_mlp_gate_up");
-    assert_eq!(legacy_receipt.mlp_down_function_name, "w8_mlp_down");
-
-    let candidate_receipt = candidate.body_input_staging_runtime_receipt_v1();
-    assert_eq!(
-        candidate_receipt.requested_profile,
-        BodyInputStagingV1::ThreadgroupShared
-    );
-    assert_eq!(
-        candidate_receipt.observed_profile,
-        candidate_receipt.requested_profile
-    );
-    assert_eq!(candidate_receipt.threads_per_threadgroup, 256);
-    assert_eq!(
-        [
-            candidate_receipt.gdn_input_threadgroup_bytes,
-            candidate_receipt.gdn_output_threadgroup_bytes,
-            candidate_receipt.mlp_gate_up_threadgroup_bytes,
-            candidate_receipt.mlp_down_threadgroup_bytes,
-        ],
-        [256, 256, 256, 256]
-    );
-    assert_eq!(candidate_receipt.pipeline_thread_execution_width, 32);
-    assert_eq!(candidate_receipt.threadgroup_barriers_per_projection, 1);
-    assert_eq!(
-        candidate_receipt.gdn_input_function_name,
-        "gdn_w8_input_projection_tg_shared"
-    );
-    assert_eq!(
-        candidate_receipt.gdn_output_function_name,
-        "gdn_w8_output_projection_g32_tg_shared"
-    );
-    assert_eq!(
-        candidate_receipt.mlp_gate_up_function_name,
-        "w8_mlp_gate_up_tg_shared"
-    );
-    assert_eq!(
-        candidate_receipt.mlp_down_function_name,
-        "w8_mlp_down_tg_shared"
-    );
-
-    assert_eq!(candidate.buffer_ledger(), legacy.buffer_ledger());
-    legacy.seed_decode_states(&initial).unwrap();
-    candidate.seed_decode_states(&initial).unwrap();
-    for _ in 0..2 {
-        let legacy_output = legacy.decode(&hidden).unwrap().to_vec();
-        let candidate_output = candidate.decode(&hidden).unwrap().to_vec();
-        assert_eq!(
-            legacy_output
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>(),
-            candidate_output
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            legacy.state_snapshots().unwrap(),
-            candidate.state_snapshots().unwrap()
-        );
-        assert_eq!(legacy.stats(), candidate.stats());
-        hidden = legacy_output;
-    }
-}
-
 #[cfg(all(target_os = "macos", debug_assertions))]
 #[test]
 fn stack3_v1_fault_is_atomic_and_terminal_until_clear() {
@@ -340,51 +178,42 @@ fn stack3_v1_fault_is_atomic_and_terminal_until_clear() {
     let layers = [&layer0, &layer1, &layer2];
     let initial = std::array::from_fn(|_| GdnDecodeState::zeroed(dims).unwrap());
     let hidden = values(dims.hidden_size, 53, 211, 0.8);
-    for profile in [
-        BodyInputStagingV1::LegacyDevice,
-        BodyInputStagingV1::ThreadgroupShared,
-    ] {
-        let mut stack =
-            MetalW8LinearLayerStack3::from_packed_gdn_out_g32_with_body_input_staging_v1(
-                layers, profile,
-            )
-            .unwrap();
-        stack.seed_decode_states(&initial).unwrap();
+    let mut stack = MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1(layers).unwrap();
+    stack.seed_decode_states(&initial).unwrap();
 
-        let error = stack
-            .inject_failure_after_scratch_execution_for_testing(&hidden)
-            .unwrap_err();
+    let error = stack
+        .inject_failure_after_scratch_execution_for_testing(&hidden)
+        .unwrap_err();
 
-        assert!(error.to_string().contains("injected"));
-        assert_eq!(stack.state_snapshots().unwrap(), initial);
-        let failed = stack.stats();
-        assert_eq!(failed.decode_calls, 1);
-        assert_eq!(failed.successful_decodes, 0);
-        assert_eq!(failed.failed_decodes, 1);
-        assert_eq!(failed.command_buffers, 1);
-        assert_eq!(failed.compute_encoders, 3);
-        assert_eq!(failed.commits, 1);
-        assert_eq!(failed.waits, 1);
-        assert_eq!(failed.state_commits, 0);
-        assert_eq!(failed.last_state_commit_mask, 0);
-        assert_eq!(failed.committed_stack_version, 0);
-        assert!(failed.terminal_error);
+    assert!(error.to_string().contains("injected"));
+    assert_eq!(stack.state_snapshots().unwrap(), initial);
+    let failed = stack.stats();
+    assert_eq!(failed.decode_calls, 1);
+    assert_eq!(failed.successful_decodes, 0);
+    assert_eq!(failed.failed_decodes, 1);
+    assert_eq!(failed.command_buffers, 1);
+    assert_eq!(failed.compute_encoders, 3);
+    assert_eq!(failed.commits, 1);
+    assert_eq!(failed.waits, 1);
+    assert_eq!(failed.state_commits, 0);
+    assert_eq!(failed.last_state_commit_mask, 0);
+    assert_eq!(failed.committed_stack_version, 0);
+    assert!(failed.terminal_error);
 
-        let retry = stack.decode(&hidden).unwrap_err();
-        assert!(retry.to_string().contains("terminal"));
-        assert_eq!(stack.stats(), failed, "terminal retry must submit no work");
-        stack.clear_decode_states().unwrap();
-        assert_eq!(stack.stats(), Default::default());
-        assert!(stack
-            .decode(&hidden)
-            .unwrap_err()
-            .to_string()
-            .contains("seeded"));
-        stack.seed_decode_states(&initial).unwrap();
-        stack.decode(&hidden).unwrap();
-        assert_eq!(stack.stats().state_commits, 3);
-        assert_eq!(stack.stats().last_state_commit_mask, 0b111);
-    }
+    let retry = stack.decode(&hidden).unwrap_err();
+    assert!(retry.to_string().contains("terminal"));
+    assert_eq!(stack.stats(), failed, "terminal retry must submit no work");
+    stack.clear_decode_states().unwrap();
+    assert_eq!(stack.stats(), Default::default());
+    assert!(stack
+        .decode(&hidden)
+        .unwrap_err()
+        .to_string()
+        .contains("seeded"));
+    stack.seed_decode_states(&initial).unwrap();
+    stack.decode(&hidden).unwrap();
+    assert_eq!(stack.stats().state_commits, 3);
+    assert_eq!(stack.stats().last_state_commit_mask, 0b111);
 }
 
 #[cfg(target_os = "macos")]
