@@ -1,0 +1,525 @@
+{
+  "format": "apxinf-qwen35-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-campaign-start-diagnostic-v2",
+  "schema_version": 2,
+  "campaign_id": "qwen35-0.8b-raw13-free128-omniinfer-diagnostic-v2-20260826",
+  "created_at_utc": "2026-08-25T18:13:20Z",
+  "created_at_local": "2026-08-26T02:13:20+0800",
+  "status": "CAMPAIGN_V2_CONSUMED_BEFORE_FIRST_GENERATION_REQUEST",
+  "one_shot_custody": {
+    "campaign_start_path_did_not_exist_before_create_new_publication": true,
+    "this_creation_consumes_v2_even_if_interrupted_or_failed": true,
+    "retry_resample_replacement_reorder_or_recreation_allowed": false,
+    "generation_requests_before_this_receipt": 0,
+    "performance_samples_before_this_receipt": 0,
+    "v1_is_not_retried_resumed_replaced_or_superseded": true,
+    "setup_only_gateway_load_and_preflight_before_this_receipt": true,
+    "setup_only_preflight_generation_requests": 0,
+    "setup_only_gateway_was_shut_down_before_this_receipt": true,
+    "port_9000_listener_before_this_receipt": false,
+    "llama_server_process_before_this_receipt": false,
+    "isolated_slot_directory_empty_before_this_receipt": true
+  },
+  "predeclaration": {
+    "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-predeclared-diagnostic-v2-20260826.json",
+    "commit": "14287eb00631824cb57c6a0e7ce3348b1e9446f4",
+    "size_bytes": 22721,
+    "sha256": "a38d2f62de8f7cac13bff57baf77c2f64c9a845572d7c2fb3430140615c20a27"
+  },
+  "git_custody": {
+    "repository": "https://github.com/qhy991/ApxInf.git",
+    "head": "14287eb00631824cb57c6a0e7ce3348b1e9446f4",
+    "origin_main": "14287eb00631824cb57c6a0e7ce3348b1e9446f4",
+    "head_equals_origin_main": true,
+    "worktree_clean_before_create_new": true
+  },
+  "driver_custody": {
+    "path": "benchmarks/cross_runtime/fixed_raw13_free128_driver.py",
+    "absolute_path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/benchmarks/cross_runtime/fixed_raw13_free128_driver.py",
+    "commit": "a3f06958b4e4e14aa9f74f2cafa63e05d8c0dae6",
+    "size_bytes": 37687,
+    "sha256": "30597a003a4de62b7b227b1a6249504fe3f5cbe79bf726e2dbd902c6a724d99a",
+    "transport": "absolute file-backed Python invocation; no python -c, eval, or shell-carried source",
+    "interpreter": {
+      "path": "/opt/homebrew/Cellar/python@3.14/3.14.3/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+      "version": "Python 3.14.3",
+      "size_bytes": 52448,
+      "mode_octal": "100755",
+      "sha256": "ff73afba45e095e0dadc9b51deb9b994ef90d097c36a211955c57336ce76508f"
+    }
+  },
+  "setup_only_preflight": {
+    "classification": "zero-generation admission only; not a performance sample",
+    "generation_endpoints_called": 0,
+    "exact_serve_command": [
+      "/tmp/apxinf-omniinfer-prep.F7GNFt/OmniInfer/omniinfer",
+      "--state-root",
+      "/tmp/apxinf-omniinfer-prep.F7GNFt/state",
+      "--runtime-root",
+      "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime",
+      "serve",
+      "--detach",
+      "--no-restore-model",
+      "--port",
+      "9000",
+      "--host",
+      "127.0.0.1"
+    ],
+    "exact_load_command": [
+      "/tmp/apxinf-omniinfer-prep.F7GNFt/OmniInfer/omniinfer",
+      "--state-root",
+      "/tmp/apxinf-omniinfer-prep.F7GNFt/state",
+      "--runtime-root",
+      "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime",
+      "load",
+      "--model",
+      "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+      "--no-mmproj",
+      "--ctx-size",
+      "256",
+      "--",
+      "-ngl",
+      "999",
+      "-b",
+      "13",
+      "-ub",
+      "13",
+      "-t",
+      "4",
+      "-tb",
+      "4",
+      "-np",
+      "1",
+      "--cache-ram",
+      "0",
+      "--slots",
+      "--no-cache-idle-slots",
+      "--no-cache-prompt",
+      "--slot-prompt-similarity",
+      "0",
+      "--slot-save-path",
+      "/tmp/apxinf-omniinfer-prep.F7GNFt/slots-cold-v2",
+      "-c",
+      "256"
+    ],
+    "receipt": {
+      "format": "apxinf-cross-runtime-fixed-raw13-free128-omniinfer-preflight-v2",
+      "ok": true,
+      "campaign_id": "qwen35-0.8b-raw13-free128-omniinfer-diagnostic-v2-20260826",
+      "execution_binding": {
+        "transport": "absolute file-backed Python invocation; no python -c, eval, or source argument",
+        "argv": [
+          "/Users/haiyan-mini/Agent4Kernel/ApxInf/benchmarks/cross_runtime/fixed_raw13_free128_driver.py",
+          "preflight",
+          "--base-url",
+          "http://127.0.0.1:9000",
+          "--model",
+          "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+          "--slot-save-path",
+          "/tmp/apxinf-omniinfer-prep.F7GNFt/slots-cold-v2"
+        ],
+        "driver": {
+          "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/benchmarks/cross_runtime/fixed_raw13_free128_driver.py",
+          "size_bytes": 37687,
+          "sha256": "30597a003a4de62b7b227b1a6249504fe3f5cbe79bf726e2dbd902c6a724d99a"
+        },
+        "python": {
+          "path": "/opt/homebrew/Cellar/python@3.14/3.14.3/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+          "size_bytes": 52448,
+          "sha256": "ff73afba45e095e0dadc9b51deb9b994ef90d097c36a211955c57336ce76508f",
+          "version": "3.14.3 (main, Feb  3 2026, 15:32:20) [Clang 17.0.0 (clang-1700.6.3.2)]"
+        }
+      },
+      "generation_requests": 0,
+      "state_before_and_after_equal": true,
+      "cache_clear": {
+        "cache_policy": "cleared_each_run",
+        "cleared_slots": [
+          0
+        ],
+        "message": "KV cache cleared",
+        "ok": true
+      },
+      "state": {
+        "backend": "llama.cpp-mac",
+        "backend_ready": true,
+        "model": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+        "model_path": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+        "mmproj": null,
+        "ctx_size": 256,
+        "backend_pid": 13084,
+        "backend_port": 65274,
+        "client_endpoint": "http://127.0.0.1:65274",
+        "generation": 1,
+        "launch_command": [
+          "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/bin/llama-server",
+          "-m",
+          "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "65274",
+          "--no-webui",
+          "--slot-save-path",
+          "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/logs",
+          "--slot-prompt-similarity",
+          "0",
+          "--cache-idle-slots",
+          "-ngl",
+          "999",
+          "--cache-ram",
+          "8192",
+          "-ngl",
+          "999",
+          "-b",
+          "13",
+          "-ub",
+          "13",
+          "-t",
+          "4",
+          "-tb",
+          "4",
+          "-np",
+          "1",
+          "--cache-ram",
+          "0",
+          "--slots",
+          "--no-cache-idle-slots",
+          "--no-cache-prompt",
+          "--slot-prompt-similarity",
+          "0",
+          "--slot-save-path",
+          "/tmp/apxinf-omniinfer-prep.F7GNFt/slots-cold-v2",
+          "-c",
+          "256"
+        ],
+        "launch_args": [
+          "--slot-prompt-similarity",
+          "0",
+          "--cache-idle-slots",
+          "-ngl",
+          "999",
+          "--cache-ram",
+          "8192",
+          "-ngl",
+          "999",
+          "-b",
+          "13",
+          "-ub",
+          "13",
+          "-t",
+          "4",
+          "-tb",
+          "4",
+          "-np",
+          "1",
+          "--cache-ram",
+          "0",
+          "--slots",
+          "--no-cache-idle-slots",
+          "--no-cache-prompt",
+          "--slot-prompt-similarity",
+          "0",
+          "--slot-save-path",
+          "/tmp/apxinf-omniinfer-prep.F7GNFt/slots-cold-v2"
+        ],
+        "request_defaults": {},
+        "effective_parameters": {},
+        "restore_selection_request_defaults": {},
+        "runtime": {
+          "mode": "external_server",
+          "client_endpoint": "http://127.0.0.1:65274",
+          "pid": 13084,
+          "port": 65274,
+          "launch_command": [
+            "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/bin/llama-server",
+            "-m",
+            "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "65274",
+            "--no-webui",
+            "--slot-save-path",
+            "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/logs",
+            "--slot-prompt-similarity",
+            "0",
+            "--cache-idle-slots",
+            "-ngl",
+            "999",
+            "--cache-ram",
+            "8192",
+            "-ngl",
+            "999",
+            "-b",
+            "13",
+            "-ub",
+            "13",
+            "-t",
+            "4",
+            "-tb",
+            "4",
+            "-np",
+            "1",
+            "--cache-ram",
+            "0",
+            "--slots",
+            "--no-cache-idle-slots",
+            "--no-cache-prompt",
+            "--slot-prompt-similarity",
+            "0",
+            "--slot-save-path",
+            "/tmp/apxinf-omniinfer-prep.F7GNFt/slots-cold-v2",
+            "-c",
+            "256"
+          ]
+        }
+      },
+      "health": {
+        "status": "ok",
+        "backend_status": "ok"
+      },
+      "props": {
+        "build_info": "b10280-61881b1f7",
+        "model_path": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+        "model_ftype": "Q8_0",
+        "total_slots": 1,
+        "default_generation_settings": {
+          "n_ctx": 256,
+          "params": {
+            "adaptive_decay": 0.8999999761581421,
+            "adaptive_target": -1,
+            "backend_sampling": false,
+            "chat_format": "Content-only",
+            "dry_allowed_length": 2,
+            "dry_base": 1.75,
+            "dry_multiplier": 0,
+            "dry_penalty_last_n": 64,
+            "dynatemp_exponent": 1,
+            "dynatemp_range": 0,
+            "frequency_penalty": 0,
+            "generation_prompt": "",
+            "ignore_eos": false,
+            "lora": [],
+            "max_tokens": -1,
+            "min_keep": 0,
+            "min_p": 0.05000000074505806,
+            "mirostat": 0,
+            "mirostat_eta": 0.10000000149011612,
+            "mirostat_tau": 5,
+            "n_discard": 0,
+            "n_keep": 0,
+            "n_predict": -1,
+            "n_probs": 0,
+            "post_sampling_probs": false,
+            "presence_penalty": 0,
+            "reasoning_format": "none",
+            "reasoning_in_content": false,
+            "repeat_last_n": 64,
+            "repeat_penalty": 1,
+            "samplers": [
+              "penalties",
+              "dry",
+              "top_n_sigma",
+              "top_k",
+              "typ_p",
+              "top_p",
+              "min_p",
+              "xtc",
+              "temperature"
+            ],
+            "seed": 4294967295,
+            "speculative.types": "none",
+            "stream": false,
+            "temperature": 0.800000011920929,
+            "timings_per_token": false,
+            "top_k": 40,
+            "top_n_sigma": -1,
+            "top_p": 0.949999988079071,
+            "typical_p": 1,
+            "xtc_probability": 0,
+            "xtc_threshold": 0.10000000149011612
+          }
+        }
+      },
+      "prompt": {
+        "apply_template_request": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "Hello"
+            }
+          ],
+          "add_generation_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false
+          }
+        },
+        "rendered": "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        "token_ids": [
+          248045,
+          846,
+          198,
+          9419,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ],
+        "token_ids_sha256": "4b890fa15ee3d7db4e9dd18bd79c6362d40e9e016ae4f9f74cb7fc420ef3b6d3"
+      }
+    },
+    "shutdown_succeeded": true
+  },
+  "model_custody": {
+    "path": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+    "device": 16777234,
+    "inode": 5245200133,
+    "size_bytes": 811843072,
+    "hard_link_count": 1,
+    "change_time_seconds": 1787612128,
+    "birth_time_seconds": 1787612125,
+    "mode_octal": "100644",
+    "sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c"
+  },
+  "direct_runner_custody": {
+    "path": "/tmp/apxinf-llama-runner-build/bin/apxinf-llama-cpp-raw-token-runner",
+    "size_bytes": 6499056,
+    "mode_octal": "100755",
+    "sha256": "ccfa5ecd78119d4f8cdd8721e7faae360cb94b8334f9d61ed47e2e00290f2716",
+    "llama_cpp_source_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+    "llama_cpp_source_tree": "21045aed8b426d7a5e25a98e646054cbd9487e81",
+    "source_checkout_clean_detached": true,
+    "fixed_process_args": [
+      "--model",
+      "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+      "--gpu-layers",
+      "-1",
+      "--gpu-device",
+      "MTL0",
+      "--threads",
+      "4"
+    ],
+    "GGML_BACKEND_PATH_unset_required": true
+  },
+  "omniinfer_custody": {
+    "cli": {
+      "path": "/tmp/apxinf-omniinfer-prep.F7GNFt/OmniInfer/omniinfer",
+      "release": "v0.3.26",
+      "release_commit": "79af77228f329a79ac665014089e23983e69e79f",
+      "size_bytes": 9719136,
+      "mode_octal": "100755",
+      "sha256": "65487424ca9179850b80079beafa5ad69a66e0841d328ee8dd8a1fd4b613d661"
+    },
+    "backend": {
+      "id": "llama.cpp-mac",
+      "release": "b10280",
+      "source_commit": "61881b1f7f0b13d9e46d561fc25afcd6bbaec479",
+      "server_path": "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/bin/llama-server",
+      "server_size_bytes": 33472,
+      "server_mode_octal": "100755",
+      "server_sha256": "02723fc39fbeebd9849ce4c9ca3799649df3cf91f101c2cd56b8756e1db54d28"
+    },
+    "prebuilt_manifest": {
+      "path": "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/prebuilt.json",
+      "size_bytes": 1054,
+      "mode_octal": "100644",
+      "sha256": "49748f180d45f8689cfd772a4baf1e4a9db90d163e0d6cdda10ea9293a4f9c6a"
+    },
+    "local_state": {
+      "path": "/tmp/apxinf-omniinfer-prep.F7GNFt/state/.local/config/state.json",
+      "size_bytes": 264,
+      "mode_octal": "100644",
+      "sha256": "9343581d8dc451259bfdaf5aadb8c530f47e44ee56541d9b817d39030aee2fad"
+    },
+    "immutable_runtime_closure": {
+      "root": "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac",
+      "excluded": "./logs/**",
+      "canonicalization": "LC_ALL=C path order; F<TAB>path<TAB>octal_lstat_mode<TAB>size<TAB>sha256<LF>; L<TAB>path<TAB>octal_lstat_mode<TAB>readlink_target<LF>",
+      "regular_file_count": 44,
+      "symbolic_link_count": 18,
+      "entry_count": 62,
+      "regular_file_total_size_bytes": 27247524,
+      "sha256": "fa89c0d9f35ec2fb69694a027cb8457be976f480b3c20a60d54b1d2e2187c853"
+    },
+    "mutable_runtime_log_start": {
+      "path": "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/logs/runtime-_Users_haiyan-mini_Agent4Kernel_models_Qwen3.5-0.8B-2fc063647-GGUF_Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf.log",
+      "size_bytes": 4869,
+      "mode_octal": "100644",
+      "modification_time_seconds": 1787681391,
+      "sha256": "840c463aac1b546107d8d204f1207bdff35595172b4837f13c79729355600e1e",
+      "mutation_expected": true
+    },
+    "isolated_slot_directory": {
+      "path": "/tmp/apxinf-omniinfer-prep.F7GNFt/slots-cold-v2",
+      "entry_count": 0,
+      "empty": true
+    }
+  },
+  "host_snapshot": {
+    "hostname": "haiyan-Mac-mini.local",
+    "hardware": "Apple M4",
+    "logical_cpus": 10,
+    "os": "macOS 26.2 build 25C56",
+    "kernel": "Darwin 25.2.0 RELEASE_ARM64_T8132 arm64",
+    "uptime": "2 days 4 hours 29 minutes",
+    "load_averages": [
+      2.7,
+      2.52,
+      2.37
+    ],
+    "power_source": "AC Power",
+    "thermal_warning_recorded": false,
+    "performance_warning_recorded": false,
+    "swap_total_mib": 6144,
+    "swap_used_mib": 4792.19,
+    "swap_free_mib": 1351.81,
+    "quiet_host_attested": false,
+    "quiet_host_reason": "WebKit GPU process was at 100 percent CPU and several non-runtime processes were materially active",
+    "top_non_runtime_processes": [
+      {
+        "pid": 988,
+        "cpu_percent": 100,
+        "rss_kib": 14208,
+        "command": "com.apple.WebKit.GPU"
+      },
+      {
+        "pid": 2232,
+        "cpu_percent": 45.9,
+        "rss_kib": 166560,
+        "command": "logioptionsplus_logivoice"
+      },
+      {
+        "pid": 1177,
+        "cpu_percent": 45.7,
+        "rss_kib": 105936,
+        "command": "logioptionsplus_agent"
+      },
+      {
+        "pid": 606,
+        "cpu_percent": 27.4,
+        "rss_kib": 13328,
+        "command": "trustd"
+      },
+      {
+        "pid": 46705,
+        "cpu_percent": 17.1,
+        "rss_kib": 356672,
+        "command": "codex"
+      }
+    ],
+    "user_or_system_processes_terminated": false,
+    "classification_effect": "diagnostic only"
+  },
+  "sampling_semantics_limitation": {
+    "same_serialized_gguf_prompt_ids_and_returned_token_count_for_D_and_N": true,
+    "same_generated_trajectory_or_sampling_workload_for_D_and_N": false,
+    "reason": "D continues through selected EOG tokens; N ignore_eos suppresses EOG logits",
+    "ratio_delta_winner_or_same_workload_speed_claim_allowed": false
+  },
+  "next_fixed_slot": "D_warmup"
+}
