@@ -1,0 +1,235 @@
+{
+  "format": "apxinf-qwen35-omniinfer-gateway-overhead-diagnostic-summary-v1",
+  "schema_version": 1,
+  "campaign_id": "qwen35-0.8b-omniinfer-gateway-overhead-v1-20260826",
+  "created_at_utc": "2026-08-25T19:43:42Z",
+  "created_at_local": "2026-08-26T03:43:42+0800",
+  "status": "VALID_COMPLETE_DIAGNOSTIC_BUT_INCONCLUSIVE_DUE_TO_ALL_PREDECLARED_STABILITY_GATES_FAILING",
+  "headline": "On one exact resident llama.cpp b10280 backend, direct and OmniInfer-gateway full-response wall times had a paired mean difference of +0.449 ms, but the 95% CI was [-19.071,+19.970] ms and every predeclared stability gate failed; neither positive gateway overhead nor practical equivalence is established.",
+  "classification": {
+    "campaign_execution_valid_and_complete": true,
+    "formal_performance_result": false,
+    "performance_conclusion_allowed": false,
+    "positive_gateway_path_overhead_detected": false,
+    "practical_equivalence_detected": false,
+    "winner_declared": false,
+    "retry_allowed": false,
+    "reason": "8 of 8 predeclared stability gates failed on a known noisy host"
+  },
+  "what_was_compared": {
+    "B": "direct POST /v1/chat/completions to one resident llama.cpp-mac b10280 server",
+    "G": "the same canonical client request through OmniInfer v0.3.26 on 127.0.0.1:9000 to that same resident backend process",
+    "backend_pid": 33885,
+    "gateway_pid": 33874,
+    "model": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+    "model_sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c",
+    "request_sha256": "7773f5337693843f1e8cf3017b98868517cbddd3bc32649e550d8f2fec1d5cf6",
+    "prompt_tokens": 13,
+    "generated_tokens": 128,
+    "claim_boundary": "client-observed full-response gateway-path overhead on warmed persistent HTTP/1.1 client connections; not engine-vs-engine throughput and not pure gateway CPU time"
+  },
+  "schedule": {
+    "warmup_pairs": 4,
+    "measured_blocks": 16,
+    "pairs_per_block": 4,
+    "measured_pairs": 64,
+    "measured_BG_pairs": 32,
+    "measured_GB_pairs": 32,
+    "total_generation_requests": 136,
+    "cache_clear_before_every_arm": true,
+    "retry_resample_replacement_reorder_outlier_removal_or_extension": false
+  },
+  "results": {
+    "client_wall_ms": {
+      "B_mean": 1814.203595046875,
+      "B_median": 1865.5404375,
+      "G_mean": 1814.6530540312501,
+      "G_median": 1859.7744579999999
+    },
+    "primary_paired_gateway_minus_backend_ms": {
+      "mean": 0.44945898437500986,
+      "block_sample_sd": 36.63334114930846,
+      "standard_error": 9.158335287327114,
+      "degrees_of_freedom": 15,
+      "t_critical": 2.131449545559323,
+      "ci95_lower": -19.07107060187828,
+      "ci95_upper": 19.9699885706283,
+      "ci95_half_width": 19.52052958625329,
+      "interpretation": "interval crosses zero by a wide margin; no positive-overhead or equivalence claim"
+    },
+    "secondary_geometric_gateway_over_backend_ratio": {
+      "estimate": 1.0002524082412556,
+      "ci95_lower": 0.9896050852638534,
+      "ci95_upper": 1.011014287508104,
+      "interpretation": "interval crosses 1 and exceeds the predeclared equivalence band [0.995,1.005]"
+    },
+    "native_adjusted_residual_sensitivity_ms": {
+      "mean": 0.6924589843750262,
+      "ci95_lower": 0.5628363269898133,
+      "ci95_upper": 0.822081641760239,
+      "role": "sensitivity observation only",
+      "why_not_primary": "llama.cpp native prompt+predicted timing is not a synchronized or subtractable pure gateway CPU clock",
+      "claim_allowed": false
+    },
+    "order_strata_gateway_minus_backend_ms": {
+      "BG_mean": 15.61037378124999,
+      "GB_mean": -14.71145581249997,
+      "absolute_difference": 30.32182959374996,
+      "opposite_signs": true
+    },
+    "front_back_gateway_minus_backend_ms": {
+      "first_8_blocks_mean": -10.134795499999996,
+      "last_8_blocks_mean": 11.033713468750015,
+      "absolute_difference": 21.16850896875001
+    }
+  },
+  "predeclared_stability_gates": {
+    "passed": 0,
+    "failed": 8,
+    "all_pass_required": true,
+    "details": {
+      "B_wall_population_cv_le_1pct": {
+        "observed": 0.08569061526077586,
+        "limit": 0.01,
+        "passed": false
+      },
+      "G_wall_population_cv_le_1pct": {
+        "observed": 0.08665912233082206,
+        "limit": 0.01,
+        "passed": false
+      },
+      "B_native_predicted_ms_population_cv_le_1pct": {
+        "observed": 0.08520097939507705,
+        "limit": 0.01,
+        "passed": false
+      },
+      "G_native_predicted_ms_population_cv_le_1pct": {
+        "observed": 0.08643931507800436,
+        "limit": 0.01,
+        "passed": false
+      },
+      "delta_population_sd_over_pooled_wall_le_1pct": {
+        "observed": 0.04317356917897477,
+        "limit": 0.01,
+        "passed": false
+      },
+      "order_stratum_mean_difference_within_threshold": {
+        "observed_ms": 30.32182959374996,
+        "threshold_ms": 3.628856649078125,
+        "passed": false
+      },
+      "front_back_block_mean_difference_within_threshold": {
+        "observed_ms": 21.16850896875001,
+        "threshold_ms": 3.628856649078125,
+        "passed": false
+      },
+      "primary_ci95_half_width_le_2ms": {
+        "observed_ms": 19.52052958625329,
+        "limit_ms": 2.0,
+        "passed": false
+      }
+    }
+  },
+  "quality_and_custody_checks": {
+    "all_passed": true,
+    "generation_sequence": "strict 1 through 136",
+    "B_generation_responses": 68,
+    "G_generation_responses": 68,
+    "cache_clear_count": 136,
+    "all_cache_clears_acknowledged_exact_slot_zero": true,
+    "cache_clear_to_generation_gap_microseconds": {
+      "min": 15.583,
+      "max": 127.417
+    },
+    "client_connection_reconnects": 0,
+    "backend_and_gateway_request_indices_each_strict_1_through_68": true,
+    "admin_connection_indices_observed_strict_3_through_155": true,
+    "semantic_hash_unique_values_each": 1,
+    "content_sha256": "c65d3fd8040fc05441d86adf0965a9f3c12bd801e965fae9cd2aa87d444df7ad",
+    "token_ids_sha256": "0a8a6c5ceeb831528480ebcad172fbcdda4ac23478ab051b1f74a00ec6d4f8e4",
+    "rendered_prompt_sha256": "13071b0f0e23e97681f6f39247dbb715973302580660a81dbae994fe8064e7d3",
+    "generation_settings_sha256": "99e6940bc3b693a57a15c128b6ac0c0fb713b1b169ebbd4c9fa41763582d32f3",
+    "usage_prompt_completion_total_all": [
+      13,
+      128,
+      141
+    ],
+    "native_prompt_predicted_cache_all": [
+      13,
+      128,
+      0
+    ],
+    "state_unchanged_across_16_blocks_and_final_check": true,
+    "artifacts_unchanged": true,
+    "request_history_unchanged": true,
+    "runtime_stopped_cleanly_after_campaign": true,
+    "one_shot_marker_preserved": true
+  },
+  "host_context": {
+    "power_and_thermal_admission_passed": true,
+    "known_noisy": true,
+    "start_external_load": [
+      "com.apple.WebKit.GPU at 100.0% CPU",
+      "spotlightknowledged at 99.3% CPU"
+    ],
+    "end_external_load": [
+      "spotlightknowledged at 99.9% CPU",
+      "com.apple.WebKit.GPU at 99.0% CPU"
+    ],
+    "inference": "the large wall/native CVs, opposite-sign order strata, and front/back drift are consistent with severe uncontrolled host noise, but causation is not proven",
+    "external_processes_terminated_or_modified": false
+  },
+  "independent_recompute": {
+    "performed_from_raw_measured_pairs_without_reading_driver_analysis": true,
+    "primary_secondary_adjusted_and_all_gate_values_match_driver": true,
+    "maximum_absolute_difference_for_each_stored_per_pair_derived_field": 0.0,
+    "raw_internal_consistency_P0": 0,
+    "raw_internal_consistency_P1": 0,
+    "limitations": [
+      "the repository raw record carries the history-before snapshot plus equality custody rather than a second embedded history-after object",
+      "zero-reconnect proof covers the three client connections, not OmniInfer-to-backend upstream sockets"
+    ]
+  },
+  "claim_decision": {
+    "allowed": "this one-shot same-backend campaign completed correctly but is statistically unstable and inconclusive",
+    "not_allowed": [
+      "OmniInfer has positive client-observed gateway overhead",
+      "OmniInfer gateway and direct backend are practically equivalent",
+      "the adjusted residual is pure gateway processing cost",
+      "OmniInfer or llama.cpp is the faster inference engine",
+      "any ratio against ApxInf or Ollama"
+    ],
+    "future_work": "a separately predeclared new campaign on a demonstrably quiet or exclusively controlled host would be required; v1 is consumed and must not be retried"
+  },
+  "evidence_receipts": {
+    "driver": {
+      "path": "benchmarks/cross_runtime/omniinfer_gateway_overhead_driver.py",
+      "commit": "7b05aac09a90aff682e33c34d46808624b368a98",
+      "size_bytes": 62777,
+      "sha256": "a064958ce1a98ade5966203c255bf1ab0baf406ffba0ec18c887ebe3e4fad2c2"
+    },
+    "predeclaration": {
+      "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-overhead-predeclared-diagnostic-v1-20260826.json",
+      "commit": "3ca6c0383b4122e8d6d38740729c8db1b6488303",
+      "size_bytes": 21175,
+      "sha256": "a776648c721942159fd42448ed84e06fafcbe1134e056115005c39c90a36c5e3"
+    },
+    "campaign_start": {
+      "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-overhead-campaign-start-diagnostic-v1-20260826.json",
+      "commit": "770c969a5c1b1126cd624f41456279ecf8ae21d1",
+      "size_bytes": 13223,
+      "sha256": "34b05a85da50e526c0ac8fe724810a44c1ee813e0a63ecc3f626d879c505f3d4"
+    },
+    "source_driver_raw": {
+      "outside_repository_path": "/tmp/apxinf-omniinfer-gateway-overhead-raw-driver-v1.json",
+      "size_bytes": 1111943,
+      "sha256": "4afb50505e907161b063b11a1062d5bdc70162bf9552625d5c03ae3caeccf8cf"
+    },
+    "repository_raw": {
+      "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-overhead-raw-campaign-diagnostic-v1-20260826.json",
+      "commit": "43008df27b3184b70f848560b7ec2f5b5ec57850",
+      "size_bytes": 289223,
+      "sha256": "7d781cd60e10f170375a7f84a964b56faf446389de6f8cd64694b79811923926"
+    }
+  }
+}
