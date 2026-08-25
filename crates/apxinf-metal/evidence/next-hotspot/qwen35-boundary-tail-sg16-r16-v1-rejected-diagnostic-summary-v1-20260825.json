@@ -1,0 +1,356 @@
+{
+  "format": "apxinf-qwen35-boundary-tail-sg16-r16-rejected-diagnostic-summary-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "STOP_REVERT_REQUIRED",
+  "classification": {
+    "formal_performance_result": false,
+    "promotion_evidence": false,
+    "use": "diagnostic hypothesis rejection only",
+    "limitations": [
+      "the strict quiet-host preflight failed because non-allowlisted background processes exceeded five percent CPU",
+      "only two counterbalanced four-sample E2E blocks were collected because the candidate already missed the predeclared E2E gate and the host was not admissible",
+      "the formal six-block ABBA/BAAB and twelve-samples-per-version contract was not run"
+    ]
+  },
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "prompt": "Hello",
+    "prompt_tokens": 13,
+    "output_tokens": 128,
+    "decode_path": "ApxInf Metal W8 boundary-tail-v1",
+    "quantization": "ApxInf native W8 group-64 with native-F32 top-4 rerank",
+    "target": "Apple M4 Metal"
+  },
+  "hypothesis": {
+    "id": "boundary-tail-head-sg16-r16-v1",
+    "legacy_kernel": "w8_rows_topk4",
+    "candidate_kernel": "w8_rows_topk4_sg16",
+    "change": "double independent vocabulary rows per threadgroup from 8 to 16 by using 16 SIMDgroups and 512 threads, while preserving one row per SIMDgroup and the legacy lane accumulation sequence",
+    "expected_mechanism": "reduce first-stage top-4 threadgroup count and partial-top4 scratch by one half without changing output arithmetic",
+    "predeclared_keep_threshold": {
+      "logic": "AND",
+      "tail_ratio_of_medians_improvement_percent_at_least": 2.0,
+      "quiet_host_end_to_end_tpot_improvement_percent_at_least": 0.5,
+      "teacher_and_free_exactness_required": true
+    },
+    "llama_cpp_equivalence_claimed": false,
+    "llama_cpp_note": "this is an ApxInf-only independent-row occupancy experiment; it does not reproduce llama.cpp's two-row, four-SIMDgroup cooperative Q8 head"
+  },
+  "build": {
+    "baseline_parent_commit": "e34686ccf5a69857a11f1c3fc6abdcb862145b8d",
+    "candidate_source_commit": "7e7a09b6a25ad2b4bf88c2d483c20c965ed5f9ca",
+    "runtime_receipt_hardening_commit": "a76513f5f888b9b5e8f65c026ccc3ec700da3b25",
+    "candidate_source_disposition": "preserved in the two named commits and scheduled for an explicit revert after this evidence is committed",
+    "binary": {
+      "path_at_measurement": "/Users/haiyan-mini/Agent4Kernel/ApxInf/target/sg16-r16-v1/release/examples/qwen35_metal_w8_boundary_tail_head_v1_gate",
+      "sha256": "33492e0fdfee83cfc3675ef590d16fe1ff4d8316ad34bc05391f99446c5c1c5a",
+      "size_bytes": 9349216,
+      "profile": "release",
+      "features": [
+        "accelerate",
+        "metal-w8"
+      ]
+    },
+    "toolchain": "stable-aarch64-apple-darwin from /Users/haiyan-mini/Agent4Kernel/.apxinf-toolchains"
+  },
+  "runtime_observed_execution_contract": {
+    "legacy": {
+      "kernel": "w8_rows_topk4",
+      "rows_per_threadgroup": 8,
+      "rows_per_simdgroup": 1,
+      "simdgroups_per_threadgroup": 8,
+      "threads_per_threadgroup": 256,
+      "partial_count": 31040,
+      "partial_topk_bytes": 993280,
+      "pipeline_max_total_threads_per_threadgroup": 1024,
+      "pipeline_thread_execution_width": 32,
+      "persistent_mtlbuffer_bytes": 799543312
+    },
+    "candidate": {
+      "kernel": "w8_rows_topk4_sg16",
+      "rows_per_threadgroup": 16,
+      "rows_per_simdgroup": 1,
+      "simdgroups_per_threadgroup": 16,
+      "threads_per_threadgroup": 512,
+      "partial_count": 15520,
+      "partial_topk_bytes": 496640,
+      "pipeline_max_total_threads_per_threadgroup": 1024,
+      "pipeline_thread_execution_width": 32,
+      "persistent_mtlbuffer_bytes": 799046672
+    },
+    "runtime_observed": true,
+    "identity_binding": "Metal MTLFunction.name, MTLBuffer.length, pipeline threadExecutionWidth, and pipeline maxTotalThreadsPerThreadgroup were read through the bridge and verified by Rust before receipt publication",
+    "unchanged_per_decode": {
+      "tail_kernel_dispatches": 8,
+      "tail_compute_encoders": 1,
+      "tail_command_buffers": 1,
+      "tail_commits": 1,
+      "tail_waits": 1
+    }
+  },
+  "quality_gate": {
+    "cpu_teacher_128_passed": true,
+    "two_legacy_teacher_128_receipts_passed": true,
+    "two_sg16_teacher_128_receipts_passed": true,
+    "all_teacher_mismatch_arrays_empty": true,
+    "all_four_teacher_top4_arrays_identical": true,
+    "cpu_free_128_passed": true,
+    "all_eight_counterbalanced_free_receipts_passed": true,
+    "all_eight_free_mismatch_counts": 0,
+    "canonical_free128_token_ids_compact_json_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"
+  },
+  "teacher_tail_diagnostic": {
+    "order": [
+      "A1 legacy",
+      "B1 SG16",
+      "B2 SG16",
+      "A2 legacy"
+    ],
+    "samples_per_variant": 256,
+    "median_definition": "arithmetic mean of the two central sorted values for an even sample count",
+    "per_run": [
+      {
+        "run": "A1",
+        "kernel": "w8_rows_topk4",
+        "tail_transaction_median_ns": 3364250.0,
+        "tail_transaction_total_ms": 436.260867
+      },
+      {
+        "run": "B1",
+        "kernel": "w8_rows_topk4_sg16",
+        "tail_transaction_median_ns": 3272542.0,
+        "tail_transaction_total_ms": 436.313666
+      },
+      {
+        "run": "B2",
+        "kernel": "w8_rows_topk4_sg16",
+        "tail_transaction_median_ns": 3265895.5,
+        "tail_transaction_total_ms": 423.526085
+      },
+      {
+        "run": "A2",
+        "kernel": "w8_rows_topk4",
+        "tail_transaction_median_ns": 3344750.0,
+        "tail_transaction_total_ms": 433.695206
+      }
+    ],
+    "legacy_pooled_median_ns": 3349875.0,
+    "candidate_pooled_median_ns": 3267646.0,
+    "candidate_ratio_of_medians_improvement_percent": 2.4546886077838725,
+    "legacy_mean_ns": 3398265.91015625,
+    "candidate_mean_ns": 3358749.02734375,
+    "candidate_mean_improvement_percent": 1.1628543456354445,
+    "tail_keep_threshold_passed": true
+  },
+  "counterbalanced_free_diagnostic": {
+    "order": [
+      "A",
+      "B",
+      "B",
+      "A",
+      "B",
+      "A",
+      "A",
+      "B"
+    ],
+    "A": "legacy w8_rows_topk4",
+    "B": "candidate w8_rows_topk4_sg16",
+    "samples": [
+      {
+        "sample": "b1-s1-A",
+        "tps": 66.15823224749182,
+        "tpot_ms": 15.115276905511811,
+        "ttft_ms": 135.167,
+        "generation_total_latency_ms": 2054.807167
+      },
+      {
+        "sample": "b1-s2-B",
+        "tps": 67.38425743552172,
+        "tpot_ms": 14.84026148031496,
+        "ttft_ms": 128.151625,
+        "generation_total_latency_ms": 2012.864833
+      },
+      {
+        "sample": "b1-s3-B",
+        "tps": 67.01928456905279,
+        "tpot_ms": 14.92107840944882,
+        "ttft_ms": 115.33475,
+        "generation_total_latency_ms": 2010.311708
+      },
+      {
+        "sample": "b1-s4-A",
+        "tps": 66.69639995677863,
+        "tpot_ms": 14.993312992125984,
+        "ttft_ms": 126.9685,
+        "generation_total_latency_ms": 2031.11925
+      },
+      {
+        "sample": "b2-s1-B",
+        "tps": 64.32129992913622,
+        "tpot_ms": 15.546949472440945,
+        "ttft_ms": 119.53925,
+        "generation_total_latency_ms": 2094.001833
+      },
+      {
+        "sample": "b2-s2-A",
+        "tps": 66.77613451911175,
+        "tpot_ms": 14.97541011023622,
+        "ttft_ms": 157.631541,
+        "generation_total_latency_ms": 2059.508625
+      },
+      {
+        "sample": "b2-s3-A",
+        "tps": 65.9756696764374,
+        "tpot_ms": 15.15710268503937,
+        "ttft_ms": 141.777375,
+        "generation_total_latency_ms": 2066.729416
+      },
+      {
+        "sample": "b2-s4-B",
+        "tps": 66.23337982136051,
+        "tpot_ms": 15.098127299212598,
+        "ttft_ms": 127.247333,
+        "generation_total_latency_ms": 2044.7095
+      }
+    ],
+    "block_tpot_reductions": [
+      {
+        "block": 1,
+        "legacy_median_tpot_ms": 15.054294948818898,
+        "candidate_median_tpot_ms": 14.88066994488189,
+        "candidate_improvement_percent": 1.1533253767598728
+      },
+      {
+        "block": 2,
+        "legacy_median_tpot_ms": 15.066256397637794,
+        "candidate_median_tpot_ms": 15.322538385826771,
+        "candidate_improvement_percent": -1.7010329668168955
+      }
+    ],
+    "reduction": {
+      "legacy_median_tpot_ms": 15.054294948818898,
+      "candidate_median_tpot_ms": 15.009602854330709,
+      "candidate_tpot_improvement_percent": 0.29687271732175,
+      "legacy_median_tps": 66.42731610213522,
+      "candidate_median_tps": 66.62633219520666,
+      "candidate_tps_improvement_percent": 0.29959978025522194,
+      "legacy_median_total_latency_ms": 2057.1578959999997,
+      "candidate_median_total_latency_ms": 2028.7871665,
+      "candidate_total_latency_improvement_percent": 1.37912260187536,
+      "candidate_faster_tpot_blocks": 1,
+      "candidate_slower_tpot_blocks": 1,
+      "passes_predeclared_0_5_percent_tpot_gate": false
+    }
+  },
+  "host_observation": {
+    "quiet_gate_passed": false,
+    "strict_preflight_problem": "non-allowlisted process exceeded 5% CPU",
+    "final_swap_used_bytes_observed_after_screen": 4935448003,
+    "dominant_offenders": [
+      {
+        "process": "logioptionsplus_agent",
+        "maximum_observed_cpu_percent": 72.0
+      },
+      {
+        "process": "logioptionsplus_logivoice",
+        "maximum_observed_cpu_percent": 45.3
+      }
+    ]
+  },
+  "validation": {
+    "results": [
+      "apxinf-metal focused tail_mlp_head_v1: 13 passed",
+      "apxinf-metal full suite: passed with one explicitly ignored production-shape gate",
+      "boundary-tail gate example: 23 passed, 1 ignored",
+      "local source-lock ignored test run explicitly: passed",
+      "runtime-receipt independent audit: CLEAN",
+      "format, source-hash, and whitespace checks passed",
+      "release build completed"
+    ]
+  },
+  "receipt_integrity": [
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-cpu-free-v1-20260825.json",
+      "sha256": "206d196ae8b6f01be1aa59bd6ec7368d6debc10b9181ffae300b0f36c5606054",
+      "size_bytes": 44066
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-cpu-teacher-v1-20260825.json",
+      "sha256": "c0f5192291992a5f9f2684dfaea2f1b5ae2e8e82676f21e6c328fa27530807e2",
+      "size_bytes": 44629
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-free-b1-s1-a-legacy-v1-20260825.json",
+      "sha256": "17691286ffd481c459f43a9449caed122060448ac251c5ab80abc67a0c2f94c0",
+      "size_bytes": 57932
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-free-b1-s2-b-sg16-v1-20260825.json",
+      "sha256": "3f3f4f5171aab51aef9f44d1fb59fdf3595416e2ddec2e26f1412789d1f5e81e",
+      "size_bytes": 57954
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-free-b1-s3-b-sg16-v1-20260825.json",
+      "sha256": "25459462d17de2e5c6ad552993c13938ea6c6a5c8fc39497d6bc947703e2f305",
+      "size_bytes": 57954
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-free-b1-s4-a-legacy-v1-20260825.json",
+      "sha256": "94f926d6a67e26bcf0382f2309e520d971298a8deabe842c4138127f4307a6b7",
+      "size_bytes": 57939
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-free-b2-s1-b-sg16-v1-20260825.json",
+      "sha256": "1f654d4795c6d928503674a1c5d3321e98e62fe9276c5d36952eb6606b76562f",
+      "size_bytes": 57955
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-free-b2-s2-a-legacy-v1-20260825.json",
+      "sha256": "84444487b7c32d2b8b64526df502c5ce1b25d016070bef207671c57015bfdcc4",
+      "size_bytes": 57932
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-free-b2-s3-a-legacy-v1-20260825.json",
+      "sha256": "c179d922517281a7d95eb602e31005aae3aa0a96dbdcac537638b7bf757fd543",
+      "size_bytes": 57924
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-free-b2-s4-b-sg16-v1-20260825.json",
+      "sha256": "143efddc907a31df5a10f16c56d02ea06b7d399049eab35fa6f354edcd7e75ea",
+      "size_bytes": 57946
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-legacy-teacher-a1-v1-20260825.json",
+      "sha256": "39db28e752e530a5c65e111cfd56424333dd111bae59b5b9c6be895d249cd7fc",
+      "size_bytes": 68860
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-legacy-teacher-a2-v1-20260825.json",
+      "sha256": "bd81b109aae6c458fd25a54f9e5855935b2ad20c33eeadff06d6d5fb467813e1",
+      "size_bytes": 68851
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-sg16-teacher-b1-v1-20260825.json",
+      "sha256": "14ebc66b146d691d7b73de45972faeb87e4be6b97c622ac9a6362c8a50eedd76",
+      "size_bytes": 68890
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-sg16-r16-v1-sg16-teacher-b2-v1-20260825.json",
+      "sha256": "d80eb8cd5a6c6aca6469b066d328d4ce93aa19a38746e18d81ba3f881792c6d6",
+      "size_bytes": 68883
+    }
+  ],
+  "decision": {
+    "accepted": false,
+    "action": "commit all raw receipts and this summary, then explicitly revert the SG16 candidate and its runtime-receipt-only support",
+    "reason": "exactness and the direct-tail two-percent ratio-of-medians gate passed, but pooled E2E TPOT improved only 0.297 percent versus the required 0.5 percent, the two counterbalanced blocks disagreed in direction, and the strict quiet-host admission check failed",
+    "next_hypothesis": "upload the static vocabulary weights and scales into GPU-private buffers while preserving the legacy rows kernel and the same exactness gates"
+  },
+  "llama_cpp_comparison_policy": {
+    "updates_published_comparison": false,
+    "reason": "a rejected, uncontrolled intra-ApxInf screen is not a replacement llama.cpp benchmark",
+    "published_apxinf_metal_w8_tps_remains": 66.336728,
+    "published_llama_cpp_metal_q8_0_tps_remains": 70.663943
+  }
+}
