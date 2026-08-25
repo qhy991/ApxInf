@@ -1,0 +1,261 @@
+{
+  "format": "apxinf-qwen35-boundary-tail-private-vocab-rejected-diagnostic-summary-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "STOP_REVERT_REQUIRED",
+  "classification": {
+    "formal_performance_result": false,
+    "promotion_evidence": false,
+    "use": "diagnostic hypothesis rejection only",
+    "limitations": [
+      "the strict quiet-host preflight failed because non-allowlisted background processes exceeded five percent CPU",
+      "the candidate missed the predeclared direct-tail two-percent gate, so the AND gate stopped before counterbalanced end-to-end timing",
+      "the single private-upload free run is an exactness smoke test and not a comparative performance sample",
+      "the formal six-block ABBA/BAAB and twelve-samples-per-version contract was not run"
+    ]
+  },
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "prompt": "Hello",
+    "prompt_tokens": 13,
+    "output_tokens": 128,
+    "decode_path": "ApxInf Metal W8 boundary-tail-v1",
+    "quantization": "ApxInf native W8 group-64 with native-F32 top-4 rerank",
+    "target": "Apple M4 Metal"
+  },
+  "hypothesis": {
+    "id": "boundary-tail-head-private-vocab-v1",
+    "legacy_storage": "shared",
+    "candidate_storage": "private-upload",
+    "change": "retain the existing w8_rows_topk4 arithmetic and dispatch geometry while uploading the immutable 254279680-byte vocabulary weights and 15892480-byte scales once through two shared staging buffers into two private Metal buffers",
+    "expected_mechanism": "allow Metal to optimize access to the 270172160-byte static vocabulary projection without changing arithmetic, dispatch count, scratch size, or per-decode transfers",
+    "predeclared_keep_threshold": {
+      "logic": "AND",
+      "tail_ratio_of_medians_improvement_percent_at_least": 2.0,
+      "quiet_host_end_to_end_tpot_improvement_percent_at_least": 0.5,
+      "teacher_and_free_exactness_required": true,
+      "counterbalanced_blocks_must_not_be_clearly_negative": true
+    },
+    "llama_cpp_equivalence_claimed": false,
+    "llama_cpp_note": "storage mode alone does not reproduce llama.cpp's vocabulary-head arithmetic, cooperative row geometry, quantization format, sampler, or runtime"
+  },
+  "build": {
+    "baseline_parent_commit": "fd0a3d41a80838196d96ac27307317c6cbcddf29",
+    "candidate_source_commit": "d72788a5c929c1fea26a83c3ba2a3641d9c92bb0",
+    "candidate_source_disposition": "preserved in the named commit and scheduled for an explicit revert after this evidence is committed",
+    "binary": {
+      "path_at_measurement": "/Users/haiyan-mini/Agent4Kernel/ApxInf/target/private-vocab-v1/release/examples/qwen35_metal_w8_boundary_tail_head_v1_gate",
+      "sha256": "15ac6fe925922016eb2d3810e1ceafd96143a4b33097e7ee1cd0fb103dcb585a",
+      "size_bytes": 9348624,
+      "profile": "release",
+      "features": [
+        "accelerate",
+        "metal-w8"
+      ]
+    },
+    "toolchain": "stable-aarch64-apple-darwin from /Users/haiyan-mini/Agent4Kernel/.apxinf-toolchains"
+  },
+  "runtime_observed_execution_contract": {
+    "shared": {
+      "vocab_storage": "shared",
+      "vocab_weights_storage": "shared",
+      "vocab_scales_storage": "shared",
+      "vocab_weight_bytes": 254279680,
+      "vocab_scale_bytes": 15892480,
+      "transient_staging_buffers": 0,
+      "transient_staging_bytes": 0,
+      "init_blit_bytes": 0,
+      "init_command_buffers": 0,
+      "init_blit_encoders": 0,
+      "init_copy_commands": 0,
+      "init_commits": 0,
+      "init_waits": 0,
+      "tail_persistent_mtlbuffer_bytes": 282923024,
+      "tail_allocated_buffers": 13,
+      "tail_shared_buffers": 10,
+      "tail_private_buffers": 3,
+      "aggregate_persistent_mtlbuffer_bytes": 799543312,
+      "aggregate_allocated_buffers": 494,
+      "aggregate_shared_buffers": 443,
+      "aggregate_private_buffers": 51
+    },
+    "private_upload": {
+      "vocab_storage": "private-upload",
+      "vocab_weights_storage": "private-upload",
+      "vocab_scales_storage": "private-upload",
+      "vocab_weight_bytes": 254279680,
+      "vocab_scale_bytes": 15892480,
+      "transient_staging_buffers": 2,
+      "transient_staging_bytes": 270172160,
+      "init_blit_bytes": 270172160,
+      "init_command_buffers": 1,
+      "init_blit_encoders": 1,
+      "init_copy_commands": 2,
+      "init_commits": 1,
+      "init_waits": 1,
+      "tail_persistent_mtlbuffer_bytes": 282923024,
+      "tail_allocated_buffers": 13,
+      "tail_shared_buffers": 8,
+      "tail_private_buffers": 5,
+      "aggregate_persistent_mtlbuffer_bytes": 799543312,
+      "aggregate_allocated_buffers": 494,
+      "aggregate_shared_buffers": 441,
+      "aggregate_private_buffers": 53
+    },
+    "runtime_observed": true,
+    "identity_binding": "the bridge read each live MTLBuffer.storageMode and MTLBuffer.length; Rust required the observed selector, both destination modes, both lengths, and every initialization counter to match before constructing the public handle",
+    "unchanged_per_decode": {
+      "tail_command_buffers": 1,
+      "tail_compute_encoders": 1,
+      "tail_kernel_dispatches": 8,
+      "tail_buffer_barriers": 7,
+      "tail_commits": 1,
+      "tail_waits": 1,
+      "tail_partial_topk_bytes": 993280
+    }
+  },
+  "quality_gate": {
+    "cpu_teacher_128_passed": true,
+    "two_shared_teacher_128_receipts_passed": true,
+    "two_private_upload_teacher_128_receipts_passed": true,
+    "all_teacher_mismatch_arrays_empty": true,
+    "all_four_teacher_top4_arrays_identical": true,
+    "cpu_free_128_passed": true,
+    "private_upload_free_128_smoke_passed": true,
+    "private_upload_free_mismatch_count": 0,
+    "private_upload_free_exact_128_token_trajectory": true,
+    "canonical_free128_token_ids_compact_json_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"
+  },
+  "teacher_tail_diagnostic": {
+    "order": [
+      "A1 shared",
+      "B1 private-upload",
+      "B2 private-upload",
+      "A2 shared"
+    ],
+    "samples_per_variant": 256,
+    "median_definition": "arithmetic mean of the two central sorted values for an even sample count",
+    "per_run": [
+      {
+        "run": "A1",
+        "storage": "shared",
+        "tail_transaction_median_ns": 3348083.0,
+        "tail_transaction_total_ms": 437.805414
+      },
+      {
+        "run": "B1",
+        "storage": "private-upload",
+        "tail_transaction_median_ns": 3341166.5,
+        "tail_transaction_total_ms": 432.947033
+      },
+      {
+        "run": "B2",
+        "storage": "private-upload",
+        "tail_transaction_median_ns": 3344104.5,
+        "tail_transaction_total_ms": 430.419838
+      },
+      {
+        "run": "A2",
+        "storage": "shared",
+        "tail_transaction_median_ns": 3355166.5,
+        "tail_transaction_total_ms": 438.150043
+      }
+    ],
+    "shared_pooled_median_ns": 3350854.0,
+    "private_upload_pooled_median_ns": 3342958.5,
+    "private_upload_ratio_of_medians_improvement_percent": 0.2356264999907486,
+    "shared_mean_ns": 3421701.00390625,
+    "private_upload_mean_ns": 3372526.83984375,
+    "private_upload_mean_improvement_percent": 1.4371262715930544,
+    "tail_keep_threshold_passed": false
+  },
+  "end_to_end_screen": {
+    "counterbalanced_comparison_run": false,
+    "reason": "the direct-tail gate is a required conjunct and missed its two-percent threshold, so the predeclared AND gate stopped early",
+    "private_upload_free_exactness_smoke": {
+      "passed": true,
+      "mismatch_count": 0,
+      "tpot_ms_uncontrolled_noncomparative": 14.98911220472441,
+      "tps_uncontrolled_noncomparative": 66.71509201757864
+    },
+    "quiet_host_end_to_end_gate_passed": false,
+    "quiet_host_end_to_end_gate_evaluated": false
+  },
+  "host_observation": {
+    "quiet_gate_passed": false,
+    "strict_preflight_problem": "non-allowlisted process exceeded 5% CPU",
+    "final_swap_used_bytes_observed_before_screen": 6201603523,
+    "dominant_offenders": [
+      {
+        "process": "logioptionsplus_agent",
+        "maximum_observed_cpu_percent": 74.6
+      },
+      {
+        "process": "logioptionsplus_logivoice",
+        "maximum_observed_cpu_percent": 46.6
+      }
+    ]
+  },
+  "validation": {
+    "results": [
+      "apxinf-metal focused tail_mlp_head_v1: 10 passed",
+      "apxinf-metal full suite: 59 passed with one explicitly ignored production-shape gate",
+      "apxinf-model feature-complete library suite: 128 passed",
+      "boundary-tail gate example: 23 passed and 1 ignored",
+      "local source-lock ignored test run explicitly: passed",
+      "Metal ABI, lifetime, live-receipt, and ledger independent audit: CLEAN",
+      "model and gate integration independent audit: CLEAN",
+      "format, frozen source hash, and whitespace checks passed",
+      "release build completed"
+    ]
+  },
+  "receipt_integrity": [
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-private-vocab-v1-cpu-free-v1-20260825.json",
+      "sha256": "e9a8425ba2bacc4c8f2b297adb3979ef263b058e5d3a63e50624052a0935a35c",
+      "size_bytes": 44106
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-private-vocab-v1-cpu-teacher-v1-20260825.json",
+      "sha256": "495b2016c0ff190b887b8677a9f9c163ba27b4539bc527a7ea7029352c9b3f4d",
+      "size_bytes": 44663
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-private-vocab-v1-private-free-smoke-v1-20260825.json",
+      "sha256": "b62fdfea089bdb77f8e44623edfeaf587286eb4977464005222ff1fff40e9bf7",
+      "size_bytes": 57482
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-private-vocab-v1-private-teacher-b1-v1-20260825.json",
+      "sha256": "e00d98d35fb06d22a021b8ee024355ddaf63e990fb6714cf4e51d6cfc4757e78",
+      "size_bytes": 68461
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-private-vocab-v1-private-teacher-b2-v1-20260825.json",
+      "sha256": "c51caf471184d2151a95398d1d33c703c0deda196e7e4b713eb48f1fb2d0f6f8",
+      "size_bytes": 68463
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-private-vocab-v1-shared-teacher-a1-v1-20260825.json",
+      "sha256": "0ca9a1d6a4b988ee57238d7b4eef56dba1fe1d002c9aa151ce6b594bdf527e17",
+      "size_bytes": 68392
+    },
+    {
+      "path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-boundary-tail-private-vocab-v1-shared-teacher-a2-v1-20260825.json",
+      "sha256": "66d41b647fa83bd70d321fa667f5db5acf6557eabc43f0afa9957c03dbea6774",
+      "size_bytes": 68377
+    }
+  ],
+  "decision": {
+    "accepted": false,
+    "action": "commit all raw receipts and this summary, then explicitly revert the private-vocabulary-storage candidate",
+    "reason": "teacher and free exactness passed and the bridge proved that both 270172160-byte vocabulary buffers were actually private, but the pooled direct-tail median improved only 0.236 percent versus the required 2.0 percent",
+    "next_hypothesis": "private storage is not a material lever on Apple unified memory; return to the row-kernel execution geometry and screen a 16-row, eight-SIMDgroup pair2 candidate that halves partial-top4 work without using SG16's 512-thread threadgroups"
+  },
+  "llama_cpp_comparison_policy": {
+    "updates_published_comparison": false,
+    "reason": "a rejected, uncontrolled intra-ApxInf storage screen is not a replacement llama.cpp benchmark",
+    "published_apxinf_metal_w8_tps_remains": 66.336728,
+    "published_llama_cpp_metal_q8_0_tps_remains": 70.663943
+  }
+}
