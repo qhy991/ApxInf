@@ -6,9 +6,10 @@ use crate::context::CudaContext;
 use crate::kernels::activation::{gelu_tanh, silu, silu_mul};
 use crate::kernels::attention::{
     causal_mask, grouped, grouped_indexed, sdpa_with_batched_prefill, softmax, softmax_causal,
-    softmax_causal_bf16_scaled_in_place_gqa_packed, softmax_causal_bf16_scaled_plain,
-    softmax_causal_bf16_scaled_plain_gqa_packed, softmax_causal_with_exp_cache,
-    softmax_causal_with_global_exp_cache, split_gqa_qkv_bias_bf16, vision,
+    softmax_causal_bf16_scaled_exp_cache, softmax_causal_bf16_scaled_in_place_gqa_packed,
+    softmax_causal_bf16_scaled_plain, softmax_causal_bf16_scaled_plain_gqa_packed,
+    softmax_causal_with_exp_cache, softmax_causal_with_global_exp_cache,
+    split_gqa_qkv_bias_bf16, vision,
 };
 #[cfg(apxinf_fa2_causal_sm80)]
 use crate::kernels::attention::causal_fa2_gqa_prefill;
@@ -686,6 +687,47 @@ fn attention_softmax_fused_scale_is_bit_exact_across_long_prefill() {
                  separate={separate:?}, fused={fused:?}"
             );
         }
+    }
+}
+
+#[test]
+fn attention_softmax_scaled_exp_cache_is_bit_exact() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let n_heads = 16usize;
+    let score_scale = 1.0 / 128.0f32.sqrt();
+    for seq_len in [2usize, 32, 128] {
+        let cols = seq_len;
+        let rows = seq_len * n_heads;
+        let input = (0..rows * cols)
+            .map(|index| {
+                let bits = (index as u32)
+                    .wrapping_mul(1_664_525)
+                    .wrapping_add(1_013_904_223);
+                (bits & 0xffff) as f32 / 8_192.0 - 4.0
+            })
+            .collect::<Vec<_>>();
+        let tensor = upload_fp32_as_bf16(&ctx, &input, vec![rows, cols]).unwrap();
+        let scaled = scale(&ctx, &tensor, score_scale).unwrap();
+        let baseline = softmax_causal_with_exp_cache(
+            &ctx,
+            &scaled,
+            0,
+            n_heads as u32,
+            true,
+        )
+        .unwrap();
+        let candidate = softmax_causal_bf16_scaled_exp_cache(
+            &ctx,
+            &tensor,
+            0,
+            n_heads as u32,
+            score_scale,
+        )
+        .unwrap();
+        assert_eq!(
+            download_bf16_as_fp32(&candidate).unwrap(),
+            download_bf16_as_fp32(&baseline).unwrap()
+        );
     }
 }
 

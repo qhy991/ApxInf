@@ -85,6 +85,16 @@ fn use_long_decode_graph(position: u32, enabled: bool) -> bool {
     enabled && position >= LONG_DECODE_GRAPH_MIN_POSITION
 }
 
+#[cfg(any(feature = "cuda", test))]
+fn use_scaled_exp_cache_prefill(
+    sequence: usize,
+    kv_len: usize,
+    enabled: bool,
+    all_chunk_fa2: bool,
+) -> bool {
+    enabled && !all_chunk_fa2 && sequence > 1 && kv_len <= 4_096
+}
+
 pub struct GeneralQwen25Omni {
     config: Qwen25OmniConfig,
     text: Qwen25OmniTextWeights,
@@ -99,6 +109,8 @@ pub struct GeneralQwen25Omni {
     long_decode_graph: Option<Qwen25OmniDecodeGraph>,
     #[cfg(feature = "cuda")]
     long_decode_split_cta: Option<cuda_kernels::qwen25_omni_attention::SplitCtaWorkspace>,
+    #[cfg(feature = "cuda")]
+    scaled_exp_cache_prefill: bool,
 }
 
 #[cfg(feature = "cuda")]
@@ -178,6 +190,15 @@ fn short_decode_pack8_residual_norm_enabled() -> Result<bool> {
     static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
     ENABLED
         .get_or_init(|| parse_binary_env("APXINF_QWEN25_SHORT_DECODE_PACK8_RESIDUAL_NORM"))
+        .clone()
+        .map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
+fn scaled_exp_cache_prefill_enabled() -> Result<bool> {
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    ENABLED
+        .get_or_init(|| parse_binary_env("APXINF_QWEN25_SCALED_EXP_CACHE_PREFILL"))
         .clone()
         .map_err(Error::Other)
 }
@@ -326,7 +347,7 @@ impl GeneralQwen25Omni {
             None
         };
         #[cfg(feature = "cuda")]
-        let (decode_graph, long_decode_graph) = {
+        let (decode_graph, long_decode_graph, scaled_exp_cache_prefill) = {
             let fa2_chunk1024 = fa2_chunk1024_enabled()?;
             let _all_chunk_fa2 = all_chunk_fa2_enabled()?;
             if fa2_chunk1024 && !chunked_prefill_enabled()? {
@@ -344,6 +365,7 @@ impl GeneralQwen25Omni {
             let short_w32_attention = short_decode_w32_attention_enabled()?;
             let short_fused_qkv_prelude = short_decode_fused_qkv_prelude_enabled()?;
             let short_pack8_residual_norm = short_decode_pack8_residual_norm_enabled()?;
+            let scaled_exp_cache_prefill = scaled_exp_cache_prefill_enabled()?;
             let m1_gemv_tactics =
                 parse_binary_env("APXINF_QWEN25_M1_GEMV_TACTICS").map_err(Error::Other)?;
             let fused_tmrope_kv = fused_tmrope_kv_enabled()?;
@@ -398,6 +420,16 @@ impl GeneralQwen25Omni {
                         .into(),
                 ));
             }
+            if scaled_exp_cache_prefill
+                && (!short_pack8_residual_norm
+                    || !parse_binary_env("APXINF_BATCHED_GQA_PREFILL").map_err(Error::Other)?
+                    || !parse_binary_env("APXINF_SOFTMAX_EXP_CACHE").map_err(Error::Other)?)
+            {
+                return Err(Error::Other(
+                    "APXINF_QWEN25_SCALED_EXP_CACHE_PREFILL=1 requires SHORT_DECODE_PACK8_RESIDUAL_NORM, BATCHED_GQA_PREFILL and SOFTMAX_EXP_CACHE"
+                        .into(),
+                ));
+            }
             if fused_tmrope_kv && !graph_enabled {
                 return Err(Error::Other(
                     "APXINF_QWEN25_FUSED_TMROPE_KV requires APXINF_QWEN25_DECODE_GRAPH=1".into(),
@@ -425,7 +457,8 @@ impl GeneralQwen25Omni {
                     || short_exact_residual_norm
                     || short_w32_attention
                     || short_fused_qkv_prelude
-                    || short_pack8_residual_norm)
+                    || short_pack8_residual_norm
+                    || scaled_exp_cache_prefill)
                     && cuda.context().caps().sm != 89
                 {
                     return Err(Error::Other(format!(
@@ -474,6 +507,11 @@ impl GeneralQwen25Omni {
                         "ApxInf Qwen2.5-Omni short-decode pack8 residual RMSNorm: aligned H2048 path"
                     );
                 }
+                if scaled_exp_cache_prefill {
+                    eprintln!(
+                        "ApxInf Qwen2.5-Omni scaled exp-cache prefill: exact fused scale and numerator-cache softmax for 2..=4096 KV tokens"
+                    );
+                }
                 let short = Qwen25OmniDecodeGraph::new(
                     cuda,
                     Self::decode_graph_config(&config),
@@ -500,9 +538,9 @@ impl GeneralQwen25Omni {
                 } else {
                     None
                 };
-                (Some(short), long)
+                (Some(short), long, scaled_exp_cache_prefill)
             } else {
-                (None, None)
+                (None, None, false)
             }
         };
         let model = Self {
@@ -519,6 +557,8 @@ impl GeneralQwen25Omni {
             long_decode_graph,
             #[cfg(feature = "cuda")]
             long_decode_split_cta,
+            #[cfg(feature = "cuda")]
+            scaled_exp_cache_prefill,
         };
         #[cfg(feature = "cuda")]
         {
@@ -1029,6 +1069,25 @@ impl GeneralQwen25Omni {
                         Error::Other("all-chunk causal FA2 requires CudaBackend".into())
                     })?;
                     cuda.sdpa_prefill_causal_fa2(
+                        &q,
+                        &mut *self.kv,
+                        index,
+                        text.n_heads,
+                        text.n_kv_heads,
+                        text.head_dim,
+                        kv_len,
+                        text.max_position_embeddings,
+                    )?
+                } else if use_scaled_exp_cache_prefill(
+                    sequence,
+                    kv_len,
+                    self.scaled_exp_cache_prefill,
+                    use_all_chunk_fa2,
+                ) {
+                    let cuda = cuda_backend(&*self.backend).ok_or_else(|| {
+                        Error::Other("scaled exp-cache prefill requires CudaBackend".into())
+                    })?;
+                    cuda.qwen25_omni_sdpa_prefill_scaled_exp_cache(
                         &q,
                         &mut *self.kv,
                         index,
@@ -1571,6 +1630,15 @@ mod tests {
         assert!(use_all_chunk_fa2(12_288, true));
         assert!(!use_all_chunk_fa2(12_289, true));
         assert!(!use_all_chunk_fa2(8_192, false));
+    }
+
+    #[test]
+    fn scaled_exp_cache_never_overrides_request_scoped_fa2() {
+        assert!(use_scaled_exp_cache_prefill(1_024, 1_024, true, false));
+        assert!(!use_scaled_exp_cache_prefill(1_024, 1_024, true, true));
+        assert!(!use_scaled_exp_cache_prefill(1, 1, true, false));
+        assert!(!use_scaled_exp_cache_prefill(1_024, 4_097, true, false));
+        assert!(!use_scaled_exp_cache_prefill(1_024, 1_024, false, false));
     }
 
     #[test]

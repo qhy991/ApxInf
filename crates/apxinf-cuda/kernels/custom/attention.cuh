@@ -366,6 +366,63 @@ __global__ void attention_softmax_bf16_exp_cache_kernel(
     }
 }
 
+// Fuse the single-consumer BF16 score scale into the exact numerator-cache
+// softmax. Each scale is rounded to BF16 before max/exp, matching the separate
+// scale kernel, while the scalar numerator summation and final division order
+// remain unchanged.
+__global__ void attention_softmax_bf16_scaled_exp_cache_kernel(
+    const __nv_bfloat16* scores, __nv_bfloat16* output,
+    uint32_t cols, uint32_t rows, uint32_t kv_offset, uint32_t n_heads,
+    float score_scale)
+{
+    uint32_t row = apxinf_row_from_grid_yz();
+    if (row >= rows) return;
+
+    uint32_t seq_pos = row / n_heads;
+    uint32_t valid_cols = min(seq_pos + kv_offset + 1, cols);
+    uint32_t lane = threadIdx.x;
+    extern __shared__ float numerators[];
+    __shared__ float max_values[256];
+    __shared__ float sum_shared;
+
+    float local_max = -INFINITY;
+    for (uint32_t c = lane; c < valid_cols; c += blockDim.x) {
+        local_max = fmaxf(
+            local_max, attention_scaled_bf16(scores[row * cols + c], score_scale));
+    }
+    max_values[lane] = local_max;
+    __syncthreads();
+    for (uint32_t offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+        if (lane < offset) {
+            max_values[lane] = fmaxf(max_values[lane], max_values[lane + offset]);
+        }
+        __syncthreads();
+    }
+    float max_val = max_values[0];
+
+    for (uint32_t c = lane; c < valid_cols; c += blockDim.x) {
+        float scaled = attention_scaled_bf16(scores[row * cols + c], score_scale);
+        numerators[c] = expf(scaled - max_val);
+    }
+    __syncthreads();
+
+    if (lane == 0) {
+        float sum_exp = 0.0f;
+        for (uint32_t c = 0; c < valid_cols; c++) {
+            sum_exp += numerators[c];
+        }
+        sum_shared = sum_exp;
+    }
+    __syncthreads();
+    float sum_exp = sum_shared;
+
+    for (uint32_t c = lane; c < cols; c += blockDim.x) {
+        output[row * cols + c] = c < valid_cols
+            ? __float2bfloat16(numerators[c] / sum_exp)
+            : __float2bfloat16(0.0f);
+    }
+}
+
 // Decode-only exact numerator cache backed by global memory. This preserves
 // the scalar max and summation order beyond the per-CTA shared-memory limit.
 __global__ void attention_softmax_bf16_exp_global_cache_kernel(

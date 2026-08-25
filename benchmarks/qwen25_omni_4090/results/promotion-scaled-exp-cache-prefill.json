@@ -1,0 +1,187 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "candidate": "scaled_exp_cache_prefill",
+  "completed_on": "2026-08-26",
+  "contract": {
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "hardware": "NVIDIA GeForce RTX 4090",
+    "sm": 89,
+    "cuda": "12.3",
+    "precision": "bf16",
+    "concurrency": 1,
+    "sampling": "greedy",
+    "primary_request": "real PNG 1760+16",
+    "text_request": "1024+32",
+    "guard_requests": ["128+128", "12288+8", "32760+8"],
+    "timing_authority": "no-profiler service wall time and service-emitted TTFT/TPOT"
+  },
+  "implementation": {
+    "base_commit": "eb8dcfeea3dfd91c99587e1566ebbd4a44ae051e",
+    "selector": "APXINF_QWEN25_SCALED_EXP_CACHE_PREFILL=1",
+    "default_enabled_in_runtime": false,
+    "deployment_enabled": true,
+    "classification": "source/runtime graph single-consumer materialization removal",
+    "eligible_path": "pinned SM89 Qwen2.5-Omni BF16 prefill with 2..=4096 KV tokens",
+    "baseline_nodes": [
+      "BF16 score scale materialization",
+      "exact numerator-cache softmax"
+    ],
+    "candidate_node": "exact scaled numerator-cache softmax",
+    "numerical_order": "BF16 score rounding, maximum, exponential, scalar sum and final division match the two-node baseline",
+    "precedence": "request-scoped causal FA2 is selected before this candidate",
+    "excluded_paths": [
+      "8K-12K request-scoped all-chunk FA2",
+      "KV length above 4096",
+      "one-token decode",
+      "post-32K long-decode graph"
+    ],
+    "candidate_binary_sha256": "617ecb8c6b519ef88c2bacba1a08bcaf93dc8ad1960072629ab81dc719ef43fc",
+    "rollback_binary_sha256": "fdf14934ed564bddf898c694e21d9be5b5e72baa0a9b4b881bdf0e53d7f6a330"
+  },
+  "operator_gate": {
+    "output_values_compared": 66600960,
+    "mismatches": 0,
+    "bit_exact": true,
+    "shapes": [
+      {
+        "tokens": 128,
+        "baseline_microseconds": 12.224,
+        "candidate_microseconds": 9.216001,
+        "speedup": 1.326388806
+      },
+      {
+        "tokens": 1024,
+        "baseline_microseconds": 135.647995,
+        "candidate_microseconds": 82.944,
+        "speedup": 1.635416602
+      },
+      {
+        "tokens": 1760,
+        "baseline_microseconds": 460.815979,
+        "candidate_microseconds": 244.639999,
+        "speedup": 1.883649363
+      }
+    ],
+    "candidate_registers": 26,
+    "spill_bytes": 0
+  },
+  "no_profiler": {
+    "binary_control": "one immutable SM89 binary with only the scaled exp-cache selector changed from 0 to 1",
+    "order": ["A", "B", "B", "A", "A", "B", "B", "A", "A", "B"],
+    "pairs": 5,
+    "real_png_1760_16": {
+      "paired_wall_wins": 5,
+      "baseline_wall_median_seconds": 0.5810405761003494,
+      "candidate_wall_median_seconds": 0.5730222687125206,
+      "wall_reduction_pct": 1.3799909537546728,
+      "paired_wall_speedup_median": 1.014926903328842,
+      "paired_wall_speedup_min": 1.006783662422785,
+      "paired_ttft_wins": 5,
+      "baseline_ttft_median_seconds": 0.251814677,
+      "candidate_ttft_median_seconds": 0.24421246,
+      "ttft_reduction_pct": 3.0189729568463552,
+      "paired_ttft_speedup_median": 1.0314810513763302,
+      "paired_ttft_speedup_min": 1.0076991370156205,
+      "complete_output_tokens_exact": true
+    },
+    "text_1024_32": {
+      "paired_wall_wins": 5,
+      "baseline_wall_median_seconds": 0.3179074078798294,
+      "candidate_wall_median_seconds": 0.31581664830446243,
+      "wall_reduction_pct": 0.6576630564574026,
+      "paired_ttft_wins": 5,
+      "baseline_ttft_median_seconds": 0.064867911,
+      "candidate_ttft_median_seconds": 0.06380055800000001,
+      "ttft_reduction_pct": 1.6454252704391714,
+      "trajectory_sha256": "bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea"
+    },
+    "decode_128": {
+      "baseline_tpot_median_seconds": 0.007421092425196851,
+      "candidate_tpot_median_seconds": 0.007423138456692913,
+      "candidate_tpot_change_pct": 0.027570489340833504,
+      "trajectory_sha256": "a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039"
+    },
+    "context_12288": {
+      "baseline_wall_median_seconds": 0.7520398423075676,
+      "candidate_wall_median_seconds": 0.750946506857872,
+      "candidate_wall_change_pct": -0.1453826497198274,
+      "trajectory_sha256": "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832",
+      "health_outlier": "one baseline sample had elevated prefill TTFT; retained and candidate-ineligible"
+    },
+    "context_32760": {
+      "baseline_wall_median_seconds": 2.6822924986481667,
+      "candidate_wall_median_seconds": 2.6560731902718544,
+      "candidate_wall_change_pct": -0.977496242096132,
+      "trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9",
+      "candidate_path_eligible": false
+    }
+  },
+  "systems_profile": {
+    "workload": "real PNG 1760+16 after one unprofiled image warmup",
+    "baseline": {
+      "first_token_envelope_ms": 260.143232,
+      "first_token_gpu_busy_ms": 234.310434,
+      "scale_plus_softmax_ms": 16.182194,
+      "kernels_to_first_token": 1926,
+      "raw_sha256": "afd586591a433df0ce37b553dd856cc39eb1808b14d78c3dd025548ee67b8dbd"
+    },
+    "candidate": {
+      "first_token_envelope_ms": 254.967461,
+      "first_token_gpu_busy_ms": 226.927695,
+      "scaled_softmax_ms": 8.307128,
+      "kernels_to_first_token": 1890,
+      "raw_sha256": "857622510b548b993564594bf422c4b8da6709da02952cef68134b0f9df7ee14"
+    },
+    "scale_softmax_saved_ms": 7.875066,
+    "first_token_gpu_busy_saved_ms": 7.382739,
+    "first_token_envelope_saved_ms": 5.175771,
+    "kernel_instances_removed": 36,
+    "attribution": "Each text layer replaces scale plus exact exp-cache softmax with one exact scaled exp-cache node; the boundary, busy interval and first-token envelope shrink consistently.",
+    "raw_trace_deleted_after_derivation": true
+  },
+  "correctness": {
+    "all_screen_trajectories_exact": true,
+    "screen_cases": 50,
+    "path_markers": {
+      "baseline_installs": 0,
+      "candidate_installs": 5
+    },
+    "strict_selector_negative": true,
+    "fa2_precedence_regression": true,
+    "mid_context_guard": {
+      "context_4096_trajectory_sha256": "edc940b80ff945971996ddf2b30534773258bb41d3d1812c38f36ba06eaabcbd",
+      "context_8192_trajectory_sha256": "490c84bc9f905195eeeb560ed9b64d55f5e10430cb12f146d672491d860229cf",
+      "baseline_candidate_exact": true
+    },
+    "acceptance": {
+      "quick_three_of_three": true,
+      "http_contract": true,
+      "real_png": true,
+      "real_wav": true,
+      "malformed_media_recovery": true
+    }
+  },
+  "external_comparison": {
+    "vllm_omni_version": "0.26.0",
+    "vllm_real_png_wall_seconds": 0.5647583678364754,
+    "apxinf_candidate_real_png_wall_seconds": 0.5730222687125206,
+    "vllm_real_png_ttft_seconds": 0.2319645881652832,
+    "apxinf_candidate_real_png_ttft_seconds": 0.24421246,
+    "vllm_real_png_tpot_seconds": 0.021917180716991425,
+    "apxinf_candidate_real_png_tpot_seconds": 0.009034825533333332,
+    "apxinf_tpot_speedup": 2.425863225
+  },
+  "decision": {
+    "status": "promote",
+    "scope": "single-request BF16 Qwen2.5-Omni prefill with 2..=4096 KV tokens on one RTX 4090, including the frozen real PNG",
+    "reason": "The operator is bit-exact, all five PNG wall/TTFT and short-text pairs win, FA2 precedence and long guards pass, Systems attributes the first-token saving to 36 removed scale nodes, and complete text/image/audio acceptance passes.",
+    "non_claims": [
+      "multi-request throughput",
+      "continuous batching",
+      "non-SM89 hardware",
+      "video input",
+      "speech generation"
+    ]
+  }
+}

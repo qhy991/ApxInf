@@ -307,6 +307,60 @@ impl CudaBackend {
                 .map_err(|_| Error::Other("causal FA2 KV offset exceeds u32".into()))?,
             true,
             1,
+            false,
+        )
+    }
+
+    /// Execute the pinned Qwen2.5-Omni short prefill path with one exact
+    /// scaled numerator-cache softmax owner instead of materializing scaled
+    /// scores before softmax.
+    #[allow(clippy::too_many_arguments)]
+    pub fn qwen25_omni_sdpa_prefill_scaled_exp_cache(
+        &self,
+        q: &Tensor,
+        kv: &mut dyn KvCache,
+        layer_idx: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        kv_len: usize,
+        max_seq_len: usize,
+    ) -> Result<Tensor> {
+        let dims = q.shape().dims();
+        if q.dtype() != DType::BF16
+            || q.device() != Device::Cuda(self.ctx.device_id())
+            || dims.len() != 3
+            || !(2..=4_096).contains(&dims[0])
+            || dims[1] != 16
+            || dims[2] != 128
+            || n_heads != 16
+            || n_kv_heads != 2
+            || head_dim != 128
+            || kv_len > 4_096
+            || max_seq_len != 32_768
+        {
+            return Err(Error::Other(
+                "Qwen2.5-Omni scaled exp-cache prefill contract mismatch".into(),
+            ));
+        }
+        let kv_offset = kv_len
+            .checked_sub(dims[0])
+            .ok_or_else(|| Error::Other("scaled exp-cache query exceeds KV length".into()))?;
+        kernels::attention::sdpa_with_batched_prefill_fa2_min_kv(
+            &self.ctx,
+            q,
+            kv,
+            layer_idx,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            kv_len,
+            max_seq_len,
+            u32::try_from(kv_offset)
+                .map_err(|_| Error::Other("scaled exp-cache KV offset exceeds u32".into()))?,
+            true,
+            4_097,
+            true,
         )
     }
 
