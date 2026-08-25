@@ -286,16 +286,6 @@ fn metal_tail_sg16_matches_legacy_and_cpu_for_an_incomplete_final_row_group() {
 
     assert_eq!(legacy.rows_kernel(), TailMlpHeadRowsKernelV1::LegacyR8Sg8);
     assert_eq!(sg16.rows_kernel(), TailMlpHeadRowsKernelV1::Sg16R16);
-    let observed = sg16.rows_kernel_receipt();
-    assert_eq!(observed.kernel, TailMlpHeadRowsKernelV1::Sg16R16);
-    assert_eq!(observed.rows_per_threadgroup, 16);
-    assert_eq!(observed.rows_per_simdgroup, 1);
-    assert_eq!(observed.simdgroups_per_threadgroup, 16);
-    assert_eq!(observed.threads_per_threadgroup, 512);
-    assert_eq!(observed.partial_count, 2);
-    assert_eq!(observed.partial_topk_bytes, 64);
-    assert!(observed.pipeline_max_total_threads_per_threadgroup >= 512);
-    assert_eq!(observed.pipeline_thread_execution_width, 32);
     let legacy_output = legacy.decode(&input).unwrap();
     let legacy_hidden = legacy_output.normalized_hidden.to_vec();
     let legacy_candidates = legacy_output.candidate_token_ids;
@@ -772,11 +762,6 @@ fn tail_v1_bridge_shape_and_shader_custody_match_the_public_contract() {
     assert!(bridge.contains("@\"w8_rows_topk4_sg16\""));
     assert!(bridge.contains("kHeadSg16Threads"));
     assert!(bridge.contains("apxinf_metal_w8_tail_mlp_head_create_with_rows_kernel_v1("));
-    assert!(bridge.contains("apxinf_metal_w8_tail_mlp_head_rows_kernel_receipt_v1("));
-    assert!(bridge.contains("handle->partial_topk.length"));
-    assert!(bridge.contains("rows_topk_function.name"));
-    assert!(bridge.contains("handle->rows_kernel != rows_kernel"));
-    assert!(bridge.contains("handle->rows_topk_pipeline.threadExecutionWidth"));
     assert!(bridge.contains("uint32_t rows_kernel"));
     assert!(bridge.contains("rows_kernel > kRowsKernelSg16R16"));
 

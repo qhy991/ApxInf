@@ -29,28 +29,6 @@ impl TailMlpHeadRowsKernelV1 {
     const fn abi_value(self) -> u32 {
         self as u32
     }
-
-    fn from_abi_value(value: u32) -> Option<Self> {
-        match value {
-            0 => Some(Self::LegacyR8Sg8),
-            1 => Some(Self::Sg16R16),
-            _ => None,
-        }
-    }
-}
-
-/// Runtime-observed Metal pipeline, dispatch, and scratch allocation identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TailMlpHeadRowsKernelReceiptV1 {
-    pub kernel: TailMlpHeadRowsKernelV1,
-    pub rows_per_threadgroup: u32,
-    pub rows_per_simdgroup: u32,
-    pub simdgroups_per_threadgroup: u32,
-    pub threads_per_threadgroup: u32,
-    pub partial_count: u32,
-    pub partial_topk_bytes: usize,
-    pub pipeline_max_total_threads_per_threadgroup: u32,
-    pub pipeline_thread_execution_width: u32,
 }
 
 /// Exact resident-buffer and per-decode transaction contract for tail v1.
@@ -248,7 +226,7 @@ pub struct TailMlpHeadDecodeViewV1<'a> {
 /// transaction. No model loader or default runtime constructs this type.
 pub struct MetalW8TailMlpHeadV1 {
     inner: platform::TailHandleV1,
-    rows_kernel_receipt: TailMlpHeadRowsKernelReceiptV1,
+    rows_kernel: TailMlpHeadRowsKernelV1,
     normalized_hidden: Vec<f32>,
     candidate_token_ids: [u32; W8_TOP_K],
     terminal_error: bool,
@@ -407,11 +385,9 @@ impl MetalW8TailMlpHeadV1 {
             weights.vocab_size(),
             rows_kernel,
         )?;
-        let inner = platform::TailHandleV1::new(weights, rows_kernel, buffer_ledger)?;
-        let rows_kernel_receipt = inner.rows_kernel_receipt();
         Ok(Self {
-            inner,
-            rows_kernel_receipt,
+            inner: platform::TailHandleV1::new(weights, rows_kernel)?,
+            rows_kernel,
             normalized_hidden: vec![0.0; weights.hidden_size()],
             candidate_token_ids: [u32::MAX; W8_TOP_K],
             terminal_error: false,
@@ -462,11 +438,7 @@ impl MetalW8TailMlpHeadV1 {
     }
 
     pub fn rows_kernel(&self) -> TailMlpHeadRowsKernelV1 {
-        self.rows_kernel_receipt.kernel
-    }
-
-    pub fn rows_kernel_receipt(&self) -> TailMlpHeadRowsKernelReceiptV1 {
-        self.rows_kernel_receipt
+        self.rows_kernel
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -690,10 +662,7 @@ fn rms_norm(input: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{
-        MetalW8Error, PackedW8TailMlpHeadV1, TailMlpHeadBufferLedgerV1,
-        TailMlpHeadRowsKernelReceiptV1, TailMlpHeadRowsKernelV1, W8_TOP_K,
-    };
+    use super::{MetalW8Error, PackedW8TailMlpHeadV1, TailMlpHeadRowsKernelV1, W8_TOP_K};
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
 
@@ -730,20 +699,6 @@ mod platform {
         pub(super) output_commit_mask: u32,
     }
 
-    #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default)]
-    struct RawTailRowsKernelReceiptV1 {
-        rows_kernel: u32,
-        rows_per_threadgroup: u32,
-        rows_per_simdgroup: u32,
-        simdgroups_per_threadgroup: u32,
-        threads_per_threadgroup: u32,
-        partial_count: u32,
-        partial_topk_bytes: u64,
-        pipeline_max_total_threads_per_threadgroup: u32,
-        pipeline_thread_execution_width: u32,
-    }
-
     pub(super) struct TailExecutionV1 {
         pub(super) receipt: TailExecutionReceiptV1,
         pub(super) result: Result<(), MetalW8Error>,
@@ -760,12 +715,6 @@ mod platform {
             descriptor: *const TailDescriptorV1,
             rows_kernel: u32,
             output: *mut *mut c_void,
-            error: *mut c_char,
-            error_capacity: usize,
-        ) -> c_int;
-        fn apxinf_metal_w8_tail_mlp_head_rows_kernel_receipt_v1(
-            handle: *mut c_void,
-            receipt: *mut RawTailRowsKernelReceiptV1,
             error: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
@@ -793,14 +742,12 @@ mod platform {
     pub(super) struct TailHandleV1 {
         handle: NonNull<c_void>,
         vocab_size: usize,
-        rows_kernel_receipt: TailMlpHeadRowsKernelReceiptV1,
     }
 
     impl TailHandleV1 {
         pub(super) fn new(
             weights: &PackedW8TailMlpHeadV1,
             rows_kernel: TailMlpHeadRowsKernelV1,
-            buffer_ledger: TailMlpHeadBufferLedgerV1,
         ) -> Result<Self, MetalW8Error> {
             let descriptor = TailDescriptorV1 {
                 gate_up_weights: weights.mlp.gate_up.values().as_ptr(),
@@ -845,78 +792,10 @@ mod platform {
             let handle = NonNull::new(output).ok_or_else(|| {
                 MetalW8Error::new("create Metal W8 tail MLP+head v1 returned a null handle")
             })?;
-            let mut raw_receipt = RawTailRowsKernelReceiptV1::default();
-            error.fill(0);
-            let receipt_status = unsafe {
-                apxinf_metal_w8_tail_mlp_head_rows_kernel_receipt_v1(
-                    handle.as_ptr(),
-                    &mut raw_receipt,
-                    error.as_mut_ptr(),
-                    error.len(),
-                )
-            };
-            if receipt_status != 0 {
-                unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                return Err(bridge_error(
-                    "read Metal W8 tail MLP+head v1 rows-kernel receipt",
-                    &error,
-                ));
-            }
-            let observed_kernel = TailMlpHeadRowsKernelV1::from_abi_value(raw_receipt.rows_kernel)
-                .ok_or_else(|| {
-                    unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                    MetalW8Error::new(
-                        "Metal W8 tail MLP+head v1 returned an unknown rows-kernel selector",
-                    )
-                })?;
-            let expected_shape = rows_kernel.execution_shape();
-            let expected_partial_count =
-                weights.vocab_size().div_ceil(expected_shape.0 as usize) as u32;
-            let observed_partial_topk_bytes = usize::try_from(raw_receipt.partial_topk_bytes)
-                .map_err(|_| {
-                    unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                    MetalW8Error::new("Metal W8 tail MLP+head v1 rows-kernel receipt exceeds usize")
-                })?;
-            let receipt_matches = observed_kernel == rows_kernel
-                && raw_receipt.rows_per_threadgroup == expected_shape.0
-                && raw_receipt.rows_per_simdgroup == expected_shape.1
-                && raw_receipt.simdgroups_per_threadgroup == expected_shape.2
-                && raw_receipt.threads_per_threadgroup == expected_shape.3
-                && raw_receipt.partial_count == expected_partial_count
-                && observed_partial_topk_bytes == buffer_ledger.partial_topk_bytes
-                && raw_receipt.pipeline_max_total_threads_per_threadgroup >= expected_shape.3
-                && raw_receipt.pipeline_thread_execution_width == 32
-                && raw_receipt
-                    .pipeline_thread_execution_width
-                    .checked_mul(raw_receipt.simdgroups_per_threadgroup)
-                    == Some(raw_receipt.threads_per_threadgroup);
-            if !receipt_matches {
-                unsafe { apxinf_metal_w8_tail_mlp_head_destroy_v1(handle.as_ptr()) };
-                return Err(MetalW8Error::new(
-                    "Metal W8 tail MLP+head v1 rows-kernel runtime receipt drifted from the requested selector and ledger",
-                ));
-            }
-            let rows_kernel_receipt = TailMlpHeadRowsKernelReceiptV1 {
-                kernel: observed_kernel,
-                rows_per_threadgroup: raw_receipt.rows_per_threadgroup,
-                rows_per_simdgroup: raw_receipt.rows_per_simdgroup,
-                simdgroups_per_threadgroup: raw_receipt.simdgroups_per_threadgroup,
-                threads_per_threadgroup: raw_receipt.threads_per_threadgroup,
-                partial_count: raw_receipt.partial_count,
-                partial_topk_bytes: observed_partial_topk_bytes,
-                pipeline_max_total_threads_per_threadgroup: raw_receipt
-                    .pipeline_max_total_threads_per_threadgroup,
-                pipeline_thread_execution_width: raw_receipt.pipeline_thread_execution_width,
-            };
             Ok(Self {
                 handle,
                 vocab_size: weights.vocab_size(),
-                rows_kernel_receipt,
             })
-        }
-
-        pub(super) fn rows_kernel_receipt(&self) -> TailMlpHeadRowsKernelReceiptV1 {
-            self.rows_kernel_receipt
         }
 
         pub(super) fn decode(
@@ -992,10 +871,7 @@ mod platform {
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
-    use super::{
-        MetalW8Error, PackedW8TailMlpHeadV1, TailMlpHeadBufferLedgerV1,
-        TailMlpHeadRowsKernelReceiptV1, TailMlpHeadRowsKernelV1, W8_TOP_K,
-    };
+    use super::{MetalW8Error, PackedW8TailMlpHeadV1, TailMlpHeadRowsKernelV1, W8_TOP_K};
 
     #[derive(Clone, Copy, Debug, Default)]
     pub(super) struct TailExecutionReceiptV1 {
@@ -1022,15 +898,10 @@ mod platform {
         pub(super) fn new(
             _weights: &PackedW8TailMlpHeadV1,
             _rows_kernel: TailMlpHeadRowsKernelV1,
-            _buffer_ledger: TailMlpHeadBufferLedgerV1,
         ) -> Result<Self, MetalW8Error> {
             Err(MetalW8Error::new(
                 "Metal W8 tail MLP+head v1 requires macOS",
             ))
-        }
-
-        pub(super) fn rows_kernel_receipt(&self) -> TailMlpHeadRowsKernelReceiptV1 {
-            unreachable!("non-macOS tail handle cannot be constructed")
         }
 
         pub(super) fn decode(

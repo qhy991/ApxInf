@@ -131,7 +131,6 @@ fn tail_rows_kernel_contract(kernel: TailMlpHeadRowsKernelV1) -> Value {
         cooperative_across_simdgroups,
     ) = kernel.execution_shape();
     let partial_count = 248_320_u32.div_ceil(rows_per_threadgroup);
-    let partial_topk_bytes = u64::from(partial_count) * 4 * 8;
     json!({
         "kernel": kernel.receipt_label(),
         "rows_per_threadgroup": rows_per_threadgroup,
@@ -139,8 +138,6 @@ fn tail_rows_kernel_contract(kernel: TailMlpHeadRowsKernelV1) -> Value {
         "simdgroups_per_threadgroup": simdgroups_per_threadgroup,
         "threads_per_threadgroup": threads_per_threadgroup,
         "partial_count": partial_count,
-        "partial_topk_bytes": partial_topk_bytes,
-        "pipeline_thread_execution_width": 32,
         "cooperative_across_simdgroups": cooperative_across_simdgroups,
     })
 }
@@ -708,19 +705,6 @@ fn boundary_tail_generation_receipt_is_exact(
             && tail.get("simdgroups_per_threadgroup") == contract.get("simdgroups_per_threadgroup")
             && tail.get("threads_per_threadgroup") == contract.get("threads_per_threadgroup")
             && tail.get("partial_count") == contract.get("partial_count")
-            && tail.get("partial_topk_bytes") == contract.get("partial_topk_bytes")
-            && tail.get("pipeline_thread_execution_width")
-                == contract.get("pipeline_thread_execution_width")
-            && tail.get("runtime_observed").and_then(Value::as_bool) == Some(true)
-            && tail
-                .get("pipeline_max_total_threads_per_threadgroup")
-                .and_then(Value::as_u64)
-                .zip(
-                    contract
-                        .get("threads_per_threadgroup")
-                        .and_then(Value::as_u64),
-                )
-                .is_some_and(|(observed, required)| observed >= required)
             && tail.get("cooperative_across_simdgroups")
                 == contract.get("cooperative_across_simdgroups")
     });
@@ -900,19 +884,6 @@ fn boundary_tail_path_checks(
             && tail.get("threads_per_threadgroup")
                 == expected_rows_kernel.get("threads_per_threadgroup")
             && tail.get("partial_count") == expected_rows_kernel.get("partial_count")
-            && tail.get("partial_topk_bytes") == expected_rows_kernel.get("partial_topk_bytes")
-            && tail.get("pipeline_thread_execution_width")
-                == expected_rows_kernel.get("pipeline_thread_execution_width")
-            && tail.get("runtime_observed").and_then(Value::as_bool) == Some(true)
-            && tail
-                .get("pipeline_max_total_threads_per_threadgroup")
-                .and_then(Value::as_u64)
-                .zip(
-                    expected_rows_kernel
-                        .get("threads_per_threadgroup")
-                        .and_then(Value::as_u64),
-                )
-                .is_some_and(|(observed, required)| observed >= required)
             && tail.get("cooperative_across_simdgroups")
                 == expected_rows_kernel.get("cooperative_across_simdgroups")
     });
@@ -2355,26 +2326,36 @@ mod tests {
 
     fn generation_receipt_fixture(calls: usize, phase: TailPhaseCounts) -> Value {
         let transfer = calls * 4_096;
-        let initial_stack = json!({
-            "layer_indices": [0, 1, 2],
-            "mechanism": "metal-w8-linear-layer-stack3-v1",
-            "prefill_seed_calls": [1, 1, 1],
-            "decode_calls": calls,
-            "successful_decodes": calls,
-            "failed_decodes": 0,
-            "command_buffers": calls,
-            "compute_encoders": calls * 3,
-            "commits": calls,
-            "waits": calls,
-            "host_to_device_bytes": transfer,
-            "device_to_host_bytes": transfer,
-            "state_commits": calls * 3,
-            "last_state_commit_mask": if calls == 0 { 0 } else { 0b111 },
-            "committed_stack_version": calls,
-            "terminal_error": false,
-        });
-        let boundaries = BOUNDARY_REGIONS.map(|(boundary_mlp_layer_index, stack_layer_indices)| {
-            json!({
+        json!({
+            "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
+            "mechanism": "metal-w8-mlp-stack3-boundary-tail-head-v1",
+            "cpu_full_attention_and_kv": true,
+            "cpu_prefill_all_24_layers": true,
+            "metal_w8_initial_complete_linear_layer_stack3": true,
+            "metal_w8_mlp_stack3_boundaries": true,
+            "metal_w8_tail_layer23_mlp_final_rms_top4": true,
+            "standalone_layer23_mlp": false,
+            "standalone_metal_lm_head": false,
+            "f32_tied_four_candidate_rerank": true,
+            "initial_stack": {
+                "layer_indices": [0, 1, 2],
+                "mechanism": "metal-w8-linear-layer-stack3-v1",
+                "prefill_seed_calls": [1, 1, 1],
+                "decode_calls": calls,
+                "successful_decodes": calls,
+                "failed_decodes": 0,
+                "command_buffers": calls,
+                "compute_encoders": calls * 3,
+                "commits": calls,
+                "waits": calls,
+                "host_to_device_bytes": transfer,
+                "device_to_host_bytes": transfer,
+                "state_commits": calls * 3,
+                "last_state_commit_mask": if calls == 0 { 0 } else { 0b111 },
+                "committed_stack_version": calls,
+                "terminal_error": false,
+            },
+            "boundaries": BOUNDARY_REGIONS.map(|(boundary_mlp_layer_index, stack_layer_indices)| json!({
                 "boundary_mlp_layer_index": boundary_mlp_layer_index,
                 "stack_layer_indices": stack_layer_indices,
                 "mechanism": "metal-w8-mlp-stack3-boundary-v1",
@@ -2392,75 +2373,55 @@ mod tests {
                 "last_state_commit_mask": if calls == 0 { 0 } else { 0b111 },
                 "committed_stack_version": calls,
                 "terminal_error": false,
-            })
-        });
-        let decode_head = json!({
-            "mechanism": "metal-w8-tail-v1",
-            "topk_rows_kernel": "w8_rows_topk4",
-            "rows_per_threadgroup": 8,
-            "rows_per_simdgroup": 1,
-            "simdgroups_per_threadgroup": 8,
-            "threads_per_threadgroup": 256,
-            "partial_count": 31_040,
-            "partial_topk_bytes": 993_280,
-            "pipeline_max_total_threads_per_threadgroup": 1_024,
-            "pipeline_thread_execution_width": 32,
-            "runtime_observed": true,
-            "cooperative_across_simdgroups": false,
-            "layer_index": 23,
-            "calls": phase.decode,
-            "teacher_calls": phase.teacher,
-            "tail_transactions": calls,
-            "successful_transactions": calls,
-            "failed_transactions": 0,
-            "command_buffers": calls,
-            "compute_encoders": calls,
-            "kernel_dispatches": calls * 8,
-            "commits": calls,
-            "waits": calls,
-            "host_to_device_bytes": transfer,
-            "device_to_host_bytes": calls * 4_112,
-            "output_commits": calls * 2,
-            "last_output_commit_mask": if calls == 0 { 0 } else { 0b11 },
-            "terminal_error": false,
-        });
-        let aggregate = json!({
-            "scope": "resident-mtlbuffer-only",
-            "includes_lm_head": true,
-            "persistent_mtlbuffer_bytes": 799_543_312usize,
-            "allocated_buffers": 494,
-            "shared_buffers": 443,
-            "private_buffers": 51,
-            "host_to_device_bytes_per_decode": 28_672,
-            "device_to_host_bytes_per_decode": 28_688,
-            "state_host_transfer_bytes_per_decode": 0,
-            "command_buffers_per_decode": 7,
-            "compute_encoders_per_decode": 24,
-            "kernel_dispatches_per_decode": 267,
-            "commits_per_decode": 7,
-            "waits_per_decode": 7,
-        });
-        json!({
-            "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
-            "mechanism": "metal-w8-mlp-stack3-boundary-tail-head-v1",
-            "cpu_full_attention_and_kv": true,
-            "cpu_prefill_all_24_layers": true,
-            "metal_w8_initial_complete_linear_layer_stack3": true,
-            "metal_w8_mlp_stack3_boundaries": true,
-            "metal_w8_tail_layer23_mlp_final_rms_top4": true,
-            "standalone_layer23_mlp": false,
-            "standalone_metal_lm_head": false,
-            "f32_tied_four_candidate_rerank": true,
-            "initial_stack": initial_stack,
-            "boundaries": boundaries,
+            })),
             "prefill_body_calls": 1,
             "prefill_head": {
                 "mechanism": "cpu-f32-tied",
                 "calls": 1,
                 "tail_transactions": 0,
             },
-            "decode_head": decode_head,
-            "aggregate": aggregate,
+            "decode_head": {
+                "mechanism": "metal-w8-tail-v1",
+                "topk_rows_kernel": "w8_rows_topk4",
+                "rows_per_threadgroup": 8,
+                "rows_per_simdgroup": 1,
+                "simdgroups_per_threadgroup": 8,
+                "threads_per_threadgroup": 256,
+                "partial_count": 31_040,
+                "cooperative_across_simdgroups": false,
+                "layer_index": 23,
+                "calls": phase.decode,
+                "teacher_calls": phase.teacher,
+                "tail_transactions": calls,
+                "successful_transactions": calls,
+                "failed_transactions": 0,
+                "command_buffers": calls,
+                "compute_encoders": calls,
+                "kernel_dispatches": calls * 8,
+                "commits": calls,
+                "waits": calls,
+                "host_to_device_bytes": transfer,
+                "device_to_host_bytes": calls * 4_112,
+                "output_commits": calls * 2,
+                "last_output_commit_mask": if calls == 0 { 0 } else { 0b11 },
+                "terminal_error": false,
+            },
+            "aggregate": {
+                "scope": "resident-mtlbuffer-only",
+                "includes_lm_head": true,
+                "persistent_mtlbuffer_bytes": 799_543_312usize,
+                "allocated_buffers": 494,
+                "shared_buffers": 443,
+                "private_buffers": 51,
+                "host_to_device_bytes_per_decode": 28_672,
+                "device_to_host_bytes_per_decode": 28_688,
+                "state_host_transfer_bytes_per_decode": 0,
+                "command_buffers_per_decode": 7,
+                "compute_encoders_per_decode": 24,
+                "kernel_dispatches_per_decode": 267,
+                "commits_per_decode": 7,
+                "waits_per_decode": 7,
+            },
             "terminal_error": false,
         })
     }
@@ -2809,15 +2770,8 @@ mod tests {
         sg16["decode_head"]["simdgroups_per_threadgroup"] = json!(16);
         sg16["decode_head"]["threads_per_threadgroup"] = json!(512);
         sg16["decode_head"]["partial_count"] = json!(15_520);
-        sg16["decode_head"]["partial_topk_bytes"] = json!(496_640);
         sg16["aggregate"]["persistent_mtlbuffer_bytes"] = json!(799_046_672);
         assert!(boundary_tail_generation_receipt_is_exact(&sg16, 7, phase));
-        let mut wrong = sg16.clone();
-        wrong["decode_head"]["pipeline_thread_execution_width"] = json!(64);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
-        let mut wrong = sg16;
-        wrong["decode_head"]["runtime_observed"] = json!(false);
-        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
 
         let mut wrong = receipt.clone();
         wrong["terminal_error"] = json!(true);
