@@ -985,7 +985,7 @@ mod tests {
             .split("kernel void gdn_recurrent_update_qk_staged_v1(")
             .nth(1)
             .unwrap()
-            .split("kernel void gdn_norm_gate(")
+            .split("kernel void gdn_core_fused_v1(")
             .next()
             .unwrap();
         assert_eq!(leader.matches("threadgroup_barrier").count(), 1);

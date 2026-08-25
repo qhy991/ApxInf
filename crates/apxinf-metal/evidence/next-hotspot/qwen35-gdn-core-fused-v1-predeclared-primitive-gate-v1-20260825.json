@@ -1,0 +1,255 @@
+{
+  "format": "apxinf-qwen35-gdn-core-fused-v1-predeclared-primitive-gate-v1",
+  "created_at_local_date": "2026-08-25",
+  "status": "PREDECLARED_BEFORE_CANDIDATE_PERFORMANCE_SAMPLING",
+  "baseline_parent_commit": "9bea2b585a37267c8796381fcba0308d4ba6e759",
+  "candidate_source_binding": "the additive A/B/C count-18 primitive, gdn_core_fused_v1 kernel, fixed-shape bridge, Rust selectors and receipts, gate example, tests, custody closure, and this predeclaration must be committed and pushed together before the first candidate performance sample",
+  "scope": {
+    "stage": "independent count-matched primitive mechanism screen only; a pass authorizes a separate explicit production-topology continuation gate and does not accept or default an end-to-end runtime",
+    "model_shape": "Qwen/Qwen3.5-0.8B GDN core at the 18 production linear-attention layers",
+    "target": "Apple M4 Metal",
+    "hidden_size": 1024,
+    "key_heads": 16,
+    "value_heads": 16,
+    "key_dim": 128,
+    "value_dim": 128,
+    "conv_kernel_size": 4,
+    "key_width": 2048,
+    "value_width": 2048,
+    "qkv_width": 6144,
+    "seams_per_aggregate_call": 18,
+    "same_binary_and_same_diagnostic_live_library_for_all_arms": true,
+    "default_registry_cli_and_production_routes_unchanged": true,
+    "production_submission_topology": false
+  },
+  "independence_from_rejected_qk_staged_production_candidate": {
+    "rejected_summary": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-recurrent-qk-staged-production-ac-v1-rejected-diagnostic-summary-v1-20260825.json",
+    "rejected_candidate_scope": "qk-staged changed only the recurrent kernel implementation and thread geometry while retaining the four-dispatch depthwise-preprocess, Q/K-normalize, recurrent-update, and norm-gate sequence at every seam",
+    "new_candidate_scope": "gdn_core_fused_v1 combines those four dependent kernels into one per-head fused kernel dispatch at every seam",
+    "material_difference": "four kernels become one kernel; this is a dispatch-and-barrier topology change, not another recurrent-local-reuse variant",
+    "count18_expected_kernel_dispatches": {
+      "A_legacy_four_dispatch": 72,
+      "B_qk_staged_four_dispatch_control": 72,
+      "C_gdn_core_fused_v1": 18,
+      "C_removed_vs_A_or_B": 54
+    },
+    "count18_expected_explicit_broad_buffer_barriers": {
+      "A_legacy_four_dispatch": 72,
+      "B_qk_staged_four_dispatch_control": 72,
+      "C_gdn_core_fused_v1": 18,
+      "C_removed_vs_A_or_B": 54
+    },
+    "qualification": "72-to-18 dispatch and barrier counts are precommitted source/bridge/runtime-receipt expectations for the count-18 primitive, not hardware performance counters",
+    "B_control_disposition": "the additive qk-staged primitive remains feasible in the independent diagnostic library and is retained only as a four-dispatch control; rejected production plumbing must not be restored"
+  },
+  "hypothesis": {
+    "id": "gdn_core_fused_v1",
+    "arms": {
+      "A": {
+        "profile": "legacy-four-dispatch",
+        "function_sequence": [
+          "gdn_depthwise_preprocess",
+          "gdn_normalize_qk",
+          "gdn_recurrent_update",
+          "gdn_norm_gate"
+        ],
+        "dispatches_per_seam": 4,
+        "explicit_broad_buffer_barriers_per_seam": 4,
+        "role": "authoritative legacy arithmetic and topology baseline"
+      },
+      "B": {
+        "profile": "qk-staged-four-dispatch-control",
+        "function_sequence": [
+          "gdn_depthwise_preprocess",
+          "gdn_normalize_qk",
+          "gdn_recurrent_update_qk_staged_v1",
+          "gdn_norm_gate"
+        ],
+        "dispatches_per_seam": 4,
+        "explicit_broad_buffer_barriers_per_seam": 4,
+        "role": "feasible retained additive control that isolates fusion benefit from previously accepted recurrent-local reuse; never a fallback or renewed production candidate"
+      },
+      "C": {
+        "profile": "gdn-core-fused-v1",
+        "function_sequence": [
+          "gdn_core_fused_v1"
+        ],
+        "dispatches_per_seam": 1,
+        "explicit_broad_buffer_barriers_per_seam": 1,
+        "threads_per_threadgroup": 128,
+        "threadgroups_per_seam": 16,
+        "mapping": "one threadgroup owns one fixed Q/K/V value head, performs depthwise convolution, legacy-order Q/K normalization, recurrent update, and norm gate with explicit internal phase barriers",
+        "role": "only candidate eligible to continue"
+      }
+    },
+    "fixed_arithmetic_contract": {
+      "legacy_convolution_tap_order_preserved": true,
+      "legacy_silu_expression_preserved": true,
+      "legacy_qk_sum_square_loop_order_preserved": true,
+      "legacy_query_scale_order_preserved": true,
+        "legacy_recurrent_ascending_key_loop_order_preserved": true,
+        "loop_carried_recurrent_delta_is_volatile": "required to preserve the legacy kernel's per-key F32 materialization/contraction result to bits in the larger fused compiler context",
+        "legacy_beta_softplus_and_decay_expressions_preserved": true,
+        "legacy_norm_gate_sum_square_and_output_loop_orders_preserved": true,
+        "gated_output_loop_remains_single_thread_serial": "required because parallel per-lane writes changed backend contraction by one ULP despite identical inputs",
+      "no_cross_head_reduction": true,
+      "no_fma_vector_reduction_or_precision_contract_change": true,
+            "fused_intermediates_remain_threadgroup_resident_and_are_not_materialized_for_observation": true,
+      "next_state_outputs_are_never_fed_back_during_this_screen": true
+    }
+  },
+  "count18_aggregate_topology_per_successful_call": {
+    "common": {
+      "command_buffers": 1,
+      "compute_encoders": 1,
+      "commits": 1,
+      "waits": 1,
+      "explicit_bridge_host_to_device_memcpy_bytes_inside_timed_call": 0,
+      "explicit_bridge_device_to_host_memcpy_bytes_inside_timed_call": 0
+    },
+    "A": {
+      "kernel_dispatches": 72,
+      "explicit_broad_buffer_barriers": 72
+    },
+    "B": {
+      "kernel_dispatches": 72,
+      "explicit_broad_buffer_barriers": 72,
+      "qk_staged_recurrent_dispatches": 18
+    },
+    "C": {
+      "kernel_dispatches": 18,
+      "explicit_broad_buffer_barriers": 18,
+      "fused_dispatches": 18,
+      "threadgroups": 288
+    },
+    "barrier_qualification": "A/B place one explicit broad buffer barrier after each of four stage dispatches per seam; C places one symmetric broad consumer barrier after each fused seam dispatch; fused internal threadgroup barriers are separately source- and pipeline-attested",
+    "zero_copy_qualification": "zero explicit bridge memcpy inside the timed aggregate call, not zero GPU, cache, shared-memory, or unified-memory traffic"
+  },
+  "fixed_fixture": {
+    "correctness_fixtures": 8,
+    "shape_is_hard_locked_on_rust_and_objective_cxx_boundaries": "H=1024/KH=16/VH=16/KD=128/VD=128/conv=4/seams=18",
+    "generator": "deterministic independently seeded dyadic xorshift64 streams; every input and expected tensor is fingerprinted from little-endian f32 bits with domain and shape tags",
+    "branch_coverage": "fixtures must cover negative and nonnegative beta inputs including negative zero, and all three softplus branches below -20, inclusive [-20,20], and above 20",
+    "signed_zero_sentinels": "fixed +0.0 and -0.0 locations in projected, convolution-state, recurrent-state, coefficient, and norm-weight domains",
+    "separate_output_ranges": true,
+    "performance_fixture_restage_count": 1,
+    "all_fixture_staging_is_outside_timing": true
+  },
+  "correctness_gate": {
+    "logic": "AND",
+    "order_per_fixture": "ABCCBA",
+    "first_A_is_oracle": true,
+    "all_three_profiles_and_functions_must_be_present_in_one_live_library": true,
+    "requested_and_observed_profile_function_and_topology_must_match": true,
+    "outputs_poisoned_with_nan_before_every_call": true,
+    "snapshots_compared_immediately_outside_timing": true,
+        "conv_exactness": {
+            "next_query_key_and_value_conv_states_match_A_to_bits": true,
+            "processed_values_are_not_separately_observed": "C deliberately avoids global processed output; normalized Q/K arithmetic is qualified transitively by exact recurrent state and gated outputs"
+        },
+        "normalized_qk_values_are_not_separately_materialized": true,
+        "recurrent_exactness": {
+            "next_recurrent_state_matches_A_to_bits": true,
+            "core_is_not_separately_observed": "C deliberately keeps core in threadgroup memory; exact gated output plus exact recurrent state closes the externally observable contract"
+        },
+        "gated_values_match_A_to_bits": true,
+        "all_observed_conv_recurrent_and_gated_outputs_must_be_finite": true,
+    "input_immutability": {
+      "projected_input_unchanged_to_bits": true,
+      "conv_weights_unchanged_to_bits": true,
+      "query_key_and_value_state_inputs_unchanged_to_bits": true,
+      "a_log_and_dt_bias_unchanged_to_bits": true,
+      "recurrent_state_input_unchanged_to_bits": true,
+      "gdn_norm_weight_unchanged_to_bits": true,
+      "verified_after_every_successful_call": true
+    },
+    "invalid_selector": {
+      "valid_raw_selectors": {
+        "0": "A legacy-four-dispatch",
+        "1": "B qk-staged-four-dispatch-control",
+        "2": "C gdn-core-fused-v1"
+      },
+      "all_other_raw_selectors_fail_closed": true,
+      "must_fail_before_command_buffer_creation_or_encoding": true,
+      "must_not_mutate_runtime_receipts_outputs_or_snapshots": true,
+      "explicit_probes": [
+        3,
+        4294967295
+      ]
+    },
+    "performance_sampling_permitted_only_after_full_correctness_gate_passes": true
+  },
+  "fixed_performance_schedule": {
+    "calls_per_cell": 64,
+    "warmup_blocks": [
+      "ABCCBA",
+      "BCAACB",
+      "CABBAC"
+    ],
+    "timed_blocks": [
+      "ABCCBA",
+      "BCAACB",
+      "CABBAC"
+    ],
+    "counterbalanced_timed_blocks": 3,
+    "samples_per_arm_per_timed_block": 128,
+    "pooled_samples_per_arm": 384,
+    "timed_calls_total_all_arms": 1152,
+    "position_balance": "each arm occupies each cell position 1 through 6 exactly once across the three timed blocks",
+    "timing": "host monotonic elapsed time around one complete synchronous count-18 aggregate GPU call; staging, poisoning, snapshots, exactness checks, input verification, custody checks, statistics, and JSON work are outside timing",
+    "primary_statistic": "even median of raw aggregate-call latency per arm in each block and pooled",
+    "raw_samples_required": true,
+    "outlier_removal": false,
+    "cell_median_substitution": false,
+    "retries": false,
+    "resampling_after_failure": false,
+    "replacement_samples_after_failure": false,
+    "schedule_reordering": false,
+    "start_admission": "argument and create-new path validation, embedded candidate binding, clean local/origin/live-GitHub custody, disk-versus-embedded source hashes, legacy production-consumer selection, fixture construction and coverage, primitive creation, and zero-run A/B/C receipts must pass before the one candidate execution; a failure in this admission phase performs no correctness or performance call, creates no raw receipt, and is not a sampling retry",
+    "failure_policy": "after start admission, on any correctness, runtime-receipt, end-custody, or sampled-call failure, publish the create-new raw or partial receipt and reject without retry, replacement, resampling, or a second performance run"
+  },
+  "precommitted_admission": {
+    "logic": "AND",
+    "improvement_definition": "I(C over X)=100*(median(X)-median(C))/median(X)",
+    "C_over_B_pooled_improvement_percent_at_least": 3.0,
+    "C_over_A_pooled_improvement_percent_at_least": 8.0,
+    "each_of_three_blocks_C_over_B_must_be_strictly_positive": true,
+    "each_of_three_blocks_C_over_A_must_be_strictly_positive": true,
+    "equality_behavior": "pooled equality at 3.0 percent and 8.0 percent passes; a block improvement of exactly 0.0 percent is not positive",
+    "B_is_control_not_fallback": true,
+    "no_fallback_if_C_fails": true,
+    "overall_pass": "full A/B/C bit exactness and input immutability AND fixed-shape and invalid-selector admission AND exact runtime topology receipts AND completed fixed three-block schedule AND both pooled thresholds AND both comparisons strictly positive in every block AND unchanged custody AND zero sampled failures",
+    "pass_authorizes": "retain only the additive primitive evidence and begin a separately predeclared explicit opt-in production-topology continuation gate for gdn_core_fused_v1",
+    "failure_action": "after an admitted candidate execution fails, archive the create-new raw receipt and rejection summary, then revert candidate implementation while retaining this predeclaration and rejection evidence"
+  },
+  "custody": {
+    "implementation_gate_tests_predeclaration_and_custody_closure_committed_together": true,
+    "candidate_commit_must_be_on_clean_main_origin_main_and_live_github_main_before_sampling": true,
+    "candidate_must_be_one_non_merge_commit_directly_above_baseline_parent": true,
+    "candidate_changed_path_whitelist": [
+      "crates/apxinf-metal/build.rs",
+      "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-predeclared-primitive-gate-v1-20260825.json",
+      "crates/apxinf-metal/examples/qwen35_gdn_core_fused_abc_v1.rs",
+      "crates/apxinf-metal/src/gdn_core_fused_profile_v1.rs",
+      "crates/apxinf-metal/src/gdn_recurrent_profile_v1.rs",
+      "crates/apxinf-metal/src/lib.rs",
+      "crates/apxinf-metal/src/metal_gdn_core_fused_count18_profile_v1_bridge.mm",
+      "crates/apxinf-metal/src/metal_w8_gdn.metal"
+    ],
+    "same_release_binary_for_all_arms": true,
+    "binary_shader_bridge_rust_gate_predeclaration_build_inputs_qwen_route_registry_cli_source_lock_and_production_consumers_rehashed_at_start_and_end": true,
+    "runtime_receipts_must_bind_requested_and_observed_selector_function_thread_geometry_dispatches_barriers_command_buffers_encoders_commits_and_waits": true,
+    "raw_receipt_is_create_new_after_start_admission": true,
+    "raw_sample_arrays_must_be_complete": true,
+    "no_performance_sample_before_candidate_commit_and_push": true
+  },
+  "cross_runtime_rule": {
+    "candidate_is_apxinf_specific_not_llama_or_omniinfer_equivalent": true,
+    "frozen_cross_runtime_comparison_is_unchanged_until_a_full_path_candidate_is_accepted": true,
+    "current_apxinf_metal_W8_tps": 66.33672849846097,
+    "current_llama_cpp_metal_Q8_0_tps": 70.66394293407429,
+    "current_llama_cpp_advantage_percent": 6.52310497300709,
+    "llama_cpp_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+    "omniinfer_rule": "no OmniInfer refresh before explicit full-path acceptance; any later omnimind-ai/OmniInfer result must separate llama.cpp core timing from gateway/orchestration wall time"
+  }
+}

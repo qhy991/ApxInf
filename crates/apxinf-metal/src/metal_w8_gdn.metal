@@ -298,6 +298,214 @@ kernel void gdn_recurrent_update_qk_staged_v1(
     }
 }
 
+// Fixed-shape Qwen3.5-0.8B decode core. One 128-thread threadgroup owns one
+// value head and, because this profile requires value_heads == key_heads, the
+// corresponding query/key head. The legacy depthwise, Q/K normalization,
+// recurrent, and norm-gate operation orders are retained inside the group;
+// only their device-buffer seams are replaced by threadgroup storage.
+//
+// Unsupported shapes or launch geometries return before any output/state
+// write or threadgroup barrier. Host bridges must still reject them eagerly so
+// a no-op dispatch cannot be mistaken for successful execution.
+kernel void gdn_core_fused_v1(
+    device const float *projected [[buffer(0)]],
+    device const float *conv_weight [[buffer(1)]],
+    device const float *query_state [[buffer(2)]],
+    device const float *key_state [[buffer(3)]],
+    device const float *value_state [[buffer(4)]],
+    device float *next_query_state [[buffer(5)]],
+    device float *next_key_state [[buffer(6)]],
+    device float *next_value_state [[buffer(7)]],
+    device const float *a_log [[buffer(8)]],
+    device const float *dt_bias [[buffer(9)]],
+    device const float *state [[buffer(10)]],
+    device float *next_state [[buffer(11)]],
+    device const float *norm_weight [[buffer(12)]],
+    device float *gated [[buffer(13)]],
+    constant GdnParams& params [[buffer(14)]],
+    uint value_index [[thread_index_in_threadgroup]],
+    uint3 group_position [[threadgroup_position_in_grid]],
+    uint3 thread_count [[threads_per_threadgroup]]) {
+    constexpr uint fused_width = 128;
+    constexpr uint fixed_hidden_size = 1024;
+    constexpr uint fixed_heads = 16;
+    constexpr uint fixed_conv_kernel_size = 4;
+    constexpr uint fixed_key_width = 2048;
+    constexpr uint fixed_value_width = 2048;
+    constexpr uint fixed_qkv_width = 6144;
+    constexpr uint fixed_input_rows = 8224;
+
+    const uint value_head = group_position.x;
+    if (params.value_heads != params.key_heads ||
+        params.hidden_size != fixed_hidden_size ||
+        params.key_heads != fixed_heads || params.value_heads != fixed_heads ||
+        params.key_dim != fused_width || params.value_dim != fused_width ||
+        params.conv_kernel_size != fixed_conv_kernel_size ||
+        params.key_width != fixed_key_width ||
+        params.value_width != fixed_value_width ||
+        params.qkv_width != fixed_qkv_width ||
+        params.input_rows != fixed_input_rows ||
+        params.input_groups_per_row != 16 ||
+        params.output_groups_per_row != 32 ||
+        !isfinite(params.rms_norm_eps) || params.rms_norm_eps < 0.0f ||
+        thread_count.x != fused_width || thread_count.y != 1 ||
+        thread_count.z != 1 || group_position.y != 0 ||
+        group_position.z != 0 || value_head >= fixed_heads) {
+        return;
+    }
+
+    threadgroup float shared_query[fused_width];
+    threadgroup float shared_key[fused_width];
+    threadgroup float shared_value[fused_width];
+    threadgroup float shared_core[fused_width];
+    // Beta, decay, and inverse RMS respectively. Q/K scales stay local to the
+    // two legacy-order normalization leaders.
+    threadgroup float shared_scalars[3];
+
+    const uint local_channel = value_head * fused_width + value_index;
+    const uint query_channel = local_channel;
+    const uint key_channel = params.key_width + local_channel;
+    const uint value_channel = 2 * params.key_width + local_channel;
+
+    float query_sum = 0.0f;
+    for (uint tap = 0; tap < params.conv_kernel_size; ++tap) {
+        const float sample = tap + 1 < params.conv_kernel_size
+            ? query_state[(tap + 1) * params.key_width + local_channel]
+            : projected[query_channel];
+        query_sum += sample *
+                     conv_weight[query_channel * params.conv_kernel_size + tap];
+    }
+    shared_query[value_index] = query_sum / (1.0f + exp(-query_sum));
+    for (uint time = 0; time < params.conv_kernel_size; ++time) {
+        next_query_state[time * params.key_width + local_channel] =
+            time + 1 < params.conv_kernel_size
+                ? query_state[(time + 1) * params.key_width + local_channel]
+                : projected[query_channel];
+    }
+
+    float key_sum = 0.0f;
+    for (uint tap = 0; tap < params.conv_kernel_size; ++tap) {
+        const float sample = tap + 1 < params.conv_kernel_size
+            ? key_state[(tap + 1) * params.key_width + local_channel]
+            : projected[key_channel];
+        key_sum += sample *
+                   conv_weight[key_channel * params.conv_kernel_size + tap];
+    }
+    shared_key[value_index] = key_sum / (1.0f + exp(-key_sum));
+    for (uint time = 0; time < params.conv_kernel_size; ++time) {
+        next_key_state[time * params.key_width + local_channel] =
+            time + 1 < params.conv_kernel_size
+                ? key_state[(time + 1) * params.key_width + local_channel]
+                : projected[key_channel];
+    }
+
+    float value_sum = 0.0f;
+    for (uint tap = 0; tap < params.conv_kernel_size; ++tap) {
+        const float sample = tap + 1 < params.conv_kernel_size
+            ? value_state[(tap + 1) * params.value_width + local_channel]
+            : projected[value_channel];
+        value_sum += sample *
+                     conv_weight[value_channel * params.conv_kernel_size + tap];
+    }
+    shared_value[value_index] = value_sum / (1.0f + exp(-value_sum));
+    for (uint time = 0; time < params.conv_kernel_size; ++time) {
+        next_value_state[time * params.value_width + local_channel] =
+            time + 1 < params.conv_kernel_size
+                ? value_state[(time + 1) * params.value_width + local_channel]
+                : projected[value_channel];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // The two serial sums intentionally match gdn_normalize_qk's per-head
+    // index order. The uniform recurrent scalars use the accepted leader form.
+    if (value_index == 0) {
+        float sum_square = 0.0f;
+        for (uint index = 0; index < params.key_dim; ++index) {
+            const float value = shared_query[index];
+            sum_square += value * value;
+        }
+        float scale = rsqrt(sum_square + 1.0e-6f);
+        scale *= rsqrt(float(params.key_dim));
+        for (uint index = 0; index < params.key_dim; ++index) {
+            shared_query[index] *= scale;
+        }
+    } else if (value_index == 1) {
+        float sum_square = 0.0f;
+        for (uint index = 0; index < params.key_dim; ++index) {
+            const float value = shared_key[index];
+            sum_square += value * value;
+        }
+        const float scale = rsqrt(sum_square + 1.0e-6f);
+        for (uint index = 0; index < params.key_dim; ++index) {
+            shared_key[index] *= scale;
+        }
+    } else if (value_index == 2) {
+        const uint a_base = params.qkv_width + params.value_width;
+        const uint b_base = a_base + params.value_heads;
+        const float b = projected[b_base + value_head];
+        const float beta = b >= 0.0f ? 1.0f / (1.0f + exp(-b))
+                                     : exp(b) / (1.0f + exp(b));
+        const float gate = projected[a_base + value_head] + dt_bias[value_head];
+        const float softplus = gate > 20.0f ? gate
+                             : gate < -20.0f ? exp(gate)
+                                             : log(1.0f + exp(gate));
+        shared_scalars[0] = beta;
+        shared_scalars[1] = exp(-exp(a_log[value_head]) * softplus);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const float beta = shared_scalars[0];
+    const float decay = shared_scalars[1];
+    const uint state_base = value_head * params.key_dim * params.value_dim;
+    // Keep the accepted recurrent kernel's loop form verbatim. The fixed
+    // launch executes exactly one iteration per lane, but preserving the loop
+    // is required for identical Metal arithmetic contraction/codegen.
+    for (uint v = value_index; v < params.value_dim; v += thread_count.x) {
+        volatile float delta = 0.0f;
+        for (uint key = 0; key < params.key_dim; ++key) {
+            const uint index = state_base + key * params.value_dim + v;
+            delta += state[index] * decay * shared_key[key];
+        }
+        delta = (shared_value[v] - delta) * beta;
+        float output = 0.0f;
+        for (uint key = 0; key < params.key_dim; ++key) {
+            const uint index = state_base + key * params.value_dim + v;
+            const float updated = state[index] * decay + shared_key[key] * delta;
+            next_state[index] = updated;
+            output += updated * shared_query[key];
+        }
+        shared_core[v] = output;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Preserve gdn_norm_gate's serial mean-square order before parallelizing
+    // only the independent gated writes.
+    if (value_index == 0) {
+        float mean_square = 0.0f;
+        for (uint index = 0; index < params.value_dim; ++index) {
+            const float value = shared_core[index];
+            mean_square += value * value;
+        }
+        shared_scalars[2] =
+            rsqrt(mean_square / float(params.value_dim) + params.rms_norm_eps);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Match gdn_norm_gate's single-thread output loop as well as its RMS loop;
+    // parallelizing these independent writes changes backend contraction by a
+    // ULP on the fixed diagnostic fixture.
+    if (value_index == 0) {
+        const uint base = value_head * params.value_dim;
+        const uint z_base = params.qkv_width;
+        for (uint index = 0; index < params.value_dim; ++index) {
+            const float z = projected[z_base + base + index];
+            const float silu_z = z / (1.0f + exp(-z));
+            gated[base + index] = shared_core[index] * shared_scalars[2] *
+                                  norm_weight[index] * silu_z;
+        }
+    }
+}
+
 kernel void gdn_norm_gate(
     device const float *core [[buffer(0)]],
     device const float *projected [[buffer(1)]],
