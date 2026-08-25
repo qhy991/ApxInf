@@ -31,54 +31,6 @@ pub use tail_mlp_head_v1::{
 pub const W8_GROUP_SIZE: usize = 64;
 pub const W8_TOP_K: usize = 4;
 
-/// Explicit non-tail MLP epilogue selector used by the diagnostic Stack3
-/// primitives. Existing constructors remain fixed to [`Self::LegacySeparate`].
-#[repr(u32)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum MlpEpilogueV1 {
-    #[default]
-    LegacySeparate = 0,
-    DownResidualFused = 1,
-}
-
-impl MlpEpilogueV1 {
-    pub const fn selector(self) -> u32 {
-        self as u32
-    }
-
-    pub const fn expected_mlp_down_function_name(self) -> &'static str {
-        match self {
-            Self::LegacySeparate => "w8_mlp_down",
-            Self::DownResidualFused => "w8_mlp_down_residual",
-        }
-    }
-}
-
-impl TryFrom<u32> for MlpEpilogueV1 {
-    type Error = MetalW8Error;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::LegacySeparate),
-            1 => Ok(Self::DownResidualFused),
-            _ => Err(MetalW8Error::new(format!(
-                "Metal W8 MLP epilogue selector {value} is invalid; expected 0 or 1"
-            ))),
-        }
-    }
-}
-
-/// Fail-closed runtime proof for the selected non-tail MLP epilogue. The
-/// function name is read from the live `MTLFunction` retained by the bridge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MlpEpilogueRuntimeReceiptV1 {
-    pub requested_profile: MlpEpilogueV1,
-    pub observed_profile: MlpEpilogueV1,
-    pub mlp_down_function_name: &'static str,
-    pub kernel_dispatches_per_decode: usize,
-    pub buffer_barriers_per_decode: usize,
-}
-
 /// Quantization group sizes supported by the CPU packed-weight oracle.
 ///
 /// Legacy Metal entry points remain ABI-locked to [`Self::G64`]. [`Self::G32`]
@@ -1427,7 +1379,6 @@ mod tests {
         assert!(mlp_shader.contains("kernel void w8_mlp_gate_up("));
         assert!(mlp_shader.contains("kernel void w8_mlp_silu_mul("));
         assert!(mlp_shader.contains("kernel void w8_mlp_down("));
-        assert!(mlp_shader.contains("kernel void w8_mlp_down_residual("));
         assert!(!shader.contains("kernel void w8_mlp_"));
         assert!(!matvec_shader.contains("kernel void w8_mlp_"));
         assert!(bridge.contains("#include \"metal_w8_source.inc\""));

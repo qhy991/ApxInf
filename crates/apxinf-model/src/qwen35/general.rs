@@ -72,14 +72,6 @@ enum Qwen35BoundaryTailHeadFaultV1ForTest {
     TailOutOfRangeCandidate,
 }
 
-#[cfg(feature = "metal-w8")]
-const fn mlp_epilogue_v1_label(value: apxinf_metal::MlpEpilogueV1) -> &'static str {
-    match value {
-        apxinf_metal::MlpEpilogueV1::LegacySeparate => "legacy-separate",
-        apxinf_metal::MlpEpilogueV1::DownResidualFused => "down-residual-fused",
-    }
-}
-
 /// Observable receipt for one explicitly selected, decode-only Metal W8 GDN
 /// attention block. One successful decode is one command buffer and one wait.
 #[cfg(feature = "metal-w8")]
@@ -238,7 +230,6 @@ struct Qwen35MetalW8AllLinearLayersPrecisionV2 {
 pub struct Qwen35MetalW8LinearLayerStack3V1Stats {
     pub layer_indices: [usize; 3],
     pub mechanism: &'static str,
-    pub mlp_epilogue_runtime: apxinf_metal::MlpEpilogueRuntimeReceiptV1,
     pub quantization: [apxinf_metal::LinearLayerQuantizationLedger; 3],
     pub prefill_seed_calls: [usize; 3],
     pub execution: apxinf_metal::LinearLayerStack3MetalStats,
@@ -357,7 +348,6 @@ pub struct Qwen35MetalW8MlpStack3BoundaryRegionV1Stats {
     pub boundary_mlp_layer_index: usize,
     pub stack_layer_indices: [usize; 3],
     pub mechanism: &'static str,
-    pub mlp_epilogue_runtime: apxinf_metal::MlpEpilogueRuntimeReceiptV1,
     pub quantization: [apxinf_metal::LinearLayerQuantizationLedger; 3],
     pub prefill_seed_calls: [usize; 3],
     pub execution: apxinf_metal::MlpStack3BoundaryMetalStatsV1,
@@ -414,7 +404,6 @@ pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
     pub scope: &'static str,
     pub exclusions: &'static str,
     pub includes_lm_head: bool,
-    pub body_mlp_epilogue: apxinf_metal::MlpEpilogueV1,
     pub initial_stack: Qwen35MetalW8LinearLayerStack3BufferLedger,
     pub boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionBufferLedgerV1>,
     pub tail_layer_index: usize,
@@ -429,7 +418,6 @@ pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
     pub command_buffers_per_decode: usize,
     pub compute_encoders_per_decode: usize,
     pub kernel_dispatches_per_decode: usize,
-    pub buffer_barriers_per_decode: usize,
     pub commits_per_decode: usize,
     pub waits_per_decode: usize,
 }
@@ -464,7 +452,6 @@ struct Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
     pub mechanism: &'static str,
-    pub body_mlp_epilogue: apxinf_metal::MlpEpilogueV1,
     pub initial_stack: Qwen35MetalW8LinearLayerStack3V1Stats,
     pub boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionV1Stats>,
     pub tail_layer_index: usize,
@@ -479,7 +466,6 @@ pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
 
 #[cfg(feature = "metal-w8")]
 struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
-    body_mlp_epilogue: apxinf_metal::MlpEpilogueV1,
     initial_stack: Qwen35MetalW8LinearLayerStack3V1,
     boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionV1>,
     tail_layer_index: usize,
@@ -929,27 +915,6 @@ impl GeneralQwen35 {
         device: Device,
         max_context: usize,
     ) -> Result<Self> {
-        Self::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_body_mlp_epilogue(
-            config,
-            tensors,
-            device,
-            max_context,
-            apxinf_metal::MlpEpilogueV1::LegacySeparate,
-        )
-    }
-
-    /// Diagnostic-only composite lane with an explicit non-tail MLP epilogue
-    /// selector. The legacy constructor above remains fixed to separate down
-    /// projection and residual kernels; this additive route is used only by
-    /// same-binary performance gates.
-    #[cfg(feature = "metal-w8")]
-    pub fn from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_body_mlp_epilogue(
-        config: Qwen35Config,
-        tensors: HashMap<String, Tensor>,
-        device: Device,
-        max_context: usize,
-        body_mlp_epilogue: apxinf_metal::MlpEpilogueV1,
-    ) -> Result<Self> {
         if !config.text.tie_word_embeddings {
             return Err(Error::Other(
                 "qwen3.5 Metal W8 boundary + tail-head v1 requires tied word embeddings".into(),
@@ -958,11 +923,7 @@ impl GeneralQwen35 {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(&config.text)?;
         let backend = create_backend(device)?;
         let weights = Qwen35TextWeights::from_map(&config, tensors)?;
-        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack_with_body_mlp_epilogue(
-            &weights,
-            &config.text,
-            body_mlp_epilogue,
-        )?;
+        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack(&weights, &config.text)?;
         let mut model =
             Self::new_with_metal_options(config, weights, backend, max_context, false, None, None)?;
         model.metal_w8_mlp_stack3_boundary_tail_head_v1 = Some(lane);
@@ -3118,13 +3079,6 @@ impl LlmTrait for GeneralQwen35 {
                             "boundary_mlp_layer_index": region.boundary_mlp_layer_index,
                             "stack_layer_indices": region.stack_layer_indices,
                             "mechanism": region.mechanism,
-                            "mlp_epilogue_runtime": {
-                                "requested_profile": mlp_epilogue_v1_label(region.mlp_epilogue_runtime.requested_profile),
-                                "observed_profile": mlp_epilogue_v1_label(region.mlp_epilogue_runtime.observed_profile),
-                                "mlp_down_function_name": region.mlp_epilogue_runtime.mlp_down_function_name,
-                                "kernel_dispatches_per_decode": region.mlp_epilogue_runtime.kernel_dispatches_per_decode,
-                                "buffer_barriers_per_decode": region.mlp_epilogue_runtime.buffer_barriers_per_decode,
-                            },
                             "prefill_seed_calls": region.prefill_seed_calls,
                             "decode_calls": execution.decode_calls,
                             "successful_decodes": execution.successful_decodes,
@@ -3146,7 +3100,6 @@ impl LlmTrait for GeneralQwen35 {
                 return Some(serde_json::json!({
                     "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
                     "mechanism": lane.mechanism,
-                    "body_mlp_epilogue": mlp_epilogue_v1_label(lane.body_mlp_epilogue),
                     "cpu_full_attention_and_kv": true,
                     "cpu_prefill_all_24_layers": true,
                     "metal_w8_initial_complete_linear_layer_stack3": true,
@@ -3158,13 +3111,6 @@ impl LlmTrait for GeneralQwen35 {
                     "initial_stack": {
                         "layer_indices": lane.initial_stack.layer_indices,
                         "mechanism": lane.initial_stack.mechanism,
-                        "mlp_epilogue_runtime": {
-                            "requested_profile": mlp_epilogue_v1_label(lane.initial_stack.mlp_epilogue_runtime.requested_profile),
-                            "observed_profile": mlp_epilogue_v1_label(lane.initial_stack.mlp_epilogue_runtime.observed_profile),
-                            "mlp_down_function_name": lane.initial_stack.mlp_epilogue_runtime.mlp_down_function_name,
-                            "kernel_dispatches_per_decode": lane.initial_stack.mlp_epilogue_runtime.kernel_dispatches_per_decode,
-                            "buffer_barriers_per_decode": lane.initial_stack.mlp_epilogue_runtime.buffer_barriers_per_decode,
-                        },
                         "prefill_seed_calls": lane.initial_stack.prefill_seed_calls,
                         "decode_calls": initial_execution.decode_calls,
                         "successful_decodes": initial_execution.successful_decodes,
@@ -3211,7 +3157,6 @@ impl LlmTrait for GeneralQwen35 {
                     "aggregate": {
                         "scope": aggregate.scope,
                         "includes_lm_head": aggregate.includes_lm_head,
-                        "body_mlp_epilogue": mlp_epilogue_v1_label(aggregate.body_mlp_epilogue),
                         "persistent_mtlbuffer_bytes": aggregate.total_persistent_mtlbuffer_bytes,
                         "allocated_buffers": aggregate.allocated_buffers,
                         "shared_buffers": aggregate.shared_buffers,
@@ -3222,7 +3167,6 @@ impl LlmTrait for GeneralQwen35 {
                         "command_buffers_per_decode": aggregate.command_buffers_per_decode,
                         "compute_encoders_per_decode": aggregate.compute_encoders_per_decode,
                         "kernel_dispatches_per_decode": aggregate.kernel_dispatches_per_decode,
-                        "buffer_barriers_per_decode": aggregate.buffer_barriers_per_decode,
                         "commits_per_decode": aggregate.commits_per_decode,
                         "waits_per_decode": aggregate.waits_per_decode,
                     },
@@ -4411,20 +4355,6 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         config: &Qwen35TextConfig,
         layer_indices: [usize; 3],
     ) -> Result<Self> {
-        Self::pack_with_mlp_epilogue(
-            weights,
-            config,
-            layer_indices,
-            apxinf_metal::MlpEpilogueV1::LegacySeparate,
-        )
-    }
-
-    fn pack_with_mlp_epilogue(
-        weights: &Qwen35TextWeights,
-        config: &Qwen35TextConfig,
-        layer_indices: [usize; 3],
-        mlp_epilogue: apxinf_metal::MlpEpilogueV1,
-    ) -> Result<Self> {
         let packed = layer_indices
             .into_iter()
             .map(|layer_index| {
@@ -4454,16 +4384,16 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         })?
         .try_into()
         .map_err(|_| Error::Other("qwen3.5 Metal W8 stack3-v1 ledger depth changed".into()))?;
-        let block =
-            apxinf_metal::MetalW8LinearLayerStack3::from_packed_gdn_out_g32_with_mlp_epilogue_v1(
-                [&packed[0].packed, &packed[1].packed, &packed[2].packed],
-                mlp_epilogue,
-            )
-            .map_err(|error| {
-                Error::Other(format!(
+        let block = apxinf_metal::MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1([
+            &packed[0].packed,
+            &packed[1].packed,
+            &packed[2].packed,
+        ])
+        .map_err(|error| {
+            Error::Other(format!(
                 "qwen3.5 Metal W8 stack3-v1 layers {layer_indices:?} construction failed: {error}"
             ))
-            })?;
+        })?;
         Ok(Self {
             layer_indices,
             dimensions,
@@ -4523,7 +4453,6 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         Qwen35MetalW8LinearLayerStack3V1Stats {
             layer_indices: self.layer_indices,
             mechanism: "metal-w8-linear-layer-stack3-v1",
-            mlp_epilogue_runtime: self.block.mlp_epilogue_runtime_receipt_v1(),
             quantization: self.quantization,
             prefill_seed_calls: self.prefill_seed_calls,
             execution: self.block.stats(),
@@ -4814,22 +4743,6 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
         boundary_mlp_layer_index: usize,
         stack_layer_indices: [usize; 3],
     ) -> Result<Self> {
-        Self::pack_with_mlp_epilogue(
-            weights,
-            config,
-            boundary_mlp_layer_index,
-            stack_layer_indices,
-            apxinf_metal::MlpEpilogueV1::LegacySeparate,
-        )
-    }
-
-    fn pack_with_mlp_epilogue(
-        weights: &Qwen35TextWeights,
-        config: &Qwen35TextConfig,
-        boundary_mlp_layer_index: usize,
-        stack_layer_indices: [usize; 3],
-        mlp_epilogue: apxinf_metal::MlpEpilogueV1,
-    ) -> Result<Self> {
         if config.layer_types.get(boundary_mlp_layer_index) != Some(&Qwen35LayerType::FullAttention)
             || !matches!(
                 weights
@@ -4910,15 +4823,13 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
                 "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} assembly failed: {error}"
             ))
         })?;
-        let block = apxinf_metal::MetalW8MlpStack3BoundaryV1::from_packed_with_mlp_epilogue_v1(
-            &packed,
-            mlp_epilogue,
-        )
-        .map_err(|error| {
-            Error::Other(format!(
-                "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} construction failed: {error}"
-            ))
-        })?;
+        let block = apxinf_metal::MetalW8MlpStack3BoundaryV1::from_packed(&packed).map_err(
+            |error| {
+                Error::Other(format!(
+                    "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} construction failed: {error}"
+                ))
+            },
+        )?;
         Ok(Self {
             boundary_mlp_layer_index,
             stack_layer_indices,
@@ -4940,7 +4851,6 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
             boundary_mlp_layer_index: self.boundary_mlp_layer_index,
             stack_layer_indices: self.stack_layer_indices,
             mechanism: "metal-w8-mlp-stack3-boundary-v1",
-            mlp_epilogue_runtime: self.block.mlp_epilogue_runtime_receipt_v1(),
             quantization: self.quantization,
             prefill_seed_calls: self.prefill_seed_calls,
             execution: self.block.stats(),
@@ -5275,11 +5185,7 @@ impl Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 
 #[cfg(feature = "metal-w8")]
 impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
-    fn pack_with_body_mlp_epilogue(
-        weights: &Qwen35TextWeights,
-        config: &Qwen35TextConfig,
-        body_mlp_epilogue: apxinf_metal::MlpEpilogueV1,
-    ) -> Result<Self> {
+    fn pack(weights: &Qwen35TextWeights, config: &Qwen35TextConfig) -> Result<Self> {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(config)?;
         if weights.layers.len() != 24 || weights.lm_head_weight.is_some() {
             return Err(Error::Other(
@@ -5287,21 +5193,19 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                     .into(),
             ));
         }
-        let initial_stack = Qwen35MetalW8LinearLayerStack3V1::pack_with_mlp_epilogue(
+        let initial_stack = Qwen35MetalW8LinearLayerStack3V1::pack(
             weights,
             config,
             QWEN35_MLP_STACK3_BOUNDARY_INITIAL_STACK_V1,
-            body_mlp_epilogue,
         )?;
         let boundaries = QWEN35_MLP_STACK3_BOUNDARY_REGIONS_V1
             .into_iter()
             .map(|(boundary_mlp_layer_index, stack_layer_indices)| {
-                Qwen35MetalW8MlpStack3BoundaryRegionV1::pack_with_mlp_epilogue(
+                Qwen35MetalW8MlpStack3BoundaryRegionV1::pack(
                     weights,
                     config,
                     boundary_mlp_layer_index,
                     stack_layer_indices,
-                    body_mlp_epilogue,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -5363,7 +5267,6 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
             ))
         })?;
         Ok(Self {
-            body_mlp_epilogue,
             initial_stack,
             boundaries,
             tail_layer_index: QWEN35_MLP_STACK3_BOUNDARY_FINAL_MLP_V1,
@@ -5380,7 +5283,6 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
     fn stats(&self) -> Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
         Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
             mechanism: "metal-w8-mlp-stack3-boundary-tail-head-v1",
-            body_mlp_epilogue: self.body_mlp_epilogue,
             initial_stack: self.initial_stack.stats(),
             boundaries: self
                 .boundaries
@@ -5485,7 +5387,6 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
 
     fn aggregate_ledger(&self) -> Result<Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger> {
         Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger::new(
-            self.body_mlp_epilogue,
             Qwen35MetalW8LinearLayerStack3BufferLedger {
                 layer_indices: self.initial_stack.layer_indices,
                 ledger: self.initial_stack.block.buffer_ledger(),
@@ -5509,7 +5410,6 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
 #[cfg(feature = "metal-w8")]
 impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
     fn new(
-        body_mlp_epilogue: apxinf_metal::MlpEpilogueV1,
         initial_stack: Qwen35MetalW8LinearLayerStack3BufferLedger,
         boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionBufferLedgerV1>,
         tail_layer_index: usize,
@@ -5531,18 +5431,14 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
                 add(sum, tail.$tail_field, stringify!($field))?
             }};
         }
-        let mut kernel_dispatches_per_decode = initial_stack.ledger.kernel_dispatches_per_decode;
-        let mut buffer_barriers_per_decode = initial_stack.ledger.buffer_barriers_per_decode;
+        let mut kernel_dispatches_per_decode = 3usize.checked_mul(13).ok_or_else(|| {
+            Error::Other("qwen3.5 Metal W8 boundary + tail-head v1 dispatch count overflow".into())
+        })?;
         for boundary in &boundaries {
             kernel_dispatches_per_decode = add(
                 kernel_dispatches_per_decode,
                 boundary.ledger.kernel_dispatches_per_decode,
                 "dispatch count",
-            )?;
-            buffer_barriers_per_decode = add(
-                buffer_barriers_per_decode,
-                boundary.ledger.buffer_barriers_per_decode,
-                "buffer barrier count",
             )?;
         }
         kernel_dispatches_per_decode = add(
@@ -5550,16 +5446,10 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
             tail.kernel_dispatches_per_decode,
             "dispatch count",
         )?;
-        buffer_barriers_per_decode = add(
-            buffer_barriers_per_decode,
-            tail.buffer_barriers_per_decode,
-            "buffer barrier count",
-        )?;
         Ok(Self {
             scope: "resident-mtlbuffer-only",
             exclusions: "CPU F32 weights, host F32 tied embedding and exact four-candidate rerank, host allocations, Metal pipelines/libraries/queues, command objects, driver allocations, full attention/KV, model loader, and prefill CPU head",
             includes_lm_head: true,
-            body_mlp_epilogue,
             total_persistent_mtlbuffer_bytes: total!(total_persistent_bytes, total_persistent_bytes),
             allocated_buffers: total!(allocated_buffers, allocated_buffers),
             shared_buffers: total!(shared_buffers, shared_buffers),
@@ -5585,7 +5475,6 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
                 compute_encoders_per_decode
             ),
             kernel_dispatches_per_decode,
-            buffer_barriers_per_decode,
             commits_per_decode: total!(commits_per_decode, commits_per_decode),
             waits_per_decode: total!(waits_per_decode, waits_per_decode),
             initial_stack,
@@ -7845,18 +7734,6 @@ mod tests {
         assert_eq!(stats.tail.decode_calls, 2);
         assert_eq!(stats.tail.successful_decodes, 2);
         assert_eq!(stats.tail.output_commits, 4);
-        assert_eq!(
-            stats.body_mlp_epilogue,
-            apxinf_metal::MlpEpilogueV1::LegacySeparate
-        );
-        assert_eq!(
-            stats.initial_stack.mlp_epilogue_runtime.observed_profile,
-            apxinf_metal::MlpEpilogueV1::LegacySeparate
-        );
-        assert!(stats.boundaries.iter().all(|region| {
-            region.mlp_epilogue_runtime.observed_profile
-                == apxinf_metal::MlpEpilogueV1::LegacySeparate
-        }));
         assert!(!stats.terminal_error);
         let receipt = diagnostic.generation_path_receipt().unwrap();
         assert_eq!(receipt["prefill_body_calls"], 1);
@@ -7871,77 +7748,6 @@ mod tests {
             .unwrap()
             .iter()
             .all(|region| region["last_state_commit_mask"] == 0b111));
-    }
-
-    #[cfg(all(feature = "metal-w8", target_os = "macos"))]
-    #[test]
-    fn metal_boundary_tail_head_v1_fused_body_epilogue_is_live_exact_and_accounted() {
-        let (config, tensors) = metal_all_linear_layers_fixture();
-        let mut cpu =
-            GeneralQwen35::from_weights(config.clone(), tensors.clone(), Device::Cpu, 16).unwrap();
-        let mut diagnostic = GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_body_mlp_epilogue(
-            config,
-            tensors,
-            Device::Cpu,
-            16,
-            apxinf_metal::MlpEpilogueV1::DownResidualFused,
-        )
-        .unwrap();
-
-        let cpu_tokens = cpu
-            .generate_streaming(LlmInput::text(&[1, 2]), 3, |_| {}, None)
-            .unwrap()
-            .0;
-        let diagnostic_tokens = diagnostic
-            .generate_streaming(LlmInput::text(&[1, 2]), 3, |_| {}, None)
-            .unwrap()
-            .0;
-        assert_eq!(diagnostic_tokens, cpu_tokens);
-
-        let stats = diagnostic
-            .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
-            .unwrap();
-        assert_eq!(
-            stats.body_mlp_epilogue,
-            apxinf_metal::MlpEpilogueV1::DownResidualFused
-        );
-        let initial = stats.initial_stack.mlp_epilogue_runtime;
-        assert_eq!(
-            initial.requested_profile,
-            apxinf_metal::MlpEpilogueV1::DownResidualFused
-        );
-        assert_eq!(initial.observed_profile, initial.requested_profile);
-        assert_eq!(initial.mlp_down_function_name, "w8_mlp_down_residual");
-        assert_eq!(initial.kernel_dispatches_per_decode, 36);
-        assert_eq!(initial.buffer_barriers_per_decode, 33);
-        assert!(stats.boundaries.iter().all(|region| {
-            let runtime = region.mlp_epilogue_runtime;
-            runtime.requested_profile == apxinf_metal::MlpEpilogueV1::DownResidualFused
-                && runtime.observed_profile == runtime.requested_profile
-                && runtime.mlp_down_function_name == "w8_mlp_down_residual"
-                && runtime.kernel_dispatches_per_decode == 40
-                && runtime.buffer_barriers_per_decode == 36
-        }));
-
-        let aggregate = diagnostic
-            .metal_w8_mlp_stack3_boundary_tail_head_v1_aggregate_ledger()
-            .unwrap();
-        assert_eq!(aggregate.kernel_dispatches_per_decode, 244);
-        assert_eq!(aggregate.buffer_barriers_per_decode, 220);
-        assert_eq!(
-            aggregate.body_mlp_epilogue,
-            apxinf_metal::MlpEpilogueV1::DownResidualFused
-        );
-
-        let receipt = diagnostic.generation_path_receipt().unwrap();
-        assert_eq!(receipt["body_mlp_epilogue"], "down-residual-fused");
-        assert_eq!(
-            receipt["initial_stack"]["mlp_epilogue_runtime"]["observed_profile"],
-            "down-residual-fused"
-        );
-        assert_eq!(receipt["aggregate"]["kernel_dispatches_per_decode"], 244);
-        assert_eq!(receipt["aggregate"]["buffer_barriers_per_decode"], 220);
-        assert_eq!(receipt["terminal_error"], false);
     }
 
     #[cfg(all(feature = "metal-w8", target_os = "macos"))]
@@ -7976,11 +7782,6 @@ mod tests {
         assert_eq!(aggregate.command_buffers_per_decode, 7);
         assert_eq!(aggregate.compute_encoders_per_decode, 24);
         assert_eq!(aggregate.kernel_dispatches_per_decode, 267);
-        assert_eq!(aggregate.buffer_barriers_per_decode, 243);
-        assert_eq!(
-            aggregate.body_mlp_epilogue,
-            apxinf_metal::MlpEpilogueV1::LegacySeparate
-        );
         assert_eq!(aggregate.commits_per_decode, 7);
         assert_eq!(aggregate.waits_per_decode, 7);
 
@@ -7993,11 +7794,6 @@ mod tests {
             receipt["mechanism"],
             "metal-w8-mlp-stack3-boundary-tail-head-v1"
         );
-        assert_eq!(receipt["body_mlp_epilogue"], "legacy-separate");
-        assert_eq!(
-            receipt["initial_stack"]["mlp_epilogue_runtime"]["mlp_down_function_name"],
-            "w8_mlp_down"
-        );
         assert_eq!(receipt["cpu_prefill_all_24_layers"], true);
         assert_eq!(receipt["prefill_head"]["mechanism"], "cpu-f32-tied");
         assert_eq!(receipt["decode_head"]["mechanism"], "metal-w8-tail-v1");
@@ -8005,7 +7801,6 @@ mod tests {
         assert_eq!(receipt["aggregate"]["allocated_buffers"], 494);
         assert_eq!(receipt["aggregate"]["compute_encoders_per_decode"], 24);
         assert_eq!(receipt["aggregate"]["kernel_dispatches_per_decode"], 267);
-        assert_eq!(receipt["aggregate"]["buffer_barriers_per_decode"], 243);
         assert_eq!(receipt["terminal_error"], false);
     }
 
@@ -9269,8 +9064,6 @@ mod tests {
             state_host_transfer_bytes_per_decode: 0,
             command_buffers_per_decode: 1,
             compute_encoders_per_decode: 3,
-            kernel_dispatches_per_decode: 39,
-            buffer_barriers_per_decode: 36,
             commits_per_decode: 1,
             waits_per_decode: 1,
             intermediate_host_finite_checks_per_decode: 0,
@@ -9352,8 +9145,6 @@ mod tests {
                 state_host_transfer_bytes_per_decode: 0,
                 command_buffers_per_decode: 1,
                 compute_encoders_per_decode: 3,
-                kernel_dispatches_per_decode: 39,
-                buffer_barriers_per_decode: 36,
                 commits_per_decode: 1,
                 waits_per_decode: 1,
                 intermediate_host_finite_checks_per_decode: 0,
@@ -9381,7 +9172,6 @@ mod tests {
             command_buffers_per_decode: 1,
             compute_encoders_per_decode: 4,
             kernel_dispatches_per_decode: 44,
-            buffer_barriers_per_decode: 40,
             commits_per_decode: 1,
             waits_per_decode: 1,
             intermediate_host_finite_checks_per_decode: 0,
@@ -9461,8 +9251,6 @@ mod tests {
                 state_host_transfer_bytes_per_decode: 0,
                 command_buffers_per_decode: 1,
                 compute_encoders_per_decode: 3,
-                kernel_dispatches_per_decode: 39,
-                buffer_barriers_per_decode: 36,
                 commits_per_decode: 1,
                 waits_per_decode: 1,
                 intermediate_host_finite_checks_per_decode: 0,
@@ -9490,7 +9278,6 @@ mod tests {
             command_buffers_per_decode: 1,
             compute_encoders_per_decode: 4,
             kernel_dispatches_per_decode: 44,
-            buffer_barriers_per_decode: 40,
             commits_per_decode: 1,
             waits_per_decode: 1,
             intermediate_host_finite_checks_per_decode: 0,
@@ -9508,7 +9295,6 @@ mod tests {
         let tail = apxinf_metal::TailMlpHeadBufferLedgerV1::from_dimensions(1_024, 3_584, 248_320)
             .unwrap();
         let aggregate = Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger::new(
-            apxinf_metal::MlpEpilogueV1::LegacySeparate,
             initial_stack,
             boundaries,
             23,
@@ -9526,11 +9312,6 @@ mod tests {
         assert_eq!(aggregate.command_buffers_per_decode, 7);
         assert_eq!(aggregate.compute_encoders_per_decode, 24);
         assert_eq!(aggregate.kernel_dispatches_per_decode, 267);
-        assert_eq!(aggregate.buffer_barriers_per_decode, 243);
-        assert_eq!(
-            aggregate.body_mlp_epilogue,
-            apxinf_metal::MlpEpilogueV1::LegacySeparate
-        );
         assert_eq!(aggregate.commits_per_decode, 7);
         assert_eq!(aggregate.waits_per_decode, 7);
         assert!(aggregate.exclusions.contains("F32 tied embedding"));

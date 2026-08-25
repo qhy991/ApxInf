@@ -17,10 +17,6 @@ constexpr uint32_t kRowsPerThreadgroup = 8;
 constexpr uint32_t kMatVecThreads = kRowsPerThreadgroup * 32;
 constexpr uint32_t kElementThreads = 256;
 constexpr uint32_t kAllSeededMask = (1u << kStackDepth) - 1;
-constexpr uint32_t kMlpEpilogueLegacySeparate = 0;
-constexpr uint32_t kMlpEpilogueDownResidualFused = 1;
-constexpr uint32_t kUnknownMlpEpilogue = UINT32_MAX;
-constexpr size_t kMlpDownFunctionNameCapacity = 64;
 
 struct GdnParams {
     uint32_t hidden_size;
@@ -120,14 +116,6 @@ struct BoundaryExecutionReceiptV1 {
     uint32_t state_commit_mask;
 };
 
-struct MlpEpilogueRuntimeReceiptV1 {
-    uint32_t requested_profile;
-    uint32_t observed_profile;
-    uint32_t kernel_dispatches_per_decode;
-    uint32_t buffer_barriers_per_decode;
-    char mlp_down_function_name[kMlpDownFunctionNameCapacity];
-};
-
 static_assert(sizeof(GdnParams) == 52, "Metal W8 GDN parameter ABI changed");
 static_assert(sizeof(MlpParams) == 16, "Metal W8 MLP parameter ABI changed");
 static_assert(sizeof(LinearLayerParams) == 8,
@@ -142,8 +130,6 @@ static_assert(sizeof(BoundaryMutableStateDescriptorV1) == 64,
               "Metal W8 stack3 mutable state descriptor ABI changed");
 static_assert(sizeof(BoundaryExecutionReceiptV1) == 40,
               "Metal W8 stack3 execution receipt ABI changed");
-static_assert(sizeof(MlpEpilogueRuntimeReceiptV1) == 80,
-              "Metal W8 MLP epilogue runtime receipt ABI changed");
 
 struct BoundaryStackShape {
     uint32_t hidden_size;
@@ -230,7 +216,6 @@ struct ApxinfMetalW8MlpStack3BoundaryHandleV1 {
     id<MTLComputePipelineState> mlp_gate_up_pipeline;
     id<MTLComputePipelineState> mlp_activation_pipeline;
     id<MTLComputePipelineState> mlp_down_pipeline;
-    id<MTLFunction> mlp_down_function;
 
     // Five immutable full-attention boundary MLP/RMS buffers. They extend the
     // Stack3 resident set without allocating another hidden or scratch row.
@@ -258,7 +243,6 @@ struct ApxinfMetalW8MlpStack3BoundaryHandleV1 {
     id<MTLBuffer> mlp_gate_up;
     id<MTLBuffer> mlp_activated;
 
-    uint32_t requested_mlp_epilogue;
     uint32_t seeded_mask;
     bool terminal_error;
 };
@@ -291,61 +275,6 @@ id<MTLComputePipelineState> make_pipeline(
     id<MTLFunction> function = [library newFunctionWithName:name];
     return function == nil ? nil
                            : [device newComputePipelineStateWithFunction:function error:error];
-}
-
-bool valid_mlp_epilogue_selector(uint32_t profile) {
-    return profile == kMlpEpilogueLegacySeparate ||
-           profile == kMlpEpilogueDownResidualFused;
-}
-
-uint32_t observed_mlp_epilogue(id<MTLFunction> function) {
-    if (function == nil || function.name == nil) {
-        return kUnknownMlpEpilogue;
-    }
-    if ([function.name isEqualToString:@"w8_mlp_down"]) {
-        return kMlpEpilogueLegacySeparate;
-    }
-    if ([function.name isEqualToString:@"w8_mlp_down_residual"]) {
-        return kMlpEpilogueDownResidualFused;
-    }
-    return kUnknownMlpEpilogue;
-}
-
-bool live_mlp_epilogue_matches(
-    const ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle) {
-    return handle != nullptr &&
-           observed_mlp_epilogue(handle->mlp_down_function) ==
-               handle->requested_mlp_epilogue;
-}
-
-bool write_mlp_epilogue_receipt(
-    const ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
-    MlpEpilogueRuntimeReceiptV1 *receipt) {
-    if (handle == nullptr || receipt == nullptr) {
-        return false;
-    }
-    *receipt = MlpEpilogueRuntimeReceiptV1{};
-    receipt->requested_profile = handle->requested_mlp_epilogue;
-    receipt->observed_profile = observed_mlp_epilogue(handle->mlp_down_function);
-    if (!valid_mlp_epilogue_selector(receipt->requested_profile) ||
-        receipt->observed_profile != receipt->requested_profile) {
-        return false;
-    }
-    const char *function_name = handle->mlp_down_function.name.UTF8String;
-    if (function_name == nullptr ||
-        std::strlen(function_name) >= kMlpDownFunctionNameCapacity) {
-        return false;
-    }
-    std::snprintf(receipt->mlp_down_function_name,
-                  sizeof(receipt->mlp_down_function_name), "%s", function_name);
-    if (receipt->observed_profile == kMlpEpilogueDownResidualFused) {
-        receipt->kernel_dispatches_per_decode = 40;
-        receipt->buffer_barriers_per_decode = 36;
-    } else {
-        receipt->kernel_dispatches_per_decode = 44;
-        receipt->buffer_barriers_per_decode = 40;
-    }
-    return true;
 }
 
 id<MTLBuffer> make_shared_f32(id<MTLDevice> device, size_t count) {
@@ -669,28 +598,15 @@ void encode_boundary_mlp(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     [encoder setBuffer:handle->boundary_down_weights offset:0 atIndex:0];
     [encoder setBuffer:handle->boundary_down_scales offset:0 atIndex:1];
     [encoder setBuffer:handle->mlp_activated offset:0 atIndex:2];
-    const bool fused_epilogue =
-        handle->requested_mlp_epilogue == kMlpEpilogueDownResidualFused;
-    if (fused_epilogue) {
-        [encoder setBuffer:input offset:0 atIndex:3];
-        [encoder setBuffer:output offset:0 atIndex:4];
-        [encoder setBytes:&handle->boundary_mlp_params
-                   length:sizeof(handle->boundary_mlp_params)
-                  atIndex:5];
-    } else {
-        [encoder setBuffer:handle->branch_output offset:0 atIndex:3];
-        [encoder setBytes:&handle->boundary_mlp_params
-                   length:sizeof(handle->boundary_mlp_params)
-                  atIndex:4];
-    }
+    [encoder setBuffer:handle->branch_output offset:0 atIndex:3];
+    [encoder setBytes:&handle->boundary_mlp_params
+                length:sizeof(handle->boundary_mlp_params)
+               atIndex:4];
     [encoder dispatchThreadgroups:MTLSizeMake(
                 (handle->boundary_mlp_params.hidden_size + kRowsPerThreadgroup - 1) /
                     kRowsPerThreadgroup,
                 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
-    if (fused_epilogue) {
-        return;
-    }
     buffer_barrier(encoder);
 
     [encoder setComputePipelineState:handle->residual_pipeline];
@@ -833,28 +749,13 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
     [encoder setBuffer:layer.mlp_down_weights offset:0 atIndex:0];
     [encoder setBuffer:layer.mlp_down_scales offset:0 atIndex:1];
     [encoder setBuffer:handle->mlp_activated offset:0 atIndex:2];
-    const bool fused_epilogue =
-        handle->requested_mlp_epilogue == kMlpEpilogueDownResidualFused;
-    if (fused_epilogue) {
-        [encoder setBuffer:output offset:0 atIndex:3];
-        [encoder setBuffer:output offset:0 atIndex:4];
-        [encoder setBytes:&layer.mlp_params
-                   length:sizeof(layer.mlp_params)
-                  atIndex:5];
-    } else {
-        [encoder setBuffer:handle->branch_output offset:0 atIndex:3];
-        [encoder setBytes:&layer.mlp_params
-                   length:sizeof(layer.mlp_params)
-                  atIndex:4];
-    }
+    [encoder setBuffer:handle->branch_output offset:0 atIndex:3];
+    [encoder setBytes:&layer.mlp_params length:sizeof(layer.mlp_params) atIndex:4];
     [encoder dispatchThreadgroups:MTLSizeMake(
                 (layer.mlp_params.hidden_size + kRowsPerThreadgroup - 1) /
                     kRowsPerThreadgroup,
                 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
-    if (fused_epilogue) {
-        return;
-    }
     buffer_barrier(encoder);
 
     [encoder setComputePipelineState:handle->residual_pipeline];
@@ -868,11 +769,10 @@ void encode_layer(ApxinfMetalW8MlpStack3BoundaryHandleV1 *handle,
 
 }  // namespace
 
-int create_mlp_stack3_boundary_gdn_out_g32_impl(
+extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
     const BoundaryMlpDescriptorV1 *boundary,
     const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
-    uint32_t mlp_epilogue, void **output, char *error_output,
-    size_t error_capacity) {
+    void **output, char *error_output, size_t error_capacity) {
     @autoreleasepool {
         if (output == nullptr) {
             write_error(error_output, error_capacity,
@@ -880,11 +780,6 @@ int create_mlp_stack3_boundary_gdn_out_g32_impl(
             return 1;
         }
         *output = nullptr;
-        if (!valid_mlp_epilogue_selector(mlp_epilogue)) {
-            write_error(error_output, error_capacity,
-                        "invalid Metal W8 MLP-to-Stack3 boundary v1 MLP epilogue selector");
-            return 1;
-        }
         if (boundary == nullptr || layers == nullptr ||
             layer_count != kStackDepth) {
             write_error(error_output, error_capacity,
@@ -957,19 +852,8 @@ int create_mlp_stack3_boundary_gdn_out_g32_impl(
             make_pipeline(handle->device, library, @"w8_mlp_gate_up", &error);
         handle->mlp_activation_pipeline =
             make_pipeline(handle->device, library, @"w8_mlp_silu_mul", &error);
-        NSString *mlp_down_function_name =
-            mlp_epilogue == kMlpEpilogueDownResidualFused
-                ? @"w8_mlp_down_residual"
-                : @"w8_mlp_down";
-        handle->mlp_down_function =
-            [library newFunctionWithName:mlp_down_function_name];
         handle->mlp_down_pipeline =
-            handle->mlp_down_function == nil
-                ? nil
-                : [handle->device
-                      newComputePipelineStateWithFunction:handle->mlp_down_function
-                                                   error:&error];
-        handle->requested_mlp_epilogue = mlp_epilogue;
+            make_pipeline(handle->device, library, @"w8_mlp_down", &error);
         if (handle->layer_rms_pipeline == nil || handle->residual_pipeline == nil ||
             handle->gdn_input_pipeline == nil ||
             handle->gdn_depthwise_pipeline == nil ||
@@ -982,12 +866,6 @@ int create_mlp_stack3_boundary_gdn_out_g32_impl(
             handle->mlp_down_pipeline == nil) {
             delete handle;
             write_nserror(error_output, error_capacity, error);
-            return 1;
-        }
-        if (!live_mlp_epilogue_matches(handle)) {
-            delete handle;
-            write_error(error_output, error_capacity,
-                        "Metal W8 MLP-to-Stack3 boundary v1 live MLP epilogue does not match the requested selector");
             return 1;
         }
         handle->queue = [handle->device newCommandQueue];
@@ -1072,44 +950,6 @@ int create_mlp_stack3_boundary_gdn_out_g32_impl(
     }
 }
 
-extern "C" int apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_v1(
-    const BoundaryMlpDescriptorV1 *boundary,
-    const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
-    void **output, char *error_output, size_t error_capacity) {
-    return create_mlp_stack3_boundary_gdn_out_g32_impl(
-        boundary, layers, layer_count, kMlpEpilogueLegacySeparate, output,
-        error_output, error_capacity);
-}
-
-extern "C" int
-apxinf_metal_w8_mlp_stack3_boundary_create_gdn_out_g32_with_mlp_epilogue_v1(
-    const BoundaryMlpDescriptorV1 *boundary,
-    const BoundaryStackLayerDescriptorV1 *layers, uint32_t layer_count,
-    uint32_t mlp_epilogue, void **output, char *error_output,
-    size_t error_capacity) {
-    return create_mlp_stack3_boundary_gdn_out_g32_impl(
-        boundary, layers, layer_count, mlp_epilogue, output, error_output,
-        error_capacity);
-}
-
-extern "C" int apxinf_metal_w8_mlp_stack3_boundary_mlp_epilogue_receipt_v1(
-    void *opaque_handle, MlpEpilogueRuntimeReceiptV1 *receipt,
-    char *error_output, size_t error_capacity) {
-    @autoreleasepool {
-        if (receipt != nullptr) {
-            *receipt = MlpEpilogueRuntimeReceiptV1{};
-        }
-        auto handle =
-            static_cast<ApxinfMetalW8MlpStack3BoundaryHandleV1 *>(opaque_handle);
-        if (!write_mlp_epilogue_receipt(handle, receipt)) {
-            write_error(error_output, error_capacity,
-                        "Metal W8 MLP-to-Stack3 boundary v1 live MLP epilogue receipt is invalid");
-            return 1;
-        }
-        return 0;
-    }
-}
-
 extern "C" int apxinf_metal_w8_mlp_stack3_boundary_seed_states_v1(
     void *opaque_handle, const BoundaryStateDescriptorV1 *states,
     uint32_t state_count, char *error_output, size_t error_capacity) {
@@ -1190,12 +1030,6 @@ extern "C" int apxinf_metal_w8_mlp_stack3_boundary_decode_v1(
         if (handle->terminal_error) {
             write_error(error_output, error_capacity,
                         "Metal W8 MLP-to-Stack3 boundary v1 is terminal until reset");
-            return 1;
-        }
-        if (!live_mlp_epilogue_matches(handle)) {
-            handle->terminal_error = true;
-            write_error(error_output, error_capacity,
-                        "Metal W8 MLP-to-Stack3 boundary v1 live MLP epilogue changed after create");
             return 1;
         }
         if (handle->seeded_mask != kAllSeededMask) {

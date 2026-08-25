@@ -1,6 +1,6 @@
 use apxinf_metal::{
-    GdnDecodeState, GdnDimensions, GdnF32Weights, MetalW8LinearLayerStack3, MlpEpilogueV1,
-    PackedW8GdnBlock, PackedW8LinearLayerBlock, PackedW8MlpBlock, W8GroupSize,
+    GdnDecodeState, GdnDimensions, GdnF32Weights, MetalW8LinearLayerStack3, PackedW8GdnBlock,
+    PackedW8LinearLayerBlock, PackedW8MlpBlock, W8GroupSize,
 };
 
 fn values(elements: usize, multiplier: usize, modulus: usize, scale: f32) -> Vec<f32> {
@@ -104,22 +104,6 @@ fn nonzero_state(dims: GdnDimensions, seed: usize) -> GdnDecodeState {
     .unwrap()
 }
 
-#[test]
-fn mlp_epilogue_v1_selector_values_are_stable_and_unknown_values_are_rejected() {
-    assert_eq!(MlpEpilogueV1::LegacySeparate.selector(), 0);
-    assert_eq!(MlpEpilogueV1::DownResidualFused.selector(), 1);
-    assert_eq!(
-        MlpEpilogueV1::try_from(0).unwrap(),
-        MlpEpilogueV1::LegacySeparate
-    );
-    assert_eq!(
-        MlpEpilogueV1::try_from(1).unwrap(),
-        MlpEpilogueV1::DownResidualFused
-    );
-    assert!(MlpEpilogueV1::try_from(2).is_err());
-    assert!(MlpEpilogueV1::try_from(u32::MAX).is_err());
-}
-
 #[cfg(target_os = "macos")]
 #[test]
 fn stack3_v1_matches_three_sequential_packed_cpu_layers_in_one_transaction() {
@@ -185,82 +169,6 @@ fn stack3_v1_matches_three_sequential_packed_cpu_layers_in_one_transaction() {
     assert_eq!(stats.committed_stack_version, 1);
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn stack3_v1_fused_mlp_epilogue_is_bit_exact_and_live_receipted() {
-    let (dims, layer0) = fixture(0);
-    let (_, layer1) = fixture(1);
-    let (_, layer2) = fixture(2);
-    let layers = [&layer0, &layer1, &layer2];
-    let initial = std::array::from_fn(|slot| nonzero_state(dims, slot));
-    let mut hidden = values(dims.hidden_size, 53, 211, 0.8);
-
-    let mut legacy = MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1(layers).unwrap();
-    let mut fused = MetalW8LinearLayerStack3::from_packed_gdn_out_g32_with_mlp_epilogue_v1(
-        layers,
-        MlpEpilogueV1::DownResidualFused,
-    )
-    .unwrap();
-
-    let legacy_receipt = legacy.mlp_epilogue_runtime_receipt_v1();
-    assert_eq!(
-        legacy_receipt.requested_profile,
-        MlpEpilogueV1::LegacySeparate
-    );
-    assert_eq!(
-        legacy_receipt.observed_profile,
-        legacy_receipt.requested_profile
-    );
-    assert_eq!(legacy_receipt.mlp_down_function_name, "w8_mlp_down");
-    assert_eq!(legacy_receipt.kernel_dispatches_per_decode, 39);
-    assert_eq!(legacy_receipt.buffer_barriers_per_decode, 36);
-
-    let fused_receipt = fused.mlp_epilogue_runtime_receipt_v1();
-    assert_eq!(
-        fused_receipt.requested_profile,
-        MlpEpilogueV1::DownResidualFused
-    );
-    assert_eq!(
-        fused_receipt.observed_profile,
-        fused_receipt.requested_profile
-    );
-    assert_eq!(fused_receipt.mlp_down_function_name, "w8_mlp_down_residual");
-    assert_eq!(fused_receipt.kernel_dispatches_per_decode, 36);
-    assert_eq!(fused_receipt.buffer_barriers_per_decode, 33);
-
-    let legacy_ledger = legacy.buffer_ledger();
-    let mut fused_ledger = fused.buffer_ledger();
-    assert_eq!(legacy_ledger.kernel_dispatches_per_decode, 39);
-    assert_eq!(legacy_ledger.buffer_barriers_per_decode, 36);
-    assert_eq!(fused_ledger.kernel_dispatches_per_decode, 36);
-    assert_eq!(fused_ledger.buffer_barriers_per_decode, 33);
-    fused_ledger.kernel_dispatches_per_decode = 39;
-    fused_ledger.buffer_barriers_per_decode = 36;
-    assert_eq!(fused_ledger, legacy_ledger);
-
-    legacy.seed_decode_states(&initial).unwrap();
-    fused.seed_decode_states(&initial).unwrap();
-    for _ in 0..2 {
-        let legacy_output = legacy.decode(&hidden).unwrap().to_vec();
-        let fused_output = fused.decode(&hidden).unwrap().to_vec();
-        assert_eq!(
-            legacy_output
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>(),
-            fused_output
-                .iter()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            legacy.state_snapshots().unwrap(),
-            fused.state_snapshots().unwrap()
-        );
-        hidden = legacy_output;
-    }
-}
-
 #[cfg(all(target_os = "macos", debug_assertions))]
 #[test]
 fn stack3_v1_fault_is_atomic_and_terminal_until_clear() {
@@ -270,49 +178,42 @@ fn stack3_v1_fault_is_atomic_and_terminal_until_clear() {
     let layers = [&layer0, &layer1, &layer2];
     let initial = std::array::from_fn(|_| GdnDecodeState::zeroed(dims).unwrap());
     let hidden = values(dims.hidden_size, 53, 211, 0.8);
-    for profile in [
-        MlpEpilogueV1::LegacySeparate,
-        MlpEpilogueV1::DownResidualFused,
-    ] {
-        let mut stack =
-            MetalW8LinearLayerStack3::from_packed_gdn_out_g32_with_mlp_epilogue_v1(layers, profile)
-                .unwrap();
-        stack.seed_decode_states(&initial).unwrap();
+    let mut stack = MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1(layers).unwrap();
+    stack.seed_decode_states(&initial).unwrap();
 
-        let error = stack
-            .inject_failure_after_scratch_execution_for_testing(&hidden)
-            .unwrap_err();
+    let error = stack
+        .inject_failure_after_scratch_execution_for_testing(&hidden)
+        .unwrap_err();
 
-        assert!(error.to_string().contains("injected"));
-        assert_eq!(stack.state_snapshots().unwrap(), initial);
-        let failed = stack.stats();
-        assert_eq!(failed.decode_calls, 1);
-        assert_eq!(failed.successful_decodes, 0);
-        assert_eq!(failed.failed_decodes, 1);
-        assert_eq!(failed.command_buffers, 1);
-        assert_eq!(failed.compute_encoders, 3);
-        assert_eq!(failed.commits, 1);
-        assert_eq!(failed.waits, 1);
-        assert_eq!(failed.state_commits, 0);
-        assert_eq!(failed.last_state_commit_mask, 0);
-        assert_eq!(failed.committed_stack_version, 0);
-        assert!(failed.terminal_error);
+    assert!(error.to_string().contains("injected"));
+    assert_eq!(stack.state_snapshots().unwrap(), initial);
+    let failed = stack.stats();
+    assert_eq!(failed.decode_calls, 1);
+    assert_eq!(failed.successful_decodes, 0);
+    assert_eq!(failed.failed_decodes, 1);
+    assert_eq!(failed.command_buffers, 1);
+    assert_eq!(failed.compute_encoders, 3);
+    assert_eq!(failed.commits, 1);
+    assert_eq!(failed.waits, 1);
+    assert_eq!(failed.state_commits, 0);
+    assert_eq!(failed.last_state_commit_mask, 0);
+    assert_eq!(failed.committed_stack_version, 0);
+    assert!(failed.terminal_error);
 
-        let retry = stack.decode(&hidden).unwrap_err();
-        assert!(retry.to_string().contains("terminal"));
-        assert_eq!(stack.stats(), failed, "terminal retry must submit no work");
-        stack.clear_decode_states().unwrap();
-        assert_eq!(stack.stats(), Default::default());
-        assert!(stack
-            .decode(&hidden)
-            .unwrap_err()
-            .to_string()
-            .contains("seeded"));
-        stack.seed_decode_states(&initial).unwrap();
-        stack.decode(&hidden).unwrap();
-        assert_eq!(stack.stats().state_commits, 3);
-        assert_eq!(stack.stats().last_state_commit_mask, 0b111);
-    }
+    let retry = stack.decode(&hidden).unwrap_err();
+    assert!(retry.to_string().contains("terminal"));
+    assert_eq!(stack.stats(), failed, "terminal retry must submit no work");
+    stack.clear_decode_states().unwrap();
+    assert_eq!(stack.stats(), Default::default());
+    assert!(stack
+        .decode(&hidden)
+        .unwrap_err()
+        .to_string()
+        .contains("seeded"));
+    stack.seed_decode_states(&initial).unwrap();
+    stack.decode(&hidden).unwrap();
+    assert_eq!(stack.stats().state_commits, 3);
+    assert_eq!(stack.stats().last_state_commit_mask, 0b111);
 }
 
 #[cfg(target_os = "macos")]
@@ -364,8 +265,6 @@ fn stack3_v1_ledger_counts_only_the_shared_resident_resources_and_boundary_trans
     assert_eq!(ledger.state_host_transfer_bytes_per_decode, 0);
     assert_eq!(ledger.command_buffers_per_decode, 1);
     assert_eq!(ledger.compute_encoders_per_decode, 3);
-    assert_eq!(ledger.kernel_dispatches_per_decode, 39);
-    assert_eq!(ledger.buffer_barriers_per_decode, 36);
     assert_eq!(ledger.commits_per_decode, 1);
     assert_eq!(ledger.waits_per_decode, 1);
     assert_eq!(ledger.intermediate_host_finite_checks_per_decode, 0);
