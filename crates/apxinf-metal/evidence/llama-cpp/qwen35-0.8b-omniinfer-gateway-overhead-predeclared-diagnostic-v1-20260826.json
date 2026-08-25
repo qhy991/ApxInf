@@ -1,0 +1,570 @@
+{
+  "format": "apxinf-qwen35-omniinfer-gateway-overhead-predeclared-diagnostic-v1",
+  "schema_version": 1,
+  "campaign_id": "qwen35-0.8b-omniinfer-gateway-overhead-v1-20260826",
+  "created_at_utc": "2026-08-25T19:22:44Z",
+  "created_at_local": "2026-08-26T03:22:44+0800",
+  "status": "PREDECLARED_AFTER_THREE_DISCLOSED_EXPLORATORY_GENERATION_REQUESTS_AND_BEFORE_ANY_ONE_SHOT_CAMPAIGN_GENERATION_REQUEST",
+  "classification": {
+    "formal_performance_result": false,
+    "timing_use": "same-host same-resident-backend paired diagnostic only",
+    "what_is_measured": "client-observed full-response OmniInfer gateway-path overhead under warmed persistent HTTP/1.1 client connections",
+    "not_measured": [
+      "OmniInfer inference engine versus llama.cpp inference engine",
+      "pure Rust or JSON CPU time",
+      "ApxInf versus llama.cpp, OmniInfer, or Ollama throughput",
+      "gateway upstream TCP connection reuse"
+    ],
+    "promotion_or_default_activation_allowed": false,
+    "reason_not_formal": "the host has a known uncontrolled com.apple.WebKit.GPU process near 99-100% CPU and no exclusive-machine reservation"
+  },
+  "exploratory_disclosure": {
+    "classification": "setup-only exploratory semantic freeze; excluded from the one-shot campaign and every performance statistic",
+    "generation_requests_before_predeclaration": 3,
+    "performance_samples_before_predeclaration": 0,
+    "formal_warmup_requests_before_predeclaration": 0,
+    "formal_measured_requests_before_predeclaration": 0,
+    "requests": [
+      {
+        "ordinal": 1,
+        "arm": "B_direct_backend",
+        "generation_completed": true,
+        "driver_validation_failed": true,
+        "failure_phase": "post-response driver validation",
+        "cause": "the exploratory validator incorrectly required __verbose.tokens_cached == 0; b10280 returned 140",
+        "backend_or_runtime_generation_failure": false,
+        "performance_use_allowed": false
+      },
+      {
+        "ordinal": 2,
+        "arm": "B_direct_backend",
+        "generation_completed": true,
+        "driver_validation_passed": true,
+        "role": "first arm of one successful final-shape BG semantic-freeze probe",
+        "performance_use_allowed": false
+      },
+      {
+        "ordinal": 3,
+        "arm": "G_omniinfer_gateway",
+        "generation_completed": true,
+        "driver_validation_passed": true,
+        "role": "second arm of one successful final-shape BG semantic-freeze probe",
+        "performance_use_allowed": false
+      }
+    ],
+    "exploratory_process": {
+      "gateway_pid": 29091,
+      "backend_pid": 29266,
+      "backend_port": 62959
+    },
+    "incidental_wall_observations_excluded_from_performance": {
+      "B_direct_backend_ms": 1663.003,
+      "G_omniinfer_gateway_ms": 1632.841,
+      "performance_use_allowed": false,
+      "used_to_change_schedule_statistics_gates_or_claim_policy": false
+    },
+    "semantic_freeze": {
+      "content_utf8_sha256": "c65d3fd8040fc05441d86adf0965a9f3c12bd801e965fae9cd2aa87d444df7ad",
+      "generated_token_ids_compact_json_sha256": "0a8a6c5ceeb831528480ebcad172fbcdda4ac23478ab051b1f74a00ec6d4f8e4",
+      "generation_settings_compact_json_sha256": "99e6940bc3b693a57a15c128b6ac0c0fb713b1b169ebbd4c9fa41763582d32f3",
+      "rendered_prompt_utf8_sha256": "13071b0f0e23e97681f6f39247dbb715973302580660a81dbae994fe8064e7d3",
+      "verbose_tokens_cached": 140,
+      "native_timings_cache_n": 0,
+      "usage_prompt_tokens_details_cached_tokens": 0,
+      "generated_token_ids": [
+        9419,
+        0,
+        2500,
+        628,
+        353,
+        1438,
+        488,
+        3242,
+        30,
+        25677,
+        232,
+        353,
+        2688,
+        1167,
+        16451,
+        18,
+        13,
+        20,
+        11,
+        279,
+        5362,
+        3349,
+        3992,
+        1558,
+        7633,
+        539,
+        48696,
+        36814,
+        11274,
+        13,
+        3437,
+        579,
+        383,
+        678,
+        3838,
+        30,
+        10838,
+        234,
+        253,
+        9008,
+        97,
+        244,
+        169379,
+        9008,
+        234,
+        235,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008,
+        234,
+        109,
+        9008
+      ]
+    },
+    "post_probe_driver_changes": "only semantic constants, fresh-PID admission, timing-boundary correction, OS process binding, raw-invalid preservation, and audit fixes were frozen; exploratory wall values were not used to tune the design"
+  },
+  "comparison_shape": {
+    "B_direct_backend": "direct POST to the resident b10280 llama-server",
+    "G_omniinfer_gateway": "POST through OmniInfer on 127.0.0.1:9000 to that exact same resident llama-server",
+    "same_backend_process_required": true,
+    "same_model_artifact_required": true,
+    "same_canonical_client_request_required": true,
+    "cache_clear_before_every_arm_required": true,
+    "concurrency": 1
+  },
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "host": {
+      "machine": "Apple M4",
+      "architecture": "arm64",
+      "memory_bytes": 17179869184,
+      "os": "macOS 26.2 build 25C56"
+    },
+    "semantic_prompt": "Hello",
+    "rendered_prompt": "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "prompt_token_ids": [
+      248045,
+      846,
+      198,
+      9419,
+      248046,
+      198,
+      248045,
+      74455,
+      198,
+      248068,
+      271,
+      248069,
+      271
+    ],
+    "prompt_token_count": 13,
+    "returned_token_count": 128
+  },
+  "request_contract": {
+    "endpoint": "/v1/chat/completions",
+    "method": "POST",
+    "canonicalization": "UTF-8 JSON with sort_keys=true, ensure_ascii=false, and compact separators",
+    "request": {
+      "cache_prompt": false,
+      "chat_template_kwargs": {
+        "enable_thinking": false
+      },
+      "id_slot": 0,
+      "ignore_eos": true,
+      "max_tokens": 128,
+      "messages": [
+        {
+          "content": "Hello",
+          "role": "user"
+        }
+      ],
+      "model": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+      "reasoning_format": "none",
+      "return_tokens": true,
+      "seed": 0,
+      "stream": false,
+      "temperature": 0,
+      "verbose": true
+    },
+    "canonical_utf8": "{\"cache_prompt\":false,\"chat_template_kwargs\":{\"enable_thinking\":false},\"id_slot\":0,\"ignore_eos\":true,\"max_tokens\":128,\"messages\":[{\"content\":\"Hello\",\"role\":\"user\"}],\"model\":\"/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf\",\"reasoning_format\":\"none\",\"return_tokens\":true,\"seed\":0,\"stream\":false,\"temperature\":0,\"verbose\":true}",
+    "size_bytes": 383,
+    "sha256": "7773f5337693843f1e8cf3017b98868517cbddd3bc32649e550d8f2fec1d5cf6",
+    "same_client_body_for_B_and_G": true,
+    "response_admission": {
+      "object": "chat.completion",
+      "model_and_system_fingerprint_exact": true,
+      "system_fingerprint": "b10280-61881b1f7",
+      "finish_reason": "length",
+      "usage_prompt_completion_total": [
+        13,
+        128,
+        141
+      ],
+      "native_prompt_predicted_cache_n": [
+        13,
+        128,
+        0
+      ],
+      "generated_token_ids_count": 128,
+      "semantic_hashes_equal_to_exploratory_freeze": true,
+      "B_and_G_content_tokens_prompt_settings_and_verbose_cache_equal_within_every_pair": true
+    }
+  },
+  "source_derived_gateway_boundary": {
+    "statement": "The client sends the same canonical 383-byte body to B and G. Review of pinned OmniInfer source establishes that with request_defaults {}, proxy_model null, explicit chat_template_kwargs.enable_thinking false, explicit reasoning_format none, and no legacy or Omni stream fields, normalize_chat_request_with_defaults is a semantic JSON-value fixed point. OmniInfer nevertheless parses and reserializes the G request before forwarding.",
+    "semantic_fixed_point_source_derived": true,
+    "upstream_socket_bytes_captured": false,
+    "upstream_wire_byte_identity_claimed": false,
+    "response_boundary": "the nonstream gateway collects, parses, and reserializes upstream JSON and only fills a missing usage.total_tokens; pinned b10280 already supplies total_tokens; response wire-byte identity is not claimed",
+    "omniinfer_release_commit": "79af77228f329a79ac665014089e23983e69e79f",
+    "sources": [
+      {
+        "path": "crates/omniinfer-core/src/protocol/request_normalization.rs",
+        "url": "https://github.com/omnimind-ai/OmniInfer/blob/79af77228f329a79ac665014089e23983e69e79f/crates/omniinfer-core/src/protocol/request_normalization.rs"
+      },
+      {
+        "path": "crates/omniinfer-cli/src/gateway/mod.rs",
+        "url": "https://github.com/omnimind-ai/OmniInfer/blob/79af77228f329a79ac665014089e23983e69e79f/crates/omniinfer-cli/src/gateway/mod.rs"
+      }
+    ]
+  },
+  "runtime_and_artifact_custody": {
+    "model": {
+      "path": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+      "size_bytes": 811843072,
+      "sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c",
+      "quantization": "Q8_0"
+    },
+    "omniinfer": {
+      "release": "v0.3.26",
+      "source_commit": "79af77228f329a79ac665014089e23983e69e79f",
+      "release_archive_sha256": "0f83ea36aad7126976ff2a53a58f0ce20e934d2bd0133d40f4ce974658a48cf4",
+      "cli_path": "/tmp/apxinf-omniinfer-prep.F7GNFt/OmniInfer/omniinfer",
+      "cli_size_bytes": 9719136,
+      "cli_sha256": "65487424ca9179850b80079beafa5ad69a66e0841d328ee8dd8a1fd4b613d661",
+      "state_root": "/tmp/apxinf-omniinfer-prep.F7GNFt/state",
+      "runtime_root": "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime",
+      "gateway_base_url": "http://127.0.0.1:9000",
+      "request_history_environment_required": "OMNIINFER_REQUEST_HISTORY=0",
+      "request_history_environment_proof": "ps eww on the unique port-9000 listener",
+      "request_history_snapshot_must_remain_equal": true
+    },
+    "backend": {
+      "runtime": "llama.cpp-mac",
+      "release": "b10280",
+      "source_commit": "61881b1f7f0b13d9e46d561fc25afcd6bbaec479",
+      "release_archive_sha256": "5dc4b11192ef34895c7f92a9f1dd3bd3d5864a63976ea2327fe2e0944891cb75",
+      "llama_server_path": "/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/bin/llama-server",
+      "llama_server_size_bytes": 33472,
+      "llama_server_sha256": "02723fc39fbeebd9849ce4c9ca3799649df3cf91f101c2cd56b8756e1db54d28",
+      "build_info": "b10280-61881b1f7",
+      "model_ftype": "Q8_0",
+      "ctx_size": 256,
+      "slots": 1,
+      "slot_save_path": "/tmp/apxinf-omniinfer-prep.F7GNFt/slots-gateway-overhead-v1",
+      "request_defaults_required": {},
+      "effective_parameters_required": {},
+      "proxy_model_required": null,
+      "launch_args_exact": [
+        "--slot-prompt-similarity",
+        "0",
+        "--cache-idle-slots",
+        "-ngl",
+        "999",
+        "--cache-ram",
+        "8192",
+        "-ngl",
+        "999",
+        "-b",
+        "13",
+        "-ub",
+        "13",
+        "-t",
+        "4",
+        "-tb",
+        "4",
+        "-np",
+        "1",
+        "--cache-ram",
+        "0",
+        "--slots",
+        "--no-cache-idle-slots",
+        "--no-cache-prompt",
+        "--slot-prompt-similarity",
+        "0",
+        "--slot-save-path",
+        "/tmp/apxinf-omniinfer-prep.F7GNFt/slots-gateway-overhead-v1"
+      ],
+      "launch_argument_semantics": "the leading values are immutable OmniInfer defaults and later explicit occurrences are intentional last-occurrence overrides"
+    }
+  },
+  "fresh_restart_contract": {
+    "exploratory_gateway_pid": 29091,
+    "exploratory_backend_pid": 29266,
+    "exploratory_backend_port": 62959,
+    "before_campaign_start_required": [
+      "the exploratory gateway and backend PIDs are gone",
+      "ports 9000 and 62959 have no listener",
+      "the gateway is restarted with no model restore and OMNIINFER_REQUEST_HISTORY=0",
+      "the exact model and fixed launch args are loaded on the fresh gateway"
+    ],
+    "campaign_gateway_pid_must_differ_from_exploratory": true,
+    "campaign_backend_pid_must_differ_from_exploratory": true,
+    "backend_os_binding_required": {
+      "unique_listener_pid_equals_state_and_runtime_pid": true,
+      "parent_pid_equals_campaign_gateway_pid": true,
+      "ps_command_equals_state_launch_command": true,
+      "lsof_txt_maps_pinned_llama_server": true
+    },
+    "one_resident_backend_and_unchanged_state_required_throughout": true
+  },
+  "connection_contract": {
+    "client_connections": [
+      "gateway-admin",
+      "backend-measurement",
+      "gateway-measurement"
+    ],
+    "all_preconnected_before_generation": true,
+    "protocol": "HTTP/1.1",
+    "per_connection_socket_object_fileno_local_and_peer_must_remain_identical": true,
+    "connection_generation": 1,
+    "reconnect_allowed": false,
+    "upstream_gateway_connection_boundary": "OmniInfer's shared Hyper client is source-level pool-capable, but upstream TCP reuse is not socket-instrumented or claimed"
+  },
+  "timing_boundary": {
+    "clock": "Python time.monotonic_ns",
+    "start": "immediately before putrequest on an already-connected arm socket",
+    "stop": "immediately after the full response.read returns and before json.loads",
+    "included": [
+      "client HTTP request header and precomputed-body send",
+      "endpoint, gateway, and backend work on the selected path",
+      "full response transfer and client read"
+    ],
+    "excluded": [
+      "TCP connection establishment",
+      "canonical request JSON serialization",
+      "client response JSON parsing",
+      "cache clear",
+      "semantic response validation",
+      "state, history, and artifact checks"
+    ],
+    "client_json_parse_ns_and_ms_retained_separately": true,
+    "native_prompt_plus_predicted_timing_role": "quality check and adjusted sensitivity input only; not a subtractable pure gateway CPU clock"
+  },
+  "fixed_execution_schedule": {
+    "warmup": {
+      "pair_orders": [
+        "BG",
+        "GB",
+        "GB",
+        "BG"
+      ],
+      "pairs": 4,
+      "generation_requests": 8,
+      "included_in_statistics": false
+    },
+    "measured": {
+      "blocks": 16,
+      "pairs_per_block": 4,
+      "odd_block_orders": [
+        "BG",
+        "GB",
+        "GB",
+        "BG"
+      ],
+      "even_block_orders": [
+        "GB",
+        "BG",
+        "BG",
+        "GB"
+      ],
+      "pairs": 64,
+      "generation_requests": 128,
+      "BG_pairs": 32,
+      "GB_pairs": 32
+    },
+    "total_one_shot_campaign_generation_requests": 136,
+    "before_every_arm": "POST /omni/cache/clear must acknowledge exact cleared_slots [0]",
+    "retry_resample_replacement_reorder_outlier_removal_or_sample_extension_allowed": false
+  },
+  "timing_and_statistics": {
+    "primary_estimand": "per-pair G_wall_ms - B_wall_ms",
+    "primary_interval": "mean of four pair deltas within each of 16 blocks, then two-sided 95% t interval across block means",
+    "primary_degrees_of_freedom": 15,
+    "primary_t_critical_0_975": 2.131449545559323,
+    "secondary_ratio": "within-pair log(G_wall/B_wall), four-pair block means, t interval on 16 blocks, then exponentiate",
+    "adjusted_residual_sensitivity": "(G_wall - G_native_prompt_plus_predicted) - (B_wall - B_native_prompt_plus_predicted)",
+    "stability_gates": {
+      "B_wall_population_cv_max": 0.01,
+      "G_wall_population_cv_max": 0.01,
+      "B_native_predicted_ms_population_cv_max": 0.01,
+      "G_native_predicted_ms_population_cv_max": 0.01,
+      "population_sd_pair_delta_over_pooled_wall_max": 0.01,
+      "absolute_BG_GB_mean_difference_max": "max(2 ms, 0.2% of pooled wall)",
+      "absolute_first8_last8_block_mean_difference_max": "max(2 ms, 0.2% of pooled wall)",
+      "primary_ci95_half_width_max_ms": 2.0
+    }
+  },
+  "claim_policy": {
+    "positive_gateway_path_overhead": "allowed only if every stability gate passes, primary CI lower > 0, ratio CI lower > 1, both BG and GB stratum means > 0, and adjusted-sensitivity CI lower > 0",
+    "practical_equivalence": "allowed only if every stability gate passes, the primary CI is entirely within [-5,+5] ms, and the ratio CI is entirely within [0.995,1.005]",
+    "otherwise": "inconclusive or unstable diagnostic",
+    "allowed_positive_name": "positive client-observed full-response OmniInfer gateway-path overhead",
+    "forbidden_claims": [
+      "OmniInfer or llama.cpp engine winner",
+      "pure gateway CPU cost",
+      "ApxInf performance ratio",
+      "gateway upstream TCP reuse",
+      "gateway-to-backend wire-body identity"
+    ]
+  },
+  "host_policy": {
+    "known_noise": "com.apple.WebKit.GPU observed near 99-100% CPU during setup",
+    "classification_effect": "diagnostic only regardless of passed gates",
+    "user_or_system_process_termination_allowed": false,
+    "capture_at_start_and_end": [
+      "power and thermal state",
+      "load averages",
+      "swap",
+      "top CPU processes",
+      "gateway and backend PIDs"
+    ],
+    "hard_stop_before_first_generation": [
+      "AC power absent",
+      "serious or critical thermal pressure",
+      "runtime or artifact identity admission failure"
+    ],
+    "gate_scope": "stability, order, drift, and CI gates determine interpretability of this diagnostic but cannot promote it to formal"
+  },
+  "one_shot_custody": {
+    "predeclaration_must_be_committed_and_pushed_before_campaign_start": true,
+    "campaign_start_must_be_create-new_committed_and_pushed_before_first_one_shot_generation": true,
+    "campaign_start_creation_consumes_v1_even_if_interrupted_or_failed": true,
+    "exclusive_marker_path": "/tmp/apxinf-omniinfer-prep.F7GNFt/gateway-overhead-v1-campaign-consumed.marker",
+    "marker_must_be_absent_before_campaign_start_and_exclusively_created_once_by_driver": true,
+    "post_start_failure_policy": "preserve partial raw evidence, publish invalid classification, and do not retry",
+    "marker_delete_or_recreate_allowed": false
+  },
+  "execution_driver": {
+    "repository": "https://github.com/qhy991/ApxInf.git",
+    "commit": "7b05aac09a90aff682e33c34d46808624b368a98",
+    "origin_main_at_publication": "7b05aac09a90aff682e33c34d46808624b368a98",
+    "path": "benchmarks/cross_runtime/omniinfer_gateway_overhead_driver.py",
+    "absolute_path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/benchmarks/cross_runtime/omniinfer_gateway_overhead_driver.py",
+    "size_bytes": 62777,
+    "sha256": "a064958ce1a98ade5966203c255bf1ab0baf406ffba0ec18c887ebe3e4fad2c2",
+    "interpreter": {
+      "path": "/opt/homebrew/Cellar/python@3.14/3.14.3/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+      "version": "3.14.3 (main, Feb  3 2026, 15:32:20) [Clang 17.0.0 (clang-1700.6.3.2)]",
+      "size_bytes": 52448,
+      "sha256": "ff73afba45e095e0dadc9b51deb9b994ef90d097c36a211955c57336ce76508f"
+    },
+    "self_test": {
+      "passed_after_final_edit": true,
+      "generation_requests": 0,
+      "request_size_and_sha_passed": true,
+      "schedule_balance_passed": true,
+      "block_interval_fixture_passed": true
+    },
+    "independent_audit": {
+      "P0_remaining": 0,
+      "P1_remaining": 0,
+      "wall_timing_json_parse_exclusion_verified": true,
+      "backend_os_binding_verified_on_exploratory_runtime": true,
+      "consumed_campaign_raw_invalid_preservation_verified": true
+    }
+  },
+  "git_custody": {
+    "pre_create_head": "7b05aac09a90aff682e33c34d46808624b368a98",
+    "pre_create_origin_main": "7b05aac09a90aff682e33c34d46808624b368a98",
+    "head_equals_origin_main": true,
+    "worktree_clean_before_create_new": true
+  },
+  "output_paths": {
+    "campaign_start": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-overhead-campaign-start-diagnostic-v1-20260826.json",
+    "raw_campaign": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-overhead-raw-campaign-diagnostic-v1-20260826.json",
+    "summary": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-overhead-diagnostic-summary-v1-20260826.json"
+  }
+}
