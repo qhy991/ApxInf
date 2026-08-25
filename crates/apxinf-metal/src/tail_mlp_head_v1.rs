@@ -1,7 +1,4 @@
-use crate::{
-    tail_scale_load_receipt, MetalW8Error, PackedW8MlpBlock, PackedW8Rows, W8GroupSize,
-    W8ScaleLoadProfileV1, W8TailScaleLoadRuntimeReceiptV1, W8_TOP_K,
-};
+use crate::{MetalW8Error, PackedW8MlpBlock, PackedW8Rows, W8GroupSize, W8_TOP_K};
 
 /// Exact resident-buffer and per-decode transaction contract for tail v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,7 +185,6 @@ pub struct MetalW8TailMlpHeadV1 {
     terminal_error: bool,
     stats: TailMlpHeadMetalStatsV1,
     buffer_ledger: TailMlpHeadBufferLedgerV1,
-    scale_load_receipt: W8TailScaleLoadRuntimeReceiptV1,
 }
 
 impl PackedW8TailMlpHeadV1 {
@@ -329,32 +325,14 @@ fn require_finite(values: &[f32], label: &str) -> Result<(), MetalW8Error> {
 
 impl MetalW8TailMlpHeadV1 {
     pub fn from_packed(weights: &PackedW8TailMlpHeadV1) -> Result<Self, MetalW8Error> {
-        Self::from_packed_with_scale_load_profile_v1(weights, W8ScaleLoadProfileV1::LegacyPerLane)
-    }
-
-    /// Additive diagnostic selector for broadcasting identical G64 scale
-    /// values in the tail MLP and vocabulary-row kernels. The legacy
-    /// constructor above remains permanently fixed to per-lane scale loads.
-    pub fn from_packed_with_scale_load_profile_v1(
-        weights: &PackedW8TailMlpHeadV1,
-        scale_load_profile: W8ScaleLoadProfileV1,
-    ) -> Result<Self, MetalW8Error> {
         let buffer_ledger = weights.buffer_ledger()?;
-        let inner = platform::TailHandleV1::new(weights, scale_load_profile)?;
-        let observed_profile = inner.observed_scale_load_profile()?;
-        if observed_profile != scale_load_profile {
-            return Err(MetalW8Error::new(
-                "Metal W8 tail MLP+head v1 observed scale-load profile differs from its request",
-            ));
-        }
         Ok(Self {
-            inner,
+            inner: platform::TailHandleV1::new(weights)?,
             normalized_hidden: vec![0.0; weights.hidden_size()],
             candidate_token_ids: [u32::MAX; W8_TOP_K],
             terminal_error: false,
             stats: TailMlpHeadMetalStatsV1::default(),
             buffer_ledger,
-            scale_load_receipt: tail_scale_load_receipt(scale_load_profile, observed_profile),
         })
     }
 
@@ -397,10 +375,6 @@ impl MetalW8TailMlpHeadV1 {
 
     pub fn buffer_ledger(&self) -> TailMlpHeadBufferLedgerV1 {
         self.buffer_ledger
-    }
-
-    pub fn scale_load_runtime_receipt_v1(&self) -> W8TailScaleLoadRuntimeReceiptV1 {
-        self.scale_load_receipt
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -624,7 +598,7 @@ fn rms_norm(input: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{MetalW8Error, PackedW8TailMlpHeadV1, W8ScaleLoadProfileV1, W8_TOP_K};
+    use super::{MetalW8Error, PackedW8TailMlpHeadV1, W8_TOP_K};
     use std::ffi::{c_char, c_int, c_void, CStr};
     use std::ptr::NonNull;
 
@@ -667,19 +641,6 @@ mod platform {
     }
 
     extern "C" {
-        fn apxinf_metal_w8_tail_mlp_head_create_with_scale_load_profile_v1(
-            descriptor: *const TailDescriptorV1,
-            scale_load_profile: u32,
-            output: *mut *mut c_void,
-            error: *mut c_char,
-            error_capacity: usize,
-        ) -> c_int;
-        fn apxinf_metal_w8_tail_mlp_head_observed_scale_load_profile_v1(
-            handle: *mut c_void,
-            profile: *mut u32,
-            error: *mut c_char,
-            error_capacity: usize,
-        ) -> c_int;
         fn apxinf_metal_w8_tail_mlp_head_create_v1(
             descriptor: *const TailDescriptorV1,
             output: *mut *mut c_void,
@@ -713,10 +674,7 @@ mod platform {
     }
 
     impl TailHandleV1 {
-        pub(super) fn new(
-            weights: &PackedW8TailMlpHeadV1,
-            scale_load_profile: W8ScaleLoadProfileV1,
-        ) -> Result<Self, MetalW8Error> {
+        pub(super) fn new(weights: &PackedW8TailMlpHeadV1) -> Result<Self, MetalW8Error> {
             let descriptor = TailDescriptorV1 {
                 gate_up_weights: weights.mlp.gate_up.values().as_ptr(),
                 gate_up_scales: weights.mlp.gate_up.scales().as_ptr(),
@@ -734,23 +692,12 @@ mod platform {
             let mut output = std::ptr::null_mut();
             let mut error = [0 as c_char; ERROR_CAPACITY];
             let status = unsafe {
-                match scale_load_profile {
-                    W8ScaleLoadProfileV1::LegacyPerLane => apxinf_metal_w8_tail_mlp_head_create_v1(
-                        &descriptor,
-                        &mut output,
-                        error.as_mut_ptr(),
-                        error.len(),
-                    ),
-                    W8ScaleLoadProfileV1::SimdBroadcast => {
-                        apxinf_metal_w8_tail_mlp_head_create_with_scale_load_profile_v1(
-                            &descriptor,
-                            scale_load_profile.selector(),
-                            &mut output,
-                            error.as_mut_ptr(),
-                            error.len(),
-                        )
-                    }
-                }
+                apxinf_metal_w8_tail_mlp_head_create_v1(
+                    &descriptor,
+                    &mut output,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
             };
             if status != 0 {
                 return Err(bridge_error("create Metal W8 tail MLP+head v1", &error));
@@ -762,28 +709,6 @@ mod platform {
                 handle,
                 vocab_size: weights.vocab_size(),
             })
-        }
-
-        pub(super) fn observed_scale_load_profile(
-            &self,
-        ) -> Result<W8ScaleLoadProfileV1, MetalW8Error> {
-            let mut profile = u32::MAX;
-            let mut error = [0 as c_char; ERROR_CAPACITY];
-            let status = unsafe {
-                apxinf_metal_w8_tail_mlp_head_observed_scale_load_profile_v1(
-                    self.handle.as_ptr(),
-                    &mut profile,
-                    error.as_mut_ptr(),
-                    error.len(),
-                )
-            };
-            if status != 0 {
-                return Err(bridge_error(
-                    "read Metal W8 tail MLP+head v1 scale-load profile",
-                    &error,
-                ));
-            }
-            W8ScaleLoadProfileV1::try_from(profile)
         }
 
         pub(super) fn decode(
@@ -859,7 +784,7 @@ mod platform {
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
-    use super::{MetalW8Error, PackedW8TailMlpHeadV1, W8ScaleLoadProfileV1, W8_TOP_K};
+    use super::{MetalW8Error, PackedW8TailMlpHeadV1, W8_TOP_K};
 
     #[derive(Clone, Copy, Debug, Default)]
     pub(super) struct TailExecutionReceiptV1 {
@@ -883,18 +808,7 @@ mod platform {
     pub(super) struct TailHandleV1;
 
     impl TailHandleV1 {
-        pub(super) fn new(
-            _weights: &PackedW8TailMlpHeadV1,
-            _scale_load_profile: W8ScaleLoadProfileV1,
-        ) -> Result<Self, MetalW8Error> {
-            Err(MetalW8Error::new(
-                "Metal W8 tail MLP+head v1 requires macOS",
-            ))
-        }
-
-        pub(super) fn observed_scale_load_profile(
-            &self,
-        ) -> Result<W8ScaleLoadProfileV1, MetalW8Error> {
+        pub(super) fn new(_weights: &PackedW8TailMlpHeadV1) -> Result<Self, MetalW8Error> {
             Err(MetalW8Error::new(
                 "Metal W8 tail MLP+head v1 requires macOS",
             ))

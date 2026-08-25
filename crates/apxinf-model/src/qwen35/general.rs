@@ -72,183 +72,6 @@ enum Qwen35BoundaryTailHeadFaultV1ForTest {
     TailOutOfRangeCandidate,
 }
 
-#[cfg(feature = "metal-w8")]
-const fn scale_load_profile_v1_label(value: apxinf_metal::W8ScaleLoadProfileV1) -> &'static str {
-    match value {
-        apxinf_metal::W8ScaleLoadProfileV1::LegacyPerLane => "legacy-per-lane",
-        apxinf_metal::W8ScaleLoadProfileV1::SimdBroadcast => "simd-broadcast",
-    }
-}
-
-#[cfg(feature = "metal-w8")]
-fn body_scale_load_runtime_json(
-    receipt: apxinf_metal::W8BodyScaleLoadRuntimeReceiptV1,
-) -> serde_json::Value {
-    serde_json::json!({
-        "requested_profile": scale_load_profile_v1_label(receipt.requested_profile),
-        "observed_profile": scale_load_profile_v1_label(receipt.observed_profile),
-        "threads_per_threadgroup": receipt.threads_per_threadgroup,
-        "pipeline_thread_execution_width": receipt.pipeline_thread_execution_width,
-        "dynamic_threadgroup_memory_bytes": receipt.dynamic_threadgroup_memory_bytes,
-        "threadgroup_barriers_per_projection": receipt.threadgroup_barriers_per_projection,
-        "g64_scale_loader_lanes_per_full_simd": receipt.g64_scale_loader_lanes_per_full_simd,
-        "g32_scale_loader_lanes_per_full_simd": receipt.g32_scale_loader_lanes_per_full_simd,
-        "g64_broadcasts_per_full_simd": receipt.g64_broadcasts_per_full_simd,
-        "g32_broadcasts_per_full_simd": receipt.g32_broadcasts_per_full_simd,
-        "gdn_input_function_name": receipt.gdn_input_function_name,
-        "gdn_output_function_name": receipt.gdn_output_function_name,
-        "mlp_gate_up_function_name": receipt.mlp_gate_up_function_name,
-        "mlp_down_function_name": receipt.mlp_down_function_name,
-    })
-}
-
-#[cfg(feature = "metal-w8")]
-fn tail_scale_load_runtime_json(
-    receipt: apxinf_metal::W8TailScaleLoadRuntimeReceiptV1,
-) -> serde_json::Value {
-    serde_json::json!({
-        "requested_profile": scale_load_profile_v1_label(receipt.requested_profile),
-        "observed_profile": scale_load_profile_v1_label(receipt.observed_profile),
-        "threads_per_threadgroup": receipt.threads_per_threadgroup,
-        "pipeline_thread_execution_width": receipt.pipeline_thread_execution_width,
-        "dynamic_threadgroup_memory_bytes": receipt.dynamic_threadgroup_memory_bytes,
-        "added_threadgroup_barriers_per_transaction": receipt.added_threadgroup_barriers_per_transaction,
-        "g64_scale_loader_lanes_per_full_simd": receipt.g64_scale_loader_lanes_per_full_simd,
-        "g64_broadcasts_per_full_simd": receipt.g64_broadcasts_per_full_simd,
-        "mlp_gate_up_function_name": receipt.mlp_gate_up_function_name,
-        "mlp_down_function_name": receipt.mlp_down_function_name,
-        "vocab_rows_function_name": receipt.vocab_rows_function_name,
-    })
-}
-
-#[cfg(feature = "metal-w8")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct W8ScaleLoadLogicalMappingV1 {
-    body_w8_kernel_invocations_per_decode: usize,
-    tail_w8_kernel_invocations_per_decode: usize,
-    legacy_scalar_scale_loads_per_decode: usize,
-    simd_broadcast_scalar_scale_loads_per_decode: usize,
-    body_legacy_scalar_scale_loads_per_decode: usize,
-    body_simd_broadcast_scalar_scale_loads_per_decode: usize,
-    tail_legacy_scalar_scale_loads_per_decode: usize,
-    tail_simd_broadcast_scalar_scale_loads_per_decode: usize,
-}
-
-#[cfg(feature = "metal-w8")]
-impl W8ScaleLoadLogicalMappingV1 {
-    fn from_config(config: &Qwen35TextConfig) -> Option<Self> {
-        fn matrix_scale_loads(
-            rows: usize,
-            columns: usize,
-            group_size: usize,
-        ) -> Option<(usize, usize)> {
-            if columns % group_size != 0 || columns % 4 != 0 {
-                return None;
-            }
-            let weights = rows.checked_mul(columns)?;
-            Some((weights / 4, weights / group_size))
-        }
-
-        fn add(left: (usize, usize), right: (usize, usize)) -> Option<(usize, usize)> {
-            Some((left.0.checked_add(right.0)?, left.1.checked_add(right.1)?))
-        }
-
-        fn multiply(value: (usize, usize), count: usize) -> Option<(usize, usize)> {
-            Some((value.0.checked_mul(count)?, value.1.checked_mul(count)?))
-        }
-
-        let key_width = config
-            .linear_num_key_heads
-            .checked_mul(config.linear_key_head_dim)?;
-        let value_width = config
-            .linear_num_value_heads
-            .checked_mul(config.linear_value_head_dim)?;
-        let qkv_width = key_width.checked_mul(2)?.checked_add(value_width)?;
-        let gdn_input_rows = qkv_width
-            .checked_add(value_width)?
-            .checked_add(config.linear_num_value_heads.checked_mul(2)?)?;
-        let mlp_gate_up_rows = config.intermediate_size.checked_mul(2)?;
-        let linear_layer_count = config
-            .layer_types
-            .iter()
-            .filter(|&&layer_type| layer_type == Qwen35LayerType::LinearAttention)
-            .count();
-        let boundary_count = QWEN35_MLP_STACK3_BOUNDARY_REGIONS_V1.len();
-
-        let per_linear_layer = add(
-            add(
-                matrix_scale_loads(gdn_input_rows, config.hidden_size, 64)?,
-                matrix_scale_loads(config.hidden_size, value_width, 32)?,
-            )?,
-            add(
-                matrix_scale_loads(mlp_gate_up_rows, config.hidden_size, 64)?,
-                matrix_scale_loads(config.hidden_size, config.intermediate_size, 64)?,
-            )?,
-        )?;
-        let per_mlp = add(
-            matrix_scale_loads(mlp_gate_up_rows, config.hidden_size, 64)?,
-            matrix_scale_loads(config.hidden_size, config.intermediate_size, 64)?,
-        )?;
-        let linear_body = multiply(per_linear_layer, linear_layer_count)?;
-        let boundary_body = multiply(per_mlp, boundary_count)?;
-        let body = add(linear_body, boundary_body)?;
-        let tail = add(
-            per_mlp,
-            matrix_scale_loads(config.vocab_size, config.hidden_size, 64)?,
-        )?;
-        let total = add(body, tail)?;
-        let body_w8_kernel_invocations_per_decode = linear_layer_count
-            .checked_mul(4)?
-            .checked_add(boundary_count.checked_mul(2)?)?;
-        let tail_w8_kernel_invocations_per_decode = 3;
-
-        Some(Self {
-            body_w8_kernel_invocations_per_decode,
-            tail_w8_kernel_invocations_per_decode,
-            legacy_scalar_scale_loads_per_decode: total.0,
-            simd_broadcast_scalar_scale_loads_per_decode: total.1,
-            body_legacy_scalar_scale_loads_per_decode: body.0,
-            body_simd_broadcast_scalar_scale_loads_per_decode: body.1,
-            tail_legacy_scalar_scale_loads_per_decode: tail.0,
-            tail_simd_broadcast_scalar_scale_loads_per_decode: tail.1,
-        })
-    }
-
-    fn scope_json(self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "initial_stack_and_five_boundaries": true,
-            "tail_layer23_mlp_and_vocab_rows": true,
-            "count_unit": "w8-matvec-kernel-invocation-per-decode",
-            "body_w8_kernel_invocations_per_decode": self.body_w8_kernel_invocations_per_decode,
-            "tail_w8_kernel_invocations_per_decode": self.tail_w8_kernel_invocations_per_decode,
-            "total_w8_kernel_invocations_per_decode": self
-                .body_w8_kernel_invocations_per_decode
-                .checked_add(self.tail_w8_kernel_invocations_per_decode)?,
-        }))
-    }
-
-    fn mapping_json(self) -> Option<serde_json::Value> {
-        let logical_scalar_scale_load_reduction_per_decode = self
-            .legacy_scalar_scale_loads_per_decode
-            .checked_sub(self.simd_broadcast_scalar_scale_loads_per_decode)?;
-        Some(serde_json::json!({
-            "scope": "all-body-w8-matvec-kernel-invocations-plus-tail-mlp-and-vocab-rows",
-            "legacy_scalar_scale_loads_per_decode": self.legacy_scalar_scale_loads_per_decode,
-            "simd_broadcast_scalar_scale_loads_per_decode": self.simd_broadcast_scalar_scale_loads_per_decode,
-            "logical_scalar_scale_load_reduction_per_decode": logical_scalar_scale_load_reduction_per_decode,
-            "legacy_logical_scale_read_bytes_per_decode": self.legacy_scalar_scale_loads_per_decode.checked_mul(std::mem::size_of::<f32>())?,
-            "simd_broadcast_logical_scale_read_bytes_per_decode": self.simd_broadcast_scalar_scale_loads_per_decode.checked_mul(std::mem::size_of::<f32>())?,
-            "logical_scale_read_reduction_bytes_per_decode": logical_scalar_scale_load_reduction_per_decode.checked_mul(std::mem::size_of::<f32>())?,
-            "body_legacy_scalar_scale_loads_per_decode": self.body_legacy_scalar_scale_loads_per_decode,
-            "body_simd_broadcast_scalar_scale_loads_per_decode": self.body_simd_broadcast_scalar_scale_loads_per_decode,
-            "tail_legacy_scalar_scale_loads_per_decode": self.tail_legacy_scalar_scale_loads_per_decode,
-            "tail_simd_broadcast_scalar_scale_loads_per_decode": self.tail_simd_broadcast_scalar_scale_loads_per_decode,
-            "measured_dram_traffic": false,
-            "interpretation": "static logical scale-load mapping derived from the active model dimensions; not a measured DRAM-traffic claim",
-        }))
-    }
-}
-
 /// Observable receipt for one explicitly selected, decode-only Metal W8 GDN
 /// attention block. One successful decode is one command buffer and one wait.
 #[cfg(feature = "metal-w8")]
@@ -641,20 +464,8 @@ pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
     pub terminal_error: bool,
 }
 
-/// Additive runtime receipt for the W8 scale-load selector. Keeping this
-/// separate preserves the source shape of the existing tail-head v1 stats.
-#[cfg(feature = "metal-w8")]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Qwen35MetalW8ScaleLoadRuntimeV1 {
-    pub profile: apxinf_metal::W8ScaleLoadProfileV1,
-    pub initial_stack: apxinf_metal::W8BodyScaleLoadRuntimeReceiptV1,
-    pub boundaries: Vec<apxinf_metal::W8BodyScaleLoadRuntimeReceiptV1>,
-    pub tail: apxinf_metal::W8TailScaleLoadRuntimeReceiptV1,
-}
-
 #[cfg(feature = "metal-w8")]
 struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
-    scale_load_profile: apxinf_metal::W8ScaleLoadProfileV1,
     initial_stack: Qwen35MetalW8LinearLayerStack3V1,
     boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionV1>,
     tail_layer_index: usize,
@@ -1104,26 +915,6 @@ impl GeneralQwen35 {
         device: Device,
         max_context: usize,
     ) -> Result<Self> {
-        Self::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_scale_load_profile(
-            config,
-            tensors,
-            device,
-            max_context,
-            apxinf_metal::W8ScaleLoadProfileV1::LegacyPerLane,
-        )
-    }
-
-    /// Additive diagnostic selector for the W8 scale-load implementation in
-    /// all six body transactions and the fused tail transaction. The legacy
-    /// constructor above remains fixed to per-lane loads.
-    #[cfg(feature = "metal-w8")]
-    pub fn from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_scale_load_profile(
-        config: Qwen35Config,
-        tensors: HashMap<String, Tensor>,
-        device: Device,
-        max_context: usize,
-        scale_load_profile: apxinf_metal::W8ScaleLoadProfileV1,
-    ) -> Result<Self> {
         if !config.text.tie_word_embeddings {
             return Err(Error::Other(
                 "qwen3.5 Metal W8 boundary + tail-head v1 requires tied word embeddings".into(),
@@ -1132,11 +923,7 @@ impl GeneralQwen35 {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(&config.text)?;
         let backend = create_backend(device)?;
         let weights = Qwen35TextWeights::from_map(&config, tensors)?;
-        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack_with_scale_load_profile(
-            &weights,
-            &config.text,
-            scale_load_profile,
-        )?;
+        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack(&weights, &config.text)?;
         let mut model =
             Self::new_with_metal_options(config, weights, backend, max_context, false, None, None)?;
         model.metal_w8_mlp_stack3_boundary_tail_head_v1 = Some(lane);
@@ -1667,15 +1454,6 @@ impl GeneralQwen35 {
         self.metal_w8_mlp_stack3_boundary_tail_head_v1
             .as_ref()
             .map(Qwen35MetalW8MlpStack3BoundaryTailHeadV1::stats)
-    }
-
-    #[cfg(feature = "metal-w8")]
-    pub fn metal_w8_mlp_stack3_boundary_tail_head_v1_scale_load_runtime_v1(
-        &self,
-    ) -> Option<Qwen35MetalW8ScaleLoadRuntimeV1> {
-        self.metal_w8_mlp_stack3_boundary_tail_head_v1
-            .as_ref()
-            .map(Qwen35MetalW8MlpStack3BoundaryTailHeadV1::scale_load_runtime_v1)
     }
 
     #[cfg(feature = "metal-w8")]
@@ -3291,26 +3069,16 @@ impl LlmTrait for GeneralQwen35 {
             if let Some(lane) = self.metal_w8_mlp_stack3_boundary_tail_head_v1_stats() {
                 let aggregate =
                     self.metal_w8_mlp_stack3_boundary_tail_head_v1_aggregate_ledger()?;
-                let scale_load_runtime =
-                    self.metal_w8_mlp_stack3_boundary_tail_head_v1_scale_load_runtime_v1()?;
-                let scale_load_mapping =
-                    W8ScaleLoadLogicalMappingV1::from_config(&self.config.text)?;
-                let scale_load_scope = scale_load_mapping.scope_json()?;
-                let scale_load_logical_mapping = scale_load_mapping.mapping_json()?;
                 let initial_execution = lane.initial_stack.execution;
                 let boundaries = lane
                     .boundaries
                     .iter()
-                    .zip(&scale_load_runtime.boundaries)
-                    .map(|(region, scale_load_runtime)| {
+                    .map(|region| {
                         let execution = region.execution;
                         serde_json::json!({
                             "boundary_mlp_layer_index": region.boundary_mlp_layer_index,
                             "stack_layer_indices": region.stack_layer_indices,
                             "mechanism": region.mechanism,
-                            "scale_load_runtime": body_scale_load_runtime_json(
-                                *scale_load_runtime,
-                            ),
                             "prefill_seed_calls": region.prefill_seed_calls,
                             "decode_calls": execution.decode_calls,
                             "successful_decodes": execution.successful_decodes,
@@ -3332,7 +3100,6 @@ impl LlmTrait for GeneralQwen35 {
                 return Some(serde_json::json!({
                     "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
                     "mechanism": lane.mechanism,
-                    "scale_load_profile": scale_load_profile_v1_label(scale_load_runtime.profile),
                     "cpu_full_attention_and_kv": true,
                     "cpu_prefill_all_24_layers": true,
                     "metal_w8_initial_complete_linear_layer_stack3": true,
@@ -3341,14 +3108,9 @@ impl LlmTrait for GeneralQwen35 {
                     "standalone_layer23_mlp": false,
                     "standalone_metal_lm_head": false,
                     "f32_tied_four_candidate_rerank": true,
-                    "scale_load_scope": scale_load_scope,
-                    "scale_load_logical_mapping": scale_load_logical_mapping,
                     "initial_stack": {
                         "layer_indices": lane.initial_stack.layer_indices,
                         "mechanism": lane.initial_stack.mechanism,
-                        "scale_load_runtime": body_scale_load_runtime_json(
-                            scale_load_runtime.initial_stack,
-                        ),
                         "prefill_seed_calls": lane.initial_stack.prefill_seed_calls,
                         "decode_calls": initial_execution.decode_calls,
                         "successful_decodes": initial_execution.successful_decodes,
@@ -3374,9 +3136,6 @@ impl LlmTrait for GeneralQwen35 {
                     },
                     "decode_head": {
                         "mechanism": "metal-w8-tail-v1",
-                        "scale_load_runtime": tail_scale_load_runtime_json(
-                            scale_load_runtime.tail,
-                        ),
                         "layer_index": lane.tail_layer_index,
                         "calls": lane.decode_calls,
                         "teacher_calls": lane.teacher_calls,
@@ -4596,20 +4355,6 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         config: &Qwen35TextConfig,
         layer_indices: [usize; 3],
     ) -> Result<Self> {
-        Self::pack_with_scale_load_profile(
-            weights,
-            config,
-            layer_indices,
-            apxinf_metal::W8ScaleLoadProfileV1::LegacyPerLane,
-        )
-    }
-
-    fn pack_with_scale_load_profile(
-        weights: &Qwen35TextWeights,
-        config: &Qwen35TextConfig,
-        layer_indices: [usize; 3],
-        scale_load_profile: apxinf_metal::W8ScaleLoadProfileV1,
-    ) -> Result<Self> {
         let packed = layer_indices
             .into_iter()
             .map(|layer_index| {
@@ -4639,10 +4384,11 @@ impl Qwen35MetalW8LinearLayerStack3V1 {
         })?
         .try_into()
         .map_err(|_| Error::Other("qwen3.5 Metal W8 stack3-v1 ledger depth changed".into()))?;
-        let block = apxinf_metal::MetalW8LinearLayerStack3::from_packed_gdn_out_g32_with_scale_load_profile_v1(
-            [&packed[0].packed, &packed[1].packed, &packed[2].packed],
-            scale_load_profile,
-        )
+        let block = apxinf_metal::MetalW8LinearLayerStack3::from_packed_gdn_out_g32_v1([
+            &packed[0].packed,
+            &packed[1].packed,
+            &packed[2].packed,
+        ])
         .map_err(|error| {
             Error::Other(format!(
                 "qwen3.5 Metal W8 stack3-v1 layers {layer_indices:?} construction failed: {error}"
@@ -4997,22 +4743,6 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
         boundary_mlp_layer_index: usize,
         stack_layer_indices: [usize; 3],
     ) -> Result<Self> {
-        Self::pack_with_scale_load_profile(
-            weights,
-            config,
-            boundary_mlp_layer_index,
-            stack_layer_indices,
-            apxinf_metal::W8ScaleLoadProfileV1::LegacyPerLane,
-        )
-    }
-
-    fn pack_with_scale_load_profile(
-        weights: &Qwen35TextWeights,
-        config: &Qwen35TextConfig,
-        boundary_mlp_layer_index: usize,
-        stack_layer_indices: [usize; 3],
-        scale_load_profile: apxinf_metal::W8ScaleLoadProfileV1,
-    ) -> Result<Self> {
         if config.layer_types.get(boundary_mlp_layer_index) != Some(&Qwen35LayerType::FullAttention)
             || !matches!(
                 weights
@@ -5093,15 +4823,13 @@ impl Qwen35MetalW8MlpStack3BoundaryRegionV1 {
                 "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} assembly failed: {error}"
             ))
         })?;
-        let block = apxinf_metal::MetalW8MlpStack3BoundaryV1::from_packed_with_scale_load_profile_v1(
-            &packed,
-            scale_load_profile,
-        )
-        .map_err(|error| {
-            Error::Other(format!(
-                "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} construction failed: {error}"
-            ))
-        })?;
+        let block = apxinf_metal::MetalW8MlpStack3BoundaryV1::from_packed(&packed).map_err(
+            |error| {
+                Error::Other(format!(
+                    "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {boundary_mlp_layer_index} construction failed: {error}"
+                ))
+            },
+        )?;
         Ok(Self {
             boundary_mlp_layer_index,
             stack_layer_indices,
@@ -5457,11 +5185,7 @@ impl Qwen35MetalW8MlpStack3BoundaryBodyV1 {
 
 #[cfg(feature = "metal-w8")]
 impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
-    fn pack_with_scale_load_profile(
-        weights: &Qwen35TextWeights,
-        config: &Qwen35TextConfig,
-        scale_load_profile: apxinf_metal::W8ScaleLoadProfileV1,
-    ) -> Result<Self> {
+    fn pack(weights: &Qwen35TextWeights, config: &Qwen35TextConfig) -> Result<Self> {
         Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(config)?;
         if weights.layers.len() != 24 || weights.lm_head_weight.is_some() {
             return Err(Error::Other(
@@ -5469,21 +5193,19 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                     .into(),
             ));
         }
-        let initial_stack = Qwen35MetalW8LinearLayerStack3V1::pack_with_scale_load_profile(
+        let initial_stack = Qwen35MetalW8LinearLayerStack3V1::pack(
             weights,
             config,
             QWEN35_MLP_STACK3_BOUNDARY_INITIAL_STACK_V1,
-            scale_load_profile,
         )?;
         let boundaries = QWEN35_MLP_STACK3_BOUNDARY_REGIONS_V1
             .into_iter()
             .map(|(boundary_mlp_layer_index, stack_layer_indices)| {
-                Qwen35MetalW8MlpStack3BoundaryRegionV1::pack_with_scale_load_profile(
+                Qwen35MetalW8MlpStack3BoundaryRegionV1::pack(
                     weights,
                     config,
                     boundary_mlp_layer_index,
                     stack_layer_indices,
-                    scale_load_profile,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -5539,17 +5261,12 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                 "qwen3.5 Metal W8 tail-head v1 assembly failed: {error}"
             ))
         })?;
-        let tail = apxinf_metal::MetalW8TailMlpHeadV1::from_packed_with_scale_load_profile_v1(
-            &packed,
-            scale_load_profile,
-        )
-        .map_err(|error| {
+        let tail = apxinf_metal::MetalW8TailMlpHeadV1::from_packed(&packed).map_err(|error| {
             Error::Other(format!(
                 "qwen3.5 Metal W8 tail-head v1 construction failed: {error}"
             ))
         })?;
         Ok(Self {
-            scale_load_profile,
             initial_stack,
             boundaries,
             tail_layer_index: QWEN35_MLP_STACK3_BOUNDARY_FINAL_MLP_V1,
@@ -5583,19 +5300,6 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                 || self.initial_stack.terminal_error
                 || self.boundaries.iter().any(|region| region.terminal_error)
                 || self.tail.stats().terminal_error,
-        }
-    }
-
-    fn scale_load_runtime_v1(&self) -> Qwen35MetalW8ScaleLoadRuntimeV1 {
-        Qwen35MetalW8ScaleLoadRuntimeV1 {
-            profile: self.scale_load_profile,
-            initial_stack: self.initial_stack.block.scale_load_runtime_receipt_v1(),
-            boundaries: self
-                .boundaries
-                .iter()
-                .map(|region| region.block.scale_load_runtime_receipt_v1())
-                .collect(),
-            tail: self.tail.scale_load_runtime_receipt_v1(),
         }
     }
 
@@ -7900,22 +7604,7 @@ mod tests {
         let stats = diagnostic
             .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
             .unwrap();
-        let scale_load_runtime = diagnostic
-            .metal_w8_mlp_stack3_boundary_tail_head_v1_scale_load_runtime_v1()
-            .unwrap();
         assert_eq!(stats.mechanism, "metal-w8-mlp-stack3-boundary-tail-head-v1");
-        assert_eq!(
-            scale_load_runtime.profile,
-            apxinf_metal::W8ScaleLoadProfileV1::LegacyPerLane
-        );
-        assert_eq!(
-            scale_load_runtime.initial_stack.observed_profile,
-            apxinf_metal::W8ScaleLoadProfileV1::LegacyPerLane
-        );
-        assert_eq!(
-            scale_load_runtime.tail.observed_profile,
-            apxinf_metal::W8ScaleLoadProfileV1::LegacyPerLane
-        );
         assert_eq!(stats.initial_stack.layer_indices, [0, 1, 2]);
         assert_eq!(stats.boundaries.len(), 5);
         assert_eq!(stats.tail_layer_index, 23);
@@ -7943,137 +7632,6 @@ mod tests {
         .err()
         .expect("tail-head v1 must reject untied output weights");
         assert!(error.to_string().contains("tied word embeddings"));
-    }
-
-    #[cfg(all(feature = "metal-w8", target_os = "macos"))]
-    #[test]
-    fn metal_boundary_tail_head_v1_simd_scale_broadcast_is_live_in_all_seven_transactions() {
-        let (config, tensors) = metal_all_linear_layers_fixture();
-        let diagnostic = GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_scale_load_profile(
-            config,
-            tensors,
-            Device::Cpu,
-            16,
-            apxinf_metal::W8ScaleLoadProfileV1::SimdBroadcast,
-        )
-        .unwrap();
-        let scale_load_runtime = diagnostic
-            .metal_w8_mlp_stack3_boundary_tail_head_v1_scale_load_runtime_v1()
-            .unwrap();
-        assert_eq!(
-            scale_load_runtime.profile,
-            apxinf_metal::W8ScaleLoadProfileV1::SimdBroadcast
-        );
-        let initial = scale_load_runtime.initial_stack;
-        assert_eq!(initial.requested_profile, scale_load_runtime.profile);
-        assert_eq!(initial.observed_profile, scale_load_runtime.profile);
-        assert_eq!(initial.threads_per_threadgroup, 256);
-        assert_eq!(initial.pipeline_thread_execution_width, 32);
-        assert_eq!(initial.dynamic_threadgroup_memory_bytes, 0);
-        assert_eq!(initial.threadgroup_barriers_per_projection, 0);
-        assert_eq!(initial.g64_scale_loader_lanes_per_full_simd, 2);
-        assert_eq!(initial.g32_scale_loader_lanes_per_full_simd, 4);
-        assert_eq!(initial.g64_broadcasts_per_full_simd, 2);
-        assert_eq!(initial.g32_broadcasts_per_full_simd, 4);
-        assert!(scale_load_runtime.boundaries.iter().all(|runtime| {
-            runtime.requested_profile == scale_load_runtime.profile
-                && runtime.observed_profile == scale_load_runtime.profile
-                && runtime.threads_per_threadgroup == 256
-                && runtime.pipeline_thread_execution_width == 32
-                && runtime.dynamic_threadgroup_memory_bytes == 0
-                && runtime.threadgroup_barriers_per_projection == 0
-                && runtime.gdn_input_function_name == "gdn_w8_input_projection_scale_broadcast"
-                && runtime.gdn_output_function_name
-                    == "gdn_w8_output_projection_g32_scale_broadcast"
-                && runtime.mlp_gate_up_function_name == "w8_mlp_gate_up_scale_broadcast"
-                && runtime.mlp_down_function_name == "w8_mlp_down_scale_broadcast"
-        }));
-        let tail = scale_load_runtime.tail;
-        assert_eq!(tail.requested_profile, scale_load_runtime.profile);
-        assert_eq!(tail.observed_profile, scale_load_runtime.profile);
-        assert_eq!(tail.threads_per_threadgroup, 256);
-        assert_eq!(tail.pipeline_thread_execution_width, 32);
-        assert_eq!(tail.dynamic_threadgroup_memory_bytes, 0);
-        assert_eq!(tail.added_threadgroup_barriers_per_transaction, 0);
-        assert_eq!(tail.g64_scale_loader_lanes_per_full_simd, 2);
-        assert_eq!(tail.g64_broadcasts_per_full_simd, 2);
-        assert_eq!(
-            tail.mlp_gate_up_function_name,
-            "w8_mlp_gate_up_scale_broadcast"
-        );
-        assert_eq!(tail.mlp_down_function_name, "w8_mlp_down_scale_broadcast");
-        assert_eq!(
-            tail.vocab_rows_function_name,
-            "w8_rows_topk4_scale_broadcast"
-        );
-
-        let receipt = diagnostic.generation_path_receipt().unwrap();
-        assert_eq!(receipt["scale_load_profile"], "simd-broadcast");
-        assert_eq!(
-            receipt["scale_load_scope"]["total_w8_kernel_invocations_per_decode"],
-            85
-        );
-        assert_eq!(
-            receipt["scale_load_logical_mapping"]["logical_scale_read_reduction_bytes_per_decode"],
-            623_712usize
-        );
-        assert_eq!(
-            receipt["initial_stack"]["scale_load_runtime"]["observed_profile"],
-            "simd-broadcast"
-        );
-        assert_eq!(receipt["boundaries"].as_array().unwrap().len(), 5);
-        assert!(receipt["boundaries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|region| region["scale_load_runtime"]["observed_profile"] == "simd-broadcast"));
-        assert_eq!(
-            receipt["decode_head"]["scale_load_runtime"]["observed_profile"],
-            "simd-broadcast"
-        );
-        assert_eq!(receipt["aggregate"]["kernel_dispatches_per_decode"], 267);
-    }
-
-    #[cfg(all(feature = "metal-w8", target_os = "macos"))]
-    #[test]
-    fn scale_load_logical_mapping_matches_the_locked_qwen35_0_8b_dimensions() {
-        let (mut config, _) = metal_all_linear_layers_fixture();
-        config.text.hidden_size = 1_024;
-        config.text.intermediate_size = 3_584;
-        config.text.vocab_size = 248_320;
-        config.text.linear_key_head_dim = 128;
-        config.text.linear_num_key_heads = 16;
-        config.text.linear_value_head_dim = 128;
-        config.text.linear_num_value_heads = 16;
-
-        let mapping = W8ScaleLoadLogicalMappingV1::from_config(&config.text).unwrap();
-        assert_eq!(mapping.body_w8_kernel_invocations_per_decode, 82);
-        assert_eq!(mapping.tail_w8_kernel_invocations_per_decode, 3);
-        assert_eq!(mapping.legacy_scalar_scale_loads_per_decode, 176_963_584);
-        assert_eq!(
-            mapping.simd_broadcast_scalar_scale_loads_per_decode,
-            11_650_048
-        );
-        assert_eq!(
-            mapping.body_legacy_scalar_scale_loads_per_decode,
-            110_641_152
-        );
-        assert_eq!(
-            mapping.body_simd_broadcast_scalar_scale_loads_per_decode,
-            7_504_896
-        );
-        assert_eq!(
-            mapping.tail_legacy_scalar_scale_loads_per_decode,
-            66_322_432
-        );
-        assert_eq!(
-            mapping.tail_simd_broadcast_scalar_scale_loads_per_decode,
-            4_145_152
-        );
-        assert_eq!(
-            mapping.mapping_json().unwrap()["logical_scale_read_reduction_bytes_per_decode"],
-            661_254_144usize
-        );
     }
 
     #[cfg(all(feature = "metal-w8", target_os = "macos"))]

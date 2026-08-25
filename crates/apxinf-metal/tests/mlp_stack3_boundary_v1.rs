@@ -1,7 +1,6 @@
 use apxinf_metal::{
     GdnDecodeState, GdnDimensions, GdnF32Weights, MetalW8MlpStack3BoundaryV1, PackedW8GdnBlock,
     PackedW8LinearLayerBlock, PackedW8MlpBlock, PackedW8MlpStack3BoundaryV1, W8GroupSize,
-    W8ScaleLoadProfileV1,
 };
 
 fn values(elements: usize, multiplier: usize, modulus: usize, scale: f32) -> Vec<f32> {
@@ -246,89 +245,6 @@ fn metal_boundary_v1_matches_packed_output_and_all_three_states_in_one_transacti
     assert!(!stats.terminal_error);
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn boundary_scale_broadcast_is_two_step_bitwise_identical_to_legacy() {
-    let (dims, layer0) = layer_fixture(0);
-    let (_, layer1) = layer_fixture(1);
-    let (_, layer2) = layer_fixture(2);
-    let packed = PackedW8MlpStack3BoundaryV1::new(
-        boundary_mlp(dims.hidden_size, 128),
-        &vec![1.0; dims.hidden_size],
-        1.0e-6,
-        [layer0, layer1, layer2],
-    )
-    .unwrap();
-    let initial = std::array::from_fn(|slot| nonzero_state(dims, slot));
-    let mut legacy = MetalW8MlpStack3BoundaryV1::from_packed(&packed).unwrap();
-    let mut broadcast = MetalW8MlpStack3BoundaryV1::from_packed_with_scale_load_profile_v1(
-        &packed,
-        W8ScaleLoadProfileV1::SimdBroadcast,
-    )
-    .unwrap();
-    legacy.seed_decode_states(&initial).unwrap();
-    broadcast.seed_decode_states(&initial).unwrap();
-
-    for input in [
-        values(dims.hidden_size, 103, 193, 0.8),
-        values(dims.hidden_size, 107, 191, 0.7),
-    ] {
-        let legacy_output = legacy.decode(&input).unwrap().to_vec();
-        let broadcast_output = broadcast.decode(&input).unwrap().to_vec();
-        assert_bits_equal(&broadcast_output, &legacy_output, "boundary output");
-        let legacy_states = legacy.state_snapshots().unwrap();
-        let broadcast_states = broadcast.state_snapshots().unwrap();
-        for slot in 0..3 {
-            assert_bits_equal(
-                broadcast_states[slot].query_conv(),
-                legacy_states[slot].query_conv(),
-                "query state",
-            );
-            assert_bits_equal(
-                broadcast_states[slot].key_conv(),
-                legacy_states[slot].key_conv(),
-                "key state",
-            );
-            assert_bits_equal(
-                broadcast_states[slot].value_conv(),
-                legacy_states[slot].value_conv(),
-                "value state",
-            );
-            assert_bits_equal(
-                broadcast_states[slot].recurrent(),
-                legacy_states[slot].recurrent(),
-                "recurrent state",
-            );
-        }
-    }
-
-    assert_eq!(broadcast.stats(), legacy.stats());
-    assert_eq!(broadcast.buffer_ledger(), legacy.buffer_ledger());
-    let receipt = broadcast.scale_load_runtime_receipt_v1();
-    assert_eq!(
-        receipt.observed_profile,
-        W8ScaleLoadProfileV1::SimdBroadcast
-    );
-    assert_eq!(
-        receipt.gdn_input_function_name,
-        "gdn_w8_input_projection_scale_broadcast"
-    );
-    assert_eq!(
-        receipt.gdn_output_function_name,
-        "gdn_w8_output_projection_g32_scale_broadcast"
-    );
-    assert_eq!(
-        receipt.mlp_gate_up_function_name,
-        "w8_mlp_gate_up_scale_broadcast"
-    );
-    assert_eq!(
-        receipt.mlp_down_function_name,
-        "w8_mlp_down_scale_broadcast"
-    );
-    assert_eq!(receipt.dynamic_threadgroup_memory_bytes, 0);
-    assert_eq!(receipt.threadgroup_barriers_per_projection, 0);
-}
-
 #[test]
 fn boundary_v1_ledger_is_exact_and_counts_only_outer_hidden_transfers() {
     let (dims, layer0) = layer_fixture(0);
@@ -428,52 +344,45 @@ fn boundary_v1_scratch_failure_publishes_no_state_or_output_and_reset_recovers()
     .unwrap();
     let input = values(dims.hidden_size, 103, 193, 0.8);
     let initial = std::array::from_fn(|slot| nonzero_state(dims, slot));
-    for profile in [
-        W8ScaleLoadProfileV1::LegacyPerLane,
-        W8ScaleLoadProfileV1::SimdBroadcast,
-    ] {
-        let mut metal =
-            MetalW8MlpStack3BoundaryV1::from_packed_with_scale_load_profile_v1(&packed, profile)
-                .unwrap();
-        metal.seed_decode_states(&initial).unwrap();
+    let mut metal = MetalW8MlpStack3BoundaryV1::from_packed(&packed).unwrap();
+    metal.seed_decode_states(&initial).unwrap();
 
-        let error = metal
-            .inject_failure_after_scratch_execution_for_testing(&input)
-            .unwrap_err();
+    let error = metal
+        .inject_failure_after_scratch_execution_for_testing(&input)
+        .unwrap_err();
 
-        assert!(error.to_string().contains("injected"));
-        assert_eq!(metal.state_snapshots().unwrap(), initial);
-        let failed = metal.stats();
-        assert_eq!(failed.decode_calls, 1);
-        assert_eq!(failed.successful_decodes, 0);
-        assert_eq!(failed.failed_decodes, 1);
-        assert_eq!(failed.command_buffers, 1);
-        assert_eq!(failed.compute_encoders, 4);
-        assert_eq!(failed.commits, 1);
-        assert_eq!(failed.waits, 1);
-        assert_eq!(failed.host_to_device_bytes, dims.hidden_size * 4);
-        assert_eq!(failed.device_to_host_bytes, 0);
-        assert_eq!(failed.state_commits, 0);
-        assert_eq!(failed.last_state_commit_mask, 0);
-        assert_eq!(failed.committed_stack_version, 0);
-        assert!(failed.terminal_error);
+    assert!(error.to_string().contains("injected"));
+    assert_eq!(metal.state_snapshots().unwrap(), initial);
+    let failed = metal.stats();
+    assert_eq!(failed.decode_calls, 1);
+    assert_eq!(failed.successful_decodes, 0);
+    assert_eq!(failed.failed_decodes, 1);
+    assert_eq!(failed.command_buffers, 1);
+    assert_eq!(failed.compute_encoders, 4);
+    assert_eq!(failed.commits, 1);
+    assert_eq!(failed.waits, 1);
+    assert_eq!(failed.host_to_device_bytes, dims.hidden_size * 4);
+    assert_eq!(failed.device_to_host_bytes, 0);
+    assert_eq!(failed.state_commits, 0);
+    assert_eq!(failed.last_state_commit_mask, 0);
+    assert_eq!(failed.committed_stack_version, 0);
+    assert!(failed.terminal_error);
 
-        let retry = metal.decode(&input).unwrap_err();
-        assert!(retry.to_string().contains("terminal"));
-        assert_eq!(metal.stats(), failed, "terminal retry must submit no work");
+    let retry = metal.decode(&input).unwrap_err();
+    assert!(retry.to_string().contains("terminal"));
+    assert_eq!(metal.stats(), failed, "terminal retry must submit no work");
 
-        metal.clear_decode_states().unwrap();
-        assert_eq!(metal.stats(), Default::default());
-        assert!(metal
-            .decode(&input)
-            .unwrap_err()
-            .to_string()
-            .contains("seeded"));
-        metal.seed_decode_states(&initial).unwrap();
-        metal.decode(&input).unwrap();
-        assert_eq!(metal.stats().state_commits, 3);
-        assert_eq!(metal.stats().last_state_commit_mask, 0b111);
-    }
+    metal.clear_decode_states().unwrap();
+    assert_eq!(metal.stats(), Default::default());
+    assert!(metal
+        .decode(&input)
+        .unwrap_err()
+        .to_string()
+        .contains("seeded"));
+    metal.seed_decode_states(&initial).unwrap();
+    metal.decode(&input).unwrap();
+    assert_eq!(metal.stats().state_commits, 3);
+    assert_eq!(metal.stats().last_state_commit_mask, 0b111);
 }
 
 #[test]
@@ -532,17 +441,6 @@ fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32, label: &str) {
         assert!(
             (actual - expected).abs() <= tolerance,
             "{label}[{index}] actual={actual} expected={expected} tolerance={tolerance}"
-        );
-    }
-}
-
-fn assert_bits_equal(actual: &[f32], expected: &[f32], label: &str) {
-    assert_eq!(actual.len(), expected.len(), "{label} length");
-    for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
-        assert_eq!(
-            actual.to_bits(),
-            expected.to_bits(),
-            "{label}[{index}] actual={actual:?} expected={expected:?}"
         );
     }
 }

@@ -23,7 +23,7 @@ use apxinf_model::qwen35::general::{
 };
 use apxinf_model::qwen35::general::{
     Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger,
-    Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats, Qwen35MetalW8ScaleLoadRuntimeV1,
+    Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats,
 };
 use apxinf_model::{GeneralQwen35, LlmInput, LlmTrait, Qwen35Config, Qwen35LayerType};
 use apxinf_tokenizer::{ChatMessage, Tokenizer};
@@ -73,241 +73,6 @@ enum Mode {
     BoundaryTailV1Teacher,
     CpuFree,
     BoundaryTailV1Free,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ScaleLoadProfile {
-    LegacyPerLane,
-    SimdBroadcast,
-}
-
-impl ScaleLoadProfile {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "legacy-per-lane" => Ok(Self::LegacyPerLane),
-            "simd-broadcast" => Ok(Self::SimdBroadcast),
-            other => Err(format!("invalid --scale-load-profile {other:?}")),
-        }
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::LegacyPerLane => "legacy-per-lane",
-            Self::SimdBroadcast => "simd-broadcast",
-        }
-    }
-
-    const fn metal(self) -> apxinf_metal::W8ScaleLoadProfileV1 {
-        match self {
-            Self::LegacyPerLane => apxinf_metal::W8ScaleLoadProfileV1::LegacyPerLane,
-            Self::SimdBroadcast => apxinf_metal::W8ScaleLoadProfileV1::SimdBroadcast,
-        }
-    }
-
-    const fn expected_body_function_names(self) -> [&'static str; 4] {
-        match self {
-            Self::LegacyPerLane => [
-                "gdn_w8_input_projection",
-                "gdn_w8_output_projection_g32",
-                "w8_mlp_gate_up",
-                "w8_mlp_down",
-            ],
-            Self::SimdBroadcast => [
-                "gdn_w8_input_projection_scale_broadcast",
-                "gdn_w8_output_projection_g32_scale_broadcast",
-                "w8_mlp_gate_up_scale_broadcast",
-                "w8_mlp_down_scale_broadcast",
-            ],
-        }
-    }
-
-    const fn expected_tail_function_names(self) -> [&'static str; 3] {
-        match self {
-            Self::LegacyPerLane => ["w8_mlp_gate_up", "w8_mlp_down", "w8_rows_topk4"],
-            Self::SimdBroadcast => [
-                "w8_mlp_gate_up_scale_broadcast",
-                "w8_mlp_down_scale_broadcast",
-                "w8_rows_topk4_scale_broadcast",
-            ],
-        }
-    }
-
-    const fn expected_g64_loader_lanes(self) -> usize {
-        match self {
-            Self::LegacyPerLane => 32,
-            Self::SimdBroadcast => 2,
-        }
-    }
-
-    const fn expected_g32_loader_lanes(self) -> usize {
-        match self {
-            Self::LegacyPerLane => 32,
-            Self::SimdBroadcast => 4,
-        }
-    }
-
-    const fn expected_g64_broadcasts(self) -> usize {
-        match self {
-            Self::LegacyPerLane => 0,
-            Self::SimdBroadcast => 2,
-        }
-    }
-
-    const fn expected_g32_broadcasts(self) -> usize {
-        match self {
-            Self::LegacyPerLane => 0,
-            Self::SimdBroadcast => 4,
-        }
-    }
-}
-
-fn body_scale_load_runtime_is_exact(
-    receipt: apxinf_metal::W8BodyScaleLoadRuntimeReceiptV1,
-    profile: ScaleLoadProfile,
-) -> bool {
-    let [gdn_input_name, gdn_output_name, mlp_gate_up_name, mlp_down_name] =
-        profile.expected_body_function_names();
-    receipt.requested_profile == profile.metal()
-        && receipt.observed_profile == profile.metal()
-        && receipt.threads_per_threadgroup == 256
-        && receipt.pipeline_thread_execution_width == 32
-        && receipt.dynamic_threadgroup_memory_bytes == 0
-        && receipt.threadgroup_barriers_per_projection == 0
-        && receipt.g64_scale_loader_lanes_per_full_simd == profile.expected_g64_loader_lanes()
-        && receipt.g32_scale_loader_lanes_per_full_simd == profile.expected_g32_loader_lanes()
-        && receipt.g64_broadcasts_per_full_simd == profile.expected_g64_broadcasts()
-        && receipt.g32_broadcasts_per_full_simd == profile.expected_g32_broadcasts()
-        && receipt.gdn_input_function_name == gdn_input_name
-        && receipt.gdn_output_function_name == gdn_output_name
-        && receipt.mlp_gate_up_function_name == mlp_gate_up_name
-        && receipt.mlp_down_function_name == mlp_down_name
-}
-
-fn body_scale_load_runtime_json_is_exact(
-    receipt: Option<&Value>,
-    profile: ScaleLoadProfile,
-) -> bool {
-    let Some(receipt) = receipt else {
-        return false;
-    };
-    let [gdn_input_name, gdn_output_name, mlp_gate_up_name, mlp_down_name] =
-        profile.expected_body_function_names();
-    receipt.get("requested_profile").and_then(Value::as_str) == Some(profile.label())
-        && receipt.get("observed_profile").and_then(Value::as_str) == Some(profile.label())
-        && receipt
-            .get("threads_per_threadgroup")
-            .and_then(Value::as_u64)
-            == Some(256)
-        && receipt
-            .get("pipeline_thread_execution_width")
-            .and_then(Value::as_u64)
-            == Some(32)
-        && receipt
-            .get("dynamic_threadgroup_memory_bytes")
-            .and_then(Value::as_u64)
-            == Some(0)
-        && receipt
-            .get("threadgroup_barriers_per_projection")
-            .and_then(Value::as_u64)
-            == Some(0)
-        && receipt
-            .get("g64_scale_loader_lanes_per_full_simd")
-            .and_then(Value::as_u64)
-            == Some(profile.expected_g64_loader_lanes() as u64)
-        && receipt
-            .get("g32_scale_loader_lanes_per_full_simd")
-            .and_then(Value::as_u64)
-            == Some(profile.expected_g32_loader_lanes() as u64)
-        && receipt
-            .get("g64_broadcasts_per_full_simd")
-            .and_then(Value::as_u64)
-            == Some(profile.expected_g64_broadcasts() as u64)
-        && receipt
-            .get("g32_broadcasts_per_full_simd")
-            .and_then(Value::as_u64)
-            == Some(profile.expected_g32_broadcasts() as u64)
-        && receipt
-            .get("gdn_input_function_name")
-            .and_then(Value::as_str)
-            == Some(gdn_input_name)
-        && receipt
-            .get("gdn_output_function_name")
-            .and_then(Value::as_str)
-            == Some(gdn_output_name)
-        && receipt
-            .get("mlp_gate_up_function_name")
-            .and_then(Value::as_str)
-            == Some(mlp_gate_up_name)
-        && receipt
-            .get("mlp_down_function_name")
-            .and_then(Value::as_str)
-            == Some(mlp_down_name)
-}
-
-fn tail_scale_load_runtime_is_exact(
-    receipt: apxinf_metal::W8TailScaleLoadRuntimeReceiptV1,
-    profile: ScaleLoadProfile,
-) -> bool {
-    let [mlp_gate_up_name, mlp_down_name, vocab_rows_name] = profile.expected_tail_function_names();
-    receipt.requested_profile == profile.metal()
-        && receipt.observed_profile == profile.metal()
-        && receipt.threads_per_threadgroup == 256
-        && receipt.pipeline_thread_execution_width == 32
-        && receipt.dynamic_threadgroup_memory_bytes == 0
-        && receipt.added_threadgroup_barriers_per_transaction == 0
-        && receipt.g64_scale_loader_lanes_per_full_simd == profile.expected_g64_loader_lanes()
-        && receipt.g64_broadcasts_per_full_simd == profile.expected_g64_broadcasts()
-        && receipt.mlp_gate_up_function_name == mlp_gate_up_name
-        && receipt.mlp_down_function_name == mlp_down_name
-        && receipt.vocab_rows_function_name == vocab_rows_name
-}
-
-fn tail_scale_load_runtime_json_is_exact(
-    receipt: Option<&Value>,
-    profile: ScaleLoadProfile,
-) -> bool {
-    let Some(receipt) = receipt else {
-        return false;
-    };
-    let [mlp_gate_up_name, mlp_down_name, vocab_rows_name] = profile.expected_tail_function_names();
-    receipt.get("requested_profile").and_then(Value::as_str) == Some(profile.label())
-        && receipt.get("observed_profile").and_then(Value::as_str) == Some(profile.label())
-        && receipt
-            .get("threads_per_threadgroup")
-            .and_then(Value::as_u64)
-            == Some(256)
-        && receipt
-            .get("pipeline_thread_execution_width")
-            .and_then(Value::as_u64)
-            == Some(32)
-        && receipt
-            .get("dynamic_threadgroup_memory_bytes")
-            .and_then(Value::as_u64)
-            == Some(0)
-        && receipt
-            .get("added_threadgroup_barriers_per_transaction")
-            .and_then(Value::as_u64)
-            == Some(0)
-        && receipt
-            .get("g64_scale_loader_lanes_per_full_simd")
-            .and_then(Value::as_u64)
-            == Some(profile.expected_g64_loader_lanes() as u64)
-        && receipt
-            .get("g64_broadcasts_per_full_simd")
-            .and_then(Value::as_u64)
-            == Some(profile.expected_g64_broadcasts() as u64)
-        && receipt
-            .get("mlp_gate_up_function_name")
-            .and_then(Value::as_str)
-            == Some(mlp_gate_up_name)
-        && receipt
-            .get("mlp_down_function_name")
-            .and_then(Value::as_str)
-            == Some(mlp_down_name)
-        && receipt
-            .get("vocab_rows_function_name")
-            .and_then(Value::as_str)
-            == Some(vocab_rows_name)
 }
 
 impl Mode {
@@ -360,75 +125,6 @@ const BOUNDARY_REGIONS: [(usize, [usize; 3]); 5] = [
     (15, [16, 17, 18]),
     (19, [20, 21, 22]),
 ];
-const BODY_SCALE_LOAD_KERNEL_INVOCATIONS_PER_DECODE: usize = 82;
-const TAIL_SCALE_LOAD_KERNEL_INVOCATIONS_PER_DECODE: usize = 3;
-const TOTAL_SCALE_LOAD_KERNEL_INVOCATIONS_PER_DECODE: usize = 85;
-const BODY_LEGACY_SCALAR_SCALE_LOADS_PER_DECODE: usize = 110_641_152;
-const BODY_SIMD_BROADCAST_SCALAR_SCALE_LOADS_PER_DECODE: usize = 7_504_896;
-const TAIL_LEGACY_SCALAR_SCALE_LOADS_PER_DECODE: usize = 66_322_432;
-const TAIL_SIMD_BROADCAST_SCALAR_SCALE_LOADS_PER_DECODE: usize = 4_145_152;
-const LEGACY_SCALAR_SCALE_LOADS_PER_DECODE: usize = 176_963_584;
-const SIMD_BROADCAST_SCALAR_SCALE_LOADS_PER_DECODE: usize = 11_650_048;
-const LOGICAL_SCALAR_SCALE_LOAD_REDUCTION_PER_DECODE: usize = 165_313_536;
-const LEGACY_LOGICAL_SCALE_READ_BYTES_PER_DECODE: usize = 707_854_336;
-const SIMD_BROADCAST_LOGICAL_SCALE_READ_BYTES_PER_DECODE: usize = 46_600_192;
-const LOGICAL_SCALE_READ_REDUCTION_BYTES_PER_DECODE: usize = 661_254_144;
-const EXTERNAL_KERNEL_DISPATCHES_PER_DECODE: usize = 267;
-const INITIAL_STACK_EXISTING_BUFFER_BARRIERS_PER_DECODE: usize = 36;
-const BOUNDARY_REGION_EXISTING_BUFFER_BARRIERS_PER_DECODE: usize = 40;
-const TAIL_EXISTING_BUFFER_BARRIERS_PER_DECODE: usize = 7;
-const EXISTING_BUFFER_BARRIERS_PER_DECODE: usize = INITIAL_STACK_EXISTING_BUFFER_BARRIERS_PER_DECODE
-    + BOUNDARY_REGIONS.len() * BOUNDARY_REGION_EXISTING_BUFFER_BARRIERS_PER_DECODE
-    + TAIL_EXISTING_BUFFER_BARRIERS_PER_DECODE;
-const SCALE_LOAD_ADDED_BUFFER_BARRIERS_PER_DECODE: usize = 0;
-const TAIL_SCALE_LOAD_ADDED_THREADGROUP_BARRIERS_PER_TRANSACTION: usize = 0;
-const EXTERNAL_COMPUTE_ENCODERS_PER_DECODE: usize = 24;
-const EXTERNAL_COMMAND_BUFFERS_PER_DECODE: usize = 7;
-const EXTERNAL_COMMITS_PER_DECODE: usize = 7;
-const EXTERNAL_WAITS_PER_DECODE: usize = 7;
-
-fn scale_load_scope_json() -> Value {
-    json!({
-        "initial_stack_and_five_boundaries": true,
-        "tail_layer23_mlp_and_vocab_rows": true,
-        "count_unit": "w8-matvec-kernel-invocation-per-decode",
-        "body_w8_kernel_invocations_per_decode": BODY_SCALE_LOAD_KERNEL_INVOCATIONS_PER_DECODE,
-        "tail_w8_kernel_invocations_per_decode": TAIL_SCALE_LOAD_KERNEL_INVOCATIONS_PER_DECODE,
-        "total_w8_kernel_invocations_per_decode": TOTAL_SCALE_LOAD_KERNEL_INVOCATIONS_PER_DECODE,
-    })
-}
-
-fn scale_load_logical_mapping_json() -> Value {
-    json!({
-        "scope": "all-body-w8-matvec-kernel-invocations-plus-tail-mlp-and-vocab-rows",
-        "legacy_scalar_scale_loads_per_decode": LEGACY_SCALAR_SCALE_LOADS_PER_DECODE,
-        "simd_broadcast_scalar_scale_loads_per_decode": SIMD_BROADCAST_SCALAR_SCALE_LOADS_PER_DECODE,
-        "logical_scalar_scale_load_reduction_per_decode": LOGICAL_SCALAR_SCALE_LOAD_REDUCTION_PER_DECODE,
-        "legacy_logical_scale_read_bytes_per_decode": LEGACY_LOGICAL_SCALE_READ_BYTES_PER_DECODE,
-        "simd_broadcast_logical_scale_read_bytes_per_decode": SIMD_BROADCAST_LOGICAL_SCALE_READ_BYTES_PER_DECODE,
-        "logical_scale_read_reduction_bytes_per_decode": LOGICAL_SCALE_READ_REDUCTION_BYTES_PER_DECODE,
-        "body_legacy_scalar_scale_loads_per_decode": BODY_LEGACY_SCALAR_SCALE_LOADS_PER_DECODE,
-        "body_simd_broadcast_scalar_scale_loads_per_decode": BODY_SIMD_BROADCAST_SCALAR_SCALE_LOADS_PER_DECODE,
-        "tail_legacy_scalar_scale_loads_per_decode": TAIL_LEGACY_SCALAR_SCALE_LOADS_PER_DECODE,
-        "tail_simd_broadcast_scalar_scale_loads_per_decode": TAIL_SIMD_BROADCAST_SCALAR_SCALE_LOADS_PER_DECODE,
-        "measured_dram_traffic": false,
-        "interpretation": "static logical scale-load mapping derived from the active model dimensions; not a measured DRAM-traffic claim",
-    })
-}
-
-fn unchanged_external_schedule_json() -> Value {
-    json!({
-        "kernel_dispatches_per_decode": EXTERNAL_KERNEL_DISPATCHES_PER_DECODE,
-        "existing_buffer_barriers_per_decode": EXISTING_BUFFER_BARRIERS_PER_DECODE,
-        "scale_load_added_buffer_barriers_per_decode": SCALE_LOAD_ADDED_BUFFER_BARRIERS_PER_DECODE,
-        "tail_existing_buffer_barriers_per_decode": TAIL_EXISTING_BUFFER_BARRIERS_PER_DECODE,
-        "tail_scale_load_added_threadgroup_barriers_per_transaction": TAIL_SCALE_LOAD_ADDED_THREADGROUP_BARRIERS_PER_TRANSACTION,
-        "compute_encoders_per_decode": EXTERNAL_COMPUTE_ENCODERS_PER_DECODE,
-        "command_buffers_per_decode": EXTERNAL_COMMAND_BUFFERS_PER_DECODE,
-        "commits_per_decode": EXTERNAL_COMMITS_PER_DECODE,
-        "waits_per_decode": EXTERNAL_WAITS_PER_DECODE,
-    })
-}
 
 fn validate_official_schedule(layer_types: &[Qwen35LayerType]) -> Result<(), String> {
     if layer_types.len() != 24 {
@@ -571,7 +267,7 @@ fn official_tail_ledger_is_exact(ledger: apxinf_metal::TailMlpHeadBufferLedgerV1
         && ledger.command_buffers_per_decode == 1
         && ledger.compute_encoders_per_decode == 1
         && ledger.kernel_dispatches_per_decode == 8
-        && ledger.buffer_barriers_per_decode == TAIL_EXISTING_BUFFER_BARRIERS_PER_DECODE
+        && ledger.buffer_barriers_per_decode == 7
         && ledger.commits_per_decode == 1
         && ledger.waits_per_decode == 1
 }
@@ -679,15 +375,11 @@ fn official_aggregate_ledger_is_exact(
         && aggregate.host_to_device_bytes_per_decode == 28_672
         && aggregate.device_to_host_bytes_per_decode == 28_688
         && aggregate.state_host_transfer_bytes_per_decode == 0
-        && aggregate.command_buffers_per_decode == EXTERNAL_COMMAND_BUFFERS_PER_DECODE
-        && aggregate.compute_encoders_per_decode == EXTERNAL_COMPUTE_ENCODERS_PER_DECODE
-        && aggregate.kernel_dispatches_per_decode == EXTERNAL_KERNEL_DISPATCHES_PER_DECODE
-        && aggregate
-            .kernel_dispatches_per_decode
-            .checked_sub(aggregate.compute_encoders_per_decode)
-            == Some(EXISTING_BUFFER_BARRIERS_PER_DECODE)
-        && aggregate.commits_per_decode == EXTERNAL_COMMITS_PER_DECODE
-        && aggregate.waits_per_decode == EXTERNAL_WAITS_PER_DECODE
+        && aggregate.command_buffers_per_decode == 7
+        && aggregate.compute_encoders_per_decode == 24
+        && aggregate.kernel_dispatches_per_decode == 267
+        && aggregate.commits_per_decode == 7
+        && aggregate.waits_per_decode == 7
 }
 
 fn stack3_ledger_json(ledger: apxinf_metal::LinearLayerStack3BufferLedger) -> Value {
@@ -799,8 +491,6 @@ fn aggregate_ledger_json(
         "command_buffers_per_decode": ledger.command_buffers_per_decode,
         "compute_encoders_per_decode": ledger.compute_encoders_per_decode,
         "kernel_dispatches_per_decode": ledger.kernel_dispatches_per_decode,
-        "existing_buffer_barriers_per_decode": EXISTING_BUFFER_BARRIERS_PER_DECODE,
-        "scale_load_added_buffer_barriers_per_decode": SCALE_LOAD_ADDED_BUFFER_BARRIERS_PER_DECODE,
         "commits_per_decode": ledger.commits_per_decode,
         "waits_per_decode": ledger.waits_per_decode,
         "component_sum_recomputed_and_exact": official_aggregate_ledger_is_exact(ledger),
@@ -836,7 +526,6 @@ fn boundary_tail_generation_receipt_is_exact(
     receipt: &Value,
     body_tail_calls: usize,
     phase: TailPhaseCounts,
-    scale_load_profile: ScaleLoadProfile,
 ) -> bool {
     if phase.prefill != 0
         || phase.decode.checked_add(phase.teacher) != Some(body_tail_calls)
@@ -844,8 +533,6 @@ fn boundary_tail_generation_receipt_is_exact(
             != Some("apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1")
         || receipt.get("mechanism").and_then(Value::as_str)
             != Some("metal-w8-mlp-stack3-boundary-tail-head-v1")
-        || receipt.get("scale_load_profile").and_then(Value::as_str)
-            != Some(scale_load_profile.label())
         || receipt
             .get("cpu_full_attention_and_kv")
             .and_then(Value::as_bool)
@@ -878,8 +565,6 @@ fn boundary_tail_generation_receipt_is_exact(
             .get("f32_tied_four_candidate_rerank")
             .and_then(Value::as_bool)
             != Some(true)
-        || receipt.get("scale_load_scope") != Some(&scale_load_scope_json())
-        || receipt.get("scale_load_logical_mapping") != Some(&scale_load_logical_mapping_json())
         || receipt.get("prefill_body_calls").and_then(Value::as_u64) != Some(1)
         || receipt.get("terminal_error").and_then(Value::as_bool) != Some(false)
     {
@@ -902,10 +587,6 @@ fn boundary_tail_generation_receipt_is_exact(
     let initial_valid = initial.get("layer_indices") == Some(&json!([0, 1, 2]))
         && initial.get("mechanism").and_then(Value::as_str)
             == Some("metal-w8-linear-layer-stack3-v1")
-        && body_scale_load_runtime_json_is_exact(
-            initial.get("scale_load_runtime"),
-            scale_load_profile,
-        )
         && initial.get("prefill_seed_calls") == Some(&json!([1, 1, 1]))
         && initial.get("decode_calls").and_then(Value::as_u64) == Some(calls)
         && initial.get("successful_decodes").and_then(Value::as_u64) == Some(calls)
@@ -939,10 +620,6 @@ fn boundary_tail_generation_receipt_is_exact(
                     && entry.get("stack_layer_indices") == Some(&json!(stack_layer_indices))
                     && entry.get("mechanism").and_then(Value::as_str)
                         == Some("metal-w8-mlp-stack3-boundary-v1")
-                    && body_scale_load_runtime_json_is_exact(
-                        entry.get("scale_load_runtime"),
-                        scale_load_profile,
-                    )
                     && entry.get("prefill_seed_calls") == Some(&json!([1, 1, 1]))
                     && entry.get("decode_calls").and_then(Value::as_u64) == Some(calls)
                     && entry.get("successful_decodes").and_then(Value::as_u64) == Some(calls)
@@ -974,10 +651,6 @@ fn boundary_tail_generation_receipt_is_exact(
         return false;
     };
     let tail_valid = tail.get("mechanism").and_then(Value::as_str) == Some("metal-w8-tail-v1")
-        && tail_scale_load_runtime_json_is_exact(
-            tail.get("scale_load_runtime"),
-            scale_load_profile,
-        )
         && tail.get("layer_index").and_then(Value::as_u64) == Some(23)
         && tail.get("calls").and_then(Value::as_u64) == Some(phase.decode as u64)
         && tail.get("teacher_calls").and_then(Value::as_u64) == Some(phase.teacher as u64)
@@ -1026,19 +699,17 @@ fn boundary_tail_generation_receipt_is_exact(
         && aggregate
             .get("command_buffers_per_decode")
             .and_then(Value::as_u64)
-            == Some(EXTERNAL_COMMAND_BUFFERS_PER_DECODE as u64)
+            == Some(7)
         && aggregate
             .get("compute_encoders_per_decode")
             .and_then(Value::as_u64)
-            == Some(EXTERNAL_COMPUTE_ENCODERS_PER_DECODE as u64)
+            == Some(24)
         && aggregate
             .get("kernel_dispatches_per_decode")
             .and_then(Value::as_u64)
-            == Some(EXTERNAL_KERNEL_DISPATCHES_PER_DECODE as u64)
-        && aggregate.get("commits_per_decode").and_then(Value::as_u64)
-            == Some(EXTERNAL_COMMITS_PER_DECODE as u64)
-        && aggregate.get("waits_per_decode").and_then(Value::as_u64)
-            == Some(EXTERNAL_WAITS_PER_DECODE as u64);
+            == Some(267)
+        && aggregate.get("commits_per_decode").and_then(Value::as_u64) == Some(7)
+        && aggregate.get("waits_per_decode").and_then(Value::as_u64) == Some(7);
     initial_valid && boundaries_valid && prefill_valid && tail_valid && aggregate_valid
 }
 
@@ -1046,11 +717,9 @@ fn boundary_tail_generation_receipt_is_exact(
 struct BoundaryTailPathChecks {
     schedule_valid: bool,
     mechanism_and_precision_valid: bool,
-    scale_load_runtime_valid: bool,
     six_region_execution_valid: bool,
     tail_execution_and_phase_valid: bool,
     aggregate_ledger_valid: bool,
-    external_schedule_valid: bool,
     generation_receipt_valid: bool,
     terminal_clear: bool,
 }
@@ -1059,11 +728,9 @@ impl BoundaryTailPathChecks {
     fn all_valid(self) -> bool {
         self.schedule_valid
             && self.mechanism_and_precision_valid
-            && self.scale_load_runtime_valid
             && self.six_region_execution_valid
             && self.tail_execution_and_phase_valid
             && self.aggregate_ledger_valid
-            && self.external_schedule_valid
             && self.generation_receipt_valid
             && self.terminal_clear
     }
@@ -1072,11 +739,9 @@ impl BoundaryTailPathChecks {
         json!({
             "schedule_valid": self.schedule_valid,
             "mechanism_and_precision_valid": self.mechanism_and_precision_valid,
-            "scale_load_runtime_valid": self.scale_load_runtime_valid,
             "six_region_execution_valid": self.six_region_execution_valid,
             "tail_execution_and_phase_valid": self.tail_execution_and_phase_valid,
             "aggregate_ledger_valid": self.aggregate_ledger_valid,
-            "external_schedule_valid": self.external_schedule_valid,
             "generation_receipt_valid": self.generation_receipt_valid,
             "terminal_clear": self.terminal_clear,
             "all_valid": self.all_valid(),
@@ -1094,12 +759,10 @@ fn quantization_profile_is_exact(ledger: apxinf_metal::LinearLayerQuantizationLe
 
 fn boundary_tail_path_checks(
     stats: &Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats,
-    scale_load_runtime: &Qwen35MetalW8ScaleLoadRuntimeV1,
     aggregate: &Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger,
     generation_receipt: &Value,
     body_tail_calls: usize,
     phase: TailPhaseCounts,
-    scale_load_profile: ScaleLoadProfile,
 ) -> BoundaryTailPathChecks {
     let calls = body_tail_calls;
     let triple = calls.checked_mul(3);
@@ -1174,30 +837,6 @@ fn boundary_tail_path_checks(
         .iter()
         .map(|entry| (entry.boundary_mlp_layer_index, entry.stack_layer_indices))
         .collect::<Vec<_>>();
-    let scale_load_runtime_valid = scale_load_runtime.profile == scale_load_profile.metal()
-        && body_scale_load_runtime_is_exact(scale_load_runtime.initial_stack, scale_load_profile)
-        && scale_load_runtime.boundaries.len() == BOUNDARY_REGIONS.len()
-        && scale_load_runtime
-            .boundaries
-            .iter()
-            .copied()
-            .all(|receipt| body_scale_load_runtime_is_exact(receipt, scale_load_profile))
-        && tail_scale_load_runtime_is_exact(scale_load_runtime.tail, scale_load_profile);
-    let external_schedule_valid = aggregate.kernel_dispatches_per_decode
-        == EXTERNAL_KERNEL_DISPATCHES_PER_DECODE
-        && aggregate.compute_encoders_per_decode == EXTERNAL_COMPUTE_ENCODERS_PER_DECODE
-        && aggregate.command_buffers_per_decode == EXTERNAL_COMMAND_BUFFERS_PER_DECODE
-        && aggregate.commits_per_decode == EXTERNAL_COMMITS_PER_DECODE
-        && aggregate.waits_per_decode == EXTERNAL_WAITS_PER_DECODE
-        && aggregate
-            .kernel_dispatches_per_decode
-            .checked_sub(aggregate.compute_encoders_per_decode)
-            == Some(EXISTING_BUFFER_BARRIERS_PER_DECODE)
-        && aggregate.tail.buffer_barriers_per_decode == TAIL_EXISTING_BUFFER_BARRIERS_PER_DECODE
-        && scale_load_runtime
-            .tail
-            .added_threadgroup_barriers_per_transaction
-            == TAIL_SCALE_LOAD_ADDED_THREADGROUP_BARRIERS_PER_TRANSACTION;
     BoundaryTailPathChecks {
         schedule_valid: stats.initial_stack.layer_indices == [0, 1, 2]
             && stats_boundaries == BOUNDARY_REGIONS
@@ -1219,16 +858,13 @@ fn boundary_tail_path_checks(
                         .copied()
                         .all(quantization_profile_is_exact)
             }),
-        scale_load_runtime_valid,
         six_region_execution_valid: initial_valid && boundaries_valid,
         tail_execution_and_phase_valid: tail_valid,
         aggregate_ledger_valid: official_aggregate_ledger_is_exact(aggregate),
-        external_schedule_valid,
         generation_receipt_valid: boundary_tail_generation_receipt_is_exact(
             generation_receipt,
             body_tail_calls,
             phase,
-            scale_load_profile,
         ),
         terminal_clear: !stats.terminal_error
             && generation_receipt
@@ -1337,8 +973,6 @@ fn validate_cpu_teacher_receipt(
     validate_finalized_cpu_receipt_custody(receipt, expected_identity)?;
     if receipt.get("format").and_then(Value::as_str) != Some(CPU_TEACHER_FORMAT)
         || receipt.get("mode").and_then(Value::as_str) != Some(Mode::CpuTeacher.label())
-        || receipt.get("scale_load_profile").and_then(Value::as_str)
-            != Some(ScaleLoadProfile::LegacyPerLane.label())
         || receipt.get("passed").and_then(Value::as_bool) != Some(true)
         || receipt.get("identity") != Some(expected_identity)
         || receipt.get("comparisons").and_then(Value::as_u64) != Some(STEPS as u64)
@@ -1516,8 +1150,6 @@ fn validate_cpu_free_receipt(
     validate_finalized_cpu_receipt_custody(receipt, expected_identity)?;
     if receipt.get("format").and_then(Value::as_str) != Some(CPU_FREE_FORMAT)
         || receipt.get("mode").and_then(Value::as_str) != Some(Mode::CpuFree.label())
-        || receipt.get("scale_load_profile").and_then(Value::as_str)
-            != Some(ScaleLoadProfile::LegacyPerLane.label())
         || receipt.get("passed").and_then(Value::as_bool) != Some(true)
         || receipt.get("identity") != Some(expected_identity)
         || receipt.get("max_new_tokens").and_then(Value::as_u64) != Some(STEPS as u64)
@@ -1560,7 +1192,6 @@ struct Args {
     model_dir: PathBuf,
     source_lock: PathBuf,
     mode: Mode,
-    scale_load_profile: ScaleLoadProfile,
     input_receipt: Option<PathBuf>,
     output: PathBuf,
 }
@@ -1570,7 +1201,6 @@ fn usage() -> &'static str {
   --model-dir OFFICIAL_LOCAL_QWEN35_0_8B \
   --source-lock SOURCE_LOCK.json \
   --mode cpu-teacher|boundary-tail-v1-teacher|cpu-free|boundary-tail-v1-free \
-  [--scale-load-profile legacy-per-lane|simd-broadcast] \
   [--input-receipt CPU_RECEIPT.json] \
   --output NEW_RECEIPT.json"
 }
@@ -1583,7 +1213,6 @@ where
     let mut model_dir = None;
     let mut source_lock = None;
     let mut mode = None;
-    let mut scale_load_profile = None;
     let mut input_receipt = None;
     let mut output = None;
     let mut iter = args.into_iter().map(Into::into).skip(1);
@@ -1609,12 +1238,6 @@ where
                     return Err("duplicate --mode".into());
                 }
             }
-            "--scale-load-profile" => {
-                let parsed = ScaleLoadProfile::parse(&value.to_string_lossy())?;
-                if scale_load_profile.replace(parsed).is_some() {
-                    return Err("duplicate --scale-load-profile".into());
-                }
-            }
             "--input-receipt" => {
                 if input_receipt.replace(PathBuf::from(value)).is_some() {
                     return Err("duplicate --input-receipt".into());
@@ -1633,7 +1256,6 @@ where
         source_lock: source_lock
             .ok_or_else(|| format!("--source-lock is required\n{}", usage()))?,
         mode: mode.ok_or_else(|| format!("--mode is required\n{}", usage()))?,
-        scale_load_profile: scale_load_profile.unwrap_or(ScaleLoadProfile::LegacyPerLane),
         input_receipt,
         output: output.ok_or_else(|| format!("--output is required\n{}", usage()))?,
     };
@@ -1656,9 +1278,6 @@ where
         } else {
             "CPU modes reject --input-receipt".into()
         });
-    }
-    if !args.mode.is_candidate() && args.scale_load_profile != ScaleLoadProfile::LegacyPerLane {
-        return Err("CPU modes require --scale-load-profile legacy-per-lane".into());
     }
     Ok(args)
 }
@@ -2020,12 +1639,11 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
     let same_process_cpu_oracle_ms = same_process_oracle_started.elapsed().as_secs_f64() * 1_000.0;
     let construct_started = Instant::now();
     let mut model = if args.mode.is_candidate() {
-        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_scale_load_profile(
+        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
             config,
             tensors,
             Device::Cpu,
             max_context,
-            args.scale_load_profile.metal(),
         )?
     } else {
         GeneralQwen35::from_weights(config, tensors, Device::Cpu, max_context)?
@@ -2050,7 +1668,7 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
             "identity_fields": ["device", "inode", "size", "nlink", "ctime", "sha256"],
         },
         "cpu_reference_constructor": "GeneralQwen35::from_weights",
-        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1_with_scale_load_profile",
+        "candidate_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1",
         "custody": custody.receipt_json(),
     });
     let setup = json!({
@@ -2059,10 +1677,6 @@ fn real_main() -> Result<bool, Box<dyn Error>> {
         "same_process_cpu_oracle_ms": same_process_cpu_oracle_ms,
         "same_process_cpu_oracle": args.mode.is_candidate(),
         "timing_classification": "single-pass diagnostic timing only; never formal promotion evidence",
-        "scale_load_profile": args.scale_load_profile.label(),
-        "scale_load_scope": scale_load_scope_json(),
-        "scale_load_logical_mapping": scale_load_logical_mapping_json(),
-        "external_schedule_unchanged": unchanged_external_schedule_json(),
     });
     let result = match args.mode {
         Mode::CpuTeacher | Mode::BoundaryTailV1Teacher => run_teacher(
@@ -2127,7 +1741,6 @@ fn run_teacher(
             receipt: json!({
                 "format": args.mode.receipt_format(),
                 "mode": args.mode.label(),
-                "scale_load_profile": args.scale_load_profile.label(),
                 "identity": identity,
                 "prompt": PROMPT,
                 "prompt_token_ids": prompt_tokens,
@@ -2157,20 +1770,15 @@ fn run_teacher(
     let prefill_stats = model
         .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
         .ok_or("boundary-tail v1 constructor omitted prefill stats")?;
-    let prefill_scale_load_runtime = model
-        .metal_w8_mlp_stack3_boundary_tail_head_v1_scale_load_runtime_v1()
-        .ok_or("boundary-tail v1 constructor omitted prefill scale-load runtime receipt")?;
     let prefill_generation = model
         .generation_path_receipt()
         .ok_or("boundary-tail v1 constructor omitted prefill generation receipt")?;
     let prefill_checks = boundary_tail_path_checks(
         &prefill_stats,
-        &prefill_scale_load_runtime,
         &aggregate,
         &prefill_generation,
         0,
         TailPhaseCounts::teacher(0),
-        args.scale_load_profile,
     );
     let input_path = args
         .input_receipt
@@ -2228,20 +1836,15 @@ fn run_teacher(
     let final_stats = model
         .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
         .ok_or("boundary-tail v1 constructor omitted final stats")?;
-    let final_scale_load_runtime = model
-        .metal_w8_mlp_stack3_boundary_tail_head_v1_scale_load_runtime_v1()
-        .ok_or("boundary-tail v1 constructor omitted final scale-load runtime receipt")?;
     let final_generation = model
         .generation_path_receipt()
         .ok_or("boundary-tail v1 constructor omitted final generation receipt")?;
     let final_checks = boundary_tail_path_checks(
         &final_stats,
-        &final_scale_load_runtime,
         &aggregate,
         &final_generation,
         STEPS,
         TailPhaseCounts::teacher(STEPS),
-        args.scale_load_profile,
     );
     let passed = evaluation.passed && prefill_checks.all_valid() && final_checks.all_valid();
     gate_evidence::verify_file_unchanged(
@@ -2255,7 +1858,6 @@ fn run_teacher(
         receipt: json!({
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
-            "scale_load_profile": args.scale_load_profile.label(),
             "identity": identity,
             "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
@@ -2285,10 +1887,6 @@ fn run_teacher(
             "generation_path_contract": {
                 "schema": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
                 "binds_initial_stack_five_boundaries_and_fused_tail": true,
-                "scale_load_profile": args.scale_load_profile.label(),
-                "scale_load_scope": scale_load_scope_json(),
-                "scale_load_logical_mapping": scale_load_logical_mapping_json(),
-                "external_schedule_unchanged": unchanged_external_schedule_json(),
                 "cpu_f32_prefill": true,
                 "tail_prefill_calls": 0,
                 "tail_decode_calls": 0,
@@ -2374,7 +1972,6 @@ fn run_free(
             receipt: json!({
                 "format": args.mode.receipt_format(),
                 "mode": args.mode.label(),
-                "scale_load_profile": args.scale_load_profile.label(),
                 "identity": identity,
                 "prompt": PROMPT,
                 "prompt_token_ids": prompt_tokens,
@@ -2401,9 +1998,6 @@ fn run_free(
     let stats = model
         .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
         .ok_or("boundary-tail v1 constructor omitted final stats")?;
-    let scale_load_runtime = model
-        .metal_w8_mlp_stack3_boundary_tail_head_v1_scale_load_runtime_v1()
-        .ok_or("boundary-tail v1 constructor omitted final scale-load runtime receipt")?;
     let aggregate = model
         .metal_w8_mlp_stack3_boundary_tail_head_v1_aggregate_ledger()
         .ok_or("boundary-tail v1 constructor omitted aggregate ledger")?;
@@ -2413,12 +2007,10 @@ fn run_free(
     let body_tail_calls = STEPS - 1;
     let checks = boundary_tail_path_checks(
         &stats,
-        &scale_load_runtime,
         &aggregate,
         &generation,
         body_tail_calls,
         TailPhaseCounts::free(body_tail_calls),
-        args.scale_load_profile,
     );
     let passed = mismatches.is_empty() && checks.all_valid();
     gate_evidence::verify_file_unchanged(
@@ -2430,7 +2022,6 @@ fn run_free(
         receipt: json!({
             "format": args.mode.receipt_format(),
             "mode": args.mode.label(),
-            "scale_load_profile": args.scale_load_profile.label(),
             "identity": identity,
             "oracle_source": "same-process-cpu-f32-from-pinned-artifacts",
             "input_receipt": gate_evidence::attestation_json(&input_attestation),
@@ -2448,10 +2039,6 @@ fn run_free(
                 "schema": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
                 "shared_generate_streaming": true,
                 "binds_initial_stack_five_boundaries_and_fused_tail": true,
-                "scale_load_profile": args.scale_load_profile.label(),
-                "scale_load_scope": scale_load_scope_json(),
-                "scale_load_logical_mapping": scale_load_logical_mapping_json(),
-                "external_schedule_unchanged": unchanged_external_schedule_json(),
                 "body_tail_calls": body_tail_calls,
                 "cpu_f32_prefill_head_calls": 1,
                 "tail_prefill_calls": 0,
@@ -2631,55 +2218,11 @@ mod tests {
         }
     }
 
-    fn body_scale_load_runtime_fixture(profile: ScaleLoadProfile) -> Value {
-        let [gdn_input_name, gdn_output_name, mlp_gate_up_name, mlp_down_name] =
-            profile.expected_body_function_names();
-        json!({
-            "requested_profile": profile.label(),
-            "observed_profile": profile.label(),
-            "threads_per_threadgroup": 256,
-            "pipeline_thread_execution_width": 32,
-            "dynamic_threadgroup_memory_bytes": 0,
-            "threadgroup_barriers_per_projection": 0,
-            "g64_scale_loader_lanes_per_full_simd": profile.expected_g64_loader_lanes(),
-            "g32_scale_loader_lanes_per_full_simd": profile.expected_g32_loader_lanes(),
-            "g64_broadcasts_per_full_simd": profile.expected_g64_broadcasts(),
-            "g32_broadcasts_per_full_simd": profile.expected_g32_broadcasts(),
-            "gdn_input_function_name": gdn_input_name,
-            "gdn_output_function_name": gdn_output_name,
-            "mlp_gate_up_function_name": mlp_gate_up_name,
-            "mlp_down_function_name": mlp_down_name,
-        })
-    }
-
-    fn tail_scale_load_runtime_fixture(profile: ScaleLoadProfile) -> Value {
-        let [mlp_gate_up_name, mlp_down_name, vocab_rows_name] =
-            profile.expected_tail_function_names();
-        json!({
-            "requested_profile": profile.label(),
-            "observed_profile": profile.label(),
-            "threads_per_threadgroup": 256,
-            "pipeline_thread_execution_width": 32,
-            "dynamic_threadgroup_memory_bytes": 0,
-            "added_threadgroup_barriers_per_transaction": 0,
-            "g64_scale_loader_lanes_per_full_simd": profile.expected_g64_loader_lanes(),
-            "g64_broadcasts_per_full_simd": profile.expected_g64_broadcasts(),
-            "mlp_gate_up_function_name": mlp_gate_up_name,
-            "mlp_down_function_name": mlp_down_name,
-            "vocab_rows_function_name": vocab_rows_name,
-        })
-    }
-
-    fn generation_receipt_fixture(
-        calls: usize,
-        phase: TailPhaseCounts,
-        scale_load_profile: ScaleLoadProfile,
-    ) -> Value {
+    fn generation_receipt_fixture(calls: usize, phase: TailPhaseCounts) -> Value {
         let transfer = calls * 4_096;
         json!({
             "format": "apxinf-qwen35-mlp-stack3-boundary-tail-head-generation-path-v1",
             "mechanism": "metal-w8-mlp-stack3-boundary-tail-head-v1",
-            "scale_load_profile": scale_load_profile.label(),
             "cpu_full_attention_and_kv": true,
             "cpu_prefill_all_24_layers": true,
             "metal_w8_initial_complete_linear_layer_stack3": true,
@@ -2688,12 +2231,9 @@ mod tests {
             "standalone_layer23_mlp": false,
             "standalone_metal_lm_head": false,
             "f32_tied_four_candidate_rerank": true,
-            "scale_load_scope": scale_load_scope_json(),
-            "scale_load_logical_mapping": scale_load_logical_mapping_json(),
             "initial_stack": {
                 "layer_indices": [0, 1, 2],
                 "mechanism": "metal-w8-linear-layer-stack3-v1",
-                "scale_load_runtime": body_scale_load_runtime_fixture(scale_load_profile),
                 "prefill_seed_calls": [1, 1, 1],
                 "decode_calls": calls,
                 "successful_decodes": calls,
@@ -2713,7 +2253,6 @@ mod tests {
                 "boundary_mlp_layer_index": boundary_mlp_layer_index,
                 "stack_layer_indices": stack_layer_indices,
                 "mechanism": "metal-w8-mlp-stack3-boundary-v1",
-                "scale_load_runtime": body_scale_load_runtime_fixture(scale_load_profile),
                 "prefill_seed_calls": [1, 1, 1],
                 "decode_calls": calls,
                 "successful_decodes": calls,
@@ -2737,7 +2276,6 @@ mod tests {
             },
             "decode_head": {
                 "mechanism": "metal-w8-tail-v1",
-                "scale_load_runtime": tail_scale_load_runtime_fixture(scale_load_profile),
                 "layer_index": 23,
                 "calls": phase.decode,
                 "teacher_calls": phase.teacher,
@@ -2765,11 +2303,11 @@ mod tests {
                 "host_to_device_bytes_per_decode": 28_672,
                 "device_to_host_bytes_per_decode": 28_688,
                 "state_host_transfer_bytes_per_decode": 0,
-                "command_buffers_per_decode": EXTERNAL_COMMAND_BUFFERS_PER_DECODE,
-                "compute_encoders_per_decode": EXTERNAL_COMPUTE_ENCODERS_PER_DECODE,
-                "kernel_dispatches_per_decode": EXTERNAL_KERNEL_DISPATCHES_PER_DECODE,
-                "commits_per_decode": EXTERNAL_COMMITS_PER_DECODE,
-                "waits_per_decode": EXTERNAL_WAITS_PER_DECODE,
+                "command_buffers_per_decode": 7,
+                "compute_encoders_per_decode": 24,
+                "kernel_dispatches_per_decode": 267,
+                "commits_per_decode": 7,
+                "waits_per_decode": 7,
             },
             "terminal_error": false,
         })
@@ -2826,79 +2364,10 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(args.mode, Mode::BoundaryTailV1Free);
-        assert_eq!(args.scale_load_profile, ScaleLoadProfile::LegacyPerLane);
         assert_eq!(
             args.input_receipt.unwrap(),
             std::path::PathBuf::from("/cpu-free.json")
         );
-        let broadcast = parse_args_from([
-            "gate",
-            "--model-dir",
-            "/model",
-            "--source-lock",
-            "/source-lock.json",
-            "--mode",
-            "boundary-tail-v1-free",
-            "--scale-load-profile",
-            "simd-broadcast",
-            "--input-receipt",
-            "/cpu-free.json",
-            "--output",
-            "/new-broadcast-receipt.json",
-        ])
-        .unwrap();
-        assert_eq!(
-            broadcast.scale_load_profile,
-            ScaleLoadProfile::SimdBroadcast
-        );
-        assert!(parse_args_from([
-            "gate",
-            "--model-dir",
-            "/model",
-            "--source-lock",
-            "/source-lock.json",
-            "--mode",
-            "cpu-free",
-            "--scale-load-profile",
-            "simd-broadcast",
-            "--output",
-            "/new-cpu-receipt.json",
-        ])
-        .is_err());
-        assert!(parse_args_from([
-            "gate",
-            "--model-dir",
-            "/model",
-            "--source-lock",
-            "/source-lock.json",
-            "--mode",
-            "boundary-tail-v1-free",
-            "--scale-load-profile",
-            "not-a-profile",
-            "--input-receipt",
-            "/cpu-free.json",
-            "--output",
-            "/invalid-profile.json",
-        ])
-        .is_err());
-        assert!(parse_args_from([
-            "gate",
-            "--model-dir",
-            "/model",
-            "--source-lock",
-            "/source-lock.json",
-            "--mode",
-            "boundary-tail-v1-free",
-            "--scale-load-profile",
-            "legacy-per-lane",
-            "--scale-load-profile",
-            "simd-broadcast",
-            "--input-receipt",
-            "/cpu-free.json",
-            "--output",
-            "/duplicate-profile.json",
-        ])
-        .is_err());
         assert!(parse_args_from([
             "gate",
             "--model-dir",
@@ -2948,7 +2417,6 @@ mod tests {
         let mut receipt = json!({
             "format": CPU_TEACHER_FORMAT,
             "mode": Mode::CpuTeacher.label(),
-            "scale_load_profile": ScaleLoadProfile::LegacyPerLane.label(),
             "passed": true,
             "identity": identity,
             "prompt_token_ids": [1, 2],
@@ -2962,9 +2430,6 @@ mod tests {
         let oracle = validate_cpu_teacher_receipt(&receipt, &identity, &[1, 2], 7).unwrap();
         assert_eq!(oracle.teacher_inputs.len(), 128);
         assert_eq!(oracle.expected_outputs.len(), 128);
-        let mut wrong_profile = receipt.clone();
-        wrong_profile["scale_load_profile"] = json!(ScaleLoadProfile::SimdBroadcast.label());
-        assert!(validate_cpu_teacher_receipt(&wrong_profile, &identity, &[1, 2], 7).is_err());
         receipt["passed"] = json!(false);
         assert!(validate_cpu_teacher_receipt(&receipt, &identity, &[1, 2], 7).is_err());
     }
@@ -3031,7 +2496,6 @@ mod tests {
         let mut receipt = json!({
             "format": CPU_FREE_FORMAT,
             "mode": Mode::CpuFree.label(),
-            "scale_load_profile": ScaleLoadProfile::LegacyPerLane.label(),
             "passed": true,
             "identity": identity,
             "prompt_token_ids": [1, 2],
@@ -3044,9 +2508,6 @@ mod tests {
             validate_cpu_free_receipt(&receipt, &identity, &[1, 2]).unwrap(),
             tokens
         );
-        let mut wrong_profile = receipt.clone();
-        wrong_profile["scale_load_profile"] = json!(ScaleLoadProfile::SimdBroadcast.label());
-        assert!(validate_cpu_free_receipt(&wrong_profile, &identity, &[1, 2]).is_err());
         receipt["generated_token_ids"].as_array_mut().unwrap().pop();
         assert!(validate_cpu_free_receipt(&receipt, &identity, &[1, 2]).is_err());
     }
@@ -3102,15 +2563,6 @@ mod tests {
     fn component_ledgers_and_recomputed_aggregate_are_strictly_frozen() {
         let aggregate = official_aggregate_fixture();
         assert!(official_aggregate_ledger_is_exact(&aggregate));
-        let aggregate_json = aggregate_ledger_json(&aggregate);
-        assert_eq!(
-            aggregate_json["existing_buffer_barriers_per_decode"],
-            EXISTING_BUFFER_BARRIERS_PER_DECODE
-        );
-        assert_eq!(
-            aggregate_json["scale_load_added_buffer_barriers_per_decode"],
-            0
-        );
 
         let mut wrong = aggregate.clone();
         wrong.boundaries[2].ledger.total_persistent_bytes -= 1;
@@ -3127,183 +2579,41 @@ mod tests {
     }
 
     #[test]
-    fn scale_load_mapping_and_external_schedule_are_source_derived_and_frozen() {
-        assert_eq!(
-            BODY_SCALE_LOAD_KERNEL_INVOCATIONS_PER_DECODE,
-            ALL_LINEAR_LAYER_INDICES.len() * 4 + BOUNDARY_REGIONS.len() * 2
-        );
-        assert_eq!(TAIL_SCALE_LOAD_KERNEL_INVOCATIONS_PER_DECODE, 1 + 1 + 1);
-        assert_eq!(
-            BODY_SCALE_LOAD_KERNEL_INVOCATIONS_PER_DECODE
-                + TAIL_SCALE_LOAD_KERNEL_INVOCATIONS_PER_DECODE,
-            TOTAL_SCALE_LOAD_KERNEL_INVOCATIONS_PER_DECODE
-        );
-        assert_eq!(
-            BODY_LEGACY_SCALAR_SCALE_LOADS_PER_DECODE + TAIL_LEGACY_SCALAR_SCALE_LOADS_PER_DECODE,
-            LEGACY_SCALAR_SCALE_LOADS_PER_DECODE
-        );
-        assert_eq!(
-            BODY_SIMD_BROADCAST_SCALAR_SCALE_LOADS_PER_DECODE
-                + TAIL_SIMD_BROADCAST_SCALAR_SCALE_LOADS_PER_DECODE,
-            SIMD_BROADCAST_SCALAR_SCALE_LOADS_PER_DECODE
-        );
-        assert_eq!(
-            LEGACY_SCALAR_SCALE_LOADS_PER_DECODE - SIMD_BROADCAST_SCALAR_SCALE_LOADS_PER_DECODE,
-            LOGICAL_SCALAR_SCALE_LOAD_REDUCTION_PER_DECODE
-        );
-        assert_eq!(
-            LEGACY_SCALAR_SCALE_LOADS_PER_DECODE * std::mem::size_of::<f32>(),
-            LEGACY_LOGICAL_SCALE_READ_BYTES_PER_DECODE
-        );
-        assert_eq!(
-            SIMD_BROADCAST_SCALAR_SCALE_LOADS_PER_DECODE * std::mem::size_of::<f32>(),
-            SIMD_BROADCAST_LOGICAL_SCALE_READ_BYTES_PER_DECODE
-        );
-        assert_eq!(
-            LOGICAL_SCALAR_SCALE_LOAD_REDUCTION_PER_DECODE * std::mem::size_of::<f32>(),
-            LOGICAL_SCALE_READ_REDUCTION_BYTES_PER_DECODE
-        );
-        assert_eq!(
-            INITIAL_STACK_EXISTING_BUFFER_BARRIERS_PER_DECODE,
-            3 * (13 - 1)
-        );
-        assert_eq!(
-            BOUNDARY_REGION_EXISTING_BUFFER_BARRIERS_PER_DECODE,
-            (5 - 1) + 3 * (13 - 1)
-        );
-        assert_eq!(TAIL_EXISTING_BUFFER_BARRIERS_PER_DECODE, 8 - 1);
-        assert_eq!(
-            EXTERNAL_KERNEL_DISPATCHES_PER_DECODE - EXTERNAL_COMPUTE_ENCODERS_PER_DECODE,
-            EXISTING_BUFFER_BARRIERS_PER_DECODE
-        );
-        assert_eq!(
-            scale_load_scope_json()["count_unit"],
-            "w8-matvec-kernel-invocation-per-decode"
-        );
-        assert_eq!(
-            unchanged_external_schedule_json()
-                ["tail_scale_load_added_threadgroup_barriers_per_transaction"],
-            0
-        );
-    }
-
-    #[test]
     fn generation_receipt_locks_six_regions_tail_phases_and_commit_masks() {
         let phase = TailPhaseCounts::teacher(7);
-        let receipt = generation_receipt_fixture(7, phase, ScaleLoadProfile::LegacyPerLane);
+        let receipt = generation_receipt_fixture(7, phase);
         assert!(boundary_tail_generation_receipt_is_exact(
-            &receipt,
-            7,
-            phase,
-            ScaleLoadProfile::LegacyPerLane,
+            &receipt, 7, phase
         ));
 
         let mut wrong = receipt.clone();
         wrong["initial_stack"]["last_state_commit_mask"] = json!(0b011);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            phase,
-            ScaleLoadProfile::LegacyPerLane,
-        ));
+        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
         let mut wrong = receipt.clone();
         wrong["boundaries"][3]["last_state_commit_mask"] = json!(0b110);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            phase,
-            ScaleLoadProfile::LegacyPerLane,
-        ));
+        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
         let mut wrong = receipt.clone();
         wrong["decode_head"]["teacher_calls"] = json!(6);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            phase,
-            ScaleLoadProfile::LegacyPerLane,
-        ));
+        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
 
         let mut wrong = receipt.clone();
         wrong["terminal_error"] = json!(true);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            phase,
-            ScaleLoadProfile::LegacyPerLane,
-        ));
+        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
         let mut wrong = receipt;
         wrong["decode_head"]["terminal_error"] = json!(true);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            phase,
-            ScaleLoadProfile::LegacyPerLane,
-        ));
+        assert!(!boundary_tail_generation_receipt_is_exact(&wrong, 7, phase));
 
         let free_phase = TailPhaseCounts::free(7);
-        let free_receipt =
-            generation_receipt_fixture(7, free_phase, ScaleLoadProfile::SimdBroadcast);
+        let free_receipt = generation_receipt_fixture(7, free_phase);
         assert!(boundary_tail_generation_receipt_is_exact(
             &free_receipt,
             7,
-            free_phase,
-            ScaleLoadProfile::SimdBroadcast,
-        ));
-        let mut wrong = free_receipt.clone();
-        wrong["prefill_head"]["tail_transactions"] = json!(1);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            free_phase,
-            ScaleLoadProfile::SimdBroadcast,
-        ));
-
-        let mut wrong = free_receipt.clone();
-        wrong["initial_stack"]["scale_load_runtime"]["observed_profile"] =
-            json!(ScaleLoadProfile::LegacyPerLane.label());
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            free_phase,
-            ScaleLoadProfile::SimdBroadcast,
-        ));
-        for boundary_index in 0..BOUNDARY_REGIONS.len() {
-            let mut wrong = free_receipt.clone();
-            wrong["boundaries"][boundary_index]["scale_load_runtime"]
-                ["g32_scale_loader_lanes_per_full_simd"] = json!(32);
-            assert!(!boundary_tail_generation_receipt_is_exact(
-                &wrong,
-                7,
-                free_phase,
-                ScaleLoadProfile::SimdBroadcast,
-            ));
-        }
-        let mut wrong = free_receipt.clone();
-        wrong["decode_head"]["scale_load_runtime"]["added_threadgroup_barriers_per_transaction"] =
-            json!(1);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            free_phase,
-            ScaleLoadProfile::SimdBroadcast,
-        ));
-
-        let mut wrong = free_receipt.clone();
-        wrong["scale_load_scope"]["total_w8_kernel_invocations_per_decode"] = json!(84);
-        assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            free_phase,
-            ScaleLoadProfile::SimdBroadcast,
+            free_phase
         ));
         let mut wrong = free_receipt;
-        wrong["scale_load_logical_mapping"]["logical_scale_read_reduction_bytes_per_decode"] =
-            json!(LOGICAL_SCALE_READ_REDUCTION_BYTES_PER_DECODE - 4);
+        wrong["prefill_head"]["tail_transactions"] = json!(1);
         assert!(!boundary_tail_generation_receipt_is_exact(
-            &wrong,
-            7,
-            free_phase,
-            ScaleLoadProfile::SimdBroadcast,
+            &wrong, 7, free_phase
         ));
     }
 

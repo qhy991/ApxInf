@@ -17,10 +17,6 @@ constexpr uint32_t kRowsPerThreadgroup = 8;
 constexpr uint32_t kMatVecThreads = kRowsPerThreadgroup * 32;
 constexpr uint32_t kElementThreads = 256;
 constexpr uint32_t kAllSeededMask = (1u << kStackDepth) - 1;
-constexpr uint32_t kScaleLoadLegacyPerLane = 0;
-constexpr uint32_t kScaleLoadSimdBroadcast = 1;
-constexpr uint32_t kUnknownScaleLoadProfile = UINT32_MAX;
-constexpr uint32_t kExpectedThreadExecutionWidth = 32;
 
 struct GdnParams {
     uint32_t hidden_size;
@@ -197,10 +193,6 @@ struct ApxinfMetalW8LinearLayerStack3HandleV1 {
     id<MTLComputePipelineState> mlp_gate_up_pipeline;
     id<MTLComputePipelineState> mlp_activation_pipeline;
     id<MTLComputePipelineState> mlp_down_pipeline;
-    id<MTLFunction> gdn_input_function;
-    id<MTLFunction> gdn_output_function;
-    id<MTLFunction> mlp_gate_up_function;
-    id<MTLFunction> mlp_down_function;
 
     Stack3Layer layers[kStackDepth];
 
@@ -218,7 +210,6 @@ struct ApxinfMetalW8LinearLayerStack3HandleV1 {
     id<MTLBuffer> mlp_gate_up;
     id<MTLBuffer> mlp_activated;
 
-    uint32_t requested_scale_load_profile;
     uint32_t seeded_mask;
     bool terminal_error;
 };
@@ -251,63 +242,6 @@ id<MTLComputePipelineState> make_pipeline(
     id<MTLFunction> function = [library newFunctionWithName:name];
     return function == nil ? nil
                            : [device newComputePipelineStateWithFunction:function error:error];
-}
-
-bool valid_scale_load_profile(uint32_t profile) {
-    return profile == kScaleLoadLegacyPerLane ||
-           profile == kScaleLoadSimdBroadcast;
-}
-
-bool function_has_name(id<MTLFunction> function, NSString *name) {
-    return function != nil && function.name != nil &&
-           [function.name isEqualToString:name];
-}
-
-uint32_t observed_scale_load_profile(
-    const ApxinfMetalW8LinearLayerStack3HandleV1 *handle) {
-    if (handle == nullptr) {
-        return kUnknownScaleLoadProfile;
-    }
-    if (function_has_name(handle->gdn_input_function,
-                          @"gdn_w8_input_projection") &&
-        function_has_name(handle->gdn_output_function,
-                          @"gdn_w8_output_projection_g32") &&
-        function_has_name(handle->mlp_gate_up_function,
-                          @"w8_mlp_gate_up") &&
-        function_has_name(handle->mlp_down_function, @"w8_mlp_down")) {
-        return kScaleLoadLegacyPerLane;
-    }
-    if (function_has_name(handle->gdn_input_function,
-                          @"gdn_w8_input_projection_scale_broadcast") &&
-        function_has_name(
-            handle->gdn_output_function,
-            @"gdn_w8_output_projection_g32_scale_broadcast") &&
-        function_has_name(handle->mlp_gate_up_function,
-                          @"w8_mlp_gate_up_scale_broadcast") &&
-        function_has_name(handle->mlp_down_function,
-                          @"w8_mlp_down_scale_broadcast")) {
-        return kScaleLoadSimdBroadcast;
-    }
-    return kUnknownScaleLoadProfile;
-}
-
-bool selected_pipeline_geometry_is_valid(
-    id<MTLComputePipelineState> pipeline) {
-    return pipeline != nil &&
-           pipeline.threadExecutionWidth == kExpectedThreadExecutionWidth &&
-           pipeline.maxTotalThreadsPerThreadgroup >= kMatVecThreads &&
-           pipeline.staticThreadgroupMemoryLength == 0;
-}
-
-bool live_scale_load_profile_matches(
-    const ApxinfMetalW8LinearLayerStack3HandleV1 *handle) {
-    return handle != nullptr &&
-           observed_scale_load_profile(handle) ==
-               handle->requested_scale_load_profile &&
-           selected_pipeline_geometry_is_valid(handle->gdn_input_pipeline) &&
-           selected_pipeline_geometry_is_valid(handle->gdn_output_pipeline) &&
-           selected_pipeline_geometry_is_valid(handle->mlp_gate_up_pipeline) &&
-           selected_pipeline_geometry_is_valid(handle->mlp_down_pipeline);
 }
 
 id<MTLBuffer> make_shared_f32(id<MTLDevice> device, size_t count) {
@@ -706,10 +640,9 @@ void encode_layer(ApxinfMetalW8LinearLayerStack3HandleV1 *handle,
 
 }  // namespace
 
-int create_linear_layer_stack3_gdn_out_g32_impl(
-    const Stack3LayerDescriptorV1 *layers, uint32_t layer_count,
-    uint32_t scale_load_profile, void **output, char *error_output,
-    size_t error_capacity) {
+extern "C" int apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1(
+    const Stack3LayerDescriptorV1 *layers, uint32_t layer_count, void **output,
+    char *error_output, size_t error_capacity) {
     @autoreleasepool {
         if (output == nullptr) {
             write_error(error_output, error_capacity,
@@ -717,11 +650,6 @@ int create_linear_layer_stack3_gdn_out_g32_impl(
             return 1;
         }
         *output = nullptr;
-        if (!valid_scale_load_profile(scale_load_profile)) {
-            write_error(error_output, error_capacity,
-                        "invalid Metal W8 stack3 v1 scale-load profile");
-            return 1;
-        }
         if (layers == nullptr || layer_count != kStackDepth) {
             write_error(error_output, error_capacity,
                         "Metal W8 stack3 v1 requires exactly three layer descriptors");
@@ -770,28 +698,8 @@ int create_linear_layer_stack3_gdn_out_g32_impl(
             make_pipeline(handle->device, library, @"linear_layer_rms_norm", &error);
         handle->residual_pipeline =
             make_pipeline(handle->device, library, @"linear_layer_residual_add", &error);
-        NSString *gdn_input_name =
-            scale_load_profile == kScaleLoadSimdBroadcast
-                ? @"gdn_w8_input_projection_scale_broadcast"
-                : @"gdn_w8_input_projection";
-        NSString *gdn_output_name =
-            scale_load_profile == kScaleLoadSimdBroadcast
-                ? @"gdn_w8_output_projection_g32_scale_broadcast"
-                : @"gdn_w8_output_projection_g32";
-        NSString *mlp_gate_up_name =
-            scale_load_profile == kScaleLoadSimdBroadcast
-                ? @"w8_mlp_gate_up_scale_broadcast"
-                : @"w8_mlp_gate_up";
-        NSString *mlp_down_name =
-            scale_load_profile == kScaleLoadSimdBroadcast
-                ? @"w8_mlp_down_scale_broadcast"
-                : @"w8_mlp_down";
-        handle->gdn_input_function = [library newFunctionWithName:gdn_input_name];
-        handle->gdn_input_pipeline = handle->gdn_input_function == nil
-            ? nil
-            : [handle->device
-                  newComputePipelineStateWithFunction:handle->gdn_input_function
-                                                error:&error];
+        handle->gdn_input_pipeline =
+            make_pipeline(handle->device, library, @"gdn_w8_input_projection", &error);
         handle->gdn_depthwise_pipeline =
             make_pipeline(handle->device, library, @"gdn_depthwise_preprocess", &error);
         handle->gdn_normalize_pipeline =
@@ -800,26 +708,14 @@ int create_linear_layer_stack3_gdn_out_g32_impl(
             make_pipeline(handle->device, library, @"gdn_recurrent_update", &error);
         handle->gdn_norm_gate_pipeline =
             make_pipeline(handle->device, library, @"gdn_norm_gate", &error);
-        handle->gdn_output_function = [library newFunctionWithName:gdn_output_name];
-        handle->gdn_output_pipeline = handle->gdn_output_function == nil
-            ? nil
-            : [handle->device
-                  newComputePipelineStateWithFunction:handle->gdn_output_function
-                                                error:&error];
-        handle->mlp_gate_up_function = [library newFunctionWithName:mlp_gate_up_name];
-        handle->mlp_gate_up_pipeline = handle->mlp_gate_up_function == nil
-            ? nil
-            : [handle->device
-                  newComputePipelineStateWithFunction:handle->mlp_gate_up_function
-                                                error:&error];
+        handle->gdn_output_pipeline =
+            make_pipeline(handle->device, library, @"gdn_w8_output_projection_g32", &error);
+        handle->mlp_gate_up_pipeline =
+            make_pipeline(handle->device, library, @"w8_mlp_gate_up", &error);
         handle->mlp_activation_pipeline =
             make_pipeline(handle->device, library, @"w8_mlp_silu_mul", &error);
-        handle->mlp_down_function = [library newFunctionWithName:mlp_down_name];
-        handle->mlp_down_pipeline = handle->mlp_down_function == nil
-            ? nil
-            : [handle->device
-                  newComputePipelineStateWithFunction:handle->mlp_down_function
-                                                error:&error];
+        handle->mlp_down_pipeline =
+            make_pipeline(handle->device, library, @"w8_mlp_down", &error);
         if (handle->layer_rms_pipeline == nil || handle->residual_pipeline == nil ||
             handle->gdn_input_pipeline == nil ||
             handle->gdn_depthwise_pipeline == nil ||
@@ -832,13 +728,6 @@ int create_linear_layer_stack3_gdn_out_g32_impl(
             handle->mlp_down_pipeline == nil) {
             delete handle;
             write_nserror(error_output, error_capacity, error);
-            return 1;
-        }
-        handle->requested_scale_load_profile = scale_load_profile;
-        if (!live_scale_load_profile_matches(handle)) {
-            delete handle;
-            write_error(error_output, error_capacity,
-                        "Metal W8 stack3 v1 live scale-load profile or pipeline geometry differs from the request");
             return 1;
         }
         handle->queue = [handle->device newCommandQueue];
@@ -874,42 +763,6 @@ int create_linear_layer_stack3_gdn_out_g32_impl(
         handle->seeded_mask = 0;
         handle->terminal_error = false;
         *output = handle;
-        return 0;
-    }
-}
-
-extern "C" int apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_v1(
-    const Stack3LayerDescriptorV1 *layers, uint32_t layer_count, void **output,
-    char *error_output, size_t error_capacity) {
-    return create_linear_layer_stack3_gdn_out_g32_impl(
-        layers, layer_count, kScaleLoadLegacyPerLane, output, error_output,
-        error_capacity);
-}
-
-extern "C" int
-apxinf_metal_w8_linear_layer_stack3_create_gdn_out_g32_with_scale_load_profile_v1(
-    const Stack3LayerDescriptorV1 *layers, uint32_t layer_count,
-    uint32_t scale_load_profile, void **output, char *error_output,
-    size_t error_capacity) {
-    return create_linear_layer_stack3_gdn_out_g32_impl(
-        layers, layer_count, scale_load_profile, output, error_output,
-        error_capacity);
-}
-
-extern "C" int
-apxinf_metal_w8_linear_layer_stack3_observed_scale_load_profile_v1(
-    void *opaque_handle, uint32_t *profile, char *error_output,
-    size_t error_capacity) {
-    @autoreleasepool {
-        auto handle =
-            static_cast<ApxinfMetalW8LinearLayerStack3HandleV1 *>(opaque_handle);
-        if (handle == nullptr || profile == nullptr ||
-            !live_scale_load_profile_matches(handle)) {
-            write_error(error_output, error_capacity,
-                        "invalid Metal W8 stack3 v1 live scale-load profile");
-            return 1;
-        }
-        *profile = observed_scale_load_profile(handle);
         return 0;
     }
 }
@@ -989,12 +842,6 @@ extern "C" int apxinf_metal_w8_linear_layer_stack3_decode_v1(
              input_count != handle->layers[0].gdn_params.hidden_size)) {
             write_error(error_output, error_capacity,
                         "invalid Metal W8 stack3 v1 input or output");
-            return 1;
-        }
-        if (!live_scale_load_profile_matches(handle)) {
-            handle->terminal_error = true;
-            write_error(error_output, error_capacity,
-                        "Metal W8 stack3 v1 live scale-load profile changed before decode");
             return 1;
         }
         if (handle->terminal_error) {

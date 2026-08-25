@@ -1,6 +1,6 @@
 use apxinf_metal::{
     MetalW8TailMlpHeadV1, PackedW8MlpBlock, PackedW8Rows, PackedW8TailMlpHeadV1,
-    TailMlpHeadBufferLedgerV1, W8ScaleLoadProfileV1,
+    TailMlpHeadBufferLedgerV1,
 };
 
 fn values(elements: usize, multiplier: usize, modulus: usize, scale: f32) -> Vec<f32> {
@@ -197,95 +197,6 @@ fn metal_tail_v1_matches_packed_hidden_and_top4_in_one_transaction() {
     assert!(!stats.terminal_error);
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn tail_scale_broadcast_is_two_step_bitwise_identical_to_legacy() {
-    let hidden_size = 192;
-    let intermediate_size = 192;
-    let vocab_size = 11;
-    let projection_elements = hidden_size * intermediate_size;
-    let packed = PackedW8TailMlpHeadV1::new(
-        PackedW8MlpBlock::pack_f32(
-            &values(projection_elements, 41, 211, 0.04),
-            &values(projection_elements, 43, 199, 0.04),
-            &values(projection_elements, 47, 197, 0.04),
-            hidden_size,
-            intermediate_size,
-        )
-        .unwrap(),
-        &values(hidden_size, 53, 193, 0.2)
-            .into_iter()
-            .map(|value| 1.0 + value)
-            .collect::<Vec<_>>(),
-        &values(hidden_size, 59, 191, 0.2)
-            .into_iter()
-            .map(|value| 1.0 + value)
-            .collect::<Vec<_>>(),
-        1.0e-6,
-        PackedW8Rows::pack_f32(
-            &values(vocab_size * hidden_size, 61, 181, 0.1),
-            vocab_size,
-            hidden_size,
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let mut legacy = MetalW8TailMlpHeadV1::from_packed(&packed).unwrap();
-    let mut broadcast = MetalW8TailMlpHeadV1::from_packed_with_scale_load_profile_v1(
-        &packed,
-        W8ScaleLoadProfileV1::SimdBroadcast,
-    )
-    .unwrap();
-
-    for input in [
-        values(hidden_size, 67, 179, 0.8),
-        values(hidden_size, 71, 173, 0.7),
-    ] {
-        let legacy_output = legacy.decode(&input).unwrap();
-        let legacy_hidden = legacy_output.normalized_hidden.to_vec();
-        let legacy_candidates = legacy_output.candidate_token_ids;
-        let broadcast_output = broadcast.decode(&input).unwrap();
-        assert_bits_equal(
-            broadcast_output.normalized_hidden,
-            &legacy_hidden,
-            "tail normalized hidden",
-        );
-        assert_eq!(
-            broadcast_output.candidate_token_ids, legacy_candidates,
-            "tail top-4 candidates"
-        );
-    }
-
-    assert_eq!(broadcast.stats(), legacy.stats());
-    assert_eq!(broadcast.buffer_ledger(), legacy.buffer_ledger());
-    let legacy_receipt = legacy.scale_load_runtime_receipt_v1();
-    assert_eq!(
-        legacy_receipt.observed_profile,
-        W8ScaleLoadProfileV1::LegacyPerLane
-    );
-    let receipt = broadcast.scale_load_runtime_receipt_v1();
-    assert_eq!(
-        receipt.observed_profile,
-        W8ScaleLoadProfileV1::SimdBroadcast
-    );
-    assert_eq!(
-        receipt.mlp_gate_up_function_name,
-        "w8_mlp_gate_up_scale_broadcast"
-    );
-    assert_eq!(
-        receipt.mlp_down_function_name,
-        "w8_mlp_down_scale_broadcast"
-    );
-    assert_eq!(
-        receipt.vocab_rows_function_name,
-        "w8_rows_topk4_scale_broadcast"
-    );
-    assert_eq!(receipt.g64_scale_loader_lanes_per_full_simd, 2);
-    assert_eq!(receipt.g64_broadcasts_per_full_simd, 2);
-    assert_eq!(receipt.dynamic_threadgroup_memory_bytes, 0);
-    assert_eq!(receipt.added_threadgroup_barriers_per_transaction, 0);
-}
-
 #[cfg(all(target_os = "macos", debug_assertions))]
 #[test]
 fn tail_v1_post_gpu_failure_publishes_nothing_is_terminal_and_reset_recovers() {
@@ -314,44 +225,38 @@ fn tail_v1_post_gpu_failure_publishes_nothing_is_terminal_and_reset_recovers() {
     )
     .unwrap();
     let input = values(hidden_size, 89, 151, 0.8);
-    for profile in [
-        W8ScaleLoadProfileV1::LegacyPerLane,
-        W8ScaleLoadProfileV1::SimdBroadcast,
-    ] {
-        let mut metal =
-            MetalW8TailMlpHeadV1::from_packed_with_scale_load_profile_v1(&packed, profile).unwrap();
+    let mut metal = MetalW8TailMlpHeadV1::from_packed(&packed).unwrap();
 
-        let error = metal
-            .inject_failure_after_gpu_execution_for_testing(&input)
-            .unwrap_err();
+    let error = metal
+        .inject_failure_after_gpu_execution_for_testing(&input)
+        .unwrap_err();
 
-        assert!(error.to_string().contains("injected"));
-        let failed = metal.stats();
-        assert_eq!(failed.decode_calls, 1);
-        assert_eq!(failed.successful_decodes, 0);
-        assert_eq!(failed.failed_decodes, 1);
-        assert_eq!(failed.host_to_device_bytes, hidden_size * 4);
-        assert_eq!(failed.device_to_host_bytes, 0);
-        assert_eq!(failed.command_buffers, 1);
-        assert_eq!(failed.compute_encoders, 1);
-        assert_eq!(failed.kernel_dispatches, 8);
-        assert_eq!(failed.buffer_barriers, 7);
-        assert_eq!(failed.commits, 1);
-        assert_eq!(failed.waits, 1);
-        assert_eq!(failed.output_commits, 0);
-        assert_eq!(failed.last_output_commit_mask, 0);
-        assert!(failed.terminal_error);
+    assert!(error.to_string().contains("injected"));
+    let failed = metal.stats();
+    assert_eq!(failed.decode_calls, 1);
+    assert_eq!(failed.successful_decodes, 0);
+    assert_eq!(failed.failed_decodes, 1);
+    assert_eq!(failed.host_to_device_bytes, hidden_size * 4);
+    assert_eq!(failed.device_to_host_bytes, 0);
+    assert_eq!(failed.command_buffers, 1);
+    assert_eq!(failed.compute_encoders, 1);
+    assert_eq!(failed.kernel_dispatches, 8);
+    assert_eq!(failed.buffer_barriers, 7);
+    assert_eq!(failed.commits, 1);
+    assert_eq!(failed.waits, 1);
+    assert_eq!(failed.output_commits, 0);
+    assert_eq!(failed.last_output_commit_mask, 0);
+    assert!(failed.terminal_error);
 
-        let retry = metal.decode(&input).unwrap_err();
-        assert!(retry.to_string().contains("terminal"));
-        assert_eq!(metal.stats(), failed, "terminal retry must submit no work");
+    let retry = metal.decode(&input).unwrap_err();
+    assert!(retry.to_string().contains("terminal"));
+    assert_eq!(metal.stats(), failed, "terminal retry must submit no work");
 
-        metal.reset().unwrap();
-        assert_eq!(metal.stats(), Default::default());
-        metal.decode(&input).unwrap();
-        assert_eq!(metal.stats().output_commits, 2);
-        assert_eq!(metal.stats().last_output_commit_mask, 0b11);
-    }
+    metal.reset().unwrap();
+    assert_eq!(metal.stats(), Default::default());
+    metal.decode(&input).unwrap();
+    assert_eq!(metal.stats().output_commits, 2);
+    assert_eq!(metal.stats().last_output_commit_mask, 0b11);
 }
 
 #[cfg(all(target_os = "macos", debug_assertions))]
@@ -662,8 +567,6 @@ fn tail_v1_bridge_shape_and_shader_custody_match_the_public_contract() {
     let bridge = include_str!("../src/metal_w8_tail_mlp_head_v1_bridge.mm");
     for symbol in [
         "apxinf_metal_w8_tail_mlp_head_create_v1(",
-        "apxinf_metal_w8_tail_mlp_head_create_with_scale_load_profile_v1(",
-        "apxinf_metal_w8_tail_mlp_head_observed_scale_load_profile_v1(",
         "apxinf_metal_w8_tail_mlp_head_decode_v1(",
         "apxinf_metal_w8_tail_mlp_head_reset_v1(",
         "apxinf_metal_w8_tail_mlp_head_destroy_v1(",
@@ -704,27 +607,8 @@ fn tail_v1_bridge_shape_and_shader_custody_match_the_public_contract() {
     assert!(!bridge.contains("kernel void w8_rows_topk4("));
 
     let build = include_str!("../build.rs");
-    assert!(build.contains(
-        "format!(\"{mlp_shader}\\n{linear_layer_shader}\\n{shader}\\n{tail_scale_broadcast_shader}\")"
-    ));
+    assert!(build.contains("format!(\"{mlp_shader}\\n{linear_layer_shader}\\n{shader}\")"));
     assert!(build.contains("metal_w8_tail_mlp_head_v1_source.inc"));
-    assert!(build.contains("src/metal_w8_tail_scale_broadcast.metal"));
-
-    let candidate = include_str!("../src/metal_w8_tail_scale_broadcast.metal");
-    for function in [
-        "kernel void w8_mlp_gate_up_scale_broadcast(",
-        "kernel void w8_mlp_down_scale_broadcast(",
-        "kernel void w8_rows_topk4_scale_broadcast(",
-    ] {
-        assert!(
-            candidate.contains(function),
-            "missing candidate function {function}"
-        );
-    }
-    let legacy_mlp = include_str!("../src/metal_w8_mlp.metal");
-    let legacy_head = include_str!("../src/metal_w8.metal");
-    assert!(!legacy_mlp.contains("scale_broadcast"));
-    assert!(!legacy_head.contains("scale_broadcast"));
 }
 
 fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32, label: &str) {
@@ -733,17 +617,6 @@ fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32, label: &str) {
         assert!(
             (actual - expected).abs() <= tolerance,
             "{label}[{index}] actual={actual} expected={expected} tolerance={tolerance}"
-        );
-    }
-}
-
-fn assert_bits_equal(actual: &[f32], expected: &[f32], label: &str) {
-    assert_eq!(actual.len(), expected.len(), "{label} length");
-    for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
-        assert_eq!(
-            actual.to_bits(),
-            expected.to_bits(),
-            "{label}[{index}] actual={actual:?} expected={expected:?}"
         );
     }
 }
