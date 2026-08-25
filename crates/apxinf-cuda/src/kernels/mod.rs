@@ -16,6 +16,7 @@ pub mod norm;
 pub mod preprocess;
 pub mod quantization;
 pub mod qwen25_omni_attention;
+pub mod qwen25_omni_fused;
 pub mod rope;
 pub mod selection;
 

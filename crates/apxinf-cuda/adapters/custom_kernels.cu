@@ -17,6 +17,7 @@ namespace {
 #include "../kernels/custom/preprocess.cuh"
 #include "../kernels/custom/attention.cuh"
 #include "../kernels/custom/qwen25_omni_attention.cuh"
+#include "../kernels/custom/qwen25_omni_fused.cuh"
 #include "../kernels/custom/normalization.cuh"
 #include "../kernels/custom/activation.cuh"
 #include "../kernels/custom/embedding.cuh"
@@ -134,6 +135,28 @@ apxinf_static_qwen25_omni_qkv_bias_tmrope_kv_write_bf16(
       static_cast<__nv_bfloat16*>(value_cache), theta,
       static_cast<const uint32_t*>(positions),
       static_cast<const uint32_t*>(cache_position));
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t
+apxinf_static_qwen25_omni_residual_rmsnorm_pack8_bf16(
+    void* residual, const void* delta, const void* weight, void* output,
+    int rows, int columns, float eps, cudaStream_t stream) {
+  const uintptr_t alignment = reinterpret_cast<uintptr_t>(residual) |
+      reinterpret_cast<uintptr_t>(delta) |
+      reinterpret_cast<uintptr_t>(weight) |
+      reinterpret_cast<uintptr_t>(output);
+  if (residual == nullptr || delta == nullptr || weight == nullptr ||
+      output == nullptr || rows != 1 || columns != 2048 ||
+      eps != 1.0e-6f || (alignment & 15U) != 0) {
+    return cudaErrorInvalidValue;
+  }
+  qwen25_omni_residual_rmsnorm_pack8_bf16_kernel<<<
+      1, 256, 2048 * sizeof(float), stream>>>(
+      static_cast<__nv_bfloat16*>(residual),
+      static_cast<const __nv_bfloat16*>(delta),
+      static_cast<const __nv_bfloat16*>(weight),
+      static_cast<__nv_bfloat16*>(output), eps);
   return cudaGetLastError();
 }
 

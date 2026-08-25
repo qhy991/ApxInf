@@ -167,6 +167,12 @@ rounded to BF16 before TMRoPE, Q is written directly in the attention layout,
 and K/V publish directly to their persistent cache slot. It requires W32 and
 the pinned SM89 Qwen2.5-Omni-3B graph; prefill, eager, 12K, and post-32K paths
 retain their existing owners.
+The pack8 residual/RMSNorm selector keeps the same exact fused graph boundary
+but specializes its aligned one-row H=2,048 implementation. Eight BF16 values
+share each 128-bit global transaction while the square-sum is reconstructed in
+the incumbent thread order, preserving both the rounded residual and normalized
+output bit-for-bit. It requires the fused QKV prelude and the pinned SM89 short
+graph; invalid epsilon, alignment, shape, or selector composition fails closed.
 `APXINF_QWEN25_PACKED_QKV=1` selects one
 packed QKV owner shared by both paths. `APXINF_QWEN25_FUSED_TMROPE_KV=1`
 publishes rotated K and unchanged V directly to their caches during graph

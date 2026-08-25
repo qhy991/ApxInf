@@ -169,6 +169,7 @@ fn decode_forward_capturable(
     fuse_residual_norm: bool,
     use_w32_attention: bool,
     fuse_qkv_prelude: bool,
+    use_pack8_residual_norm: bool,
 ) -> Result<()> {
     if weights.layers.len() != config.n_layers || config.n_layers == 0 {
         return Err(Error::Other(
@@ -489,16 +490,29 @@ fn decode_forward_capturable(
             &workspace.attn_proj,
         )?;
         if fuse_residual_norm {
-            kernels::norm::residual_add_rms_exact_bf16_into(
-                context,
-                &workspace.x,
-                &workspace.attn_proj,
-                &weight_view(layer.ffn_norm, device)?,
-                &workspace.ffn_norm,
-                hidden,
-                1,
-                config.rms_norm_eps,
-            )?;
+            if use_pack8_residual_norm {
+                kernels::qwen25_omni_fused::residual_add_rmsnorm_pack8_bf16_into(
+                    context,
+                    &workspace.x,
+                    &workspace.attn_proj,
+                    &weight_view(layer.ffn_norm, device)?,
+                    &workspace.ffn_norm,
+                    hidden,
+                    1,
+                    config.rms_norm_eps,
+                )?;
+            } else {
+                kernels::norm::residual_add_rms_exact_bf16_into(
+                    context,
+                    &workspace.x,
+                    &workspace.attn_proj,
+                    &weight_view(layer.ffn_norm, device)?,
+                    &workspace.ffn_norm,
+                    hidden,
+                    1,
+                    config.rms_norm_eps,
+                )?;
+            }
         } else {
             kernels::elementwise::add_into(
                 context,
@@ -607,16 +621,29 @@ fn decode_forward_capturable(
             } else {
                 weights.output_norm
             };
-            kernels::norm::residual_add_rms_exact_bf16_into(
-                context,
-                &workspace.x,
-                &workspace.mlp_out,
-                &weight_view(next_norm, device)?,
-                &workspace.norm,
-                hidden,
-                1,
-                config.rms_norm_eps,
-            )?;
+            if use_pack8_residual_norm {
+                kernels::qwen25_omni_fused::residual_add_rmsnorm_pack8_bf16_into(
+                    context,
+                    &workspace.x,
+                    &workspace.mlp_out,
+                    &weight_view(next_norm, device)?,
+                    &workspace.norm,
+                    hidden,
+                    1,
+                    config.rms_norm_eps,
+                )?;
+            } else {
+                kernels::norm::residual_add_rms_exact_bf16_into(
+                    context,
+                    &workspace.x,
+                    &workspace.mlp_out,
+                    &weight_view(next_norm, device)?,
+                    &workspace.norm,
+                    hidden,
+                    1,
+                    config.rms_norm_eps,
+                )?;
+            }
         } else {
             kernels::elementwise::add_into(
                 context,
@@ -674,6 +701,7 @@ pub struct Qwen25OmniDecodeGraph {
     fuse_residual_norm: bool,
     use_w32_attention: bool,
     fuse_qkv_prelude: bool,
+    use_pack8_residual_norm: bool,
 }
 
 impl Qwen25OmniDecodeGraph {
@@ -685,6 +713,7 @@ impl Qwen25OmniDecodeGraph {
         fuse_residual_norm: bool,
         use_w32_attention: bool,
         fuse_qkv_prelude: bool,
+        use_pack8_residual_norm: bool,
         grouped_long_attention: bool,
     ) -> Result<Self> {
         if config.n_layers == 0
@@ -706,6 +735,7 @@ impl Qwen25OmniDecodeGraph {
             fuse_residual_norm,
             use_w32_attention,
             fuse_qkv_prelude,
+            use_pack8_residual_norm,
         })
     }
 
@@ -734,6 +764,7 @@ impl Qwen25OmniDecodeGraph {
             self.fuse_residual_norm,
             self.use_w32_attention,
             self.fuse_qkv_prelude,
+            self.use_pack8_residual_norm,
         )?;
         backend.synchronize()?;
         cache.clear()?;
@@ -750,6 +781,7 @@ impl Qwen25OmniDecodeGraph {
             self.fuse_residual_norm,
             self.use_w32_attention,
             self.fuse_qkv_prelude,
+            self.use_pack8_residual_norm,
         );
         let graph = backend.end_capture()?;
         capture?;
@@ -790,6 +822,7 @@ impl Qwen25OmniDecodeGraph {
                 self.fuse_residual_norm,
                 self.use_w32_attention,
                 self.fuse_qkv_prelude,
+                self.use_pack8_residual_norm,
             )?;
         } else {
             graph.replay()?;

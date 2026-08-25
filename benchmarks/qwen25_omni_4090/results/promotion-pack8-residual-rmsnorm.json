@@ -1,0 +1,187 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "candidate": "short_decode_pack8_residual_rmsnorm",
+  "completed_on": "2026-08-26",
+  "contract": {
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "hardware": "NVIDIA GeForce RTX 4090",
+    "sm": 89,
+    "cuda": "12.3",
+    "precision": "bf16",
+    "concurrency": 1,
+    "sampling": "greedy",
+    "primary_request": {
+      "prompt_tokens": 1024,
+      "output_tokens": 128
+    },
+    "guard_requests": [
+      {
+        "prompt_tokens": 128,
+        "output_tokens": 128
+      },
+      {
+        "prompt_tokens": 12288,
+        "output_tokens": 8
+      },
+      {
+        "prompt_tokens": 32760,
+        "output_tokens": 8
+      }
+    ],
+    "timing_authority": "no-profiler service wall time and service-emitted TTFT/TPOT"
+  },
+  "implementation": {
+    "base_commit": "4e7d6b8e7fce9515326ccadcefa404aadfd81b7a",
+    "selector": "APXINF_QWEN25_SHORT_DECODE_PACK8_RESIDUAL_NORM=1",
+    "default_enabled_in_runtime": false,
+    "deployment_enabled": true,
+    "classification": "model-specific exact global-I/O specialization",
+    "eligible_path": "SM89 one-token Qwen2.5-Omni-3B short graph with rows=1, hidden=2048, epsilon=1e-6 and 16-byte-aligned buffers",
+    "baseline_node": "exact BF16-rounded residual add and RMSNorm",
+    "candidate_node": "the same exact residual/RMSNorm boundary with eight BF16 values per aligned 128-bit transaction",
+    "reduction_order": "threadIdx + 256*j, identical to the accepted exact kernel",
+    "excluded_paths": [
+      "prefill",
+      "eager decode",
+      "12K decode",
+      "post-32K long-decode graph"
+    ],
+    "candidate_binary_sha256": "fdf14934ed564bddf898c694e21d9be5b5e72baa0a9b4b881bdf0e53d7f6a330",
+    "rollback_binary_sha256": "30b3a2b9fc0eade3ac742bb9038d7037bd593a5f394ab5d281a8673202d73680"
+  },
+  "operator_gate": {
+    "shape": [
+      1,
+      2048
+    ],
+    "patterns": 8,
+    "residual_values_compared": 16384,
+    "output_values_compared": 16384,
+    "residual_bit_exact": true,
+    "output_bit_exact": true,
+    "maximum_absolute_error": 0.0,
+    "invalid_epsilon_fails_closed": true,
+    "baseline_median_microseconds": 3.917824,
+    "candidate_median_microseconds": 2.745344,
+    "operator_speedup": 1.427079
+  },
+  "no_profiler": {
+    "binary_control": "one immutable SM89 binary with only the pack8 residual/RMSNorm selector changed from 0 to 1",
+    "order": [
+      "A",
+      "B",
+      "B",
+      "A",
+      "A",
+      "B",
+      "B",
+      "A",
+      "A",
+      "B"
+    ],
+    "pairs": 5,
+    "primary_1024_128": {
+      "paired_wall_wins": 5,
+      "baseline_wall_median_seconds": 1.1174802780151367,
+      "candidate_wall_median_seconds": 1.0932406038045883,
+      "wall_reduction_pct": 2.1691366449529514,
+      "paired_wall_speedup_median": 1.0226952427716012,
+      "paired_wall_speedup_min": 1.0184336882505256,
+      "baseline_tpot_median_seconds": 0.008260447039370077,
+      "candidate_tpot_median_seconds": 0.008077681031496062,
+      "tpot_reduction_pct": 2.212543788525423,
+      "trajectory_sha256": "36eeb0e9c85c00123f3afeedc14df90050ced8063c4bb6f3ce96aa13b0da06e9"
+    },
+    "decode_128": {
+      "paired_wall_wins": 5,
+      "baseline_wall_median_seconds": 0.9874258488416672,
+      "candidate_wall_median_seconds": 0.961780421435833,
+      "wall_reduction_pct": 2.597200330122862,
+      "paired_wall_speedup_median": 1.0266658903486006,
+      "paired_wall_speedup_min": 1.0233239135538807,
+      "baseline_tpot_median_seconds": 0.0076222506614173225,
+      "candidate_tpot_median_seconds": 0.00742495479527559,
+      "tpot_reduction_pct": 2.588420073094866,
+      "trajectory_sha256": "a892eb11d69ed4a408e680432ebee0de04a202950ba7c5072731a001c753f039"
+    },
+    "context_12288": {
+      "baseline_wall_median_seconds": 0.7530200704932213,
+      "candidate_wall_median_seconds": 0.7524649500846863,
+      "candidate_wall_change_pct": -0.07371920487742045,
+      "trajectory_sha256": "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832"
+    },
+    "context_32760": {
+      "baseline_wall_median_seconds": 2.683345705270767,
+      "candidate_wall_median_seconds": 2.6840716898441315,
+      "candidate_wall_change_pct": 0.027055200973102878,
+      "trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9"
+    }
+  },
+  "systems_profile": {
+    "workload": "1024 prompt + 128 output after one unprofiled warmup",
+    "baseline": {
+      "mean_decode_envelope_ms": 8.714316166666666,
+      "mean_decode_gpu_busy_ms": 8.320122,
+      "residual_rmsnorm_ms_per_step": 0.307856,
+      "kernels_per_decode_step": 365,
+      "raw_sha256": "45d97f24683e58bedd1e225be6bce79091c2ab3e2af7a197e5f25e3be4402eb0"
+    },
+    "candidate": {
+      "mean_decode_envelope_ms": 8.511195333333334,
+      "mean_decode_gpu_busy_ms": 8.122374666666667,
+      "residual_rmsnorm_ms_per_step": 0.11578716666666667,
+      "kernels_per_decode_step": 365,
+      "raw_sha256": "57310a2627ce6571c8f15c876045bf48e5c4f2ca15caa17622483e0de2a28aaf"
+    },
+    "mean_envelope_saved_ms": 0.2031208333333321,
+    "mean_gpu_busy_saved_ms": 0.19774733333333302,
+    "residual_rmsnorm_saved_ms_per_step": 0.19206883333333333,
+    "residual_rmsnorm_reduction_pct": 62.38917978968522,
+    "kernel_instances_removed_per_step": 0,
+    "attribution": "The specialized node preserves graph structure while its measured saving accounts for nearly all of the GPU-busy and complete-window change.",
+    "raw_trace_deleted_after_derivation": true
+  },
+  "correctness": {
+    "all_screen_trajectories_exact": true,
+    "screen_cases": 40,
+    "path_markers": {
+      "baseline_installs": 0,
+      "candidate_installs": 5
+    },
+    "strict_selector_negative": true,
+    "cuda_regression": {
+      "residual_exact": true,
+      "normalized_output_exact": true,
+      "invalid_contract_rejected": true
+    },
+    "acceptance": {
+      "quick_three_of_three": true,
+      "http_contract": true,
+      "real_png": true,
+      "real_wav": true,
+      "malformed_media_recovery": true
+    }
+  },
+  "external_comparison": {
+    "vllm_omni_version": "0.26.0",
+    "vllm_decode_128_tpot_seconds": 0.022681,
+    "apxinf_candidate_decode_128_tpot_seconds": 0.00742495479527559,
+    "apxinf_decode_128_tpot_speedup": 3.0546987322308884,
+    "vllm_quick_tpot_seconds": 0.022617,
+    "apxinf_candidate_quick_tpot_seconds": 0.00808111193548387,
+    "apxinf_quick_tpot_speedup": 2.798748511413333
+  },
+  "decision": {
+    "status": "promote",
+    "scope": "single-request BF16 one-token short decode on one RTX 4090 for the pinned Qwen2.5-Omni-3B Thinker",
+    "reason": "The operator and complete trajectories are exact, all five primary and 128-token wall pairs win, long-path guards remain within 0.1%, Systems attributes the saving to the intended node, and text plus real-media acceptance passes.",
+    "non_claims": [
+      "multi-request throughput",
+      "continuous batching",
+      "non-SM89 hardware",
+      "video input",
+      "speech generation"
+    ]
+  }
+}
