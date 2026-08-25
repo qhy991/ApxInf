@@ -8,12 +8,14 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+mod full_attention_decode_v1;
 mod gdn;
 mod gdn_core_fused_profile_v1;
 mod gdn_recurrent_profile_v1;
 mod linear_layer;
 mod tail_mlp_head_v1;
 
+pub use full_attention_decode_v1::*;
 pub use gdn::{
     GdnDecodeResult, GdnDecodeState, GdnDimensions, GdnF32Weights, GdnMetalStats, MetalW8GdnBlock,
     PackedW8GdnBlock,

@@ -1,0 +1,225 @@
+{
+  "format": "apxinf-qwen35-full-attention-decode-v1-count6-predeclared-primitive-gate-v1",
+  "created_at_local_date": "2026-08-26",
+  "status": "PREDECLARED_BEFORE_CANDIDATE_PERFORMANCE_SAMPLING",
+  "baseline_parent_commit": "432b3858e28c3723d34aa3ec25494f176076c956",
+  "candidate_source_binding": "the fixed-shape Metal primitive, packed-W8 oracle, Objective-C++ bridge, shader, build wiring, live tests, count-6 gate driver, custody closure, and this predeclaration must be committed and pushed together before the first candidate performance sample",
+  "scope": {
+    "stage": "independent count-6 full-attention decode primitive gate only; a pass authorizes a separate real-checkpoint production-topology continuation and does not enable a runtime route",
+    "model": "Qwen/Qwen3.5-0.8B",
+    "target": "Apple M4 Metal versus six independent current CpuBackend/Accelerate full-attention boundaries",
+    "required_hw_model": "Mac16,10",
+    "required_cpu_brand": "Apple M4",
+    "full_attention_model_layer_indices": [3, 7, 11, 15, 19, 23],
+    "layer_slots_per_aggregate_call": 6,
+    "aggregate_semantics": "six independent per-layer boundary fixtures; one full-attention residual is not fed directly to the next because the real model has intervening GDN/MLP layers outside this primitive gate",
+    "hidden_size": 1024,
+    "query_heads": 8,
+    "kv_heads": 2,
+    "head_dim": 256,
+    "rotary_dim": 64,
+    "rope_theta": 10000000.0,
+    "rms_norm_eps": 0.000001,
+    "max_context": 256,
+    "decode_only": true,
+    "default_registry_cli_and_production_routes_unchanged": true,
+    "production_submission_topology_preserved_by_B": "six separate layer transactions, therefore six command buffers, six commits, and six waits per count-6 aggregate; the six layers are not artificially coalesced"
+  },
+  "hotspot_basis": {
+    "current_full_attention_execution": "CPU F32",
+    "matvecs_per_layer": 5,
+    "matvecs_per_token_across_six_layers": 30,
+    "f32_projection_weight_bytes_per_layer": 29360128,
+    "f32_projection_weight_bytes_per_token_across_six_layers": 176160768,
+    "candidate_boundary": [
+      "zero-centred input RMSNorm",
+      "fused G64 W8 Q/Gate/K/V projection",
+      "per-head zero-centred Q/K RMSNorm",
+      "partial rotate-half RoPE64",
+      "append-only explicit-position KV",
+      "GQA SDPA decode",
+      "sigmoid output gate",
+      "G64 W8 output projection",
+      "outer residual add"
+    ],
+    "projection_only_candidate_rejected_before_implementation": "existing screens show CPU five-projection and generic Metal projection latency too close to justify a projection-only route; the candidate covers the complete boundary"
+  },
+  "arms": {
+    "A": {
+      "label": "current_cpu_f32_accelerate_full_attention_count6",
+      "weights": "deterministic F32 source rows",
+      "operations": "six independent current CpuBackend/Accelerate full-attention residual boundaries",
+      "transactions_per_aggregate": 6,
+      "role": "current-mechanism performance baseline"
+    },
+    "B": {
+      "label": "metal_g64_w8_full_attention_decode_v1_count6",
+      "weights": "G64 W8 rows quantized once from the same deterministic F32 source rows",
+      "operations": "the complete fixed-shape Metal primitive",
+      "transactions_per_aggregate": 6,
+      "expected_topology_per_layer": {
+        "command_buffers": 1,
+        "compute_encoders": 1,
+        "kernel_dispatches": 5,
+        "explicit_buffer_barriers": 4,
+        "commits": 1,
+        "waits": 1
+      },
+      "expected_topology_per_aggregate": {
+        "command_buffers": 6,
+        "compute_encoders": 6,
+        "kernel_dispatches": 30,
+        "explicit_buffer_barriers": 24,
+        "commits": 6,
+        "waits": 6
+      },
+      "role": "only continuation candidate"
+    }
+  },
+  "comparison_qualification": {
+    "A_is_f32_and_B_is_g64_w8": true,
+    "performance_result_is_a_compound_precision_plus_device_plus_fusion_mechanism_comparison": true,
+    "not_a_pure_cpu_vs_gpu_engine_comparison": true,
+    "not_an_end_to_end_model_or_cross_runtime_comparison": true,
+    "B_correctness_authority": "independent packed-G64-W8 CPU oracle consuming the exact quantized rows uploaded to Metal",
+    "B_is_not_required_to_match_A_bitwise": true,
+    "real_checkpoint_quality_and_end_to_end_performance_required_after_any_primitive_pass": true
+  },
+  "fixed_semantics": {
+    "q_gate_checkpoint_layout": "each query head stores [Q256, Gate256]; host packing deinterleaves per head before concatenating [Q2048, Gate2048, K512, V512]",
+    "input_and_qk_norm": "mean-square RMSNorm with checkpoint weight plus 1.0",
+    "rope": "non-interleaved rotate-half over dimensions 0..63, pairs (i,32+i), frequency theta^(-2i/64)",
+    "gqa_mapping": "query head h maps to floor(h*2/8)=floor(h/4)",
+    "attention_scale": 0.0625,
+    "kv_layout": "logical sequence-major fixtures are transposed into resident [layer_slot, kv_head, max_context, head_dim] buffers",
+    "cursor_authority": "the primitive owns no sequence cursor; the model-wide cursor supplies start_pos and is advanced only after the whole model body succeeds",
+    "failure_transaction": "a failed submitted call may dirty the uncommitted physical row, but it remains logically unreachable and the same-position retry overwrites it"
+  },
+  "correctness_gate": {
+    "logic": "AND",
+    "fixture_positions": [1, 13, 31, 76, 126, 127, 139, 255],
+    "position_127_128_boundary_reason": "the current CPU SDPA changes from scalar to grouped BLAS when kv_length reaches 128",
+    "order_per_fixture": "ABBA",
+    "deterministic_inputs_weights_and_prefixes": true,
+    "same_distinct_per_layer_inputs_for_A_B_and_oracle": true,
+    "projection_and_norm_semantic_channels_use_distinct_non_aliasing_seeds": true,
+    "A_input_tensors_materialized_outside_timing": true,
+    "B_residual_vs_packed_oracle": {
+      "max_abs_at_most": 0.00001,
+      "nrmse_at_most": 0.000001,
+      "cosine_at_least": 0.999999
+    },
+    "B_appended_key_vs_packed_oracle": {
+      "max_abs_at_most": 0.00001,
+      "nrmse_at_most": 0.000002,
+      "cosine_at_least": 0.999999
+    },
+    "B_appended_value_vs_packed_oracle": {
+      "max_abs_at_most": 0.000002,
+      "nrmse_at_most": 0.000002,
+      "cosine_at_least": 0.999999
+    },
+    "all_outputs_and_kv_must_be_finite": true,
+    "every_seeded_prefix_row_checked_bitwise_after_each_B_correctness_call": true,
+    "all_six_layer_slots_must_be_observed": true,
+    "invalid_nonfinite_shape_layer_and_capacity_inputs_fail_closed": true,
+    "validation_failures_must_not_increment_successful_decodes": true,
+    "same_position_retry_must_succeed": true,
+    "runtime_receipts_must_be_live_observed_counts": true,
+    "performance_sampling_permitted_only_after_full_correctness_gate_passes": true,
+    "threshold_freeze_basis": {
+      "performance_samples_before_freeze": 0,
+      "untimed_live_metal_integration_test_observations": {
+        "residual_max_abs": 5.96e-8,
+        "residual_nrmse": 4.26e-9,
+        "key_max_abs": 2.50e-6,
+        "key_nrmse": 6.30e-7,
+        "value_max_abs": 7.45e-8,
+        "value_nrmse": 6.24e-7
+      }
+    }
+  },
+  "fixed_performance_schedule": {
+    "primary_start_pos": 76,
+    "primary_kv_length_after_append": 77,
+    "workload_reason": "position 76 is the middle decode workload of the frozen raw13/free128 trajectory positions 13..139",
+    "calls_per_cell": 64,
+    "warmup_blocks": ["ABBA", "BAAB"],
+    "timed_blocks": ["ABBA", "BAAB"],
+    "samples_per_arm_per_timed_block": 128,
+    "pooled_samples_per_arm": 256,
+    "timed_aggregate_calls_total": 512,
+    "B_individual_layer_decodes_in_correctness": 96,
+    "B_individual_layer_decodes_in_warmup": 1536,
+    "B_individual_layer_decodes_in_timed_sampling": 1536,
+    "B_expected_successful_layer_decodes_at_completion": 3168,
+    "fixture_and_prefix_restore": "outside timing before every aggregate call",
+    "timing": "host monotonic elapsed time around one synchronous count-6 aggregate only",
+    "primary_statistic": "even median of every raw aggregate-call latency in each block and pooled",
+    "raw_samples_required": true,
+    "outlier_removal": false,
+    "cell_median_substitution": false,
+    "retries": false,
+    "resampling_after_failure": false,
+    "replacement_samples_after_failure": false,
+    "schedule_reordering": false,
+    "failure_policy": "admission begins only after immutable preconditions pass and a canonical create-new durable attempt marker is reserved; any later crash leaves that marker and forbids a second execution, while caught correctness, sampled-call, receipt, or custody failures atomically replace it with the final rejection receipt"
+  },
+  "host_precondition_before_admission": {
+    "logic": "AND",
+    "hardware_model_must_equal": "Mac16,10",
+    "cpu_brand_must_equal": "Apple M4",
+    "thermal_and_performance_warning_status_must_be_clear": true,
+    "process_cpu_snapshots": 5,
+    "interval_ms": 250,
+    "max_any_other_process_cpu_percent_per_snapshot": 10.0,
+    "max_aggregate_other_process_cpu_percent_per_snapshot": 25.0,
+    "process_cpu_percent_unit": "one logical CPU core equals 100 percent",
+    "all_snapshots_must_pass": true,
+    "failure_occurs_before_attempt_marker_or_any_candidate_performance_sample": true,
+    "precondition_failure_may_be_retried_after_the_host_becomes_quiet": true,
+    "same_check_repeated_after_sampling": true,
+    "post_sampling_cooldown_before_check_ms": 1000,
+    "postflight_failure_rejects_the_reserved_attempt": true
+  },
+  "precommitted_admission": {
+    "logic": "AND",
+    "improvement_definition": "100*(median_A-median_B)/median_A",
+    "pooled_B_over_A_improvement_percent_at_least": 10.0,
+    "block_ABBA_B_over_A_improvement_must_be_strictly_positive": true,
+    "block_BAAB_B_over_A_improvement_must_be_strictly_positive": true,
+    "equality_behavior": "pooled equality at 10.0 percent passes; a block improvement of exactly 0.0 percent is not positive",
+    "overall_pass": "target/quiet/thermal preflight and postflight AND full B packed-oracle correctness and failure semantics AND exact live topology receipts and counts AND completed fixed schedule AND pooled threshold AND positive improvement in both blocks AND unchanged custody AND zero sampled failures",
+    "pass_authorizes": "retain the primitive and begin a separately gated real-checkpoint teacher/free-128 production-topology continuation",
+    "pass_does_not_authorize": "default enablement, an ApxInf end-to-end performance claim, or any llama.cpp, Ollama, or OmniInfer winner claim",
+    "failure_action": "retain raw diagnostic evidence and do not integrate the candidate into production"
+  },
+  "custody": {
+    "candidate_commit_must_be_clean_main_equal_origin_main_and_visible_on_live_GitHub_before_sampling": true,
+    "candidate_must_be_one_non_merge_commit_directly_above_baseline_parent": true,
+    "candidate_changed_path_whitelist": [
+      "crates/apxinf-metal/build.rs",
+      "crates/apxinf-metal/evidence/next-hotspot/qwen35-full-attention-decode-v1-count6-predeclared-primitive-gate-v1-20260826.json",
+      "crates/apxinf-metal/src/full_attention_decode_v1.rs",
+      "crates/apxinf-metal/src/lib.rs",
+      "crates/apxinf-metal/src/metal_full_attention_decode_v1.metal",
+      "crates/apxinf-metal/src/metal_full_attention_decode_v1_bridge.mm",
+      "crates/apxinf-metal/tests/full_attention_decode_v1.rs",
+      "crates/apxinf-model/examples/qwen35_full_attention_decode_count6_ab_v1.rs"
+    ],
+    "implementation_test_driver_predeclaration_and_build_inputs_hashed_at_start_and_end": true,
+    "same_release_binary_for_both_arms": true,
+    "embedded_candidate_commit_must_equal_requested_commit": true,
+    "canonical_raw_receipt_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-full-attention-decode-v1-count6-primitive-ab-raw-v1-20260826.json",
+    "raw_receipt_is_create_new": true,
+    "durable_attempt_marker_reserved_before_setup_correctness_or_performance": true,
+    "successful_final_publication_uses_same_directory_sync_then_atomic_rename_over_the_marker": true,
+    "no_performance_sample_before_candidate_commit_and_push": true,
+    "formal_candidate_performance_campaigns_per_commit": 1
+  },
+  "exploratory_disclosure": {
+    "candidate_performance_samples_before_predeclaration": 0,
+    "runtime_correctness_tests_are_not_performance_samples": true,
+    "no_threshold_was_selected_from_candidate_performance": true
+  }
+}

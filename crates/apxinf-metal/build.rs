@@ -8,12 +8,14 @@ fn main() {
     println!("cargo:rerun-if-changed=src/metal_w8_tail_mlp_head_v1_bridge.mm");
     println!("cargo:rerun-if-changed=src/metal_gdn_recurrent_count18_profile_v1_bridge.mm");
     println!("cargo:rerun-if-changed=src/metal_gdn_core_fused_count18_profile_v1_bridge.mm");
+    println!("cargo:rerun-if-changed=src/metal_full_attention_decode_v1_bridge.mm");
     println!("cargo:rerun-if-changed=src/metal_w8.metal");
     println!("cargo:rerun-if-changed=src/metal_w8_matvec.metal");
     println!("cargo:rerun-if-changed=src/metal_w8_mlp.metal");
     println!("cargo:rerun-if-changed=src/metal_w8_gdn.metal");
     println!("cargo:rerun-if-changed=src/metal_w8_gdn_out_g32.metal");
     println!("cargo:rerun-if-changed=src/metal_w8_linear_layer.metal");
+    println!("cargo:rerun-if-changed=src/metal_full_attention_decode_v1.metal");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
@@ -105,6 +107,20 @@ fn main() {
     )
     .expect("write the generated Metal tail MLP+head v1 shader include");
 
+    let full_attention_shader = std::fs::read_to_string("src/metal_full_attention_decode_v1.metal")
+        .expect("read the Metal full-attention decode v1 shader source");
+    assert!(
+        !full_attention_shader.contains(&format!("){}\"", DELIMITER)),
+        "Metal full-attention decode v1 shader contains the generated C++ raw-string delimiter"
+    );
+    std::fs::write(
+        output_dir.join("metal_full_attention_decode_v1_source.inc"),
+        format!(
+            "constexpr const char *kMetalFullAttentionDecodeSourceV1 = R\"{DELIMITER}({full_attention_shader}){DELIMITER}\";\n"
+        ),
+    )
+    .expect("write the generated Metal full-attention decode v1 shader include");
+
     cc::Build::new()
         .cpp(true)
         .file("src/metal_w8_bridge.mm")
@@ -185,6 +201,15 @@ fn main() {
         .flag("-fobjc-arc")
         .flag("-fblocks")
         .compile("apxinf_metal_gdn_core_fused_count18_profile_v1_bridge");
+
+    cc::Build::new()
+        .cpp(true)
+        .file("src/metal_full_attention_decode_v1_bridge.mm")
+        .include(&output_dir)
+        .flag("-std=c++17")
+        .flag("-fobjc-arc")
+        .flag("-fblocks")
+        .compile("apxinf_metal_full_attention_decode_v1_bridge");
 
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=Metal");
