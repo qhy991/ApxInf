@@ -1,0 +1,82 @@
+{
+  "format": "apxinf-qwen35-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-raw-campaign-diagnostic-v1",
+  "schema_version": 1,
+  "created_at_utc": "2026-08-25T17:26:00Z",
+  "created_at_local": "2026-08-26T01:26:00+0800",
+  "status": "FAILED_BEFORE_FIRST_GENERATION_DRIVER_PARSE_ERROR",
+  "passed": false,
+  "campaign_consumed": true,
+  "predeclaration": {
+    "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-predeclared-diagnostic-v1-20260826.json",
+    "commit": "59e1b0d7af3f44155605537bd80b1fbec26aae7b",
+    "size_bytes": 17336,
+    "sha256": "30e19f858198186a7d718e41423215b5f65636f0cd886023eb468cc285efb427"
+  },
+  "campaign_start": {
+    "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-campaign-start-diagnostic-v1-20260826.json",
+    "commit": "2f6a289ea31ba68a39d9918f6d938012f3d0fe5f",
+    "size_bytes": 5893,
+    "sha256": "9f5edfba719cb6587627d6e77167b172b0259d4658c9eb699641b93fae320560"
+  },
+  "fixed_schedule_progress": {
+    "scheduled": ["D_warmup", "D1", "D2", "D3", "N_setup", "N_warmup", "N1", "N2", "N3"],
+    "attempted": ["D_warmup_driver_invocation"],
+    "generation_requests_started": [],
+    "generation_requests_completed": [],
+    "direct_runner_processes_spawned": 0,
+    "omniinfer_chat_requests_sent": 0,
+    "performance_observations_collected": 0,
+    "stopped_at_first_failure": true,
+    "retry_or_replacement_performed": false
+  },
+  "failure": {
+    "slot": "D_warmup",
+    "stage": "outer_driver_python_interpreter_parse_before_subprocess.run",
+    "outer_exit_code": 1,
+    "error_type": "SyntaxError",
+    "error_message": "unexpected character after line continuation character",
+    "root_cause": "the JavaScript command composer passed JSON-stringified Python source as a shell argument, so literal escaped newline sequences reached python3 -c instead of source newlines",
+    "direct_runner_started": false,
+    "model_loaded_by_direct_runner": false,
+    "metal_generation_started": false,
+    "timing_sample_exists": false,
+    "classification": "campaign infrastructure failure, not a runtime or performance result",
+    "contract_effect": "the create-new campaign-start already consumed v1; publishing this partial raw receipt and refusing to retry v1"
+  },
+  "observations": {
+    "A_historical_sidecar_repeated_but_not_resampled": true,
+    "D_fresh_samples": [],
+    "N_fresh_samples": [],
+    "O_performance_samples": [],
+    "comparative_claim_allowed": false,
+    "performance_conclusion": null
+  },
+  "end_custody": {
+    "git": {
+      "head": "2f6a289ea31ba68a39d9918f6d938012f3d0fe5f",
+      "origin_main": "2f6a289ea31ba68a39d9918f6d938012f3d0fe5f",
+      "porcelain_status_before_raw_publication": [],
+      "clean": true
+    },
+    "model_sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c",
+    "direct_runner_sha256": "ccfa5ecd78119d4f8cdd8721e7faae360cb94b8334f9d61ed47e2e00290f2716",
+    "omniinfer_cli_sha256": "65487424ca9179850b80079beafa5ad69a66e0841d328ee8dd8a1fd4b613d661",
+    "omniinfer_prebuilt_manifest_sha256": "49748f180d45f8689cfd772a4baf1e4a9db90d163e0d6cdda10ea9293a4f9c6a",
+    "omniinfer_local_state_sha256": "9343581d8dc451259bfdaf5aadb8c530f47e44ee56541d9b817d39030aee2fad",
+    "omniinfer_runtime_recursive_manifest_sha256": "1d06916fd1c86c306596c8e6bec51c30d185686fd042138234024cb894e48d1f",
+    "all_bound_artifacts_equal_campaign_start": true,
+    "port_9000_listener": false,
+    "omniinfer_or_llama_server_process": false
+  },
+  "host_end": {
+    "power_source": "AC Power",
+    "thermal_warning_recorded": false,
+    "performance_warning_recorded": false,
+    "load_averages": [2.49, 2.48, 2.62],
+    "swap_total_mib": 6144.0,
+    "swap_used_mib": 5184.19,
+    "swap_free_mib": 959.81,
+    "quiet_host_attested": false
+  },
+  "next_action": "publish v1 failure; validate a corrected driver without model execution; create a separate v2 predeclaration and create-new campaign-start before any v2 generation"
+}
