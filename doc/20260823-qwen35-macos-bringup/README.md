@@ -447,3 +447,38 @@ Its two single-observation lanes reproduce the exact same frozen 128-token
 free-run trajectory, while remaining explicitly non-formal because the host,
 thread-policy, repetition, and teacher-forced cross-runtime gates are not yet
 closed.
+
+## Cross-runtime formal v3 predeclaration
+
+The machine-readable
+[`qwen35-0.8b-cross-runtime-formal-v3.json`](../../configs/qwen35-0.8b-cross-runtime-formal-v3.json)
+separates three questions that must not be combined into one ranking:
+
+- `NATIVE_A_VS_L` compares the two fully disclosed native deployment
+  configurations on the same raw-token workload.  A result applies only to
+  those named configurations because their quantization, prefill, KV, and
+  output-head mechanisms differ.
+- `CORE_A_VS_L` reserves an engine-isolating comparison for a future ApxInf
+  lane that consumes the exact pinned GGUF Q8_0 payload and matches the F16 KV
+  policy.  The predeclaration records the current blockers, so this edge cannot
+  be sampled or ranked yet.
+- `GATEWAY_B_VS_G` measures the client-observed increment from routing one
+  identical request through OmniInfer to the same resident llama.cpp backend.
+  It is a gateway-path experiment, not an OmniInfer-versus-llama.cpp engine
+  comparison.
+
+The native and exact-core edges require frozen raw token IDs and trajectories
+with a common next-greedy-token-ready timing boundary.  The gateway edge uses
+one frozen canonical chat request and a common client full-response wall-time
+boundary instead.  Every edge requires its predeclared ABBA/BAAB schedule,
+continuous quiet-host checks, and start/end artifact custody.  The static
+validator rejects missing disclosures or any attempt to promote the blocked
+exact-Q8 edge:
+
+```sh
+/usr/bin/python3 -I -B scripts/validate_qwen35_cross_runtime_formal_contract.py \
+  --contract configs/qwen35-0.8b-cross-runtime-formal-v3.json
+```
+
+The predeclaration contains no v3 timing result.  Existing diagnostic samples
+are not reused as formal observations.
