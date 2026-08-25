@@ -1,0 +1,185 @@
+{
+  "format": "apxinf-qwen35-gdn-core-fused-v1-production-ac-v1-accepted-diagnostic-summary-v1",
+  "created_at_local_date": "2026-08-26",
+  "status": "PASSED_PREDECLARED_EXPLICIT_FULL_PATH_CONTINUATION_GATE",
+  "scope": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "target": "Apple M4 Metal",
+    "prompt": "Hello",
+    "prompt_token_ids": [248045, 846, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271],
+    "output_tokens": 128,
+    "decoding": "greedy argmax, EOS stopping disabled",
+    "route": "explicit Metal W8 MLP-to-Stack3 boundary plus fused tail-head v1",
+    "classification": "accepted non-formal diagnostic continuation evidence",
+    "default_registry_cli_auto_and_ordinary_constructors_modified": false
+  },
+  "source_and_build_binding": {
+    "baseline_parent_commit": "ac9f72885bb9f31c5a85bf7d30269b1a59aba382",
+    "candidate_commit": "10ebe67d5ed921505bf33da2df585ecb8ebaa311",
+    "candidate_was_one_non_merge_commit_directly_above_baseline": true,
+    "candidate_changed_path_whitelist_matched_exactly": true,
+    "candidate_pushed_before_fixed_campaign_sampling": true,
+    "head_origin_main_and_live_github_main_equal_candidate_at_start_and_end": true,
+    "origin_url": "https://github.com/qhy991/ApxInf.git",
+    "worktree_clean_at_start_and_exactly_sentinel_only_at_end_before_raw_publication": true,
+    "release_binary_size_bytes": 9906752,
+    "release_binary_sha256": "d47f99193d9c49af0fd86006ce9c20025d5d548e53443ebd16ec263c4bbd7e6f",
+    "gate_source_size_bytes": 142833,
+    "gate_source_sha256": "fa568bad08ce47901700889dd43781ca775100426930fffe0dba252632d984cb",
+    "predeclaration_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-production-ac-v1-predeclared-gate-v1-20260826.json",
+    "predeclaration_size_bytes": 14594,
+    "predeclaration_sha256": "2bf28e58d6653d584c54ec079c1c64ef4b31e7aac9cbaf763c8451dca7ac4c31",
+    "campaign_start_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-production-ac-v1-campaign-start-v1-20260826.json",
+    "campaign_start_size_bytes": 26888,
+    "campaign_start_sha256": "41b664fa8c551ba89d67886531a22af1c7b3de9459fcbc1bb833a81b5af7266d",
+    "raw_receipt_path": "crates/apxinf-metal/evidence/next-hotspot/qwen35-gdn-core-fused-v1-production-ac-v1-raw-campaign-v1-20260826.json",
+    "raw_receipt_size_bytes": 375432,
+    "raw_receipt_sha256": "b899d5621ca0ad48616713ea5c0c85ff4a45e54d9e5dee216cca10fc4ba349ae",
+    "raw_receipt_commit": "f3dc06de71873769ca81ad28f1979825b63b0ecc",
+    "source_binary_model_and_git_custody_unchanged_during_sampling": true
+  },
+  "host_observation": {
+    "quiet_host_attested": false,
+    "formal_quiet_host_admission_passed": false,
+    "power": "AC Power",
+    "thermal_warning": false,
+    "user_or_system_processes_terminated": false,
+    "observed_background_load": [
+      "com.apple.WebKit.GPU approximately 98.5 percent CPU",
+      "LogiOptionsPlus agent approximately 20.0 percent CPU",
+      "LogiOptionsPlus logivoice approximately 18.9 percent CPU",
+      "trustd approximately 10.7 percent CPU"
+    ],
+    "interpretation": "the fixed one-shot diagnostic continuation contract passed despite recorded background load; these timings are not formal promotion evidence and cannot authorize default activation"
+  },
+  "arms": {
+    "A": {
+      "profile": "legacy-four-dispatch",
+      "gdn_function_chain": "gdn_depthwise_preprocess|gdn_normalize_qk|gdn_recurrent_update|gdn_norm_gate",
+      "persistent_output_groups_per_row": 64,
+      "core_kernel_output_groups_per_row": 64,
+      "full_path_kernel_dispatches_per_decode": 267,
+      "full_path_explicit_broad_buffer_barriers_per_decode": 243
+    },
+    "C": {
+      "profile": "gdn-core-fused-v1",
+      "gdn_function_chain": "gdn_core_fused_v1",
+      "persistent_output_groups_per_row": 64,
+      "core_kernel_output_groups_per_row": 32,
+      "threads_per_threadgroup": 128,
+      "threadgroups_per_seam": 16,
+      "source_declared_threadgroup_memory_bytes": 2060,
+      "pipeline_static_threadgroup_memory_bytes": 2064,
+      "internal_threadgroup_barrier_sites_per_threadgroup": 4,
+      "full_path_kernel_dispatches_per_decode": 213,
+      "full_path_explicit_broad_buffer_barriers_per_decode": 189,
+      "dispatches_removed_vs_A": 54,
+      "explicit_broad_buffer_barriers_removed_vs_A": 54
+    },
+    "common_full_path": {
+      "compute_encoders_per_decode": 24,
+      "command_buffers_per_decode": 7,
+      "commits_per_decode": 7,
+      "waits_per_decode": 7,
+      "host_to_device_bytes_per_decode": 28672,
+      "device_to_host_bytes_per_decode": 28688
+    }
+  },
+  "fixed_campaign": {
+    "single_release_binary": true,
+    "total_slots": 14,
+    "completed_slots": 14,
+    "cpu_teacher_oracles": 1,
+    "teacher_order": ["C", "A", "A", "C"],
+    "cpu_free_oracles": 1,
+    "free_block_1_order": ["A", "C", "C", "A"],
+    "free_block_2_order": ["C", "A", "A", "C"],
+    "fresh_model_per_candidate_slot": true,
+    "APXINF_PERF_unset": true,
+    "retry": false,
+    "resampling": false,
+    "replacement_samples": false,
+    "outlier_removal": false,
+    "cell_median_substitution": false,
+    "sampled_attempt_failures": 0
+  },
+  "correctness_and_path_gate": {
+    "passed": true,
+    "all_14_slots_passed": true,
+    "all_four_teacher_128_step_trajectories_exact": true,
+    "all_teacher_top4_arrays_unique_in_range_and_containing_the_f32_winner": true,
+    "all_teacher_direct_tied_f32_reranks_exact": true,
+    "all_eight_free_128_token_trajectories_exact": true,
+    "all_prefill_and_final_path_checks_passed": true,
+    "all_live_profile_function_topology_group_and_state_receipts_exact": true,
+    "all_terminal_errors_clear": true,
+    "primitive_bit_exactness_bound_separately": true,
+    "hidden_tensor_exactness_claimed_by_this_full_path_gate": false
+  },
+  "performance_gate": {
+    "teacher_changed_body": {
+      "metric": "(initial Stack3 plus five MLP-to-Stack3 boundary elapsed ns) / 128 teacher calls",
+      "A_samples_ns_per_call": [9922580.6484375, 9897651.9609375],
+      "C_samples_ns_per_call": [9808059.9453125, 9104024.1171875],
+      "A_even_median_ns_per_call": 9910116.3046875,
+      "C_even_median_ns_per_call": 9456042.03125,
+      "C_over_A_improvement_percent": 4.5819267854881,
+      "threshold_percent": 3.0,
+      "passed": true
+    },
+    "free_generation_tpot": {
+      "metric": "GenerationProfile.tpot_ms",
+      "A_samples_ms": [14.841131566929134, 15.059196196850392, 14.802139110236219, 14.8152798503937],
+      "C_samples_ms": [14.244145669291338, 14.215104984251967, 14.628695866141731, 14.381256228346457],
+      "A_pooled_even_median_ms": 14.828205708661418,
+      "C_pooled_even_median_ms": 14.312700948818897,
+      "A_derived_tps": 67.43904283819602,
+      "C_derived_tps": 69.86801467982333,
+      "pooled_C_over_A_improvement_percent": 3.476514758231374,
+      "pooled_threshold_percent": 1.5,
+      "block_1_C_over_A_improvement_percent": 4.819603054592269,
+      "block_2_C_over_A_improvement_percent": 2.0510459299280255,
+      "both_blocks_strictly_positive": true,
+      "passed": true
+    },
+    "all_predeclared_thresholds_passed": true
+  },
+  "validation": {
+    "apxinf_metal_nonignored_tests_passed": 71,
+    "fixed_shape_real_metal_A_C_bit_exact_tests_passed": 2,
+    "apxinf_model_metal_feature_lib_tests_passed": 129,
+    "campaign_gate_tests_passed": 17,
+    "campaign_gate_tests_ignored": 1,
+    "old_linear_gate_tests_passed": 14,
+    "old_linear_gate_tests_ignored": 1,
+    "format_check_passed": true,
+    "json_check_passed": true,
+    "diff_check_passed": true,
+    "independent_implementation_audit": "PASS_NO_P0_P1_P2_BLOCKERS",
+    "independent_campaign_statistics_audit": "PASS_NO_BLOCKERS"
+  },
+  "decision": {
+    "explicit_full_path_continuation_accepted": true,
+    "selected_arm": "C_gdn_core_fused_v1",
+    "retain_explicit_opt_in_route": true,
+    "formal_promotion_passed": false,
+    "default_activation_authorized": false,
+    "cross_runtime_refresh_authorized": true,
+    "unsupported_inferences": [
+      "a formal quiet-host production improvement",
+      "authorization to make C the default",
+      "a measured physical DRAM or cache-traffic reduction",
+      "that the old frozen llama.cpp advantage has changed without a fresh same-host rerun",
+      "that OmniInfer gateway wall time is equivalent to llama.cpp core decode time"
+    ]
+  },
+  "cross_runtime_next_step": {
+    "status": "AUTHORIZED_NOT_YET_REFRESHED",
+    "same_host_runtimes": ["llama.cpp", "Ollama", "omnimind-ai/OmniInfer"],
+    "frozen_workload": "same exact model artifact where supported, same 13-token prompt, 128 greedy tokens, EOS disabled, cache reset",
+    "omniinfer_reporting": "report llama.cpp core predicted_ms separately from gateway/orchestration wall_time_ms",
+    "ascend_omni_ai_npu_project": "cross-hardware service metrics only, never a same-hardware engine claim"
+  },
+  "known_one_shot_limitation": "without an external monotonic authority, the sentinel cannot prove that it was never deleted and restored or that the binary/worktree was never copied and executed elsewhere"
+}
