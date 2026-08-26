@@ -16,10 +16,7 @@ apxinf/
 │   ├── auto.py       AutoPolicy: checkpoint -> concrete policy by config type
 │   └── impls/        concrete per-model policies (the part that grows)
 │       ├── pi05.py       Pi05Policy (native ApxInf runtime)
-│       ├── dm05.py       Dm05Policy (pinned base graph + factory seam)
-│       ├── dm05_runtime.py              two-selector lazy factory
-│       ├── dm05_static_mask_prefix_graph.py  exact graph carrier
-│       └── dm05_combined_runtime.py     model-local combined runtime
+│       └── dm05.py       Dm05Policy (native Rust VlaRuntime frontend)
 ├── adapters/     downstream: expose a Policy through a foreign API (lazy imports)
 │   └── lerobot.py   ApxInfPolicy — drop-in policy for a lerobot control loop
 └── __init__.py   facade: Model (lazy), concrete policies, AutoPolicy, steps
@@ -43,8 +40,8 @@ of that workflow.
   by the tokenizer only.
 - **L2 policies** (`apxinf.Pi05Policy`, `apxinf.Dm05Policy`, or
   `apxinf.AutoPolicy`) — expose one stable observation-to-actions contract.
-  PI0.5 composes a pre pipeline + native L1 handle + post pipeline. DM05 binds
-  the pinned official base graph to an explicit runtime selector/factory seam.
+  PI0.5 composes a pre pipeline + native L1 handle + post pipeline. DM05 owns
+  exact Gemma3 preprocessing/postprocessing around its native L1 handle.
   `import apxinf` stays CUDA-free; only explicit runtime construction imports a
   backend.
 
@@ -137,16 +134,16 @@ result["timing"]    # {"model_ms": ..., "total_ms": ...}
 ```
 
 For `config.json:model_type == "dm05"`, `AutoPolicy` selects `Dm05Policy`.
-DM05-libero is intentionally a pinned external OpenDM deployment adapter, not a
-native ApxInf `VlaRuntime` port. Its wire contract is fixed to BF16, two ordered
-images, a required 8D Franka state field, ten diffusion steps, and a 10x7 action
-chunk. The state is shape-validated but not consumed because the pinned
-checkpoint uses `add_state=False`. `execution_backend="default"` uses the
-official model path; `"default_exact_combined"` is opt-in and uses ApxInf's
-Python/Triton fail-closed specialization behind the neutral `RuntimeFactory`
-seam. See the root README's
-**DM05-libero HTTP deployment** section for the immutable source/checkpoint
-identity, license boundary, server command, and request schema.
+DM05-libero is a native Rust `VlaRuntime` port: model structure, BF16 weights,
+vision/language/action execution, the ten-step denoising schedule, and CUDA
+Graph state live under `crates/apxinf-model/src/dm05/`. Python retains the
+pinned Gemma3 processor, OpenCV resize, quantile unnormalization, and serial
+HTTP wire. The deployment contract is fixed to two ordered images, a required
+8D Franka state field, and a 10x7 action chunk. State is validated but not
+consumed because the pinned checkpoint uses `add_state=False`. OpenDM is a
+private reference, not a runtime dependency or fallback. See the root README's
+**DM05-libero native HTTP deployment** section for the immutable checkpoint,
+build command, request schema, and qualification status.
 
 For bare-model (L1) use, the binding is reachable as `apxinf.Model`:
 

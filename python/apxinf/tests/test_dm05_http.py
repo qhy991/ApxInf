@@ -27,6 +27,7 @@ def test_dm05_native_http_health_and_infer():
     assert health["schema"] == "apxinf.dm05.libero.http.v2"
     assert health["policy"]["backend"] == "apxinf-native"
     assert health["policy"]["state_conditioned"] is False
+    assert health["policy"]["max_prefix_len"] == 768
     assert health["policy"]["sampling_rng"] == "apxinf-philox-box-muller-v1"
     assert "path_proof" not in health["policy"]
     assert "execution_backend" not in health["policy"]

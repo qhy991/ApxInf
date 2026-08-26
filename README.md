@@ -571,29 +571,25 @@ The evaluator is resumable: completed task/trial rows in the JSONL ledger are
 skipped on the next run. If the evaluator and server are on different machines,
 replace `127.0.0.1` with the server's reachable IP address.
 
-## DM05-libero HTTP deployment
+## DM05-libero native HTTP deployment
 
-This integration is a pinned **external OpenDM deployment adapter**, not a
-completed native ApxInf model port under
-[`doc/porting-workflow.md`](doc/porting-workflow.md). It does not add
-`crates/apxinf-model/src/dm05/`, implement Rust `VlaRuntime`, or route its
-specialized Triton kernel through ApxInf's safe-Rust kernel layer. The pinned
-official OpenDM/PyTorch source remains the owner of the base model graph,
-weights, and denoising schedule. ApxInf owns model selection, the fixed LIBERO
-wire contract, runtime selection, serial HTTP transport, and the default-off
-Python/Triton execution specialization. A native DM05 port is separate future
-work; review of this change therefore requires maintainers to accept the
-bounded external-runtime adapter boundary.
+DM05-libero is implemented as an isolated native Rust `VlaRuntime` under
+`crates/apxinf-model/src/dm05/` and loads through the normal
+`AutoModel -> LoadedModel::Vla` path. ApxInf owns the BF16 weights, Gemma3
+vision/language/action graph, ten-step denoising schedule, CUDA execution, Python
+policy, and serial HTTP transport. The pinned OpenDM revision is used only as a
+private numerical reference; serving does not import OpenDM, PyTorch, or Triton
+and has no external-runtime fallback.
 
 The first supported deployment cell is:
 
 ```text
 model       Dexmal/DM05-libero@25a8e0d38a8eaeaae41a44d7b4a2378fd8ce1088
-base graph  dexmal/opendm@e41e501bb82e9c3cb8138c0fb4687faa5f98c690
-hardware    one CUDA GPU; optimized selector scoped to RTX 4090 / SM89
-precision   BF16; eager/SDPA/SDPA attention
+reference   dexmal/opendm@e41e501bb82e9c3cb8138c0fb4687faa5f98c690
+hardware    one RTX 4090 / SM89 CUDA GPU
+precision   native BF16
 request     B=1, two ordered 448x448 images, required 8D Franka state field
-sampling    10 diffusion steps; optimized selector requires seed 7
+sampling    10 diffusion steps; explicit 10x32 latent or ApxInf-native RNG
 output      finite float32 LIBERO actions with shape 10x7
 transport   POST /v1/infer, concurrency 1
 ```
@@ -624,7 +620,7 @@ sha256sum \
   "$APXINF_DM05_MODEL/tokenizer_config.json"
 ```
 
-Before parsing configuration or importing the GPU runtime, the adapter verifies
+Before constructing the processor or GPU runtime, the policy verifies
 the complete snapshot surface used by model and processor construction:
 
 | file | exact bytes | SHA-256 |
@@ -638,143 +634,64 @@ the complete snapshot surface used by model and processor construction:
 | `tokenizer.json` | 33,384,567 | `daab2354f8a74e70d70b4d1f804939b68a8c9624dd06cb7858e52dd8970e9726` |
 | `tokenizer_config.json` | 715 | `eb28e3a9807f77cd74dce1b8aed91884621c0302941794470c5a46f884462615` |
 
-Clone and detach the exact official OpenDM source, then install its declared
-environment plus the combined runtime's Triton dependency. The checked-out
-`pyproject.toml` is the owner of the OpenDM dependency set; ApxInf's `dm05`
-extra installs only the directly imported OpenCV package, not OpenDM, PyTorch,
-Transformers, or Triton.
+Build the CUDA binding and install the Python policy in a Python 3.10 or newer
+virtual environment. The `dm05` extra pins the processor stack; OpenDM,
+PyTorch, and Triton are deliberately absent.
 
 ```bash
-export OPENDM_ROOT=/path/to/opendm-e41e501b
-export APXINF_DM05_VENV=/path/to/apxinf-dm05-py312
-python3.12 -m venv "$APXINF_DM05_VENV"
+export APXINF_DM05_VENV=/path/to/apxinf-dm05-py310
+python3.10 -m venv "$APXINF_DM05_VENV"
 . "$APXINF_DM05_VENV/bin/activate"
 
-git clone https://github.com/Dexmal/OpenDM.git "$OPENDM_ROOT"
-git -C "$OPENDM_ROOT" checkout --detach \
-  e41e501bb82e9c3cb8138c0fb4687faa5f98c690
-python3 -m pip install \
-  'torch==2.11.0' 'torchvision==0.26.0' \
-  --index-url https://download.pytorch.org/whl/cu130
-python3 -m pip install -e "$OPENDM_ROOT"
-python3 -m pip install 'triton==3.6.0'
-
-git -C "$OPENDM_ROOT" rev-parse HEAD
-# e41e501bb82e9c3cb8138c0fb4687faa5f98c690
-git -C "$OPENDM_ROOT" status --short
-
-python3 - <<'PY'
-import torch, transformers, triton
-assert torch.__version__ == "2.11.0+cu130", torch.__version__
-assert torch.version.cuda == "13.0", torch.version.cuda
-assert transformers.__version__ == "5.3.0", transformers.__version__
-assert triton.__version__ == "3.6.0", triton.__version__
-PY
-
+python3 -m pip install -U pip maturin
+APXINF_CUDA_ARCH=sm_89 CUDA_PATH=/usr/local/cuda \
+  maturin develop --release --features cuda -m crates/apxinf-py/Cargo.toml
 python3 -m pip install -e 'python/apxinf[dm05]'
-PYTHONPATH="python/apxinf:$OPENDM_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
 python3 scripts/dm05_http_server.py \
   --model-dir "$APXINF_DM05_MODEL" \
-  --opendm-root "$OPENDM_ROOT" \
   --precision bf16 --device cuda:0 \
-  --execution-backend default \
   --host 0.0.0.0 --port 7891
 ```
 
-There are exactly two public runtime selectors:
+The native path is singular and fail-closed. `Dm05Policy -> apxinf.Model ->
+AutoModel -> Dm05VlaRuntime` owns the checkpoint and execution. The loader
+accepts only BF16, `H=10`, exactly two views, SM89, and the verified single
+`model.safetensors` file. Unsupported architecture, checkpoint surface, tensor,
+shape, dtype, device, mask, or precision returns an error; it never falls back
+to another framework.
 
-- `default` runs the pinned official model path and accepts any seed in
-  PyTorch's inclusive integer range `[-2^63, 2^64-1]`.
-- `default_exact_combined` is opt-in and fail-closed. It fixes seed 7, processed
-  prefix length 564, ten diffusion steps, and the qualified host intra-op policy
-  of two threads. ApxInf owns the static prefix/suffix graphs, fixed modulation
-  table, suffix metadata owners, expanded K/V workspaces, and exact
-  post-reduction affine kernel behind the neutral `RuntimeFactory` seam.
-  Unsupported shape, source, code generation, or runtime drift raises an error
-  instead of falling back to `default`.
+`sampling.seed` drives ApxInf's deterministic
+`apxinf-philox-box-muller-v1` generator. It is distribution-compatible standard
+normal noise, but the same integer does not reproduce PyTorch CUDA's random
+tensor. For reference comparison, send the exact 10x32 latent through the
+top-level `noise` field; this is an ApxInf extension to the OpenDM-shaped HTTP
+request and is the canonical numerical replay path.
 
-`Dm05Policy.from_pretrained` and the HTTP CLI always bind ApxInf's built-in
-factory; callers cannot substitute an unqualified runtime factory on the public
-serving path.
+### RTX 4090 native qualification
 
-The model-local runtime calls the official Euler suffix mathematics without
-patching OpenDM. It verifies the official e41 `dm05_arch.py` digest as
-`b5ab170374fbc965aa86d7d370075e8c8bc21bcf46bc6de34e7e336df1af9ce8`;
-temporary capture specializations bind only the module globals consumed by that
-official path and are restored before serving.
+The native implementation is qualified independently of the superseded
+external OpenDM/Triton adapter. Measurements from that removed implementation
+are not evidence for this Rust runtime and are intentionally not reproduced
+here.
 
-The combined selector sets `OMP_NUM_THREADS=2` and `MKL_NUM_THREADS=2` before
-PyTorch import. `/health` and successful inference responses include a
-pointer-free execution proof; raw process addresses are rejected at the ApxInf
-boundary.
+Current native evidence on the declared RTX 4090 / SM89 cell:
 
-One ApxInf process owns one serialized DM05 inference stream. A process-wide
-lock covers both selectors so combined lazy initialization/capture cannot
-overlap another ApxInf-owned DM05 call. Calling OpenDM directly from another
-thread in that same process during capture bypasses this ownership boundary and
-is unsupported; use the ApxInf policy/HTTP path or a separate process.
+- the full CUDA build, including regular, split-KV, and causal BF16 FA2
+  translation units, compiles with `APXINF_CUDA_ARCH=sm_89`;
+- configuration and all 1,473 BF16 checkpoint tensors are fail-closed and fully
+  owned by the loader;
+- model-neutral CUDA tests cover exact embedding/RoPE/time/Euler boundaries,
+  noncausal regular/split-KV GQA, bottom-right causal GQA, device consistency,
+  finite outputs, and unsupported shapes;
+- three private OpenDM e41 captures retain the original LIBERO fixture and
+  official demo frames 0 and 14, including exact input latents, processor
+  tensors, selected intermediate tensors, and final normalized/LIBERO actions.
 
-The runtime verifies generated PTX structure and binds both PTX and cubin
-SHA-256 identities, but it does not ship `nvdisasm` or claim that PTX inspection
-is a SASS proof. Runtime readiness and promotion evidence remain deliberately
-separate. The qualified RTX 4090 receipt independently matched the runtime PTX
-and cubin, disassembled the cubin, and verified exactly two scalar `FMUL`, two
-scalar `FADD`, BF16 round-to-nearest output, 17 registers, zero stack/local
-storage, and no FFMA/FMA/MAD or spill path.
-
-### Owner-measured RTX 4090 fixed-cell qualification
-
-#### Owner-measured formal result: accepted private R5 versus combined
-
-The opt-in combined selector passed the owner's balanced eight-process formal
-comparison against the previously accepted private static-mask dual-graph R5
-deployment. Each arm retained 20 requests (five per process) in
-`A,B,B,A,A,B,B,A` order after one excluded warmup per process:
-
-| metric | accepted R5 A | combined B | result |
-|---|---:|---:|---:|
-| HTTP action-chunk median | 160.706 ms | 144.479 ms | 16.227 ms saved; B/A 0.89903 |
-| model median | 145.471 ms | 127.741 ms | 17.730 ms saved |
-| population CV | 2.528% | 2.115% | both within the 3% client gate |
-
-All four paired blocks were positive. Every excluded warmup and all 40 retained
-responses matched the official seed-7 oracle bitwise; the negative control was
-rejected. Peak process memory was 12,282 MiB.
-
-This is single-fixture evidence: all requests use one frozen prompt/image pair
-and layout. Raw samples and compiler/lifecycle artifacts remain owner-retained
-outside this repository, with a public content-hash manifest in the OMoE
-archive linked from PR #17. Maintainer reproduction is pending, so this result
-is not independent evidence of a general or native DM05 port.
-
-This is an integrated source-plus-runtime comparison: A used the accepted R5
-source commits, while B used this ApxInf source with official OpenDM `e41e501`.
-The 10.10% HTTP improvement is the measured combined result, not a sum of the
-individual optimization experiments and not a per-feature causal estimate.
-
-#### Descriptive comparison with the official execution path
-
-The final-PR `default` selector, which exposes the pinned official OpenDM model
-path from the same final ApxInf source, separately passed an HTTP
-correctness/lifecycle sentinel with a 694.982 ms median. The combined selector's
-formal-run median was 144.479 ms. Taken descriptively, the latter is 0.20789 of
-the `default` latency: about 79.21% lower latency, or 4.81x faster.
-
-This is useful evidence that the optimized path improves performance relative
-to the official execution path for the frozen request, but it is not the formal
-speedup claim. The `default` sentinel and combined formal arm were not collected
-as a balanced, matched ABBA comparison and have different sample populations.
-The owner's only formal performance result is therefore the 10.10% HTTP
-improvement over private accepted R5 reported above. The `default` sentinel
-preserves and checks the official rollback path; it does not establish a
-second formal speedup ratio.
-
-Cold initialization remains a deliberate limitation. Median excluded warmup
-latency was 3,251.220 ms for R5 and 5,562.208 ms for the combined selector, an
-incremental cost of 2,310.988 ms. At the measured steady saving, that difference
-is recovered after about 143 subsequent requests (about 144 total requests
-including the cold one). Short-lived or cold-first-request deployments should
-keep `default` or measure their own workload before selecting the combined path.
+The final deterministic action tolerance and current-head latency result are
+reported in PR #17 after replaying all three explicit-latent fixtures through
+the public native path. Until that receipt is present, treat native numerical
+and performance qualification as pending rather than inheriting the old
+adapter result.
 
 ```bash
 curl -fsS http://127.0.0.1:7891/health
@@ -794,6 +711,11 @@ curl -fsS http://127.0.0.1:7891/v1/infer \
 }
 ```
 
+For canonical reference replay, add top-level `"noise": [[...], ...]` with
+exactly 10 rows and 32 finite values per row. When `noise` is present,
+`sampling.seed` is reported for request identity but does not generate the
+latent.
+
 Checkpoint and license boundary: the weights are not vendored in ApxInf. The
 Hugging Face metadata for the pinned `Dexmal/DM05-libero` revision declares
 `license: gemma`; users must obtain and use the weights under that license.
@@ -812,9 +734,10 @@ the state field because `add_state=False`. The frozen HTTP request and bitwise
 oracle checks above do not replace closed-loop evaluation.
 
 Accordingly, this PR makes no claim that it reproduces, preserves, or improves
-the reported 99.0% LIBERO task-success rate. It establishes only the stated
-fixed-request numerical equivalence and RTX 4090 latency results. Maintainers
-should use the official rollout artifacts to decide task-success acceptance.
+the reported 99.0% LIBERO task-success rate. Its deterministic fixture and
+RTX 4090 latency receipts cover serving correctness and performance only;
+maintainers should use official rollout artifacts to decide task-success
+acceptance.
 
 ## License
 

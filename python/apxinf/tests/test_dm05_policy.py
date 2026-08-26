@@ -47,9 +47,37 @@ class FakeProcessor:
 
     def apply_chat_template(self, messages, **kwargs):
         self.calls.append((messages, kwargs))
-        ids = np.full((1, 564), 2, dtype=np.int64)
-        ids[:, 37:293] = 262_144
-        ids[:, 301:557] = 262_144
+        # Pinned real-processor layout for the fixture prompt.
+        ids = np.full((1, 557), 2, dtype=np.int64)
+        ids[:, 30:286] = 262_144
+        ids[:, 294:550] = 262_144
+        return {"input_ids": ids}
+
+
+class LongPromptProcessor:
+    class Tokenizer:
+        @staticmethod
+        def encode(prompt, *, add_special_tokens):
+            assert add_special_tokens is False
+            return list(range(100))
+
+        @staticmethod
+        def decode(token_ids, *, skip_special_tokens):
+            assert skip_special_tokens is False
+            assert len(token_ids) == 52
+            return " shortened prompt "
+
+    tokenizer = Tokenizer()
+
+    def __init__(self):
+        self.calls = []
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.calls.append((messages, kwargs))
+        length = 800 if len(self.calls) == 1 else 700
+        ids = np.full((1, length), 2, dtype=np.int64)
+        ids[:, 30:286] = 262_144
+        ids[:, 294:550] = 262_144
         return {"input_ids": ids}
 
 
@@ -146,12 +174,12 @@ def test_dm05_native_policy_forwards_exact_public_contract_and_noise():
     call = backend.calls[0]
     assert call["rgb_u8"].shape == (2, 448, 448, 3)
     assert call["rgb_u8"].dtype == np.uint8
-    assert call["token_ids"].shape == (564,)
+    assert call["token_ids"].shape == (557,)
     assert call["token_ids"].dtype == np.uint32
     assert np.array_equal(call["noise"], noise)
 
 
-def test_dm05_processor_template_is_exact_and_state_is_not_consumed():
+def test_dm05_processor_template_preserves_prompt_and_drops_state():
     instance = policy()
     first = observation()
     second = observation()
@@ -181,6 +209,18 @@ def test_dm05_prompt_validation_does_not_rewrite_valid_whitespace():
         "Robot: Franka\nOverall speed: 0.5\n"
         "Task:   pick up the bowl  .\nHead image: "
     )
+
+
+def test_dm05_long_prompt_uses_official_libero_shortening_rule():
+    instance = policy()
+    instance.processor = LongPromptProcessor()
+    images = [Image.new("RGB", (448, 448)), Image.new("RGB", (448, 448))]
+    ids = instance._tokens("x" * 100, images)
+    assert ids.shape == (700,)
+    assert len(instance.processor.calls) == 2
+    second_messages, second_kwargs = instance.processor.calls[1]
+    assert "Task: shortened prompt." in second_messages[0]["content"][0]["text"]
+    assert "add_generation_prompt" not in second_kwargs
 
 
 def test_dm05_seed_path_is_explicit_and_negative_seed_is_mapped():
@@ -224,6 +264,19 @@ def test_dm05_policy_rejects_bad_native_output_and_noise():
         policy().infer(observation(), noise=np.zeros((10, 7), dtype=np.float32))
 
 
+def test_dm05_policy_rejects_unowned_backend_identity():
+    class MissingMetadata(FakeBackend):
+        metadata = {}
+
+    class WrongBackend(FakeBackend):
+        metadata = {**FakeBackend.metadata, "backend": "external"}
+
+    with pytest.raises(RuntimeError, match="metadata omitted"):
+        policy(MissingMetadata())
+    with pytest.raises(RuntimeError, match="apxinf-native"):
+        policy(WrongBackend())
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -242,6 +295,7 @@ def test_dm05_policy_rejects_bad_native_output_and_noise():
         "image_prompts",
         "robot_type",
         "diffusion_steps",
+        "max_prefix_len",
         "sampling_rng",
         "concurrency",
     ],
@@ -328,10 +382,10 @@ def test_dm05_native_backend_loads_the_verified_weight_file_not_directory(
     assert calls[0][1] == tmp_path / "model.safetensors"
 
 
-def test_dm05_extra_declares_runtime_dependencies_and_python_floor():
+def test_dm05_extra_declares_runtime_dependencies_without_raising_base_floor():
     project = Path(__file__).resolve().parents[1] / "pyproject.toml"
     document = project.read_text(encoding="utf-8")
-    assert 'requires-python = ">=3.10"' in document
+    assert 'requires-python = ">=3.9"' in document
     assert '"jinja2>=3.1"' in document
     assert '"transformers==5.3.0"' in document
 

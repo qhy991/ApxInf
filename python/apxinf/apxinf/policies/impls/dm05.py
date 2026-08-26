@@ -40,6 +40,7 @@ STATE_DIM = 8
 IMAGE_SIZE = 448
 IMAGE_PROMPTS = ("Head", "Left wrist")
 DIFFUSION_STEPS = 10
+MAX_PREFIX_LEN = 768
 
 _TORCH_SEED_MIN = -(1 << 63)
 _TORCH_SEED_MAX = (1 << 64) - 1
@@ -89,6 +90,7 @@ _CANONICAL_METADATA = {
     "image_prompts",
     "robot_type",
     "diffusion_steps",
+    "max_prefix_len",
     "sampling_rng",
     "concurrency",
 }
@@ -307,6 +309,14 @@ class Dm05Policy:
         self.default_seed = int(default_seed)
         _seed_u64(self.default_seed)
         backend_metadata = dict(getattr(backend, "metadata", {}))
+        required_backend_metadata = {"backend", "model_revision", "device", "precision"}
+        missing_backend_metadata = sorted(required_backend_metadata - set(backend_metadata))
+        if missing_backend_metadata:
+            raise RuntimeError(
+                f"native DM05 backend metadata omitted: {missing_backend_metadata}"
+            )
+        if backend_metadata["backend"] != "apxinf-native":
+            raise RuntimeError("DM05 policy accepts only the apxinf-native backend")
         policy_metadata = {
             "schema": "apxinf.dm05.libero.policy.v2",
             "model_type": "dm05",
@@ -319,6 +329,7 @@ class Dm05Policy:
             "image_prompts": list(IMAGE_PROMPTS),
             "robot_type": "Franka",
             "diffusion_steps": DIFFUSION_STEPS,
+            "max_prefix_len": MAX_PREFIX_LEN,
             "sampling_rng": "apxinf-philox-box-muller-v1",
             "concurrency": 1,
         }
@@ -331,11 +342,10 @@ class Dm05Policy:
             raise RuntimeError(
                 f"native DM05 backend conflicts with policy metadata: {conflicts}"
             )
-        if backend_metadata.get("backend") == "apxinf-native":
-            if backend_metadata.get("model_revision") != MODEL_REVISION:
-                raise RuntimeError("native DM05 backend model revision mismatch")
-            if backend_metadata.get("precision") != "bf16":
-                raise RuntimeError("native DM05 backend precision mismatch")
+        if backend_metadata["model_revision"] != MODEL_REVISION:
+            raise RuntimeError("native DM05 backend model revision mismatch")
+        if backend_metadata["precision"] != "bf16":
+            raise RuntimeError("native DM05 backend precision mismatch")
         self.metadata = {
             **policy_metadata,
             **backend_metadata,
@@ -440,9 +450,34 @@ class Dm05Policy:
             return_dict=True,
             return_tensors="np",
         )
+
         ids = np.asarray(values["input_ids"])
+        if ids.ndim == 2 and ids.shape[0] == 1 and ids.shape[1] > MAX_PREFIX_LEN:
+            tokenizer = getattr(self.processor, "tokenizer", None)
+            if tokenizer is None:
+                raise RuntimeError("DM05 processor omitted tokenizer for prompt shortening")
+            prompt_token_ids = tokenizer.encode(prompt, add_special_tokens=False)
+            overflow = ids.shape[1] - MAX_PREFIX_LEN
+            keep_tokens = max(0, len(prompt_token_ids) - overflow - 16)
+            shortened_prompt = tokenizer.decode(
+                prompt_token_ids[:keep_tokens], skip_special_tokens=False
+            ).strip()
+            content[0]["text"] = content[0]["text"].replace(
+                prompt, shortened_prompt, 1
+            )
+            values = self.processor.apply_chat_template(
+                [{"role": "user", "content": content}],
+                tokenize=True,
+                return_dict=True,
+                return_tensors="np",
+            )
+            ids = np.asarray(values["input_ids"])
         if ids.ndim != 2 or ids.shape[0] != 1:
             raise RuntimeError(f"DM05 processor returned invalid input_ids shape {ids.shape}")
+        if ids.shape[1] > MAX_PREFIX_LEN:
+            raise RuntimeError(
+                f"DM05 shortened prefix still exceeds {MAX_PREFIX_LEN} tokens: {ids.shape[1]}"
+            )
         ids = np.ascontiguousarray(ids[0], dtype=np.uint32)
         if ids.size == 0 or np.count_nonzero(ids == 262_144) != 512:
             raise RuntimeError("DM05 processor did not produce two 256-token image blocks")

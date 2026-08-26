@@ -9,8 +9,8 @@ Three layers, kept deliberately decoupled:
   Robot-specific steps (varying by robot body, not by model) live under
   :mod:`apxinf.processors.robots`.
 * **policies** — the **L2** layer (:mod:`apxinf.policies`). PI0.5 composes a pre
-  pipeline + native bare-model handle + post pipeline; DM05 uses the same
-  outward contract with an explicit selected-runtime factory seam.
+  pipeline + native bare-model handle + post pipeline; DM05 owns its exact
+  Gemma3 processor contract around a native Rust ``VlaRuntime`` handle.
   :class:`~apxinf.policies.auto.AutoPolicy` dispatches a checkpoint to its concrete
   policy by ``config.json`` model type; :class:`~apxinf.policies.base.Policy` is
   the structural contract they all satisfy.

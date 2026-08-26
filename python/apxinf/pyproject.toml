@@ -7,7 +7,7 @@ name = "apxinf"
 version = "0.1.0"
 description = "ApxInf Python frontend: processor library and VLA policy/serving layer."
 license = { text = "Apache-2.0" }
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 # The processor library is pure numpy/PIL/sentencepiece with no GPU / no Rust
 # dependency, so it installs and unit-tests offline. `apxinf-py` is only needed
 # when a real Pi05Policy is constructed, hence it is an optional extra.
@@ -25,6 +25,9 @@ policy = ["apxinf-py>=0.1.0"]
 serving = ["msgpack>=1.0.5", "websockets>=14.0"]
 # Native DM05 uses the PyO3 VLA runtime; Python retains only exact Gemma3
 # tokenization plus fixed image preprocessing and action postprocessing.
+# Its pinned Transformers dependency requires Python >=3.10; installing this
+# extra on Python 3.9 therefore fails dependency resolution without dropping
+# base-package Python 3.9 support.
 dm05 = [
     "apxinf-py>=0.1.0",
     "opencv-python-headless>=4.8",
