@@ -2086,6 +2086,15 @@ impl GeneralQwen35 {
         &mut self,
         full_attention_residual: &Tensor,
     ) -> Result<Qwen35BoundaryTailHeadOutputV1> {
+        self.run_boundary_tail_head_v1_excluding(full_attention_residual, &[])
+    }
+
+    #[cfg(feature = "metal-w8")]
+    fn run_boundary_tail_head_v1_excluding(
+        &mut self,
+        full_attention_residual: &Tensor,
+        excluded_token_ids: &[u32],
+    ) -> Result<Qwen35BoundaryTailHeadOutputV1> {
         let expected = [1, self.config.text.hidden_size];
         if full_attention_residual.shape().dims() != expected {
             return Err(Error::ShapeMismatch {
@@ -2126,17 +2135,21 @@ impl GeneralQwen35 {
         }
         let started = std::time::Instant::now();
         let (normalized_hidden, candidates) = {
-            let output = self
+            let tail = &mut self
                 .metal_w8_mlp_stack3_boundary_tail_head_v1
                 .as_mut()
                 .expect("boundary + tail-head v1 presence checked before body advancement")
-                .tail
-                .decode(input)
-                .map_err(|error| {
-                    Error::Other(format!(
-                        "qwen3.5 Metal W8 tail-head v1 transaction failed: {error}"
-                    ))
-                })?;
+                .tail;
+            let output = if excluded_token_ids.is_empty() {
+                tail.decode(input)
+            } else {
+                tail.decode_excluding(input, excluded_token_ids)
+            }
+            .map_err(|error| {
+                Error::Other(format!(
+                    "qwen3.5 Metal W8 tail-head v1 transaction failed: {error}"
+                ))
+            })?;
             (
                 output.normalized_hidden.to_vec(),
                 output.candidate_token_ids,
@@ -2159,11 +2172,29 @@ impl GeneralQwen35 {
         normalized_hidden: &Tensor,
         candidates: [u32; apxinf_metal::W8_TOP_K],
     ) -> Result<(u32, u128)> {
+        self.rerank_boundary_tail_head_v1_excluding(normalized_hidden, candidates, &[])
+    }
+
+    #[cfg(feature = "metal-w8")]
+    fn rerank_boundary_tail_head_v1_excluding(
+        &mut self,
+        normalized_hidden: &Tensor,
+        candidates: [u32; apxinf_metal::W8_TOP_K],
+        excluded_token_ids: &[u32],
+    ) -> Result<(u32, u128)> {
         #[cfg(all(test, debug_assertions))]
         if std::mem::take(&mut self.fail_boundary_tail_head_rerank_once_for_test) {
             return Err(Error::Other(
                 "qwen3.5 test fault injected after tail output and before F32 rerank".into(),
             ));
+        }
+        if let Some(token) = candidates
+            .iter()
+            .find(|token| excluded_token_ids.contains(token))
+        {
+            return Err(Error::Other(format!(
+                "qwen3.5 Metal W8 tail-head returned excluded candidate token {token}"
+            )));
         }
         let started = std::time::Instant::now();
         let token = rerank_tied_f32_candidates(
@@ -2842,6 +2873,16 @@ impl GeneralQwen35 {
         hidden: &Tensor,
         phase: Qwen35MetalW8LmHeadPhase,
     ) -> Result<u32> {
+        self.metal_w8_reranked_token_excluding(hidden, phase, &[])
+    }
+
+    #[cfg(feature = "metal-w8")]
+    fn metal_w8_reranked_token_excluding(
+        &mut self,
+        hidden: &Tensor,
+        phase: Qwen35MetalW8LmHeadPhase,
+        excluded_token_ids: &[u32],
+    ) -> Result<u32> {
         let normalized = self.normalize_output(hidden)?;
         if normalized.shape().dims() != [1, self.config.text.hidden_size] {
             return Err(Error::ShapeMismatch {
@@ -2851,17 +2892,29 @@ impl GeneralQwen35 {
         }
         self.maybe_fail_stack3_lm_head_v2_before_submit_for_test()?;
         let topk_started = std::time::Instant::now();
-        let candidates = self
+        let head = self
             .metal_w8_lm_head
             .as_mut()
-            .expect("Metal W8 head presence checked before advancing state")
-            .topk4(normalized.as_f32()?)
-            .map_err(|error| {
-                Error::Other(format!(
-                    "qwen3.5 Metal W8 top-4 {} failed after state advancement: {error}",
-                    phase.label()
-                ))
-            })?;
+            .expect("Metal W8 head presence checked before advancing state");
+        let candidates = if excluded_token_ids.is_empty() {
+            head.topk4(normalized.as_f32()?)
+        } else {
+            head.topk4_excluding(normalized.as_f32()?, excluded_token_ids)
+        }
+        .map_err(|error| {
+            Error::Other(format!(
+                "qwen3.5 Metal W8 top-4 {} failed after state advancement: {error}",
+                phase.label()
+            ))
+        })?;
+        if let Some(token) = candidates
+            .iter()
+            .find(|token| excluded_token_ids.contains(token))
+        {
+            return Err(Error::Other(format!(
+                "qwen3.5 Metal W8 head returned excluded candidate token {token}"
+            )));
+        }
         let topk_elapsed_ns = topk_started.elapsed().as_nanos();
         let rerank_started = std::time::Instant::now();
         let reranked = rerank_tied_f32_candidates(
@@ -2900,14 +2953,41 @@ impl GeneralQwen35 {
         token: u32,
         pos: u32,
     ) -> Result<Qwen35MetalTeacherStep> {
+        self.teacher_forced_decode_candidates_excluding(token, pos, &[])
+    }
+
+    /// Same as [`Self::teacher_forced_decode_candidates`], but applies the
+    /// exclusion set before accelerator candidate generation and to the
+    /// full-F32 oracle. This advances model state exactly once.
+    #[cfg(feature = "metal-w8")]
+    pub fn teacher_forced_decode_candidates_excluding(
+        &mut self,
+        token: u32,
+        pos: u32,
+        excluded_token_ids: &[u32],
+    ) -> Result<Qwen35MetalTeacherStep> {
+        validate_metal_w8_excluded_token_ids(excluded_token_ids, self.config.text.vocab_size)?;
         if self.metal_w8_mlp_stack3_boundary_tail_head_v1.is_some() {
             let residual = self.forward_hidden(&[token], pos)?;
             let result = (|| {
-                let output = self.run_boundary_tail_head_v1(&residual)?;
+                let output =
+                    self.run_boundary_tail_head_v1_excluding(&residual, excluded_token_ids)?;
                 let cpu_logits = self.project_normalized_logits(&output.normalized_hidden)?;
-                let cpu_token = argmax_f32_row(&cpu_logits, self.config.text.vocab_size)?;
+                let cpu_token = if excluded_token_ids.is_empty() {
+                    argmax_f32_row(&cpu_logits, self.config.text.vocab_size)?
+                } else {
+                    argmax_f32_row_excluding(
+                        &cpu_logits,
+                        self.config.text.vocab_size,
+                        excluded_token_ids,
+                    )?
+                };
                 let (reranked_token, rerank_elapsed_ns) = self
-                    .rerank_boundary_tail_head_v1(&output.normalized_hidden, output.candidates)?;
+                    .rerank_boundary_tail_head_v1_excluding(
+                        &output.normalized_hidden,
+                        output.candidates,
+                        excluded_token_ids,
+                    )?;
                 self.metal_w8_mlp_stack3_boundary_tail_head_v1
                     .as_mut()
                     .expect("boundary + tail-head v1 lane must be present")
@@ -2931,19 +3011,39 @@ impl GeneralQwen35 {
         let result = (|| {
             let normalized = self.normalize_output(&hidden)?;
             let cpu_logits = self.project_normalized_logits(&normalized)?;
-            let cpu_token = argmax_f32_row(&cpu_logits, self.config.text.vocab_size)?;
+            let cpu_token = if excluded_token_ids.is_empty() {
+                argmax_f32_row(&cpu_logits, self.config.text.vocab_size)?
+            } else {
+                argmax_f32_row_excluding(
+                    &cpu_logits,
+                    self.config.text.vocab_size,
+                    excluded_token_ids,
+                )?
+            };
             self.maybe_fail_stack3_lm_head_v2_before_submit_for_test()?;
             let topk_started = std::time::Instant::now();
-            let candidates = self
+            let head = self
                 .metal_w8_lm_head
                 .as_mut()
-                .expect("Metal W8 head presence checked above")
-                .topk4(normalized.as_f32()?)
-                .map_err(|error| {
-                    Error::Other(format!(
-                        "qwen3.5 Metal W8 top-4 teacher gate failed after state advancement: {error}"
-                    ))
-                })?;
+                .expect("Metal W8 head presence checked above");
+            let candidates = if excluded_token_ids.is_empty() {
+                head.topk4(normalized.as_f32()?)
+            } else {
+                head.topk4_excluding(normalized.as_f32()?, excluded_token_ids)
+            }
+            .map_err(|error| {
+                Error::Other(format!(
+                    "qwen3.5 Metal W8 top-4 teacher gate failed after state advancement: {error}"
+                ))
+            })?;
+            if let Some(token) = candidates
+                .iter()
+                .find(|token| excluded_token_ids.contains(token))
+            {
+                return Err(Error::Other(format!(
+                    "qwen3.5 Metal W8 teacher head returned excluded candidate token {token}"
+                )));
+            }
             let topk_elapsed_ns = topk_started.elapsed().as_nanos();
             let rerank_started = std::time::Instant::now();
             let reranked = rerank_tied_f32_candidates(
@@ -2978,6 +3078,54 @@ impl GeneralQwen35 {
     pub fn teacher_forced_decode_argmaxes(&mut self, token: u32, pos: u32) -> Result<(u32, u32)> {
         let comparison = self.teacher_forced_decode_candidates(token, pos)?;
         Ok((comparison.cpu_token, comparison.reranked_token))
+    }
+
+    /// Advance one decode step while masking request-scoped token IDs before
+    /// Metal W8 candidate generation.
+    ///
+    /// Validation happens before any KV/GDN state advances. Once execution
+    /// begins, failures remain terminal just like the ordinary fused decode
+    /// path and require [`Self::reset_checked`] before reuse.
+    #[cfg(feature = "metal-w8")]
+    pub fn decode_token_excluding(
+        &mut self,
+        token: u32,
+        pos: u32,
+        excluded_token_ids: &[u32],
+    ) -> Result<u32> {
+        validate_metal_w8_excluded_token_ids(excluded_token_ids, self.config.text.vocab_size)?;
+        if self.metal_w8_mlp_stack3_boundary_tail_head_v1.is_some() {
+            let residual = self.forward_hidden(&[token], pos)?;
+            let result = (|| {
+                let output =
+                    self.run_boundary_tail_head_v1_excluding(&residual, excluded_token_ids)?;
+                let (token, _) = self.rerank_boundary_tail_head_v1_excluding(
+                    &output.normalized_hidden,
+                    output.candidates,
+                    excluded_token_ids,
+                )?;
+                let lane = self
+                    .metal_w8_mlp_stack3_boundary_tail_head_v1
+                    .as_mut()
+                    .expect("boundary + tail-head v1 lane must be present");
+                lane.decode_calls = lane.decode_calls.saturating_add(1);
+                Ok(token)
+            })();
+            return self
+                .finish_boundary_tail_head_v1_post_body(result, "excluded decode tail/rerank");
+        }
+        if self.metal_w8_lm_head.is_none() {
+            return Err(Error::Other(
+                "qwen3.5 excluded decode requires an enabled Metal W8 lm_head".into(),
+            ));
+        }
+        let hidden = self.forward_hidden(&[token], pos)?;
+        let result = self.metal_w8_reranked_token_excluding(
+            &hidden,
+            Qwen35MetalW8LmHeadPhase::Decode,
+            excluded_token_ids,
+        );
+        self.finish_stack3_lm_head_v2_post_body(result, "excluded decode head")
     }
 
     /// Reset every mutable generation state and report the first failure.
@@ -3062,6 +3210,23 @@ impl GeneralQwen35 {
         }
         Ok(())
     }
+
+    /// Run the ordinary full-F32 prefill projection and select the greedy
+    /// token after applying a request-scoped `-inf` mask.
+    ///
+    /// This is the exact prefill oracle used by serving adapters which need
+    /// llama.cpp-compatible `ignore_eos` semantics. The exclusion set is not
+    /// retained on the model: callers must pass the same policy to every
+    /// subsequent decode step.
+    pub fn prefill_token_for_generation_excluding(
+        &mut self,
+        input: LlmInput<'_>,
+        excluded_token_ids: &[u32],
+    ) -> Result<u32> {
+        validate_excluded_token_ids(excluded_token_ids, self.config.text.vocab_size)?;
+        let logits = <Self as LlmTrait>::prefill_for_generation(self, input)?;
+        argmax_f32_row_excluding(&logits, self.config.text.vocab_size, excluded_token_ids)
+    }
 }
 
 #[cfg(feature = "metal-w8")]
@@ -3079,6 +3244,87 @@ fn argmax_f32_row(logits: &Tensor, vocab_size: usize) -> Result<u32> {
             best = score;
             best_token = token as u32;
         }
+    }
+    Ok(best_token)
+}
+
+fn validate_excluded_token_ids(excluded_token_ids: &[u32], vocab_size: usize) -> Result<()> {
+    if excluded_token_ids.len() >= vocab_size {
+        return Err(Error::Other(format!(
+            "qwen3.5 greedy exclusion masks {} tokens from vocabulary {vocab_size}; at least one token must remain",
+            excluded_token_ids.len()
+        )));
+    }
+    for (index, &token) in excluded_token_ids.iter().enumerate() {
+        if token as usize >= vocab_size {
+            return Err(Error::Other(format!(
+                "qwen3.5 greedy exclusion token {token} at index {index} is outside vocabulary {vocab_size}"
+            )));
+        }
+        if excluded_token_ids[..index].contains(&token) {
+            return Err(Error::Other(format!(
+                "qwen3.5 greedy exclusion contains duplicate token {token}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "metal-w8")]
+fn validate_metal_w8_excluded_token_ids(
+    excluded_token_ids: &[u32],
+    vocab_size: usize,
+) -> Result<()> {
+    const MAX_EXCLUDED_TOKEN_IDS: usize = 5;
+    validate_excluded_token_ids(excluded_token_ids, vocab_size)?;
+    if excluded_token_ids.len() > MAX_EXCLUDED_TOKEN_IDS {
+        return Err(Error::Other(format!(
+            "qwen3.5 Metal W8 greedy exclusion supports at most {MAX_EXCLUDED_TOKEN_IDS} tokens, got {}",
+            excluded_token_ids.len()
+        )));
+    }
+    if vocab_size - excluded_token_ids.len() < apxinf_metal::W8_TOP_K {
+        return Err(Error::Other(format!(
+            "qwen3.5 Metal W8 greedy exclusion must leave at least {} vocabulary rows",
+            apxinf_metal::W8_TOP_K
+        )));
+    }
+    Ok(())
+}
+
+fn argmax_f32_row_excluding(
+    logits: &Tensor,
+    vocab_size: usize,
+    excluded_token_ids: &[u32],
+) -> Result<u32> {
+    if logits.shape().dims() != [1, vocab_size] {
+        return Err(Error::ShapeMismatch {
+            expected: format!("[1, {vocab_size}]"),
+            got: logits.shape().to_string(),
+        });
+    }
+    validate_excluded_token_ids(excluded_token_ids, vocab_size)?;
+    let mut best_score = f32::NEG_INFINITY;
+    let mut best_token = u32::MAX;
+    for (token, &score) in logits.as_f32()?.iter().enumerate() {
+        let token = token as u32;
+        if excluded_token_ids.contains(&token) {
+            continue;
+        }
+        if !score.is_finite() {
+            return Err(Error::Other(format!(
+                "qwen3.5 greedy exclusion encountered a non-finite allowed logit for token {token}"
+            )));
+        }
+        if score > best_score || (score == best_score && token < best_token) {
+            best_score = score;
+            best_token = token;
+        }
+    }
+    if best_token == u32::MAX {
+        return Err(Error::Other(
+            "qwen3.5 greedy exclusion did not leave a selectable token".into(),
+        ));
     }
     Ok(best_token)
 }
@@ -11764,6 +12010,48 @@ mod tests {
             rerank_tied_f32_candidates(&embedding, &hidden, 4, 2, [3, 2, 0, 1]).unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn f32_argmax_exclusion_masks_all_listed_tokens_and_uses_lowest_tie() {
+        let logits =
+            Tensor::from_f32(vec![1, 8], &[99.0, 98.0, 97.0, 4.0, 4.0, 96.0, 95.0, 3.0]).unwrap();
+        assert_eq!(
+            argmax_f32_row_excluding(&logits, 8, &[0, 1, 2, 5, 6]).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn f32_argmax_exclusion_rejects_malformed_or_empty_allowed_sets() {
+        let logits = Tensor::from_f32(vec![1, 4], &[4.0, 3.0, 2.0, 1.0]).unwrap();
+        let duplicate = argmax_f32_row_excluding(&logits, 4, &[1, 1]).unwrap_err();
+        assert!(duplicate.to_string().contains("duplicate token 1"));
+
+        let out_of_range = argmax_f32_row_excluding(&logits, 4, &[4]).unwrap_err();
+        assert!(out_of_range.to_string().contains("outside vocabulary 4"));
+
+        let all = argmax_f32_row_excluding(&logits, 4, &[0, 1, 2, 3]).unwrap_err();
+        assert!(all.to_string().contains("at least one token must remain"));
+    }
+
+    #[test]
+    fn f32_argmax_exclusion_rejects_nonfinite_allowed_logits() {
+        let logits = Tensor::from_f32(vec![1, 3], &[2.0, f32::NAN, 1.0]).unwrap();
+        let error = argmax_f32_row_excluding(&logits, 3, &[0]).unwrap_err();
+        assert!(error.to_string().contains("non-finite allowed logit"));
+    }
+
+    #[test]
+    fn malformed_prefill_exclusion_is_rejected_before_state_advances() {
+        let (config, tensors) = fixture();
+        let mut model = GeneralQwen35::from_weights(config, tensors, Device::Cpu, 16).unwrap();
+        let error = model
+            .prefill_token_for_generation_excluding(LlmInput::text(&[1, 2]), &[1, 1])
+            .unwrap_err();
+        assert!(error.to_string().contains("duplicate token 1"));
+        assert_eq!(model.state.position(), 0);
+        assert_eq!(model.state.kv.seq_len(), 0);
     }
 
     #[test]
