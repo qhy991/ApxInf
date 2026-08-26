@@ -9,6 +9,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/metal_gdn_recurrent_count18_profile_v1_bridge.mm");
     println!("cargo:rerun-if-changed=src/metal_gdn_core_fused_count18_profile_v1_bridge.mm");
     println!("cargo:rerun-if-changed=src/metal_full_attention_decode_v1_bridge.mm");
+    println!("cargo:rerun-if-changed=src/metal_q4_0_tied_head_v1_bridge.mm");
     println!("cargo:rerun-if-changed=src/metal_w8.metal");
     println!("cargo:rerun-if-changed=src/metal_w8_matvec.metal");
     println!("cargo:rerun-if-changed=src/metal_w8_mlp.metal");
@@ -16,6 +17,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/metal_w8_gdn_out_g32.metal");
     println!("cargo:rerun-if-changed=src/metal_w8_linear_layer.metal");
     println!("cargo:rerun-if-changed=src/metal_full_attention_decode_v1.metal");
+    println!("cargo:rerun-if-changed=src/metal_q4_0_tied_head_v1.metal");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
@@ -121,6 +123,20 @@ fn main() {
     )
     .expect("write the generated Metal full-attention decode v1 shader include");
 
+    let q4_0_tied_head_shader = std::fs::read_to_string("src/metal_q4_0_tied_head_v1.metal")
+        .expect("read the Metal Q4_0 tied-head v1 shader source");
+    assert!(
+        !q4_0_tied_head_shader.contains(&format!("){}\"", DELIMITER)),
+        "Metal Q4_0 tied-head v1 shader contains the generated C++ raw-string delimiter"
+    );
+    std::fs::write(
+        output_dir.join("metal_q4_0_tied_head_v1_source.inc"),
+        format!(
+            "constexpr const char *kMetalQ4_0TiedHeadSourceV1 = R\"{DELIMITER}({q4_0_tied_head_shader}){DELIMITER}\";\n"
+        ),
+    )
+    .expect("write the generated Metal Q4_0 tied-head v1 shader include");
+
     cc::Build::new()
         .cpp(true)
         .file("src/metal_w8_bridge.mm")
@@ -210,6 +226,15 @@ fn main() {
         .flag("-fobjc-arc")
         .flag("-fblocks")
         .compile("apxinf_metal_full_attention_decode_v1_bridge");
+
+    cc::Build::new()
+        .cpp(true)
+        .file("src/metal_q4_0_tied_head_v1_bridge.mm")
+        .include(&output_dir)
+        .flag("-std=c++17")
+        .flag("-fobjc-arc")
+        .flag("-fblocks")
+        .compile("apxinf_metal_q4_0_tied_head_v1_bridge");
 
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=Metal");

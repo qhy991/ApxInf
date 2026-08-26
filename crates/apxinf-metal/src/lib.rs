@@ -17,6 +17,7 @@ mod gdn_core_fused_profile_v1;
 mod gdn_recurrent_profile_v1;
 mod linear_layer;
 mod q4_0_rows_v1;
+mod q4_0_tied_head_metal_v1;
 mod tail_mlp_head_v1;
 
 pub use full_attention_decode_v1::*;
@@ -42,6 +43,10 @@ pub use linear_layer::{
 pub use q4_0_rows_v1::{
     PackedQ4_0BlockV1, PackedQ4_0RowsV1, Q4_0RowsErrorV1, Q4_0_BLOCK_SIZE_V1,
     Q4_0_PACKED_BYTES_PER_BLOCK_V1, Q4_0_QUANT_BYTES_PER_BLOCK_V1,
+};
+pub use q4_0_tied_head_metal_v1::{
+    MetalQ4_0TiedHeadV1, Q4_0TiedHeadBufferLedgerV1, Q4_0TiedHeadErrorV1,
+    Q4_0_TIED_HEAD_ABI_VERSION_V1, Q4_0_TIED_HEAD_MAX_EXCLUDED_TOKENS_V1, Q4_0_TIED_HEAD_TOP_K_V1,
 };
 pub use tail_mlp_head_v1::{
     MetalW8TailMlpHeadV1, PackedW8TailMlpHeadV1, TailMlpHeadBufferLedgerV1,

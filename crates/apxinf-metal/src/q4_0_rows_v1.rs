@@ -129,6 +129,21 @@ impl PackedQ4_0RowsV1 {
         &self.blocks
     }
 
+    /// Serialize the canonical little-endian Q4_0 byte stream.
+    ///
+    /// Every block occupies exactly 18 bytes: the FP16 scale bits in little-
+    /// endian order followed by the 16 low/high-nibble quantization bytes.
+    /// This deliberately avoids relying on host struct layout or endianness
+    /// when the packed rows cross an accelerator ABI.
+    pub fn canonical_bytes_le(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.blocks.len() * Q4_0_PACKED_BYTES_PER_BLOCK_V1);
+        for block in &self.blocks {
+            bytes.extend_from_slice(&block.scale_f16_bits.to_le_bytes());
+            bytes.extend_from_slice(&block.quant_nibbles);
+        }
+        bytes
+    }
+
     /// Dequantize the exact stored Q4_0 blocks to row-major F32 values.
     pub fn dequantize_f32(&self) -> Vec<f32> {
         let mut output = vec![0.0f32; self.rows * self.columns];
@@ -349,6 +364,15 @@ mod tests {
             &std::array::from_fn::<_, 16, _>(|index| index as u8 | ((index as u8) << 4))
         );
         assert_eq!(packed.dequantize_f32(), source);
+        assert_eq!(packed.canonical_bytes_le().len(), 18);
+        assert_eq!(
+            &packed.canonical_bytes_le()[..2],
+            &f16::from_f32(1.0).to_bits().to_le_bytes()
+        );
+        assert_eq!(
+            &packed.canonical_bytes_le()[2..],
+            packed.blocks()[0].quant_nibbles()
+        );
     }
 
     #[test]
