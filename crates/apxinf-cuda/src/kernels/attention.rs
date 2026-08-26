@@ -615,10 +615,7 @@ fn fa2_splitkv_enabled(
     if std::env::var_os("APXINF_DISABLE_FA2_SPLITKV").is_some() {
         return false;
     }
-    query_tokens <= 64
-        && key_tokens > query_tokens
-        && query_heads > kv_heads
-        && head_dim == 256
+    query_tokens <= 64 && key_tokens > query_tokens && query_heads > kv_heads && head_dim == 256
 }
 
 #[cfg(apxinf_fa2_sm80)]

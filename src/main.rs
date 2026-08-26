@@ -2,11 +2,15 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+#[cfg(feature = "cuda")]
 use std::time::Instant;
 
 use apxinf_core::{DType, Device, Tensor};
 #[cfg(feature = "cuda")]
-use apxinf_cuda::CudaContext;
+use apxinf_core::{NextTokenLogits, SamplingBackend, TokenSamplingInit, TokenSamplingSpec};
+#[cfg(feature = "cuda")]
+use apxinf_cuda::CudaBackend;
+#[cfg(feature = "cuda")]
 use apxinf_loader::safetensors;
 #[cfg(feature = "cuda")]
 use apxinf_model::qwen35::{load_embedding_row, HybridUnit, HybridUnitMode, Qwen35LmHead};
@@ -130,11 +134,14 @@ enum Commands {
         port: u16,
         #[arg(long, default_value_t = 32768)]
         max_model_len: usize,
-        /// Allocate the experimental M64 Marlin prefill workspace. Eligible
-        /// requests default to Marlin; set apxinf_prefill_mode=m8 per request
-        /// to use the rollback path.
+        /// Allocate the M64 Marlin prefill workspace. Set
+        /// apxinf_prefill_mode=m8 per request to select the M8 fallback.
         #[arg(long)]
-        enable_experimental_marlin_m64: bool,
+        enable_marlin_m64: bool,
+        /// Store full-attention KV as per-row E4M3. This raises the supported
+        /// single-request context limit from 32K to 128K on a 24 GB GPU.
+        #[arg(long)]
+        enable_e4m3_kv: bool,
         /// Load the native Qwen3.8 visual encoder and enable one-image chat
         /// requests. Requires a Python executable with the pinned HF
         /// processor dependencies in APXINF_PROCESSOR_PYTHON.
@@ -183,10 +190,21 @@ fn main() {
                     run_generate_qwen35(
                         &model,
                         &prompt,
-                        max_tokens.unwrap_or(GenerationOptions::DEFAULT_MAX_NEW_TOKENS),
+                        max_tokens,
                         !no_eos_stop,
                         system.as_deref(),
                         device,
+                        sample,
+                        greedy,
+                        temperature,
+                        top_k,
+                        top_p,
+                        repetition_penalty,
+                        frequency_penalty,
+                        presence_penalty,
+                        seed,
+                        &generation_config,
+                        override_generation_config.as_deref(),
                     );
                     #[cfg(not(feature = "cuda"))]
                     {
@@ -195,26 +213,26 @@ fn main() {
                     }
                 }
             } else if let Err(error) = run_generate(
-                    &model,
-                    &prompt,
-                    image.as_ref(),
-                    max_tokens,
-                    !no_eos_stop,
-                    system.as_deref(),
-                    device,
-                    &dtype,
-                    sample,
-                    greedy,
-                    temperature,
-                    top_k,
-                    top_p,
-                    repetition_penalty,
-                    frequency_penalty,
-                    presence_penalty,
-                    seed,
-                    &generation_config,
-                    override_generation_config.as_deref(),
-                ) {
+                &model,
+                &prompt,
+                image.as_ref(),
+                max_tokens,
+                !no_eos_stop,
+                system.as_deref(),
+                device,
+                &dtype,
+                sample,
+                greedy,
+                temperature,
+                top_k,
+                top_p,
+                repetition_penalty,
+                frequency_penalty,
+                presence_penalty,
+                seed,
+                &generation_config,
+                override_generation_config.as_deref(),
+            ) {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
@@ -230,7 +248,8 @@ fn main() {
             host,
             port,
             max_model_len,
-            enable_experimental_marlin_m64,
+            enable_marlin_m64,
+            enable_e4m3_kv,
             enable_multimodal,
         } => {
             #[cfg(feature = "cuda")]
@@ -239,8 +258,9 @@ fn main() {
                 &host,
                 port,
                 max_model_len,
-                enable_experimental_marlin_m64,
+                enable_marlin_m64,
                 enable_multimodal,
+                enable_e4m3_kv,
             ) {
                 eprintln!("Server failed: {error}");
                 std::process::exit(2);
@@ -252,7 +272,8 @@ fn main() {
                     host,
                     port,
                     max_model_len,
-                    enable_experimental_marlin_m64,
+                    enable_marlin_m64,
+                    enable_e4m3_kv,
                     enable_multimodal,
                 );
                 eprintln!("The native Qwen3.8 server requires an ApxInf CUDA build");
@@ -361,15 +382,16 @@ fn run_generate(
         ..LoadOptions::default()
     };
 
-    println!("Loading {model_name} from {:?}... (dtype: {dtype})", model_dir);
+    println!(
+        "Loading {model_name} from {:?}... (dtype: {dtype})",
+        model_dir
+    );
     let mut model = AutoModel::load_model(device, model_dir, &options)
         .map_err(|error| format!("Failed to load model: {error}"))?;
     if prepared_image.is_some() {
         match model.text_capabilities() {
             Ok(capabilities) if capabilities.image => {}
-            Ok(_) => {
-                return Err(format!("Model `{model_name}` does not support image input"))
-            }
+            Ok(_) => return Err(format!("Model `{model_name}` does not support image input")),
             Err(error) => return Err(format!("Cannot generate with this model: {error}")),
         }
     }
@@ -466,17 +488,24 @@ fn encode_prompt(
 fn run_generate_qwen35(
     model_dir: &PathBuf,
     prompt: &str,
-    max_tokens: usize,
+    max_tokens: Option<usize>,
     eos_stop: bool,
     system_prompt: Option<&str>,
     device: Device,
+    sample: bool,
+    greedy: bool,
+    temperature: Option<f32>,
+    top_k: Option<i64>,
+    top_p: Option<f32>,
+    repetition_penalty: Option<f32>,
+    frequency_penalty: Option<f32>,
+    presence_penalty: Option<f32>,
+    seed: Option<u64>,
+    generation_config: &str,
+    override_generation_config: Option<&str>,
 ) {
     if device != Device::Cuda(0) {
         eprintln!("Qwen3.5/Qwen3.8 native text generation currently requires --device cuda");
-        return;
-    }
-    if max_tokens == 0 {
-        eprintln!("--max-tokens must be positive");
         return;
     }
     let tokenizer_path = model_dir.join("tokenizer.json");
@@ -513,6 +542,60 @@ fn run_generate_qwen35(
         eprintln!("Tokenizer produced an empty prompt");
         return;
     }
+    let deployment_overrides = match override_generation_config
+        .map(GenerationOptions::from_json_str)
+        .transpose()
+    {
+        Ok(options) => options.unwrap_or_default(),
+        Err(error) => {
+            eprintln!("Invalid --override-generation-config: {error}");
+            return;
+        }
+    };
+    let model_defaults =
+        match GenerationConfigSource::from_cli_value(generation_config).load(model_dir) {
+            Ok(options) => options,
+            Err(error) => {
+                eprintln!("Cannot load generation defaults: {error}");
+                return;
+            }
+        };
+    let request_options = GenerationOptions {
+        max_new_tokens: max_tokens,
+        eos_token_ids: if eos_stop {
+            tokenizer.eos_token_id().map(|token| vec![token])
+        } else {
+            Some(Vec::new())
+        },
+        sampling_mode: if sample {
+            Some(SamplingMode::Random)
+        } else if greedy {
+            Some(SamplingMode::Greedy)
+        } else {
+            None
+        },
+        temperature,
+        top_k,
+        top_p,
+        repetition_penalty,
+        frequency_penalty,
+        presence_penalty,
+        seed,
+        return_logprob: Some(false),
+    };
+    let generation = match GenerationOptions::apxinf_defaults()
+        .overlay(&model_defaults)
+        .overlay(&deployment_overrides)
+        .overlay(&request_options)
+        .resolve()
+    {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("Invalid generation options: {error}");
+            return;
+        }
+    };
+    let max_tokens = generation.max_new_tokens;
     let required = match prompt_tokens.len().checked_add(max_tokens) {
         Some(required) if required <= 32768 => required,
         _ => {
@@ -532,13 +615,14 @@ fn run_generate_qwen35(
             return;
         }
     };
-    let context = match CudaContext::new(0) {
-        Ok(context) => context,
+    let backend = match CudaBackend::new(0) {
+        Ok(backend) => backend,
         Err(error) => {
             eprintln!("Failed to initialize CUDA: {error}");
             return;
         }
     };
+    let context = backend.context();
 
     println!("apxinf — Qwen3.8 native INT4 text generation");
     println!(
@@ -546,20 +630,38 @@ fn run_generate_qwen35(
         max_seq_len
     );
     let load_start = Instant::now();
-    let decoder = match HybridUnit::load_all(&manifest, &context, max_seq_len) {
+    let decoder = match HybridUnit::load_all(&manifest, context, max_seq_len) {
         Ok(decoder) => decoder,
         Err(error) => {
             eprintln!("Failed to load Qwen3.8 decoder: {error}");
             return;
         }
     };
-    let lm_head = match Qwen35LmHead::load(&manifest, &context) {
+    let lm_head = match Qwen35LmHead::load(&manifest, context) {
         Ok(head) => head,
         Err(error) => {
             eprintln!("Failed to load Qwen3.8 LM head: {error}");
             return;
         }
     };
+    let mut sampler = match backend.create_token_sampler(TokenSamplingSpec {
+        vocab_size: 248_320,
+        max_sequence_len: max_seq_len,
+    }) {
+        Ok(sampler) => sampler,
+        Err(error) => {
+            eprintln!("Failed to create token sampler: {error}");
+            return;
+        }
+    };
+    if let Err(error) = sampler.begin(TokenSamplingInit {
+        prompt_token_ids: &prompt_tokens,
+        params: &generation.sampling,
+        rng: generation.rng,
+    }) {
+        eprintln!("Failed to initialize token sampler: {error}");
+        return;
+    }
     let cache_shape = vec![4, max_seq_len, 256];
     let key_cache = Tensor::zeros(cache_shape.clone(), DType::BF16);
     let value_cache = Tensor::zeros(cache_shape, DType::BF16);
@@ -570,7 +672,7 @@ fn run_generate_qwen35(
             return;
         }
     };
-    if let Err(error) = decoder.reset(&context, &first_embedding, &key_cache, &value_cache) {
+    if let Err(error) = decoder.reset(context, &first_embedding, &key_cache, &value_cache) {
         eprintln!("Failed to initialize decoder state: {error}");
         return;
     }
@@ -588,11 +690,11 @@ fn run_generate_qwen35(
                     return;
                 }
             };
-        if let Err(error) = decoder.set_prefill8_input(&context, &embedding) {
+        if let Err(error) = decoder.set_prefill8_input(context, &embedding) {
             eprintln!("Set prompt tile at {position}: {error}");
             return;
         }
-        if let Err(error) = decoder.forward_prefill8(&context, position, false) {
+        if let Err(error) = decoder.forward_prefill8(context, position, false) {
             eprintln!("Prompt tile forward at {position}: {error}");
             return;
         }
@@ -607,14 +709,14 @@ fn run_generate_qwen35(
                     return;
                 }
             };
-            if let Err(error) = decoder.set_token_input(&context, &embedding) {
+            if let Err(error) = decoder.set_token_input(context, &embedding) {
                 eprintln!("Set prompt token {position}: {error}");
                 return;
             }
         }
         let bucket = (position + 1).next_power_of_two().min(max_seq_len);
         if let Err(error) = decoder.forward(
-            &context,
+            context,
             HybridUnitMode::ModelOptimized,
             bucket,
             position as u32,
@@ -625,7 +727,7 @@ fn run_generate_qwen35(
         }
     }
     if tiled_tokens == prompt_tokens.len() {
-        if let Err(error) = decoder.commit_prefill8_last(&context) {
+        if let Err(error) = decoder.commit_prefill8_last(context) {
             eprintln!("Commit final prompt tile: {error}");
             return;
         }
@@ -636,11 +738,6 @@ fn run_generate_qwen35(
     }
     let prefill_seconds = prefill_start.elapsed().as_secs_f64();
 
-    let eos_token = if eos_stop {
-        tokenizer.eos_token_id()
-    } else {
-        None
-    };
     let mut all_tokens = prompt_tokens.clone();
     let mut generated = Vec::with_capacity(max_tokens);
     let mut step_times = Vec::with_capacity(max_tokens);
@@ -658,14 +755,14 @@ fn run_generate_qwen35(
                     return;
                 }
             };
-            if let Err(error) = decoder.set_token_input(&context, &embedding) {
+            if let Err(error) = decoder.set_token_input(context, &embedding) {
                 eprintln!("Set decode token {step}: {error}");
                 return;
             }
             let position = prompt_tokens.len() + step - 1;
             let bucket = (position + 1).next_power_of_two().min(max_seq_len);
             if let Err(error) = decoder.forward(
-                &context,
+                context,
                 HybridUnitMode::ModelOptimized,
                 bucket,
                 position as u32,
@@ -675,14 +772,16 @@ fn run_generate_qwen35(
                 return;
             }
         }
-        if let Err(error) = lm_head.forward(&context, decoder.normalized_output()) {
+        if let Err(error) = lm_head.forward(context, decoder.normalized_output()) {
             eprintln!("LM head at step {step}: {error}");
             return;
         }
-        let token = match lm_head.argmax_cpu() {
-            Ok(token) => token,
+        let token = match NextTokenLogits::last(lm_head.logits(), 248_320)
+            .and_then(|logits| sampler.sample(logits))
+        {
+            Ok(sample) => sample.token_id,
             Err(error) => {
-                eprintln!("Argmax at step {step}: {error}");
+                eprintln!("Sampling at step {step}: {error}");
                 return;
             }
         };
@@ -696,7 +795,7 @@ fn run_generate_qwen35(
             print!("{}", text.strip_prefix(&previous_text).unwrap_or(&text));
             out.flush().ok();
         }
-        if eos_token == Some(token) {
+        if generation.eos_token_ids.contains(&token) {
             break;
         }
     }
@@ -768,7 +867,7 @@ fn run_inspect(model_dir: &PathBuf, json: bool) -> Result<(), String> {
             "native_capabilities": {
                 "text_generate": cfg!(feature = "cuda"),
                 "stateful_decode": cfg!(feature = "cuda"),
-                "multimodal": false,
+                "multimodal": cfg!(feature = "cuda"),
                 "m_gt_1_prefill": cfg!(feature = "cuda"),
                 "serial_prefill": cfg!(feature = "cuda"),
                 "openai_compatible_service": cfg!(feature = "cuda"),

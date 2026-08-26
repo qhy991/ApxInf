@@ -8,13 +8,12 @@ pub const HEAD_DIM: usize = 256;
 pub const WIDTH: usize = Q_HEADS * HEAD_DIM;
 pub const MAX_SPLIT_CTA: usize = 16;
 pub const SPLIT_CTA_WORKSPACE_TOKENS: usize = 8;
-pub const SPLIT_CTA_CANDIDATE_COUNT: usize = 16;
-pub const SPLIT_CTA_CANDIDATE_MIN_KV_BUCKET: usize = 256;
+pub const SPLIT_CTA_COUNT: usize = 16;
+pub const SPLIT_CTA_MIN_KV_BUCKET: usize = 256;
 
-/// Layer-screened SM89 candidate policy.  Callers must opt into this policy;
-/// the model default remains the incumbent until full-token E2E promotion.
-pub fn split_cta_candidate_for_bucket(bucket_kv_len: usize) -> Option<usize> {
-    (bucket_kv_len >= SPLIT_CTA_CANDIDATE_MIN_KV_BUCKET).then_some(SPLIT_CTA_CANDIDATE_COUNT)
+/// SM89 split-CTA dispatch policy for long-context attention.
+pub fn split_cta_count_for_bucket(bucket_kv_len: usize) -> Option<usize> {
+    (bucket_kv_len >= SPLIT_CTA_MIN_KV_BUCKET).then_some(SPLIT_CTA_COUNT)
 }
 
 pub struct SplitCtaWorkspace {
@@ -25,8 +24,8 @@ pub struct SplitCtaWorkspace {
 
 impl SplitCtaWorkspace {
     pub fn new(ctx: &CudaContext) -> Result<Self> {
-        let scalars = Q_HEADS * MAX_SPLIT_CTA * SPLIT_CTA_WORKSPACE_TOKENS
-            * std::mem::size_of::<f32>();
+        let scalars =
+            Q_HEADS * MAX_SPLIT_CTA * SPLIT_CTA_WORKSPACE_TOKENS * std::mem::size_of::<f32>();
         let accumulators = scalars * HEAD_DIM;
         Ok(Self {
             partial_max: CudaBuffer::alloc(scalars, ctx.device_id()).map_err(Error::Cuda)?,
@@ -260,10 +259,10 @@ pub fn gate_m8_write(
     }
 }
 
-/// SM89 long-context decode candidate with cross-CTA sequence splitting.
+/// SM89 long-context decode with cross-CTA sequence splitting.
 ///
-/// The path is intentionally explicit and fail-closed.  The incumbent
-/// one-CTA-per-Q-head implementation remains the short-context/default path.
+/// The path is explicit and fail-closed. The one-CTA-per-Q-head
+/// implementation remains the short-context path.
 #[allow(clippy::too_many_arguments)]
 pub fn flash_split_cta_write(
     ctx: &CudaContext,
@@ -445,6 +444,322 @@ pub fn flash_split_cta_buffer_write(
     }
 }
 
+/// Full-context E4M3 KV with per-(head, token) FP32 scales.
+#[allow(clippy::too_many_arguments)]
+pub fn flash_split_cta_e4m3_buffer_write(
+    ctx: &CudaContext,
+    query: &CudaBuffer,
+    key_cache: &CudaBuffer,
+    key_scales: &CudaBuffer,
+    value_cache: &CudaBuffer,
+    value_scales: &CudaBuffer,
+    output: &CudaBuffer,
+    workspace: &SplitCtaWorkspace,
+    split_count: usize,
+    bucket_kv_len: usize,
+    max_seq_len: usize,
+    scale: f32,
+    position: CudaDeviceAddress,
+) -> Result<()> {
+    let vector_bytes = WIDTH * DType::BF16.size_in_bytes();
+    for (name, buffer) in [("query", query), ("output", output)] {
+        if buffer.device() != ctx.device_id() || buffer.len() < vector_bytes {
+            return Err(Error::Other(format!(
+                "Qwen3.5 E4M3 split-CTA {name} buffer contract mismatch"
+            )));
+        }
+    }
+    if !matches!(split_count, 2 | 4 | 8 | 16)
+        || bucket_kv_len == 0
+        || bucket_kv_len > max_seq_len
+        || !scale.is_finite()
+        || scale <= 0.0
+        || max_seq_len > i32::MAX as usize
+        || bucket_kv_len > i32::MAX as usize
+    {
+        return Err(Error::Other(
+            "Qwen3.5 E4M3 split-CTA launch contract mismatch".into(),
+        ));
+    }
+    let cache_bytes = KV_HEADS
+        .checked_mul(max_seq_len)
+        .and_then(|value| value.checked_mul(HEAD_DIM))
+        .ok_or_else(|| Error::Other("Qwen3.5 E4M3 cache size overflow".into()))?;
+    let scale_bytes = KV_HEADS
+        .checked_mul(max_seq_len)
+        .and_then(|value| value.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| Error::Other("Qwen3.5 E4M3 scale size overflow".into()))?;
+    for (name, buffer, bytes) in [
+        ("key", key_cache, cache_bytes),
+        ("key scale", key_scales, scale_bytes),
+        ("value", value_cache, cache_bytes),
+        ("value scale", value_scales, scale_bytes),
+    ] {
+        if buffer.device() != ctx.device_id() || buffer.len() < bytes {
+            return Err(Error::Other(format!(
+                "Qwen3.5 E4M3 split-CTA {name} contract mismatch"
+            )));
+        }
+    }
+    let scalar_bytes = Q_HEADS * MAX_SPLIT_CTA * std::mem::size_of::<f32>();
+    let accumulator_bytes = scalar_bytes * HEAD_DIM;
+    for (name, buffer, bytes) in [
+        ("partial max", &workspace.partial_max, scalar_bytes),
+        ("partial sum", &workspace.partial_sum, scalar_bytes),
+        (
+            "partial accumulator",
+            &workspace.partial_accumulator,
+            accumulator_bytes,
+        ),
+    ] {
+        if buffer.device() != ctx.device_id() || buffer.len() < bytes {
+            return Err(Error::Other(format!(
+                "Qwen3.5 E4M3 split-CTA {name} workspace contract mismatch"
+            )));
+        }
+    }
+    if position.device() != ctx.device_id() || position.len() < 4 {
+        return Err(Error::Other(
+            "Qwen3.5 E4M3 split-CTA position contract mismatch".into(),
+        ));
+    }
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_static_qwen35_attention_flash_split_cta_e4m3(
+            query.ptr(),
+            key_cache.ptr(),
+            key_scales.ptr(),
+            value_cache.ptr(),
+            value_scales.ptr(),
+            workspace.partial_max.ptr(),
+            workspace.partial_sum.ptr(),
+            workspace.partial_accumulator.ptr(),
+            output.ptr(),
+            split_count as i32,
+            bucket_kv_len as i32,
+            max_seq_len as i32,
+            scale,
+            position.ptr(),
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn flash_split_cta_m8_e4m3_buffer_write(
+    ctx: &CudaContext,
+    query: &CudaBuffer,
+    key_cache: &CudaBuffer,
+    key_scales: &CudaBuffer,
+    value_cache: &CudaBuffer,
+    value_scales: &CudaBuffer,
+    output: &CudaBuffer,
+    workspace: &SplitCtaWorkspace,
+    split_count: usize,
+    bucket_kv_len: usize,
+    max_seq_len: usize,
+    scale: f32,
+    positions: CudaDeviceAddress,
+    tokens: usize,
+) -> Result<()> {
+    if tokens == 0 || tokens > SPLIT_CTA_WORKSPACE_TOKENS {
+        return Err(Error::Other(
+            "Qwen3.5 E4M3 split-CTA M8 token contract mismatch".into(),
+        ));
+    }
+    let vector_bytes = tokens * WIDTH * DType::BF16.size_in_bytes();
+    for (name, buffer) in [("query", query), ("output", output)] {
+        if buffer.device() != ctx.device_id() || buffer.len() < vector_bytes {
+            return Err(Error::Other(format!(
+                "Qwen3.5 E4M3 split-CTA M8 {name} buffer contract mismatch"
+            )));
+        }
+    }
+    if !matches!(split_count, 2 | 4 | 8 | 16)
+        || bucket_kv_len == 0
+        || bucket_kv_len > max_seq_len
+        || !scale.is_finite()
+        || scale <= 0.0
+        || max_seq_len > i32::MAX as usize
+        || bucket_kv_len > i32::MAX as usize
+    {
+        return Err(Error::Other(
+            "Qwen3.5 E4M3 split-CTA M8 launch contract mismatch".into(),
+        ));
+    }
+    let cache_bytes = KV_HEADS
+        .checked_mul(max_seq_len)
+        .and_then(|value| value.checked_mul(HEAD_DIM))
+        .ok_or_else(|| Error::Other("Qwen3.5 E4M3 cache size overflow".into()))?;
+    let scale_bytes = KV_HEADS
+        .checked_mul(max_seq_len)
+        .and_then(|value| value.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| Error::Other("Qwen3.5 E4M3 scale size overflow".into()))?;
+    for (name, buffer, bytes) in [
+        ("key", key_cache, cache_bytes),
+        ("key scale", key_scales, scale_bytes),
+        ("value", value_cache, cache_bytes),
+        ("value scale", value_scales, scale_bytes),
+    ] {
+        if buffer.device() != ctx.device_id() || buffer.len() < bytes {
+            return Err(Error::Other(format!(
+                "Qwen3.5 E4M3 split-CTA M8 {name} contract mismatch"
+            )));
+        }
+    }
+    let scalar_bytes = tokens * Q_HEADS * MAX_SPLIT_CTA * std::mem::size_of::<f32>();
+    let accumulator_bytes = scalar_bytes * HEAD_DIM;
+    for (name, buffer, bytes) in [
+        ("partial max", &workspace.partial_max, scalar_bytes),
+        ("partial sum", &workspace.partial_sum, scalar_bytes),
+        (
+            "partial accumulator",
+            &workspace.partial_accumulator,
+            accumulator_bytes,
+        ),
+    ] {
+        if buffer.device() != ctx.device_id() || buffer.len() < bytes {
+            return Err(Error::Other(format!(
+                "Qwen3.5 E4M3 split-CTA M8 {name} workspace contract mismatch"
+            )));
+        }
+    }
+    if positions.device() != ctx.device_id() || positions.len() < tokens * 4 {
+        return Err(Error::Other(
+            "Qwen3.5 E4M3 split-CTA M8 positions contract mismatch".into(),
+        ));
+    }
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_static_qwen35_attention_flash_split_cta_m8_e4m3(
+            query.ptr(),
+            key_cache.ptr(),
+            key_scales.ptr(),
+            value_cache.ptr(),
+            value_scales.ptr(),
+            workspace.partial_max.ptr(),
+            workspace.partial_sum.ptr(),
+            workspace.partial_accumulator.ptr(),
+            output.ptr(),
+            split_count as i32,
+            bucket_kv_len as i32,
+            max_seq_len as i32,
+            scale,
+            positions.ptr(),
+            tokens as i32,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn flash_split_cta_m8_shared_q4_e4m3_buffer_write(
+    ctx: &CudaContext,
+    query: &CudaBuffer,
+    key_cache: &CudaBuffer,
+    key_scales: &CudaBuffer,
+    value_cache: &CudaBuffer,
+    value_scales: &CudaBuffer,
+    output: &CudaBuffer,
+    workspace: &SplitCtaWorkspace,
+    split_count: usize,
+    bucket_kv_len: usize,
+    max_seq_len: usize,
+    scale: f32,
+    positions: CudaDeviceAddress,
+    tokens: usize,
+) -> Result<()> {
+    if tokens != SPLIT_CTA_WORKSPACE_TOKENS || split_count != SPLIT_CTA_COUNT {
+        return Err(Error::Other(
+            "Qwen3.5 shared-KV E4M3 M8 specialization contract mismatch".into(),
+        ));
+    }
+    let vector_bytes = tokens * WIDTH * DType::BF16.size_in_bytes();
+    for (name, buffer) in [("query", query), ("output", output)] {
+        if buffer.device() != ctx.device_id() || buffer.len() < vector_bytes {
+            return Err(Error::Other(format!(
+                "Qwen3.5 shared-KV E4M3 M8 {name} buffer contract mismatch"
+            )));
+        }
+    }
+    if bucket_kv_len == 0
+        || bucket_kv_len > max_seq_len
+        || !scale.is_finite()
+        || scale <= 0.0
+        || max_seq_len > i32::MAX as usize
+        || bucket_kv_len > i32::MAX as usize
+    {
+        return Err(Error::Other(
+            "Qwen3.5 shared-KV E4M3 M8 launch contract mismatch".into(),
+        ));
+    }
+    let cache_bytes = KV_HEADS
+        .checked_mul(max_seq_len)
+        .and_then(|value| value.checked_mul(HEAD_DIM))
+        .ok_or_else(|| Error::Other("Qwen3.5 E4M3 cache size overflow".into()))?;
+    let scale_bytes = KV_HEADS
+        .checked_mul(max_seq_len)
+        .and_then(|value| value.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| Error::Other("Qwen3.5 E4M3 scale size overflow".into()))?;
+    for (name, buffer, bytes) in [
+        ("key", key_cache, cache_bytes),
+        ("key scale", key_scales, scale_bytes),
+        ("value", value_cache, cache_bytes),
+        ("value scale", value_scales, scale_bytes),
+    ] {
+        if buffer.device() != ctx.device_id() || buffer.len() < bytes {
+            return Err(Error::Other(format!(
+                "Qwen3.5 shared-KV E4M3 M8 {name} contract mismatch"
+            )));
+        }
+    }
+    let scalar_bytes = tokens * Q_HEADS * MAX_SPLIT_CTA * std::mem::size_of::<f32>();
+    let accumulator_bytes = scalar_bytes * HEAD_DIM;
+    for (name, buffer, bytes) in [
+        ("partial max", &workspace.partial_max, scalar_bytes),
+        ("partial sum", &workspace.partial_sum, scalar_bytes),
+        (
+            "partial accumulator",
+            &workspace.partial_accumulator,
+            accumulator_bytes,
+        ),
+    ] {
+        if buffer.device() != ctx.device_id() || buffer.len() < bytes {
+            return Err(Error::Other(format!(
+                "Qwen3.5 shared-KV E4M3 M8 {name} workspace contract mismatch"
+            )));
+        }
+    }
+    if positions.device() != ctx.device_id() || positions.len() < tokens * 4 {
+        return Err(Error::Other(
+            "Qwen3.5 shared-KV E4M3 M8 positions contract mismatch".into(),
+        ));
+    }
+    unsafe {
+        ffi::check_cuda(
+            ffi::apxinf_static_qwen35_attention_flash_split_cta_m8_shared_q4_e4m3(
+                query.ptr(),
+                key_cache.ptr(),
+                key_scales.ptr(),
+                value_cache.ptr(),
+                value_scales.ptr(),
+                workspace.partial_max.ptr(),
+                workspace.partial_sum.ptr(),
+                workspace.partial_accumulator.ptr(),
+                output.ptr(),
+                split_count as i32,
+                bucket_kv_len as i32,
+                max_seq_len as i32,
+                scale,
+                positions.ptr(),
+                tokens as i32,
+                ctx.stream().handle(),
+            ),
+        )
+        .map_err(Error::Cuda)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn flash_split_cta_m8_buffer_write(
     ctx: &CudaContext,
@@ -497,8 +812,7 @@ pub fn flash_split_cta_m8_buffer_write(
             )));
         }
     }
-    let scalar_bytes =
-        tokens * Q_HEADS * MAX_SPLIT_CTA * std::mem::size_of::<f32>();
+    let scalar_bytes = tokens * Q_HEADS * MAX_SPLIT_CTA * std::mem::size_of::<f32>();
     let accumulator_bytes = scalar_bytes * HEAD_DIM;
     for (name, buffer, bytes) in [
         ("partial max", &workspace.partial_max, scalar_bytes),
@@ -521,24 +835,22 @@ pub fn flash_split_cta_m8_buffer_write(
         ));
     }
     unsafe {
-        ffi::check_cuda(
-            ffi::apxinf_static_qwen35_attention_flash_split_cta_m8_bf16(
-                query.ptr(),
-                key_cache.ptr(),
-                value_cache.ptr(),
-                workspace.partial_max.ptr(),
-                workspace.partial_sum.ptr(),
-                workspace.partial_accumulator.ptr(),
-                output.ptr(),
-                split_count as i32,
-                bucket_kv_len as i32,
-                max_seq_len as i32,
-                scale,
-                positions.ptr(),
-                tokens as i32,
-                ctx.stream().handle(),
-            ),
-        )
+        ffi::check_cuda(ffi::apxinf_static_qwen35_attention_flash_split_cta_m8_bf16(
+            query.ptr(),
+            key_cache.ptr(),
+            value_cache.ptr(),
+            workspace.partial_max.ptr(),
+            workspace.partial_sum.ptr(),
+            workspace.partial_accumulator.ptr(),
+            output.ptr(),
+            split_count as i32,
+            bucket_kv_len as i32,
+            max_seq_len as i32,
+            scale,
+            positions.ptr(),
+            tokens as i32,
+            ctx.stream().handle(),
+        ))
         .map_err(Error::Cuda)
     }
 }
@@ -548,11 +860,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_cta_candidate_starts_at_screened_bucket() {
-        assert_eq!(split_cta_candidate_for_bucket(0), None);
-        assert_eq!(split_cta_candidate_for_bucket(128), None);
-        assert_eq!(split_cta_candidate_for_bucket(255), None);
-        assert_eq!(split_cta_candidate_for_bucket(256), Some(16));
-        assert_eq!(split_cta_candidate_for_bucket(32768), Some(16));
+    fn split_cta_count_starts_at_min_bucket() {
+        assert_eq!(split_cta_count_for_bucket(0), None);
+        assert_eq!(split_cta_count_for_bucket(128), None);
+        assert_eq!(split_cta_count_for_bucket(255), None);
+        assert_eq!(split_cta_count_for_bucket(256), Some(16));
+        assert_eq!(split_cta_count_for_bucket(32768), Some(16));
     }
 }

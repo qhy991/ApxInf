@@ -8,10 +8,10 @@
 use apxinf_core::{DType, Device, Error, Result, Tensor};
 use apxinf_cuda::kernels::gdn::{
     qwen35_conv4_prepare_m8_write, qwen35_conv4_prepare_write, qwen35_gated_rmsnorm_m8_write,
-    qwen35_gated_rmsnorm_write, qwen35_recurrent_m8_hybrid_write, qwen35_recurrent_m8_write,
-    qwen35_recurrent_write, QWEN35_GDN_CONV_DIM as GDN_CONV_DIM,
-    QWEN35_GDN_CONV_KERNEL as GDN_CONV_KERNEL,
-    QWEN35_GDN_HEADS as GDN_HEADS, QWEN35_GDN_KEY_DIM as GDN_DIM,
+    qwen35_gated_rmsnorm_write, qwen35_recurrent_m8_hybrid_pairnorm_write,
+    qwen35_recurrent_m8_hybrid_write, qwen35_recurrent_write, QWEN35_GDN_CONV_DIM as GDN_CONV_DIM,
+    QWEN35_GDN_CONV_KERNEL as GDN_CONV_KERNEL, QWEN35_GDN_HEADS as GDN_HEADS,
+    QWEN35_GDN_KEY_DIM as GDN_DIM,
 };
 use apxinf_cuda::kernels::gemm::{
     self, MarlinPreparedWeight, MarlinWorkspace, W4A16Layout, W4A16WeightView, W8A16WeightView,
@@ -37,7 +37,9 @@ const ATTENTION_SCALE: f32 = 1.0 / 16.0;
 const PREFILL_TILE: usize = 8;
 const MARLIN_PREFILL_TILE: usize = 64;
 const MARLIN_PREFILL_SUBTILES: usize = MARLIN_PREFILL_TILE / PREFILL_TILE;
-const LAYER_MAJOR_PREFILL_ROWS: usize = 1024;
+const LAYER_MAJOR_PREFILL_ACTIVE_ROWS: usize = 1064;
+const LAYER_MAJOR_PREFILL_ROWS: usize = 1088;
+const LAYER_MAJOR_MLP_MARLIN_ROWS: usize = 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HybridUnitMode {
@@ -50,6 +52,42 @@ pub enum HybridUnitMode {
 pub enum Qwen35PrefillMode {
     M8,
     MarlinM64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Qwen35KvCacheMode {
+    Bf16,
+    E4m3,
+}
+
+impl Qwen35KvCacheMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bf16 => "bf16",
+            Self::E4m3 => "e4m3-per-token-head-scale",
+        }
+    }
+
+    fn payload_dtype(self) -> DType {
+        match self {
+            Self::Bf16 => DType::BF16,
+            Self::E4m3 => DType::F8E4M3,
+        }
+    }
+}
+
+fn kv_cache_storage_bytes(
+    mode: Qwen35KvCacheMode,
+    attention_layers: usize,
+    max_seq_len: usize,
+) -> (usize, usize) {
+    let rows = attention_layers * 2 * ATTN_KV_HEADS * max_seq_len;
+    let payload = rows * ATTN_HEAD_DIM * mode.payload_dtype().size_in_bytes();
+    let scales = match mode {
+        Qwen35KvCacheMode::Bf16 => 0,
+        Qwen35KvCacheMode::E4m3 => rows * std::mem::size_of::<f32>(),
+    };
+    (payload, scales)
 }
 
 impl Qwen35PrefillMode {
@@ -342,9 +380,55 @@ struct GdnState {
     recurrent: Tensor,
 }
 
-struct AttentionState {
-    key_cache: Tensor,
-    value_cache: Tensor,
+enum AttentionState {
+    Bf16 {
+        key_cache: Tensor,
+        value_cache: Tensor,
+    },
+    E4m3 {
+        key_cache: Tensor,
+        key_scales: Tensor,
+        value_cache: Tensor,
+        value_scales: Tensor,
+    },
+}
+
+struct AttentionCacheBuffers {
+    key: CudaBuffer,
+    key_scales: Option<CudaBuffer>,
+    value: CudaBuffer,
+    value_scales: Option<CudaBuffer>,
+}
+
+impl AttentionState {
+    fn buffers(&self) -> Result<AttentionCacheBuffers> {
+        match self {
+            Self::Bf16 {
+                key_cache,
+                value_cache,
+            } => Ok(AttentionCacheBuffers {
+                key: CudaBuffer::from_tensor(key_cache).map_err(Error::Cuda)?,
+                key_scales: None,
+                value: CudaBuffer::from_tensor(value_cache).map_err(Error::Cuda)?,
+                value_scales: None,
+            }),
+            Self::E4m3 {
+                key_cache,
+                key_scales,
+                value_cache,
+                value_scales,
+            } => Ok(AttentionCacheBuffers {
+                key: CudaBuffer::from_tensor(key_cache).map_err(Error::Cuda)?,
+                key_scales: Some(CudaBuffer::from_tensor(key_scales).map_err(Error::Cuda)?),
+                value: CudaBuffer::from_tensor(value_cache).map_err(Error::Cuda)?,
+                value_scales: Some(CudaBuffer::from_tensor(value_scales).map_err(Error::Cuda)?),
+            }),
+        }
+    }
+
+    fn is_e4m3(&self) -> bool {
+        matches!(self, Self::E4m3 { .. })
+    }
 }
 
 enum Mixer {
@@ -520,6 +604,7 @@ pub struct HybridUnit {
     zero_conv: Tensor,
     zero_recurrent: Tensor,
     max_seq_len: usize,
+    kv_cache_mode: Qwen35KvCacheMode,
 }
 
 pub struct Qwen35LmHead {
@@ -606,6 +691,7 @@ impl HybridUnit {
             4,
             "model.language_model.layers.4.input_layernorm.weight",
             Qwen35PrefillMode::M8,
+            Qwen35KvCacheMode::Bf16,
         )
     }
 
@@ -622,6 +708,7 @@ impl HybridUnit {
             64,
             "model.language_model.norm.weight",
             Qwen35PrefillMode::M8,
+            Qwen35KvCacheMode::Bf16,
         )
     }
 
@@ -639,6 +726,26 @@ impl HybridUnit {
             64,
             "model.language_model.norm.weight",
             prefill_mode,
+            Qwen35KvCacheMode::Bf16,
+        )
+    }
+
+    pub fn load_all_with_prefill_and_kv_mode(
+        manifest: &CheckpointManifest,
+        ctx: &CudaContext,
+        max_seq_len: usize,
+        prefill_mode: Qwen35PrefillMode,
+        kv_cache_mode: Qwen35KvCacheMode,
+    ) -> Result<Self> {
+        Self::load_range(
+            manifest,
+            ctx,
+            max_seq_len,
+            0,
+            64,
+            "model.language_model.norm.weight",
+            prefill_mode,
+            kv_cache_mode,
         )
     }
 
@@ -650,6 +757,7 @@ impl HybridUnit {
         layer_count: usize,
         next_norm_name: &str,
         prefill_mode: Qwen35PrefillMode,
+        kv_cache_mode: Qwen35KvCacheMode,
     ) -> Result<Self> {
         if ctx.device_id() != 0 || ctx.caps().sm != 89 || max_seq_len == 0 {
             return Err(Error::Other(
@@ -673,17 +781,21 @@ impl HybridUnit {
                     },
                 }
             } else {
+                let cache_shape = [ATTN_KV_HEADS, max_seq_len, ATTN_HEAD_DIM];
+                let scale_shape = [ATTN_KV_HEADS, max_seq_len];
                 Mixer::Attention {
                     weights: AttentionWeights::load(manifest, layer)?,
-                    state: AttentionState {
-                        key_cache: gpu_zeros(
-                            &[ATTN_KV_HEADS, max_seq_len, ATTN_HEAD_DIM],
-                            DType::BF16,
-                        )?,
-                        value_cache: gpu_zeros(
-                            &[ATTN_KV_HEADS, max_seq_len, ATTN_HEAD_DIM],
-                            DType::BF16,
-                        )?,
+                    state: match kv_cache_mode {
+                        Qwen35KvCacheMode::Bf16 => AttentionState::Bf16 {
+                            key_cache: gpu_zeros(&cache_shape, DType::BF16)?,
+                            value_cache: gpu_zeros(&cache_shape, DType::BF16)?,
+                        },
+                        Qwen35KvCacheMode::E4m3 => AttentionState::E4m3 {
+                            key_cache: gpu_zeros(&cache_shape, kv_cache_mode.payload_dtype())?,
+                            key_scales: gpu_zeros(&scale_shape, DType::F32)?,
+                            value_cache: gpu_zeros(&cache_shape, kv_cache_mode.payload_dtype())?,
+                            value_scales: gpu_zeros(&scale_shape, DType::F32)?,
+                        },
                     },
                 }
             };
@@ -791,15 +903,9 @@ impl HybridUnit {
                     layer_major: LayerMajorPrefillWorkspace {
                         residual: gpu_zeros(&[LAYER_MAJOR_PREFILL_ROWS, HIDDEN], DType::BF16)?,
                         normalized: gpu_zeros(&[LAYER_MAJOR_PREFILL_ROWS, HIDDEN], DType::BF16)?,
-                        mixer_delta: gpu_zeros(
-                            &[LAYER_MAJOR_PREFILL_ROWS, HIDDEN],
-                            DType::BF16,
-                        )?,
+                        mixer_delta: gpu_zeros(&[LAYER_MAJOR_PREFILL_ROWS, HIDDEN], DType::BF16)?,
                         gdn: LayerMajorGdnWorkspace {
-                            qkv: gpu_zeros(
-                                &[LAYER_MAJOR_PREFILL_ROWS, GDN_CONV_DIM],
-                                DType::BF16,
-                            )?,
+                            qkv: gpu_zeros(&[LAYER_MAJOR_PREFILL_ROWS, GDN_CONV_DIM], DType::BF16)?,
                             z: gpu_zeros(
                                 &[LAYER_MAJOR_PREFILL_ROWS, GDN_VALUE_WIDTH],
                                 DType::BF16,
@@ -808,21 +914,9 @@ impl HybridUnit {
                                 &[LAYER_MAJOR_PREFILL_ROWS, GDN_HEADS, GDN_DIM],
                                 DType::BF16,
                             )?,
-                            qkv_weight: MarlinPreparedWeight::new(
-                                ctx,
-                                HIDDEN,
-                                GDN_CONV_DIM,
-                            )?,
-                            z_weight: MarlinPreparedWeight::new(
-                                ctx,
-                                HIDDEN,
-                                GDN_VALUE_WIDTH,
-                            )?,
-                            out_weight: MarlinPreparedWeight::new(
-                                ctx,
-                                GDN_VALUE_WIDTH,
-                                HIDDEN,
-                            )?,
+                            qkv_weight: MarlinPreparedWeight::new(ctx, HIDDEN, GDN_CONV_DIM)?,
+                            z_weight: MarlinPreparedWeight::new(ctx, HIDDEN, GDN_VALUE_WIDTH)?,
+                            out_weight: MarlinPreparedWeight::new(ctx, GDN_VALUE_WIDTH, HIDDEN)?,
                         },
                         attention: LayerMajorAttentionWorkspace {
                             q_projection: gpu_zeros(
@@ -861,26 +955,10 @@ impl HybridUnit {
                                 &[LAYER_MAJOR_PREFILL_ROWS, ATTN_Q_HEADS, ATTN_HEAD_DIM],
                                 DType::BF16,
                             )?,
-                            q_weight: MarlinPreparedWeight::new(
-                                ctx,
-                                HIDDEN,
-                                2 * ATTN_WIDTH,
-                            )?,
-                            k_weight: MarlinPreparedWeight::new(
-                                ctx,
-                                HIDDEN,
-                                ATTN_KV_WIDTH,
-                            )?,
-                            v_weight: MarlinPreparedWeight::new(
-                                ctx,
-                                HIDDEN,
-                                ATTN_KV_WIDTH,
-                            )?,
-                            o_weight: MarlinPreparedWeight::new(
-                                ctx,
-                                ATTN_WIDTH,
-                                HIDDEN,
-                            )?,
+                            q_weight: MarlinPreparedWeight::new(ctx, HIDDEN, 2 * ATTN_WIDTH)?,
+                            k_weight: MarlinPreparedWeight::new(ctx, HIDDEN, ATTN_KV_WIDTH)?,
+                            v_weight: MarlinPreparedWeight::new(ctx, HIDDEN, ATTN_KV_WIDTH)?,
+                            o_weight: MarlinPreparedWeight::new(ctx, ATTN_WIDTH, HIDDEN)?,
                         },
                         kernel: MarlinWorkspace::new(ctx)?,
                     },
@@ -915,6 +993,7 @@ impl HybridUnit {
             zero_conv: Tensor::zeros(vec![GDN_CONV_DIM, GDN_CONV_KERNEL], DType::BF16),
             zero_recurrent: Tensor::zeros(vec![GDN_HEADS, GDN_DIM, GDN_DIM], DType::F32),
             max_seq_len,
+            kv_cache_mode,
         })
     }
 
@@ -925,6 +1004,12 @@ impl HybridUnit {
         key_cache: &Tensor,
         value_cache: &Tensor,
     ) -> Result<()> {
+        if self.kv_cache_mode != Qwen35KvCacheMode::Bf16 {
+            return Err(Error::Other(
+                "Qwen3.5 external BF16 cache reset is unavailable in E4M3 mode; use request reset"
+                    .into(),
+            ));
+        }
         if input.device() != Device::Cpu
             || input.dtype() != DType::BF16
             || input.shape().dims() != [1, HIDDEN]
@@ -951,8 +1036,17 @@ impl HybridUnit {
                     transfers::copy_cpu_to_cuda(&self.zero_recurrent, &state.recurrent)?;
                 }
                 Mixer::Attention { state, .. } => {
-                    transfers::copy_cpu_to_cuda(key_cache, &state.key_cache)?;
-                    transfers::copy_cpu_to_cuda(value_cache, &state.value_cache)?;
+                    let AttentionState::Bf16 {
+                        key_cache: state_key,
+                        value_cache: state_value,
+                    } = state
+                    else {
+                        return Err(Error::Other(
+                            "Qwen3.5 BF16 reset reached an E4M3 cache".into(),
+                        ));
+                    };
+                    transfers::copy_cpu_to_cuda(key_cache, state_key)?;
+                    transfers::copy_cpu_to_cuda(value_cache, state_value)?;
                 }
             }
         }
@@ -1029,7 +1123,24 @@ impl HybridUnit {
         self.marlin_prefill.is_some()
     }
 
+    pub fn kv_cache_mode(&self) -> Qwen35KvCacheMode {
+        self.kv_cache_mode
+    }
+
+    pub fn kv_cache_storage_bytes(&self) -> (usize, usize) {
+        let attention_layers = self
+            .layers
+            .iter()
+            .filter(|layer| matches!(&layer.mixer, Mixer::Attention { .. }))
+            .count();
+        kv_cache_storage_bytes(self.kv_cache_mode, attention_layers, self.max_seq_len)
+    }
+
     pub fn layer_major_prefill_rows() -> usize {
+        LAYER_MAJOR_PREFILL_ACTIVE_ROWS
+    }
+
+    pub fn layer_major_prefill_padded_rows() -> usize {
         LAYER_MAJOR_PREFILL_ROWS
     }
 
@@ -1059,11 +1170,7 @@ impl HybridUnit {
         Ok(())
     }
 
-    pub fn set_layer_major_prefill1k_input(
-        &self,
-        ctx: &CudaContext,
-        input: &Tensor,
-    ) -> Result<()> {
+    pub fn set_layer_major_prefill1k_input(&self, ctx: &CudaContext, input: &Tensor) -> Result<()> {
         let workspace = self.marlin_prefill.as_ref().ok_or_else(|| {
             Error::Other("Qwen3.5 Marlin M64 prefill workspace is not enabled".into())
         })?;
@@ -1175,19 +1282,15 @@ impl HybridUnit {
         })
     }
 
-    pub fn forward_layer_major_prefill1k(
-        &self,
-        ctx: &CudaContext,
-        profile: bool,
-    ) -> Result<()> {
+    pub fn forward_layer_major_prefill1k(&self, ctx: &CudaContext, profile: bool) -> Result<()> {
         if self.marlin_prefill.is_none() {
             return Err(Error::Other(
                 "Qwen3.5 Marlin M64 prefill was not enabled at model load".into(),
             ));
         }
-        if LAYER_MAJOR_PREFILL_ROWS > self.max_seq_len {
+        if LAYER_MAJOR_PREFILL_ACTIVE_ROWS > self.max_seq_len {
             return Err(Error::Other(format!(
-                "Qwen3.5 layer-major prefill length {LAYER_MAJOR_PREFILL_ROWS} exceeds KV capacity {}",
+                "Qwen3.5 layer-major prefill length {LAYER_MAJOR_PREFILL_ACTIVE_ROWS} exceeds KV capacity {}",
                 self.max_seq_len
             )));
         }
@@ -1284,7 +1387,7 @@ impl HybridUnit {
             Error::Other("Qwen3.5 Marlin M64 prefill workspace is not enabled".into())
         })?;
         let row_bytes = HIDDEN * DType::BF16.size_in_bytes();
-        let offset = (LAYER_MAJOR_PREFILL_ROWS - 1) * row_bytes;
+        let offset = (LAYER_MAJOR_PREFILL_ACTIVE_ROWS - 1) * row_bytes;
         for (source, destination) in [
             (&workspace.layer_major.residual, &self.workspace.residual),
             (
@@ -1563,11 +1666,7 @@ impl HybridUnit {
         Ok(())
     }
 
-    fn forward_layer_major_prefill1k_inner(
-        &self,
-        ctx: &CudaContext,
-        profile: bool,
-    ) -> Result<()> {
+    fn forward_layer_major_prefill1k_inner(&self, ctx: &CudaContext, profile: bool) -> Result<()> {
         let workspace = self.marlin_prefill.as_ref().ok_or_else(|| {
             Error::Other("Qwen3.5 Marlin M64 prefill workspace is not enabled".into())
         })?;
@@ -1585,7 +1684,12 @@ impl HybridUnit {
                 }
             }
             self.prepare_mlp_marlin64_layer_major(ctx, &layer.mlp)?;
-            for tile_first in (0..LAYER_MAJOR_PREFILL_ROWS).step_by(MARLIN_PREFILL_TILE) {
+            let next_norm = if layer_index + 1 < self.layers.len() {
+                &self.layers[layer_index + 1].input_norm
+            } else {
+                &self.next_input_norm
+            };
+            for tile_first in (0..LAYER_MAJOR_MLP_MARLIN_ROWS).step_by(MARLIN_PREFILL_TILE) {
                 qwen35_common::residual_add_rmsnorm_offset_write(
                     ctx,
                     &cuda_row_view(
@@ -1607,11 +1711,6 @@ impl HybridUnit {
                     &workspace.mlp_normalized,
                     &workspace.mlp_delta,
                 )?;
-                let next_norm = if layer_index + 1 < self.layers.len() {
-                    &self.layers[layer_index + 1].input_norm
-                } else {
-                    &self.next_input_norm
-                };
                 qwen35_common::residual_add_rmsnorm_offset_write(
                     ctx,
                     &cuda_row_view(
@@ -1626,6 +1725,43 @@ impl HybridUnit {
                         tile_first,
                         MARLIN_PREFILL_TILE,
                     )?,
+                    RMS_EPSILON,
+                )?;
+            }
+            qwen35_common::residual_add_rmsnorm_offset_write(
+                ctx,
+                &cuda_row_view(
+                    &workspace.layer_major.residual,
+                    LAYER_MAJOR_MLP_MARLIN_ROWS,
+                    MARLIN_PREFILL_TILE,
+                )?,
+                &cuda_row_view(
+                    &workspace.layer_major.mixer_delta,
+                    LAYER_MAJOR_MLP_MARLIN_ROWS,
+                    MARLIN_PREFILL_TILE,
+                )?,
+                &layer.post_attention_norm,
+                &workspace.mlp_normalized,
+                RMS_EPSILON,
+            )?;
+            self.forward_mlp_gate_up_marlin64_layer_major(ctx, &workspace.mlp_normalized)?;
+            for tail_first in (0..LAYER_MAJOR_PREFILL_ACTIVE_ROWS - LAYER_MAJOR_MLP_MARLIN_ROWS)
+                .step_by(PREFILL_TILE)
+            {
+                let mlp_output = cuda_row_view(&workspace.mlp_delta, tail_first, PREFILL_TILE)?;
+                gemm::w4a16_m8_write(
+                    ctx,
+                    &cuda_row_view(&workspace.mlp.hidden, tail_first, PREFILL_TILE)?,
+                    layer.mlp.down.view(),
+                    &mlp_output,
+                )?;
+                let first = LAYER_MAJOR_MLP_MARLIN_ROWS + tail_first;
+                qwen35_common::residual_add_rmsnorm_offset_write(
+                    ctx,
+                    &cuda_row_view(&workspace.layer_major.residual, first, PREFILL_TILE)?,
+                    &mlp_output,
+                    next_norm,
+                    &cuda_row_view(&workspace.layer_major.normalized, first, PREFILL_TILE)?,
                     RMS_EPSILON,
                 )?;
             }
@@ -1670,7 +1806,7 @@ impl HybridUnit {
             )?;
         }
 
-        for first in (0..LAYER_MAJOR_PREFILL_ROWS).step_by(PREFILL_TILE) {
+        for first in (0..LAYER_MAJOR_PREFILL_ACTIVE_ROWS).step_by(PREFILL_TILE) {
             self.forward_gdn_layer_major_core(
                 ctx,
                 weights,
@@ -1691,18 +1827,14 @@ impl HybridUnit {
                         &cuda_row_view(&gdn.normalized, first, MARLIN_PREFILL_TILE)?
                             .reshape(vec![MARLIN_PREFILL_TILE, GDN_VALUE_WIDTH])?,
                         gdn.out_weight.view(),
-                        &cuda_row_view(
-                            &workspace.mixer_delta,
-                            first,
-                            MARLIN_PREFILL_TILE,
-                        )?,
+                        &cuda_row_view(&workspace.mixer_delta, first, MARLIN_PREFILL_TILE)?,
                         &workspace.kernel,
                     )?;
                 }
                 Ok(())
             }
             GdnOutputWeight::Bf16 { weight, .. } => {
-                for first in (0..LAYER_MAJOR_PREFILL_ROWS).step_by(PREFILL_TILE) {
+                for first in (0..LAYER_MAJOR_PREFILL_ACTIVE_ROWS).step_by(PREFILL_TILE) {
                     bf16_linear_serial_rows(
                         ctx,
                         &cuda_row_view(&gdn.normalized, first, PREFILL_TILE)?
@@ -1731,14 +1863,7 @@ impl HybridUnit {
         normalized: &Tensor,
     ) -> Result<()> {
         let scratch = &self.prefill.gdn;
-        bf16_linear_prefill_m8(
-            ctx,
-            input,
-            &weights.ab,
-            &scratch.ab,
-            HIDDEN,
-            2 * GDN_HEADS,
-        )?;
+        bf16_linear_prefill_m8(ctx, input, &weights.ab, &scratch.ab, HIDDEN, 2 * GDN_HEADS)?;
         qwen35_conv4_prepare_m8_write(
             ctx,
             qkv,
@@ -1791,7 +1916,9 @@ impl HybridUnit {
         let attention_workspace = &workspace.attention;
         let input = &workspace.normalized;
 
-        attention_workspace.q_weight.prepare(ctx, weights.q.view())?;
+        attention_workspace
+            .q_weight
+            .prepare(ctx, weights.q.view())?;
         for first in (0..LAYER_MAJOR_PREFILL_ROWS).step_by(MARLIN_PREFILL_TILE) {
             gemm::w4a16_marlin_write(
                 ctx,
@@ -1805,7 +1932,9 @@ impl HybridUnit {
                 &workspace.kernel,
             )?;
         }
-        attention_workspace.k_weight.prepare(ctx, weights.k.view())?;
+        attention_workspace
+            .k_weight
+            .prepare(ctx, weights.k.view())?;
         for first in (0..LAYER_MAJOR_PREFILL_ROWS).step_by(MARLIN_PREFILL_TILE) {
             gemm::w4a16_marlin_write(
                 ctx,
@@ -1819,7 +1948,9 @@ impl HybridUnit {
                 &workspace.kernel,
             )?;
         }
-        attention_workspace.v_weight.prepare(ctx, weights.v.view())?;
+        attention_workspace
+            .v_weight
+            .prepare(ctx, weights.v.view())?;
         for first in (0..LAYER_MAJOR_PREFILL_ROWS).step_by(MARLIN_PREFILL_TILE) {
             gemm::w4a16_marlin_write(
                 ctx,
@@ -1834,7 +1965,7 @@ impl HybridUnit {
             )?;
         }
 
-        for first in (0..LAYER_MAJOR_PREFILL_ROWS).step_by(PREFILL_TILE) {
+        for first in (0..LAYER_MAJOR_PREFILL_ACTIVE_ROWS).step_by(PREFILL_TILE) {
             self.forward_attention_layer_major_core(
                 ctx,
                 weights,
@@ -1844,22 +1975,16 @@ impl HybridUnit {
             )?;
         }
 
-        attention_workspace.o_weight.prepare(ctx, weights.o.view())?;
+        attention_workspace
+            .o_weight
+            .prepare(ctx, weights.o.view())?;
         for first in (0..LAYER_MAJOR_PREFILL_ROWS).step_by(MARLIN_PREFILL_TILE) {
             gemm::w4a16_marlin_write(
                 ctx,
-                &cuda_row_view(
-                    &attention_workspace.gated,
-                    first,
-                    MARLIN_PREFILL_TILE,
-                )?
-                .reshape(vec![MARLIN_PREFILL_TILE, ATTN_WIDTH])?,
+                &cuda_row_view(&attention_workspace.gated, first, MARLIN_PREFILL_TILE)?
+                    .reshape(vec![MARLIN_PREFILL_TILE, ATTN_WIDTH])?,
                 attention_workspace.o_weight.view(),
-                &cuda_row_view(
-                    &workspace.mixer_delta,
-                    first,
-                    MARLIN_PREFILL_TILE,
-                )?,
+                &cuda_row_view(&workspace.mixer_delta, first, MARLIN_PREFILL_TILE)?,
                 &workspace.kernel,
             )?;
         }
@@ -1897,50 +2022,107 @@ impl HybridUnit {
                 .map_err(Error::Cuda)?,
         )?;
 
-        let key_cache = CudaBuffer::from_tensor(&state.key_cache).map_err(Error::Cuda)?;
-        let value_cache = CudaBuffer::from_tensor(&state.value_cache).map_err(Error::Cuda)?;
-        cache::append(
-            ctx,
-            &key_cache,
-            &key,
-            ATTN_KV_HEADS,
-            ATTN_HEAD_DIM,
-            self.max_seq_len,
-            first,
-            PREFILL_TILE,
-        )?;
-        cache::append(
-            ctx,
-            &value_cache,
-            &value,
-            ATTN_KV_HEADS,
-            ATTN_HEAD_DIM,
-            self.max_seq_len,
-            first,
-            PREFILL_TILE,
-        )?;
+        let cache_state = state.buffers()?;
+        if let (Some(key_scales), Some(value_scales)) = (
+            cache_state.key_scales.as_ref(),
+            cache_state.value_scales.as_ref(),
+        ) {
+            cache::append_e4m3(
+                ctx,
+                &cache_state.key,
+                key_scales,
+                &key,
+                ATTN_KV_HEADS,
+                ATTN_HEAD_DIM,
+                self.max_seq_len,
+                first,
+                PREFILL_TILE,
+            )?;
+            cache::append_e4m3(
+                ctx,
+                &cache_state.value,
+                value_scales,
+                &value,
+                ATTN_KV_HEADS,
+                ATTN_HEAD_DIM,
+                self.max_seq_len,
+                first,
+                PREFILL_TILE,
+            )?;
+        } else {
+            cache::append(
+                ctx,
+                &cache_state.key,
+                &key,
+                ATTN_KV_HEADS,
+                ATTN_HEAD_DIM,
+                self.max_seq_len,
+                first,
+                PREFILL_TILE,
+            )?;
+            cache::append(
+                ctx,
+                &cache_state.value,
+                &value,
+                ATTN_KV_HEADS,
+                ATTN_HEAD_DIM,
+                self.max_seq_len,
+                first,
+                PREFILL_TILE,
+            )?;
+        }
 
         let all_query = CudaBuffer::from_tensor(&workspace.query).map_err(Error::Cuda)?;
         let all_attended = CudaBuffer::from_tensor(&workspace.attended).map_err(Error::Cuda)?;
         let row_bytes = ATTN_WIDTH * DType::BF16.size_in_bytes();
         if first >= 256 {
             let tile_bytes = PREFILL_TILE * row_bytes;
-            qwen35_attention::flash_split_cta_m8_buffer_write(
-                ctx,
-                &all_query.view(first * row_bytes, tile_bytes).map_err(Error::Cuda)?,
-                &key_cache,
-                &value_cache,
-                &all_attended.view(first * row_bytes, tile_bytes).map_err(Error::Cuda)?,
-                &self.workspace.attention.split,
-                qwen35_attention::SPLIT_CTA_CANDIDATE_COUNT,
-                first + PREFILL_TILE,
-                self.max_seq_len,
-                ATTENTION_SCALE,
-                self.prefill_positions
-                    .address_at(first * 4, PREFILL_TILE * 4)
-                    .map_err(Error::Cuda)?,
-                PREFILL_TILE,
-            )?;
+            let query = all_query
+                .view(first * row_bytes, tile_bytes)
+                .map_err(Error::Cuda)?;
+            let attended = all_attended
+                .view(first * row_bytes, tile_bytes)
+                .map_err(Error::Cuda)?;
+            let positions = self
+                .prefill_positions
+                .address_at(first * 4, PREFILL_TILE * 4)
+                .map_err(Error::Cuda)?;
+            if let (Some(key_scales), Some(value_scales)) = (
+                cache_state.key_scales.as_ref(),
+                cache_state.value_scales.as_ref(),
+            ) {
+                qwen35_attention::flash_split_cta_m8_e4m3_buffer_write(
+                    ctx,
+                    &query,
+                    &cache_state.key,
+                    key_scales,
+                    &cache_state.value,
+                    value_scales,
+                    &attended,
+                    &self.workspace.attention.split,
+                    qwen35_attention::SPLIT_CTA_COUNT,
+                    first + PREFILL_TILE,
+                    self.max_seq_len,
+                    ATTENTION_SCALE,
+                    positions,
+                    PREFILL_TILE,
+                )?;
+            } else {
+                qwen35_attention::flash_split_cta_m8_buffer_write(
+                    ctx,
+                    &query,
+                    &cache_state.key,
+                    &cache_state.value,
+                    &attended,
+                    &self.workspace.attention.split,
+                    qwen35_attention::SPLIT_CTA_COUNT,
+                    first + PREFILL_TILE,
+                    self.max_seq_len,
+                    ATTENTION_SCALE,
+                    positions,
+                    PREFILL_TILE,
+                )?;
+            }
         } else {
             for token in first..first + PREFILL_TILE {
                 let position = self
@@ -1954,12 +2136,32 @@ impl HybridUnit {
                     .view(token * row_bytes, row_bytes)
                     .map_err(Error::Cuda)?;
                 let kv_len = token + 1;
-                if let Some(split) = qwen35_attention::split_cta_candidate_for_bucket(kv_len) {
+                if let (Some(key_scales), Some(value_scales)) = (
+                    cache_state.key_scales.as_ref(),
+                    cache_state.value_scales.as_ref(),
+                ) {
+                    let split = qwen35_attention::split_cta_count_for_bucket(kv_len).unwrap_or(2);
+                    qwen35_attention::flash_split_cta_e4m3_buffer_write(
+                        ctx,
+                        &query_row,
+                        &cache_state.key,
+                        key_scales,
+                        &cache_state.value,
+                        value_scales,
+                        &attended_row,
+                        &self.workspace.attention.split,
+                        split,
+                        kv_len,
+                        self.max_seq_len,
+                        ATTENTION_SCALE,
+                        position,
+                    )?;
+                } else if let Some(split) = qwen35_attention::split_cta_count_for_bucket(kv_len) {
                     qwen35_attention::flash_split_cta_buffer_write(
                         ctx,
                         &query_row,
-                        &key_cache,
-                        &value_cache,
+                        &cache_state.key,
+                        &cache_state.value,
                         &attended_row,
                         &self.workspace.attention.split,
                         split,
@@ -1972,8 +2174,8 @@ impl HybridUnit {
                     attention::flash_bf16_into(
                         ctx,
                         &query_row,
-                        &key_cache,
-                        &value_cache,
+                        &cache_state.key,
+                        &cache_state.value,
                         &attended_row,
                         ATTN_Q_HEADS,
                         ATTN_KV_HEADS,
@@ -2106,6 +2308,44 @@ impl HybridUnit {
         )
     }
 
+    fn forward_mlp_gate_up_marlin64_layer_major(
+        &self,
+        ctx: &CudaContext,
+        input: &Tensor,
+    ) -> Result<()> {
+        let workspace = &self
+            .marlin_prefill
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Other("Qwen3.5 Marlin M64 prefill workspace is not enabled".into())
+            })?
+            .mlp;
+        gemm::w4a16_marlin_write(
+            ctx,
+            input,
+            workspace.gate_up_weight.view(),
+            &workspace.gate_up,
+            &workspace.kernel,
+        )?;
+        let gate_up = CudaBuffer::from_tensor(&workspace.gate_up).map_err(Error::Cuda)?;
+        let hidden = CudaBuffer::from_tensor(&workspace.hidden).map_err(Error::Cuda)?;
+        let gate_up_bytes = 2 * INTERMEDIATE * DType::BF16.size_in_bytes();
+        let hidden_bytes = INTERMEDIATE * DType::BF16.size_in_bytes();
+        for token in 0..MARLIN_PREFILL_TILE {
+            activation::silu_mul_bf16_into(
+                ctx,
+                &gate_up
+                    .view(token * gate_up_bytes, gate_up_bytes)
+                    .map_err(Error::Cuda)?,
+                &hidden
+                    .view(token * hidden_bytes, hidden_bytes)
+                    .map_err(Error::Cuda)?,
+                INTERMEDIATE,
+            )?;
+        }
+        Ok(())
+    }
+
     fn forward_gdn_prefill8(
         &self,
         ctx: &CudaContext,
@@ -2142,7 +2382,7 @@ impl HybridUnit {
             &workspace.g,
             &workspace.beta,
         )?;
-        qwen35_recurrent_m8_write(
+        qwen35_recurrent_m8_hybrid_pairnorm_write(
             ctx,
             &workspace.query,
             &workspace.key,
@@ -2210,72 +2450,151 @@ impl HybridUnit {
                 .address_at(positions_offset * 3 * 4, PREFILL_TILE * 3 * 4)
                 .map_err(Error::Cuda)?,
         )?;
-        let key_cache = CudaBuffer::from_tensor(&state.key_cache).map_err(Error::Cuda)?;
-        let value_cache = CudaBuffer::from_tensor(&state.value_cache).map_err(Error::Cuda)?;
-        cache::append(
-            ctx,
-            &key_cache,
-            &workspace.key,
-            ATTN_KV_HEADS,
-            ATTN_HEAD_DIM,
-            self.max_seq_len,
-            start_position,
-            PREFILL_TILE,
-        )?;
-        cache::append(
-            ctx,
-            &value_cache,
-            &workspace.value,
-            ATTN_KV_HEADS,
-            ATTN_HEAD_DIM,
-            self.max_seq_len,
-            start_position,
-            PREFILL_TILE,
-        )?;
+        let cache_state = state.buffers()?;
+        if let (Some(key_scales), Some(value_scales)) = (
+            cache_state.key_scales.as_ref(),
+            cache_state.value_scales.as_ref(),
+        ) {
+            cache::append_e4m3(
+                ctx,
+                &cache_state.key,
+                key_scales,
+                &workspace.key,
+                ATTN_KV_HEADS,
+                ATTN_HEAD_DIM,
+                self.max_seq_len,
+                start_position,
+                PREFILL_TILE,
+            )?;
+            cache::append_e4m3(
+                ctx,
+                &cache_state.value,
+                value_scales,
+                &workspace.value,
+                ATTN_KV_HEADS,
+                ATTN_HEAD_DIM,
+                self.max_seq_len,
+                start_position,
+                PREFILL_TILE,
+            )?;
+        } else {
+            cache::append(
+                ctx,
+                &cache_state.key,
+                &workspace.key,
+                ATTN_KV_HEADS,
+                ATTN_HEAD_DIM,
+                self.max_seq_len,
+                start_position,
+                PREFILL_TILE,
+            )?;
+            cache::append(
+                ctx,
+                &cache_state.value,
+                &workspace.value,
+                ATTN_KV_HEADS,
+                ATTN_HEAD_DIM,
+                self.max_seq_len,
+                start_position,
+                PREFILL_TILE,
+            )?;
+        }
         let query = CudaBuffer::from_tensor(&workspace.query).map_err(Error::Cuda)?;
         let attended = CudaBuffer::from_tensor(&workspace.attended).map_err(Error::Cuda)?;
         let row_bytes = ATTN_WIDTH * DType::BF16.size_in_bytes();
-        for token in 0..PREFILL_TILE {
-            let position = self
-                .prefill_positions
-                .address_at((positions_offset + token) * 4, 4)
-                .map_err(Error::Cuda)?;
-            let kv_len = start_position + token + 1;
-            let query_row = query
-                .view(token * row_bytes, row_bytes)
-                .map_err(Error::Cuda)?;
-            let attended_row = attended
-                .view(token * row_bytes, row_bytes)
-                .map_err(Error::Cuda)?;
-            if let Some(split) = qwen35_attention::split_cta_candidate_for_bucket(kv_len) {
-                qwen35_attention::flash_split_cta_buffer_write(
+        let used_shared_e4m3 = if start_position >= 256 {
+            if let (Some(key_scales), Some(value_scales)) = (
+                cache_state.key_scales.as_ref(),
+                cache_state.value_scales.as_ref(),
+            ) {
+                qwen35_attention::flash_split_cta_m8_shared_q4_e4m3_buffer_write(
                     ctx,
-                    &query_row,
-                    &key_cache,
-                    &value_cache,
-                    &attended_row,
+                    &query,
+                    &cache_state.key,
+                    key_scales,
+                    &cache_state.value,
+                    value_scales,
+                    &attended,
                     &self.workspace.attention.split,
-                    split,
-                    kv_len,
+                    qwen35_attention::SPLIT_CTA_COUNT,
+                    start_position + PREFILL_TILE,
                     self.max_seq_len,
                     ATTENTION_SCALE,
-                    position,
+                    self.prefill_positions
+                        .address_at(positions_offset * 4, PREFILL_TILE * 4)
+                        .map_err(Error::Cuda)?,
+                    PREFILL_TILE,
                 )?;
+                true
             } else {
-                attention::flash_bf16_into(
-                    ctx,
-                    &query_row,
-                    &key_cache,
-                    &value_cache,
-                    &attended_row,
-                    ATTN_Q_HEADS,
-                    ATTN_KV_HEADS,
-                    ATTN_HEAD_DIM,
-                    kv_len,
-                    self.max_seq_len,
-                    ATTENTION_SCALE,
-                    position,
-                )?;
+                false
+            }
+        } else {
+            false
+        };
+        if !used_shared_e4m3 {
+            for token in 0..PREFILL_TILE {
+                let position = self
+                    .prefill_positions
+                    .address_at((positions_offset + token) * 4, 4)
+                    .map_err(Error::Cuda)?;
+                let kv_len = start_position + token + 1;
+                let query_row = query
+                    .view(token * row_bytes, row_bytes)
+                    .map_err(Error::Cuda)?;
+                let attended_row = attended
+                    .view(token * row_bytes, row_bytes)
+                    .map_err(Error::Cuda)?;
+                if let (Some(key_scales), Some(value_scales)) = (
+                    cache_state.key_scales.as_ref(),
+                    cache_state.value_scales.as_ref(),
+                ) {
+                    let split = qwen35_attention::split_cta_count_for_bucket(kv_len).unwrap_or(2);
+                    qwen35_attention::flash_split_cta_e4m3_buffer_write(
+                        ctx,
+                        &query_row,
+                        &cache_state.key,
+                        key_scales,
+                        &cache_state.value,
+                        value_scales,
+                        &attended_row,
+                        &self.workspace.attention.split,
+                        split,
+                        kv_len,
+                        self.max_seq_len,
+                        ATTENTION_SCALE,
+                        position,
+                    )?;
+                } else if let Some(split) = qwen35_attention::split_cta_count_for_bucket(kv_len) {
+                    qwen35_attention::flash_split_cta_buffer_write(
+                        ctx,
+                        &query_row,
+                        &cache_state.key,
+                        &cache_state.value,
+                        &attended_row,
+                        &self.workspace.attention.split,
+                        split,
+                        kv_len,
+                        self.max_seq_len,
+                        ATTENTION_SCALE,
+                        position,
+                    )?;
+                } else {
+                    attention::flash_bf16_into(
+                        ctx,
+                        &query_row,
+                        &cache_state.key,
+                        &cache_state.value,
+                        &attended_row,
+                        ATTN_Q_HEADS,
+                        ATTN_KV_HEADS,
+                        ATTN_HEAD_DIM,
+                        kv_len,
+                        self.max_seq_len,
+                        ATTENTION_SCALE,
+                        position,
+                    )?;
+                }
             }
         }
         qwen35_attention::gate_m8_write(
@@ -2434,44 +2753,96 @@ impl HybridUnit {
             &workspace.gate,
             rope_position,
         )?;
-        let key_cache = CudaBuffer::from_tensor(&state.key_cache).map_err(Error::Cuda)?;
-        let value_cache = CudaBuffer::from_tensor(&state.value_cache).map_err(Error::Cuda)?;
-        cache::append_at(
-            ctx,
-            DType::BF16,
-            &key_cache,
-            &CudaBuffer::from_tensor(&workspace.key).map_err(Error::Cuda)?,
-            ATTN_KV_HEADS,
-            ATTN_HEAD_DIM,
-            self.max_seq_len,
-            cache_position,
-        )?;
-        cache::append_at(
-            ctx,
-            DType::BF16,
-            &value_cache,
-            &CudaBuffer::from_tensor(&workspace.value).map_err(Error::Cuda)?,
-            ATTN_KV_HEADS,
-            ATTN_HEAD_DIM,
-            self.max_seq_len,
-            cache_position,
-        )?;
-        let split = (mode != HybridUnitMode::Native)
-            .then(|| qwen35_attention::split_cta_candidate_for_bucket(bucket_kv_len))
-            .flatten();
+        let cache_state = state.buffers()?;
+        let key = CudaBuffer::from_tensor(&workspace.key).map_err(Error::Cuda)?;
+        let value = CudaBuffer::from_tensor(&workspace.value).map_err(Error::Cuda)?;
+        if let (Some(key_scales), Some(value_scales)) = (
+            cache_state.key_scales.as_ref(),
+            cache_state.value_scales.as_ref(),
+        ) {
+            cache::append_at_e4m3(
+                ctx,
+                &cache_state.key,
+                key_scales,
+                &key,
+                ATTN_KV_HEADS,
+                ATTN_HEAD_DIM,
+                self.max_seq_len,
+                cache_position,
+            )?;
+            cache::append_at_e4m3(
+                ctx,
+                &cache_state.value,
+                value_scales,
+                &value,
+                ATTN_KV_HEADS,
+                ATTN_HEAD_DIM,
+                self.max_seq_len,
+                cache_position,
+            )?;
+        } else {
+            cache::append_at(
+                ctx,
+                DType::BF16,
+                &cache_state.key,
+                &key,
+                ATTN_KV_HEADS,
+                ATTN_HEAD_DIM,
+                self.max_seq_len,
+                cache_position,
+            )?;
+            cache::append_at(
+                ctx,
+                DType::BF16,
+                &cache_state.value,
+                &value,
+                ATTN_KV_HEADS,
+                ATTN_HEAD_DIM,
+                self.max_seq_len,
+                cache_position,
+            )?;
+        }
+        let split = if state.is_e4m3() {
+            Some(qwen35_attention::split_cta_count_for_bucket(bucket_kv_len).unwrap_or(2))
+        } else {
+            (mode != HybridUnitMode::Native)
+                .then(|| qwen35_attention::split_cta_count_for_bucket(bucket_kv_len))
+                .flatten()
+        };
         let _range = profile.then(|| {
-            apxinf_cuda::nvtx::range(if split.is_some() {
+            apxinf_cuda::nvtx::range(if state.is_e4m3() {
+                "qwen35.hybrid_unit.attention_e4m3"
+            } else if split.is_some() {
                 "qwen35.hybrid_unit.attention_split16"
             } else {
-                "qwen35.hybrid_unit.attention_incumbent"
+                "qwen35.hybrid_unit.attention_dense"
             })
         });
-        if let Some(split) = split {
+        if let (Some(key_scales), Some(value_scales)) = (
+            cache_state.key_scales.as_ref(),
+            cache_state.value_scales.as_ref(),
+        ) {
+            qwen35_attention::flash_split_cta_e4m3_buffer_write(
+                ctx,
+                &CudaBuffer::from_tensor(&workspace.query).map_err(Error::Cuda)?,
+                &cache_state.key,
+                key_scales,
+                &cache_state.value,
+                value_scales,
+                &CudaBuffer::from_tensor(&workspace.attended).map_err(Error::Cuda)?,
+                &workspace.split,
+                split.expect("E4M3 split is always selected"),
+                bucket_kv_len,
+                self.max_seq_len,
+                ATTENTION_SCALE,
+                cache_position,
+            )?;
+        } else if let Some(split) = split {
             qwen35_attention::flash_split_cta_write(
                 ctx,
                 &workspace.query,
-                &key_cache,
-                &value_cache,
+                &cache_state.key,
+                &cache_state.value,
                 &workspace.attended,
                 &workspace.split,
                 split,
@@ -2484,8 +2855,8 @@ impl HybridUnit {
             attention::flash_bf16_into(
                 ctx,
                 &CudaBuffer::from_tensor(&workspace.query).map_err(Error::Cuda)?,
-                &key_cache,
-                &value_cache,
+                &cache_state.key,
+                &cache_state.value,
                 &CudaBuffer::from_tensor(&workspace.attended).map_err(Error::Cuda)?,
                 ATTN_Q_HEADS,
                 ATTN_KV_HEADS,
@@ -2745,4 +3116,25 @@ fn bf16_linear_serial_rows(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kv_capacity_accounting_matches_128k_contract() {
+        assert_eq!(
+            kv_cache_storage_bytes(Qwen35KvCacheMode::Bf16, 16, 131_072),
+            (8 * 1024 * 1024 * 1024, 0)
+        );
+        assert_eq!(
+            kv_cache_storage_bytes(Qwen35KvCacheMode::E4m3, 16, 131_072),
+            (4 * 1024 * 1024 * 1024, 64 * 1024 * 1024)
+        );
+        assert_eq!(
+            kv_cache_storage_bytes(Qwen35KvCacheMode::Bf16, 16, 32_768),
+            (2 * 1024 * 1024 * 1024, 0)
+        );
+    }
 }

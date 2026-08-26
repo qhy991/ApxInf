@@ -17,7 +17,9 @@ pub mod vla;
 pub use auto::{AutoModel, LoadOptions, LoadedModel, ModelPrecision, SyntheticWeights};
 pub use builtin::register_builtin_models;
 pub use debug::{DebugCapture, DebugConfig};
-pub use generation_config::{GenerationConfigSource, GenerationOptions, SamplingMode};
+pub use generation_config::{
+    GenerationConfigSource, GenerationOptions, ResolvedGenerationOptions, SamplingMode,
+};
 #[cfg(feature = "cuda")]
 pub use llama::{DecodeGraph, DecodeGraphConfig, DecodeGraphWeights, DecodeLayerWeights};
 pub use llama::{GeneralLlama, KVCache, LlamaModel, LlamaWeights, TransformerLayer};
@@ -31,6 +33,6 @@ pub use qwen35::{Qwen35CheckpointReport, Qwen35Config, Qwen35LayerType};
 pub use qwen3vl::{GeneralQwen3VL, Qwen3VLConfig, Qwen3VLTextWeights};
 pub use registry::{get, list, register};
 pub use vla::{
-    Action, ImageLayout, InferenceSpec, InitialLatent, Observation,
-    PreparedInference, VisionObservation, VlaRequest, VlaRuntime,
+    Action, ImageLayout, InferenceSpec, InitialLatent, Observation, PreparedInference,
+    VisionObservation, VlaRequest, VlaRuntime,
 };

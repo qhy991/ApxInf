@@ -288,7 +288,8 @@ fn main() {
             let cutlass_fmha = std::path::Path::new(&adapters_dir).join("cutlass_fmha_adapter.cu");
             let cutlass_gemm = std::path::Path::new(&adapters_dir).join("cutlass_fp8_adapter.cu");
             let cutlass_bf16 = std::path::Path::new(&adapters_dir).join("cutlass_bf16_adapter.cu");
-            let cutlass_bf16_sm89 = std::path::Path::new(&adapters_dir).join("cutlass_bf16_sm89_adapter.cu");
+            let cutlass_bf16_sm89 =
+                std::path::Path::new(&adapters_dir).join("cutlass_bf16_sm89_adapter.cu");
             let cutlass_int8 = std::path::Path::new(&adapters_dir).join("cutlass_w8a8_adapter.cu");
             let marlin_adapter = std::path::Path::new(&adapters_dir).join("marlin_adapter.cu");
             let mut cutlass_includes = Vec::new();

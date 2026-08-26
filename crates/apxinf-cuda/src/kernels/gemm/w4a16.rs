@@ -31,7 +31,7 @@ pub fn gemv_w4a16_write(
     gemv_w4a16_write_impl(ctx, activation, weight, output, true)
 }
 
-/// Explicit pre-staging baseline retained for operator A/B and rollback.
+/// Direct M=1 path without activation pre-staging.
 pub fn gemv_w4a16_write_direct(
     ctx: &CudaContext,
     activation: &Tensor,

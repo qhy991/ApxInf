@@ -17,7 +17,10 @@ pub use config::{
     Qwen35Config, Qwen35LayerType, Qwen35QuantizationConfig, Qwen35TextConfig, Qwen35VisionConfig,
 };
 #[cfg(feature = "cuda")]
-pub use decode::{load_embedding_row, HybridUnit, HybridUnitMode, Qwen35LmHead, Qwen35PrefillMode};
+pub use decode::{
+    load_embedding_row, HybridUnit, HybridUnitMode, Qwen35KvCacheMode, Qwen35LmHead,
+    Qwen35PrefillMode,
+};
 pub use multimodal::{compute_mrope_positions, Qwen35MropePositions};
 #[cfg(feature = "cuda")]
 pub use vision::Qwen35VisionEncoder;

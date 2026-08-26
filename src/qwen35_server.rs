@@ -5,12 +5,18 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use apxinf_core::{Backend, DType, Graph, Tensor};
+use apxinf_core::{
+    Backend, DType, Graph, NextTokenLogits, SamplingBackend, Tensor, TokenSamplingInit,
+    TokenSamplingSpec,
+};
 use apxinf_cuda::CudaBackend;
 use apxinf_loader::safetensors;
 use apxinf_model::qwen35::{
-    compute_mrope_positions, HybridUnit, HybridUnitMode, Qwen35Config, Qwen35LmHead,
-    Qwen35PrefillMode, Qwen35VisionEncoder,
+    compute_mrope_positions, HybridUnit, HybridUnitMode, Qwen35Config, Qwen35KvCacheMode,
+    Qwen35LmHead, Qwen35PrefillMode, Qwen35VisionEncoder,
+};
+use apxinf_model::{
+    GenerationConfigSource, GenerationOptions, ResolvedGenerationOptions, SamplingMode,
 };
 use apxinf_tokenizer::{ChatMessage, Tokenizer};
 use serde_json::{json, Value};
@@ -27,20 +33,35 @@ pub fn serve(
     max_model_len: usize,
     enable_marlin_m64: bool,
     enable_multimodal: bool,
+    enable_e4m3_kv: bool,
 ) -> Result<(), String> {
-    if max_model_len == 0 || max_model_len > 32768 {
-        return Err("--max-model-len must be within 1..=32768".into());
+    let kv_cache_mode = if enable_e4m3_kv {
+        Qwen35KvCacheMode::E4m3
+    } else {
+        Qwen35KvCacheMode::Bf16
+    };
+    let maximum = match kv_cache_mode {
+        Qwen35KvCacheMode::Bf16 => 32_768,
+        Qwen35KvCacheMode::E4m3 => 131_072,
+    };
+    if max_model_len == 0 || max_model_len > maximum {
+        return Err(format!(
+            "--max-model-len must be within 1..={maximum} for {} KV",
+            kv_cache_mode.as_str()
+        ));
     }
     let runtime = NativeRuntime::load(
         model_dir,
         max_model_len,
         enable_marlin_m64,
         enable_multimodal,
+        kv_cache_mode,
     )?;
     let listener =
         TcpListener::bind((host, port)).map_err(|error| format!("bind {host}:{port}: {error}"))?;
     println!(
-        "ApxInf Qwen3.8 native server ready on http://{host}:{port} (max_model_len={max_model_len}, experimental_marlin_m64={enable_marlin_m64}, multimodal={enable_multimodal})"
+        "ApxInf Qwen3.8 native server ready on http://{host}:{port} (max_model_len={max_model_len}, kv_cache={}, marlin_m64={enable_marlin_m64}, multimodal={enable_multimodal})",
+        kv_cache_mode.as_str()
     );
     for connection in listener.incoming() {
         match connection {
@@ -78,6 +99,7 @@ struct NativeRuntime {
     processor_python: Option<String>,
     spatial_merge_size: u32,
     image_token_id: u32,
+    generation_defaults: GenerationOptions,
     backend: CudaBackend,
 }
 
@@ -87,6 +109,7 @@ impl NativeRuntime {
         max_model_len: usize,
         enable_marlin_m64: bool,
         enable_multimodal: bool,
+        kv_cache_mode: Qwen35KvCacheMode,
     ) -> Result<Self, String> {
         let load_start = Instant::now();
         let config = Qwen35Config::from_json_file(&model_dir.join("config.json"))
@@ -99,11 +122,12 @@ impl NativeRuntime {
         } else {
             Qwen35PrefillMode::M8
         };
-        let decoder = HybridUnit::load_all_with_prefill_mode(
+        let decoder = HybridUnit::load_all_with_prefill_and_kv_mode(
             &manifest,
             context,
             max_model_len,
             prefill_mode,
+            kv_cache_mode,
         )
         .map_err(|error| error.to_string())?;
         let lm_head = Qwen35LmHead::load(&manifest, context).map_err(|error| error.to_string())?;
@@ -119,6 +143,9 @@ impl NativeRuntime {
         let embedding = safetensors::load_manifest_tensor(embedding_entry)?;
         let tokenizer = Tokenizer::from_file(model_dir.join("tokenizer.json"))
             .map_err(|error| error.to_string())?;
+        let generation_defaults = GenerationConfigSource::Auto
+            .load(model_dir)
+            .map_err(|error| error.to_string())?;
         let (vision, processor_python) = if enable_multimodal {
             let python =
                 std::env::var("APXINF_PROCESSOR_PYTHON").unwrap_or_else(|_| "python3".to_owned());
@@ -132,6 +159,14 @@ impl NativeRuntime {
         let prefill1k_graph = enable_marlin_m64
             .then(|| capture_prefill1k_graph(&backend, &decoder))
             .transpose()?;
+        let (kv_payload_bytes, kv_scale_bytes) = decoder.kv_cache_storage_bytes();
+        println!(
+            "KV cache mode={} payload_bytes={} scale_bytes={} total_bytes={}",
+            decoder.kv_cache_mode().as_str(),
+            kv_payload_bytes,
+            kv_scale_bytes,
+            kv_payload_bytes + kv_scale_bytes
+        );
         println!(
             "resident model loaded in {:.3}s",
             load_start.elapsed().as_secs_f64()
@@ -154,6 +189,7 @@ impl NativeRuntime {
             processor_python,
             spatial_merge_size: config.vision.spatial_merge_size as u32,
             image_token_id: config.image_token_id,
+            generation_defaults,
             backend,
         })
     }
@@ -197,17 +233,34 @@ impl NativeRuntime {
 
     fn load_embedding_tokens(&self, tokens: &[u32]) -> Result<Tensor, String> {
         const HIDDEN: usize = 5120;
-        if !matches!(tokens.len(), 1 | 8 | 64)
-            && tokens.len() != HybridUnit::layer_major_prefill_rows()
-        {
+        if !matches!(tokens.len(), 1 | 8 | 64) {
             return Err(format!(
-                "Qwen3.8 embedding batch requires 1, 8, 64, or {} tokens, got {}",
-                HybridUnit::layer_major_prefill_rows(),
-                tokens.len()
+                "Qwen3.8 embedding batch requires 1, 8, or 64 tokens, got {}",
+                tokens.len(),
             ));
         }
         let values = self.load_embedding_values(tokens)?;
         Tensor::from_bf16(vec![tokens.len(), HIDDEN], &values).map_err(|error| error.to_string())
+    }
+
+    fn load_layer_major_embedding_tokens(&self, tokens: &[u32]) -> Result<Tensor, String> {
+        const HIDDEN: usize = 5120;
+        let active_rows = HybridUnit::layer_major_prefill_rows();
+        let padded_rows = HybridUnit::layer_major_prefill_padded_rows();
+        if tokens.len() != active_rows {
+            return Err(format!(
+                "Qwen3.8 layer-major embedding batch requires {active_rows} active tokens, got {}",
+                tokens.len(),
+            ));
+        }
+        if padded_rows < active_rows || padded_rows % 64 != 0 {
+            return Err(format!(
+                "invalid layer-major padded rows {padded_rows} for {active_rows} active rows"
+            ));
+        }
+        let mut values = self.load_embedding_values(tokens)?;
+        values.resize(padded_rows * HIDDEN, half::bf16::ZERO);
+        Tensor::from_bf16(vec![padded_rows, HIDDEN], &values).map_err(|error| error.to_string())
     }
 
     fn load_embedding_values(&self, tokens: &[u32]) -> Result<Vec<half::bf16>, String> {
@@ -233,9 +286,56 @@ impl NativeRuntime {
     fn generate<F>(
         &self,
         prompt_tokens: &[u32],
-        max_tokens: usize,
-        eos_stop: bool,
+        options: &GenerationOptions,
         prefill_mode: Qwen35PrefillMode,
+        on_delta: F,
+    ) -> Result<Generation, String>
+    where
+        F: FnMut(&str, u32) -> Result<(), String>,
+    {
+        self.generate_with_forcing(prompt_tokens, options, prefill_mode, None, on_delta)
+    }
+
+    fn generate_teacher_forced<F>(
+        &self,
+        prompt_tokens: &[u32],
+        reference_tokens: &[u32],
+        prefill_mode: Qwen35PrefillMode,
+        on_delta: F,
+    ) -> Result<Generation, String>
+    where
+        F: FnMut(&str, u32) -> Result<(), String>,
+    {
+        if reference_tokens.is_empty() {
+            return Err("teacher-forced reference trajectory is empty".into());
+        }
+        let options = GenerationOptions::greedy(reference_tokens.len(), None);
+        self.generate_with_forcing(
+            prompt_tokens,
+            &options,
+            prefill_mode,
+            Some(reference_tokens),
+            on_delta,
+        )
+    }
+
+    fn resolve_generation(
+        &self,
+        request: &GenerationOptions,
+    ) -> Result<ResolvedGenerationOptions, String> {
+        GenerationOptions::apxinf_defaults()
+            .overlay(&self.generation_defaults)
+            .overlay(request)
+            .resolve()
+            .map_err(|error| error.to_string())
+    }
+
+    fn generate_with_forcing<F>(
+        &self,
+        prompt_tokens: &[u32],
+        options: &GenerationOptions,
+        prefill_mode: Qwen35PrefillMode,
+        reference_tokens: Option<&[u32]>,
         mut on_delta: F,
     ) -> Result<Generation, String>
     where
@@ -244,6 +344,10 @@ impl NativeRuntime {
         if prompt_tokens.is_empty() {
             return Err("prompt token sequence is empty".into());
         }
+        let resolved = self.resolve_generation(options)?;
+        let max_tokens = reference_tokens
+            .map(<[u32]>::len)
+            .unwrap_or(resolved.max_new_tokens);
         if max_tokens == 0 || prompt_tokens.len() + max_tokens > self.max_model_len {
             return Err(format!(
                 "prompt+output must fit max_model_len {} (got {}+{})",
@@ -276,7 +380,8 @@ impl NativeRuntime {
             _ => 0,
         };
         if layer_major_tokens > 0 {
-            let embedding = self.load_embedding_tokens(&prompt_tokens[..layer_major_tokens])?;
+            let embedding =
+                self.load_layer_major_embedding_tokens(&prompt_tokens[..layer_major_tokens])?;
             self.decoder
                 .set_layer_major_prefill1k_input(self.backend.context(), &embedding)
                 .map_err(|error| error.to_string())?;
@@ -291,8 +396,7 @@ impl NativeRuntime {
         let marlin_tokens = match prefill_mode {
             Qwen35PrefillMode::M8 => 0,
             Qwen35PrefillMode::MarlinM64 => {
-                layer_major_tokens
-                    + (prompt_tokens.len() - layer_major_tokens) / 64 * 64
+                layer_major_tokens + (prompt_tokens.len() - layer_major_tokens) / 64 * 64
             }
         };
         for position in (layer_major_tokens..marlin_tokens).step_by(64) {
@@ -349,10 +453,25 @@ impl NativeRuntime {
                     .map_err(|error| error.to_string())?;
             }
         }
-        self.backend.synchronize().map_err(|error| error.to_string())?;
+        self.backend
+            .synchronize()
+            .map_err(|error| error.to_string())?;
         let prefill_seconds = prefill_start.elapsed().as_secs_f64();
 
-        let eos = eos_stop.then(|| self.tokenizer.eos_token_id()).flatten();
+        let mut sampler = self
+            .backend
+            .create_token_sampler(TokenSamplingSpec {
+                vocab_size: 248_320,
+                max_sequence_len: self.max_model_len,
+            })
+            .map_err(|error| error.to_string())?;
+        sampler
+            .begin(TokenSamplingInit {
+                prompt_token_ids: prompt_tokens,
+                params: &resolved.sampling,
+                rng: resolved.rng,
+            })
+            .map_err(|error| error.to_string())?;
         let mut all_tokens = prompt_tokens.to_vec();
         let mut generated = Vec::with_capacity(max_tokens);
         let mut output = String::new();
@@ -360,7 +479,9 @@ impl NativeRuntime {
         let mut first_token_seconds = None;
         for step in 0..max_tokens {
             if step > 0 {
-                let previous = generated[step - 1];
+                let previous = reference_tokens
+                    .map(|tokens| tokens[step - 1])
+                    .unwrap_or(generated[step - 1]);
                 let embedding = self.load_embedding_tokens(std::slice::from_ref(&previous))?;
                 self.decoder
                     .set_token_input(self.backend.context(), &embedding)
@@ -380,15 +501,19 @@ impl NativeRuntime {
             self.lm_head
                 .forward(self.backend.context(), self.decoder.normalized_output())
                 .map_err(|error| error.to_string())?;
-            let token = self
-                .lm_head
-                .argmax_cpu()
+            let token = sampler
+                .sample(
+                    NextTokenLogits::last(self.lm_head.logits(), 248_320)
+                        .map_err(|error| error.to_string())?,
+                )
+                .map(|sample| sample.token_id)
                 .map_err(|error| error.to_string())?;
             if first_token_seconds.is_none() {
                 first_token_seconds = Some(decode_start.elapsed().as_secs_f64());
             }
             generated.push(token);
-            all_tokens.push(token);
+            let trajectory_token = reference_tokens.map(|tokens| tokens[step]).unwrap_or(token);
+            all_tokens.push(trajectory_token);
             let decoded = self
                 .tokenizer
                 .decode(&all_tokens)
@@ -400,7 +525,7 @@ impl NativeRuntime {
             let delta = decoded.strip_prefix(&previous).unwrap_or(&decoded);
             output.push_str(delta);
             on_delta(delta, token)?;
-            if eos == Some(token) {
+            if reference_tokens.is_none() && resolved.eos_token_ids.contains(&token) {
                 break;
             }
         }
@@ -421,8 +546,7 @@ impl NativeRuntime {
     fn generate_multimodal<F>(
         &self,
         prepared: &PreparedImage,
-        max_tokens: usize,
-        eos_stop: bool,
+        options: &GenerationOptions,
         mut on_delta: F,
     ) -> Result<Generation, String>
     where
@@ -431,6 +555,8 @@ impl NativeRuntime {
         const HIDDEN: usize = 5120;
         const TILE: usize = 8;
         let prompt_tokens = &prepared.tokens;
+        let resolved = self.resolve_generation(options)?;
+        let max_tokens = resolved.max_new_tokens;
         if prompt_tokens.is_empty()
             || prompt_tokens.len() != prepared.modality_types.len()
             || max_tokens == 0
@@ -503,7 +629,12 @@ impl NativeRuntime {
                 .set_prefill8_input(self.backend.context(), &input)
                 .map_err(|error| error.to_string())?;
             self.decoder
-                .forward_prefill8_with_mrope(self.backend.context(), position, &rope_positions, false)
+                .forward_prefill8_with_mrope(
+                    self.backend.context(),
+                    position,
+                    &rope_positions,
+                    false,
+                )
                 .map_err(|error| error.to_string())?;
         }
         for position in tiled_tokens..prompt_tokens.len() {
@@ -530,10 +661,25 @@ impl NativeRuntime {
                 .commit_prefill8_last(self.backend.context())
                 .map_err(|error| error.to_string())?;
         }
-        self.backend.synchronize().map_err(|error| error.to_string())?;
+        self.backend
+            .synchronize()
+            .map_err(|error| error.to_string())?;
         let prefill_seconds = prefill_start.elapsed().as_secs_f64();
 
-        let eos = eos_stop.then(|| self.tokenizer.eos_token_id()).flatten();
+        let mut sampler = self
+            .backend
+            .create_token_sampler(TokenSamplingSpec {
+                vocab_size: 248_320,
+                max_sequence_len: self.max_model_len,
+            })
+            .map_err(|error| error.to_string())?;
+        sampler
+            .begin(TokenSamplingInit {
+                prompt_token_ids: prompt_tokens,
+                params: &resolved.sampling,
+                rng: resolved.rng,
+            })
+            .map_err(|error| error.to_string())?;
         let mut all_tokens = prompt_tokens.to_vec();
         let mut generated = Vec::with_capacity(max_tokens);
         let mut output = String::new();
@@ -570,9 +716,12 @@ impl NativeRuntime {
             self.lm_head
                 .forward(self.backend.context(), self.decoder.normalized_output())
                 .map_err(|error| error.to_string())?;
-            let token = self
-                .lm_head
-                .argmax_cpu()
+            let token = sampler
+                .sample(
+                    NextTokenLogits::last(self.lm_head.logits(), 248_320)
+                        .map_err(|error| error.to_string())?,
+                )
+                .map(|sample| sample.token_id)
                 .map_err(|error| error.to_string())?;
             if first_token_seconds.is_none() {
                 first_token_seconds = Some(decode_start.elapsed().as_secs_f64());
@@ -590,7 +739,7 @@ impl NativeRuntime {
             let delta = decoded.strip_prefix(&previous).unwrap_or(&decoded);
             output.push_str(delta);
             on_delta(delta, token)?;
-            if eos == Some(token) {
+            if resolved.eos_token_ids.contains(&token) {
                 break;
             }
         }
@@ -645,11 +794,14 @@ fn handle_connection(runtime: &NativeRuntime, stream: &mut TcpStream) -> Result<
                 "evaluation_contract":EVALUATION_CONTRACT,
                 "model_revision":MODEL_REVISION,
                 "max_model_len":runtime.max_model_len,
+                "kv_cache_mode":runtime.decoder.kv_cache_mode().as_str(),
                 "parallel_requests":1,
                 "fallback_active":false,
                 "capabilities":{
                     "pretokenized_input_ids":true,
                     "token_id_output":true,
+                    "teacher_forced_top1":true,
+                    "full_context_kv":true,
                     "multimodal":runtime.vision.is_some()
                 }
             }),
@@ -664,6 +816,9 @@ fn handle_connection(runtime: &NativeRuntime, stream: &mut TcpStream) -> Result<
         ),
         ("POST", "/v1/chat/completions") => handle_chat(runtime, stream, &request.body),
         ("POST", "/v1/evaluations/generate") => handle_evaluation(runtime, stream, &request.body),
+        ("POST", "/v1/evaluations/teacher-forced") => {
+            handle_teacher_forced(runtime, stream, &request.body)
+        }
         _ => send_json(
             stream,
             404,
@@ -688,6 +843,26 @@ fn parse_input_ids(body: &Value) -> Result<Vec<u32>, String> {
                 .as_u64()
                 .ok_or_else(|| format!("input_ids[{index}] must be a non-negative integer"))?;
             u32::try_from(token).map_err(|_| format!("input_ids[{index}] exceeds u32"))
+        })
+        .collect()
+}
+
+fn parse_reference_output_ids(body: &Value) -> Result<Vec<u32>, String> {
+    let values = body
+        .get("reference_output_ids")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "reference_output_ids must be a non-empty integer array".to_string())?;
+    if values.is_empty() {
+        return Err("reference_output_ids must be a non-empty integer array".into());
+    }
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let token = value.as_u64().ok_or_else(|| {
+                format!("reference_output_ids[{index}] must be a non-negative integer")
+            })?;
+            u32::try_from(token).map_err(|_| format!("reference_output_ids[{index}] exceeds u32"))
         })
         .collect()
 }
@@ -798,6 +973,12 @@ fn handle_evaluation(
     }
     let ignore_eos = body["ignore_eos"].as_bool().expect("validated boolean");
     let stream_mode = body["stream"].as_bool().expect("validated boolean");
+    let generation_options = GenerationOptions::greedy(
+        max_new_tokens,
+        (!ignore_eos)
+            .then(|| runtime.tokenizer.eos_token_id())
+            .flatten(),
+    );
     let id = format!("eval-apxinf-{}", REQUEST_ID.fetch_add(1, Ordering::Relaxed));
     let prefill_mode = if runtime.marlin_m64_enabled && prompt_tokens.len() >= 64 {
         Qwen35PrefillMode::MarlinM64
@@ -815,8 +996,7 @@ fn handle_evaluation(
         let mut index = 0_usize;
         let generation = runtime.generate(
             &prompt_tokens,
-            max_new_tokens,
-            !ignore_eos,
+            &generation_options,
             prefill_mode,
             |_delta, token| {
                 let event = json!({
@@ -851,8 +1031,7 @@ fn handle_evaluation(
     } else {
         let generation = runtime.generate(
             &prompt_tokens,
-            max_new_tokens,
-            !ignore_eos,
+            &generation_options,
             prefill_mode,
             |_delta, _token| Ok(()),
         )?;
@@ -876,6 +1055,160 @@ fn handle_evaluation(
     }
 }
 
+fn handle_teacher_forced(
+    runtime: &NativeRuntime,
+    stream: &mut TcpStream,
+    raw: &[u8],
+) -> Result<(), String> {
+    let body: Value = match serde_json::from_slice(raw) {
+        Ok(body) => body,
+        Err(error) => {
+            return send_json(
+                stream,
+                400,
+                &json!({"error":{
+                    "message":format!("invalid JSON: {error}"),
+                    "type":"invalid_request"
+                }}),
+            )
+        }
+    };
+    let object = match body.as_object() {
+        Some(object) => object,
+        None => {
+            return send_json(
+                stream,
+                400,
+                &json!({"error":{
+                    "message":"request body must be a JSON object",
+                    "type":"invalid_request"
+                }}),
+            )
+        }
+    };
+    const ALLOWED_FIELDS: [&str; 4] =
+        ["input_ids", "reference_output_ids", "temperature", "stream"];
+    if let Some(field) = object
+        .keys()
+        .find(|field| !ALLOWED_FIELDS.contains(&field.as_str()))
+    {
+        return send_json(
+            stream,
+            400,
+            &json!({"error":{
+                "message":format!("unsupported teacher-forced field {field}"),
+                "type":"invalid_request"
+            }}),
+        );
+    }
+    if !matches!(
+        object.get("temperature"),
+        Some(Value::Number(value)) if value.as_f64() == Some(0.0)
+    ) || !matches!(object.get("stream"), Some(Value::Bool(false)))
+    {
+        return send_json(
+            stream,
+            400,
+            &json!({"error":{
+                "message":"teacher-forced v1 requires temperature=0 and stream=false",
+                "type":"invalid_request"
+            }}),
+        );
+    }
+    let prompt_tokens = match parse_input_ids(&body) {
+        Ok(tokens) => tokens,
+        Err(error) => {
+            return send_json(
+                stream,
+                400,
+                &json!({"error":{"message":error,"type":"invalid_request"}}),
+            )
+        }
+    };
+    let reference_tokens = match parse_reference_output_ids(&body) {
+        Ok(tokens) => tokens,
+        Err(error) => {
+            return send_json(
+                stream,
+                400,
+                &json!({"error":{"message":error,"type":"invalid_request"}}),
+            )
+        }
+    };
+    let vocab_size = runtime.tokenizer.vocab_size();
+    for (field, tokens) in [
+        ("input_ids", prompt_tokens.as_slice()),
+        ("reference_output_ids", reference_tokens.as_slice()),
+    ] {
+        if let Some((index, token)) = tokens
+            .iter()
+            .enumerate()
+            .find(|(_, token)| **token as usize >= vocab_size)
+        {
+            return send_json(
+                stream,
+                400,
+                &json!({"error":{
+                    "message":format!("{field}[{index}]={token} is outside vocabulary"),
+                    "type":"invalid_request"
+                }}),
+            );
+        }
+    }
+    if prompt_tokens.len() + reference_tokens.len() > runtime.max_model_len {
+        return send_json(
+            stream,
+            400,
+            &json!({"error":{
+                "message":format!(
+                    "prompt+reference must fit max_model_len {} (got {}+{})",
+                    runtime.max_model_len, prompt_tokens.len(), reference_tokens.len()
+                ),
+                "type":"invalid_request"
+            }}),
+        );
+    }
+    let prefill_mode = if runtime.marlin_m64_enabled && prompt_tokens.len() >= 64 {
+        Qwen35PrefillMode::MarlinM64
+    } else {
+        Qwen35PrefillMode::M8
+    };
+    let generation = runtime.generate_teacher_forced(
+        &prompt_tokens,
+        &reference_tokens,
+        prefill_mode,
+        |_delta, _token| Ok(()),
+    )?;
+    let agreed = generation
+        .tokens
+        .iter()
+        .zip(&reference_tokens)
+        .filter(|(candidate, reference)| candidate == reference)
+        .count();
+    send_json(
+        stream,
+        200,
+        &json!({
+            "schema":"apxinf.qwen38_27b.teacher_forced_top1.v1",
+            "candidate_output_ids":generation.tokens,
+            "reference_output_ids":reference_tokens,
+            "agreement_count":agreed,
+            "step_count":reference_tokens.len(),
+            "agreement":agreed as f64 / reference_tokens.len() as f64,
+            "usage":{
+                "prompt_tokens":generation.prompt_tokens,
+                "completion_tokens":reference_tokens.len(),
+                "total_tokens":generation.prompt_tokens+reference_tokens.len()
+            },
+            "server_timing":{
+                "prefill_s":generation.prefill_seconds,
+                "first_token_s":generation.first_token_seconds,
+                "decode_s":generation.decode_seconds
+            }
+        }),
+    )
+}
+
 fn select_chat_prefill_mode(
     requested_mode: Option<&str>,
     marlin_m64_enabled: bool,
@@ -890,13 +1223,86 @@ fn select_chat_prefill_mode(
         "m8" => Ok(Qwen35PrefillMode::M8),
         "marlin-m64" if marlin_m64_enabled => Ok(Qwen35PrefillMode::MarlinM64),
         "marlin-m64" => Err(
-            "marlin-m64 was requested but the server was not started with --enable-experimental-marlin-m64"
+            "marlin-m64 was requested but the server was not started with --enable-marlin-m64"
                 .into(),
         ),
-        other => Err(format!(
-            "unsupported apxinf_prefill_mode `{other}`"
-        )),
+        other => Err(format!("unsupported apxinf_prefill_mode `{other}`")),
     }
+}
+
+fn optional_f32(body: &Value, key: &str) -> Result<Option<f32>, String> {
+    body.get(key)
+        .map(|value| {
+            value
+                .as_f64()
+                .map(|number| number as f32)
+                .ok_or_else(|| format!("{key} must be numeric"))
+        })
+        .transpose()
+}
+
+fn optional_i64(body: &Value, key: &str) -> Result<Option<i64>, String> {
+    body.get(key)
+        .map(|value| {
+            value
+                .as_i64()
+                .ok_or_else(|| format!("{key} must be an integer"))
+        })
+        .transpose()
+}
+
+fn chat_generation_options(body: &Value) -> Result<GenerationOptions, String> {
+    if body.get("logprobs").and_then(Value::as_bool) == Some(true) {
+        return Err("native Qwen3.8 chat does not return logprobs".into());
+    }
+    let max_new_tokens = body
+        .get("max_tokens")
+        .or_else(|| body.get("max_completion_tokens"))
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|number| usize::try_from(number).ok())
+                .filter(|number| *number > 0)
+                .ok_or_else(|| "max_tokens must be a positive integer".to_string())
+        })
+        .transpose()?
+        .or(Some(16));
+    let sampling_mode = body
+        .get("do_sample")
+        .map(|value| {
+            value
+                .as_bool()
+                .map(|enabled| {
+                    if enabled {
+                        SamplingMode::Random
+                    } else {
+                        SamplingMode::Greedy
+                    }
+                })
+                .ok_or_else(|| "do_sample must be boolean".to_string())
+        })
+        .transpose()?;
+    let seed = body
+        .get("seed")
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or_else(|| "seed must be a non-negative integer".to_string())
+        })
+        .transpose()?;
+    Ok(GenerationOptions {
+        max_new_tokens,
+        eos_token_ids: None,
+        sampling_mode,
+        temperature: optional_f32(body, "temperature")?,
+        top_k: optional_i64(body, "top_k")?,
+        top_p: optional_f32(body, "top_p")?,
+        repetition_penalty: optional_f32(body, "repetition_penalty")?,
+        frequency_penalty: optional_f32(body, "frequency_penalty")?,
+        presence_penalty: optional_f32(body, "presence_penalty")?,
+        seed,
+        return_logprob: Some(false),
+    })
 }
 
 fn handle_chat(runtime: &NativeRuntime, stream: &mut TcpStream, raw: &[u8]) -> Result<(), String> {
@@ -907,6 +1313,16 @@ fn handle_chat(runtime: &NativeRuntime, stream: &mut TcpStream, raw: &[u8]) -> R
                 stream,
                 400,
                 &json!({"error":{"message":format!("invalid JSON: {error}"),"type":"invalid_request"}}),
+            )
+        }
+    };
+    let generation_options = match chat_generation_options(&body) {
+        Ok(options) => options,
+        Err(error) => {
+            return send_json(
+                stream,
+                400,
+                &json!({"error":{"message":error,"type":"invalid_request"}}),
             )
         }
     };
@@ -935,18 +1351,6 @@ fn handle_chat(runtime: &NativeRuntime, stream: &mut TcpStream, raw: &[u8]) -> R
                 &json!({"error":{"message":"native multimodal v1 requires stream=false","type":"invalid_request"}}),
             );
         }
-        if body
-            .get("temperature")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0)
-            != 0.0
-        {
-            return send_json(
-                stream,
-                400,
-                &json!({"error":{"message":"native multimodal v1 requires temperature=0","type":"invalid_request"}}),
-            );
-        }
         let python = runtime
             .processor_python
             .as_deref()
@@ -957,11 +1361,6 @@ fn handle_chat(runtime: &NativeRuntime, stream: &mut TcpStream, raw: &[u8]) -> R
             &image_request.data_url,
             &image_request.prompt,
         )?;
-        let max_tokens = body
-            .get("max_tokens")
-            .or_else(|| body.get("max_completion_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(16) as usize;
         let id = format!(
             "chatcmpl-apxinf-mm-{}",
             REQUEST_ID.fetch_add(1, Ordering::Relaxed)
@@ -971,7 +1370,7 @@ fn handle_chat(runtime: &NativeRuntime, stream: &mut TcpStream, raw: &[u8]) -> R
             .unwrap_or_default()
             .as_secs();
         let generation =
-            runtime.generate_multimodal(&prepared, max_tokens, true, |_delta, _token| Ok(()))?;
+            runtime.generate_multimodal(&prepared, &generation_options, |_delta, _token| Ok(()))?;
         let response = json!({
             "id":id,"object":"chat.completion","created":created,"model":runtime.model_id,
             "choices":[{"index":0,"message":{"role":"assistant","content":generation.text},"finish_reason":"stop"}],
@@ -1003,11 +1402,6 @@ fn handle_chat(runtime: &NativeRuntime, stream: &mut TcpStream, raw: &[u8]) -> R
         runtime.marlin_m64_enabled,
         prompt_tokens.len(),
     )?;
-    let max_tokens = body
-        .get("max_tokens")
-        .or_else(|| body.get("max_completion_tokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or(16) as usize;
     let stream_mode = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let id = format!(
         "chatcmpl-apxinf-{}",
@@ -1026,8 +1420,7 @@ fn handle_chat(runtime: &NativeRuntime, stream: &mut TcpStream, raw: &[u8]) -> R
         stream.flush().map_err(|error| error.to_string())?;
         let generation = runtime.generate(
             &prompt_tokens,
-            max_tokens,
-            true,
+            &generation_options,
             prefill_mode,
             |delta, _token| {
                 let chunk = json!({
@@ -1055,8 +1448,7 @@ fn handle_chat(runtime: &NativeRuntime, stream: &mut TcpStream, raw: &[u8]) -> R
     } else {
         let generation = runtime.generate(
             &prompt_tokens,
-            max_tokens,
-            true,
+            &generation_options,
             prefill_mode,
             |_delta, _token| Ok(()),
         )?;
@@ -1516,7 +1908,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_m8_preserves_the_rollback_path() {
+    fn explicit_m8_selects_the_fallback_path() {
         let mode = select_chat_prefill_mode(Some("m8"), true, 1024).unwrap();
         assert!(matches!(mode, Qwen35PrefillMode::M8));
     }
@@ -1527,16 +1919,56 @@ mod tests {
         assert!(matches!(enabled, Qwen35PrefillMode::MarlinM64));
 
         let error = select_chat_prefill_mode(Some("marlin-m64"), false, 1024).unwrap_err();
-        assert!(error.contains("--enable-experimental-marlin-m64"));
+        assert!(error.contains("--enable-marlin-m64"));
+    }
+
+    #[test]
+    fn teacher_forced_reference_parser_is_strict() {
+        let body = json!({"reference_output_ids":[1, 2, 248319]});
+        assert_eq!(
+            parse_reference_output_ids(&body).unwrap(),
+            vec![1, 2, 248319]
+        );
+
+        let empty = json!({"reference_output_ids":[]});
+        assert!(parse_reference_output_ids(&empty)
+            .unwrap_err()
+            .contains("non-empty"));
+
+        let invalid = json!({"reference_output_ids":[-1]});
+        assert!(parse_reference_output_ids(&invalid)
+            .unwrap_err()
+            .contains("non-negative integer"));
     }
 
     #[test]
     fn unsupported_mode_still_fails() {
         let error = select_chat_prefill_mode(Some("unknown"), true, 1024).unwrap_err();
-        assert_eq!(
-            error,
-            "unsupported apxinf_prefill_mode `unknown`"
-        );
+        assert_eq!(error, "unsupported apxinf_prefill_mode `unknown`");
+    }
+
+    #[test]
+    fn chat_sampling_uses_unified_generation_options() {
+        let request = chat_generation_options(&json!({
+            "temperature":0.7,
+            "top_p":0.9,
+            "top_k":40,
+            "seed":7
+        }))
+        .unwrap();
+        let resolved = GenerationOptions::apxinf_defaults()
+            .overlay(&request)
+            .resolve()
+            .unwrap();
+        assert!(matches!(
+            resolved.sampling.selection,
+            apxinf_core::TokenSelection::Random {
+                temperature: 0.7,
+                top_k: Some(40),
+                top_p: 0.9
+            }
+        ));
+        assert!(chat_generation_options(&json!({"temperature":"0"})).is_err());
     }
 }
 
@@ -1545,7 +1977,7 @@ fn capture_prefill1k_graph(
     decoder: &HybridUnit,
 ) -> Result<Box<dyn Graph>, String> {
     const HIDDEN: usize = 5120;
-    let rows = HybridUnit::layer_major_prefill_rows();
+    let rows = HybridUnit::layer_major_prefill_padded_rows();
     let first_row = Tensor::zeros(vec![1, HIDDEN], DType::BF16);
     let input = Tensor::zeros(vec![rows, HIDDEN], DType::BF16);
     let context = backend.context();
@@ -1578,7 +2010,7 @@ fn capture_prefill1k_graph(
     captured.map_err(|error| error.to_string())?;
     backend.synchronize().map_err(|error| error.to_string())?;
     println!(
-        "first-1K CUDA Graph captured and instantiated in {:.9}s",
+        "layer-major prompt CUDA Graph captured and instantiated in {:.9}s",
         capture_start.elapsed().as_secs_f64()
     );
     Ok(graph)

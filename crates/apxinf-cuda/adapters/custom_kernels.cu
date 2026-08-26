@@ -6,10 +6,7 @@
 #include <cuda_fp8.h>
 #include <cuda_runtime.h>
 
-#include <cmath>
 #include <cstdint>
-#include <cstdlib>
-#include <cstring>
 
 namespace {
 #include "../kernels/custom/math.cuh"
@@ -28,26 +25,6 @@ namespace {
 #include "../kernels/custom/elementwise.cuh"
 #include "../kernels/custom/fused.cuh"
 #include "../kernels/custom/cache.cuh"
-}  // namespace
-
-namespace {
-
-// Resolve the validated action Ada packed8 route before CUDA graph capture.
-// Auto enables it only for the exact supported shape.
-const int kActionAdaPacked8Mode = [] {
-    const char* value = std::getenv("APXINF_PI05_ACTION_ADA_PACKED8");
-    if (value == nullptr || std::strcmp(value, "auto") == 0) {
-      return 2;
-    }
-    if (std::strcmp(value, "0") == 0 || std::strcmp(value, "off") == 0) {
-      return 0;
-    }
-    if (std::strcmp(value, "1") == 0 || std::strcmp(value, "on") == 0) {
-      return 1;
-    }
-    return -1;
-  }();
-
 }  // namespace
 
 extern "C" cudaError_t apxinf_static_evict_l2(
@@ -158,6 +135,172 @@ extern "C" cudaError_t apxinf_static_qwen35_attention_gate_bf16(
       static_cast<const __nv_bfloat16*>(input),
       static_cast<const __nv_bfloat16*>(gate),
       static_cast<__nv_bfloat16*>(output), count);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_static_qwen35_kv_quantize_bf16_e4m3(
+    const void* input, void* output, void* scales, uint32_t rows,
+    uint32_t head_dim, cudaStream_t stream) {
+  if (input == nullptr || output == nullptr || scales == nullptr ||
+      rows == 0 || head_dim == 0 || head_dim > 1024) {
+    return cudaErrorInvalidValue;
+  }
+  kv_cache_quantize_bf16_e4m3_kernel<<<rows, 256, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(input),
+      static_cast<__nv_fp8_e4m3*>(output), static_cast<float*>(scales),
+      rows, head_dim);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_static_qwen35_kv_append_bf16_e4m3(
+    void* cache, void* scales, const void* new_data, uint32_t n_kv_heads,
+    uint32_t head_dim, uint32_t max_seq_len, uint32_t seq_len,
+    uint32_t append_len, cudaStream_t stream) {
+  if (cache == nullptr || scales == nullptr || new_data == nullptr ||
+      n_kv_heads == 0 || head_dim == 0 || head_dim > 1024 ||
+      append_len == 0 || seq_len > max_seq_len ||
+      append_len > max_seq_len - seq_len) {
+    return cudaErrorInvalidValue;
+  }
+  dim3 grid(n_kv_heads, append_len, 1);
+  kv_cache_append_bf16_e4m3_kernel<<<grid, 256, 0, stream>>>(
+      static_cast<__nv_fp8_e4m3*>(cache), static_cast<float*>(scales),
+      static_cast<const __nv_bfloat16*>(new_data), n_kv_heads, head_dim,
+      max_seq_len, seq_len, append_len);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_static_qwen35_kv_append_decode_bf16_e4m3(
+    void* cache, void* scales, const void* new_data, uint32_t n_kv_heads,
+    uint32_t head_dim, uint32_t max_seq_len, const void* position,
+    cudaStream_t stream) {
+  if (cache == nullptr || scales == nullptr || new_data == nullptr ||
+      position == nullptr || n_kv_heads == 0 || head_dim == 0 ||
+      head_dim > 1024 || max_seq_len == 0) {
+    return cudaErrorInvalidValue;
+  }
+  kv_cache_append_decode_bf16_e4m3_kernel<<<n_kv_heads, 256, 0, stream>>>(
+      static_cast<__nv_fp8_e4m3*>(cache), static_cast<float*>(scales),
+      static_cast<const __nv_bfloat16*>(new_data), n_kv_heads, head_dim,
+      max_seq_len, static_cast<const uint32_t*>(position));
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t
+apxinf_static_qwen35_attention_flash_split_cta_e4m3(
+    const void* query, const void* key_cache, const void* key_scales,
+    const void* value_cache, const void* value_scales, void* partial_max,
+    void* partial_sum, void* partial_accumulator, void* output,
+    int split_count, int bucket_kv_len, int max_seq_len, float scale,
+    const void* position, cudaStream_t stream) {
+  if (query == nullptr || key_cache == nullptr || key_scales == nullptr ||
+      value_cache == nullptr || value_scales == nullptr ||
+      partial_max == nullptr || partial_sum == nullptr ||
+      partial_accumulator == nullptr || output == nullptr ||
+      position == nullptr || split_count < 2 || split_count > 16 ||
+      (split_count & (split_count - 1)) != 0 || bucket_kv_len <= 0 ||
+      bucket_kv_len > max_seq_len || !(scale > 0.0f)) {
+    return cudaErrorInvalidValue;
+  }
+  dim3 stage_grid(24, split_count, 1);
+  qwen35_attention_flash_split_cta_e4m3_kernel<<<
+      stage_grid, 256, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(query),
+      static_cast<const __nv_fp8_e4m3*>(key_cache),
+      static_cast<const float*>(key_scales),
+      static_cast<const __nv_fp8_e4m3*>(value_cache),
+      static_cast<const float*>(value_scales),
+      static_cast<float*>(partial_max), static_cast<float*>(partial_sum),
+      static_cast<float*>(partial_accumulator), split_count, bucket_kv_len,
+      max_seq_len, scale, static_cast<const uint32_t*>(position), 1);
+  cudaError_t status = cudaGetLastError();
+  if (status != cudaSuccess) return status;
+  dim3 reduce_grid(24, 1, 1);
+  qwen35_attention_flash_split_cta_reduce_bf16_kernel<<<
+      reduce_grid, 256, 0, stream>>>(
+      static_cast<const float*>(partial_max),
+      static_cast<const float*>(partial_sum),
+      static_cast<const float*>(partial_accumulator),
+      static_cast<__nv_bfloat16*>(output), split_count, 1);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t
+apxinf_static_qwen35_attention_flash_split_cta_m8_e4m3(
+    const void* query, const void* key_cache, const void* key_scales,
+    const void* value_cache, const void* value_scales, void* partial_max,
+    void* partial_sum, void* partial_accumulator, void* output,
+    int split_count, int bucket_kv_len, int max_seq_len, float scale,
+    const void* positions, int tokens, cudaStream_t stream) {
+  if (query == nullptr || key_cache == nullptr || key_scales == nullptr ||
+      value_cache == nullptr || value_scales == nullptr ||
+      partial_max == nullptr || partial_sum == nullptr ||
+      partial_accumulator == nullptr || output == nullptr ||
+      positions == nullptr || tokens < 1 || tokens > 8 ||
+      split_count < 2 || split_count > 16 ||
+      (split_count & (split_count - 1)) != 0 || bucket_kv_len <= 0 ||
+      bucket_kv_len > max_seq_len || !(scale > 0.0f)) {
+    return cudaErrorInvalidValue;
+  }
+  dim3 stage_grid(24, split_count, tokens);
+  qwen35_attention_flash_split_cta_e4m3_kernel<<<
+      stage_grid, 256, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(query),
+      static_cast<const __nv_fp8_e4m3*>(key_cache),
+      static_cast<const float*>(key_scales),
+      static_cast<const __nv_fp8_e4m3*>(value_cache),
+      static_cast<const float*>(value_scales),
+      static_cast<float*>(partial_max), static_cast<float*>(partial_sum),
+      static_cast<float*>(partial_accumulator), split_count, bucket_kv_len,
+      max_seq_len, scale, static_cast<const uint32_t*>(positions), tokens);
+  cudaError_t status = cudaGetLastError();
+  if (status != cudaSuccess) return status;
+  dim3 reduce_grid(24, tokens, 1);
+  qwen35_attention_flash_split_cta_reduce_bf16_kernel<<<
+      reduce_grid, 256, 0, stream>>>(
+      static_cast<const float*>(partial_max),
+      static_cast<const float*>(partial_sum),
+      static_cast<const float*>(partial_accumulator),
+      static_cast<__nv_bfloat16*>(output), split_count, tokens);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t
+apxinf_static_qwen35_attention_flash_split_cta_m8_shared_q4_e4m3(
+    const void* query, const void* key_cache, const void* key_scales,
+    const void* value_cache, const void* value_scales, void* partial_max,
+    void* partial_sum, void* partial_accumulator, void* output,
+    int split_count, int bucket_kv_len, int max_seq_len, float scale,
+    const void* positions, int tokens, cudaStream_t stream) {
+  if (query == nullptr || key_cache == nullptr || key_scales == nullptr ||
+      value_cache == nullptr || value_scales == nullptr ||
+      partial_max == nullptr || partial_sum == nullptr ||
+      partial_accumulator == nullptr || output == nullptr ||
+      positions == nullptr || tokens != 8 || split_count != 16 ||
+      bucket_kv_len <= 0 || bucket_kv_len > max_seq_len ||
+      !(scale > 0.0f)) {
+    return cudaErrorInvalidValue;
+  }
+  dim3 stage_grid(24, split_count, 2);
+  qwen35_attention_flash_split_cta_m8_shared_q4_e4m3_kernel<<<
+      stage_grid, 256, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(query),
+      static_cast<const __nv_fp8_e4m3*>(key_cache),
+      static_cast<const float*>(key_scales),
+      static_cast<const __nv_fp8_e4m3*>(value_cache),
+      static_cast<const float*>(value_scales),
+      static_cast<float*>(partial_max), static_cast<float*>(partial_sum),
+      static_cast<float*>(partial_accumulator), split_count, bucket_kv_len,
+      max_seq_len, scale, static_cast<const uint32_t*>(positions));
+  cudaError_t status = cudaGetLastError();
+  if (status != cudaSuccess) return status;
+  dim3 reduce_grid(24, tokens, 1);
+  qwen35_attention_flash_split_cta_reduce_bf16_kernel<<<
+      reduce_grid, 256, 0, stream>>>(
+      static_cast<const float*>(partial_max),
+      static_cast<const float*>(partial_sum),
+      static_cast<const float*>(partial_accumulator),
+      static_cast<__nv_bfloat16*>(output), split_count, tokens);
   return cudaGetLastError();
 }
 
@@ -406,6 +549,24 @@ extern "C" cudaError_t apxinf_static_qwen35_gdn_recurrent_m8_hybrid_bf16(
     return cudaErrorInvalidValue;
   }
   qwen35_gdn_recurrent_m8_hybrid_bf16_kernel<<<48, 128, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(query),
+      static_cast<const __nv_bfloat16*>(key),
+      static_cast<const __nv_bfloat16*>(value), static_cast<const float*>(g),
+      static_cast<const float*>(beta), static_cast<float*>(recurrent_state),
+      static_cast<__nv_bfloat16*>(output), tokens);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_static_qwen35_gdn_recurrent_m8_hybrid_pairnorm_bf16(
+    const void* query, const void* key, const void* value, const void* g,
+    const void* beta, void* recurrent_state, void* output, int tokens,
+    cudaStream_t stream) {
+  if (query == nullptr || key == nullptr || value == nullptr || g == nullptr ||
+      beta == nullptr || recurrent_state == nullptr || output == nullptr ||
+      tokens < 1 || tokens > 8) {
+    return cudaErrorInvalidValue;
+  }
+  qwen35_gdn_recurrent_m8_hybrid_pairnorm_bf16_kernel<<<48, 128, 0, stream>>>(
       static_cast<const __nv_bfloat16*>(query),
       static_cast<const __nv_bfloat16*>(key),
       static_cast<const __nv_bfloat16*>(value), static_cast<const float*>(g),
@@ -813,25 +974,6 @@ extern "C" cudaError_t apxinf_static_ada_gate_residual_rms_norm_quant_f16_e4m3(
     const void* norm_style, void* hidden, void* normalized, int rows, int cols,
     float eps, float scale, cudaStream_t stream) {
   if (rows <= 0 || cols <= 0 || !(scale > 0.0f)) return cudaErrorInvalidValue;
-  const int packed8_mode = kActionAdaPacked8Mode;
-  if (packed8_mode < 0) return cudaErrorInvalidValue;
-  const bool packed8_exact_shape = rows == 10 && cols == 1024;
-  if (packed8_mode == 1 && !packed8_exact_shape) return cudaErrorInvalidValue;
-  if (packed8_mode != 0 && packed8_exact_shape) {
-    if (!std::isfinite(scale) ||
-        projection == nullptr || residual == nullptr || gate_style == nullptr ||
-        norm_style == nullptr || hidden == nullptr || normalized == nullptr) {
-      return cudaErrorInvalidValue;
-    }
-    ada_gate_residual_rms_norm_quant_f16_e4m3_packed8_kernel
-        <<<rows, 256, 0, stream>>>(
-            static_cast<const half*>(projection),
-            static_cast<const half*>(residual),
-            static_cast<const half*>(gate_style),
-            static_cast<const half*>(norm_style), static_cast<half*>(hidden),
-            static_cast<__nv_fp8_e4m3*>(normalized), eps, 1.0f / scale);
-    return cudaGetLastError();
-  }
   ada_gate_residual_rms_norm_quant_f16_e4m3_kernel<<<rows, 256, 0, stream>>>(
       static_cast<const half*>(projection), static_cast<const half*>(residual),
       static_cast<const half*>(gate_style), static_cast<const half*>(norm_style),
