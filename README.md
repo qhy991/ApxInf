@@ -688,6 +688,8 @@ storage, and no FFMA/FMA/MAD or spill path.
 
 ### RTX 4090 qualification
 
+#### Formal promotion result: accepted R5 versus combined
+
 The opt-in combined selector passed a balanced eight-process formal comparison
 against the previously accepted static-mask dual-graph R5 deployment. Each arm
 retained 20 requests (five per process) in `A,B,B,A,A,B,B,A` order after one
@@ -701,14 +703,29 @@ excluded warmup per process:
 
 All four paired blocks were positive. Every excluded warmup and all 40 retained
 responses matched the official seed-7 oracle bitwise; the negative control was
-rejected. Peak process memory was 12,282 MiB. The final-PR `default` selector
-also passed a separate HTTP correctness/lifecycle sentinel (694.982 ms median,
-descriptive only), preserving the official rollback path.
+rejected. Peak process memory was 12,282 MiB.
 
 This is an integrated source-plus-runtime comparison: A used the accepted R5
 source commits, while B used this ApxInf source with official OpenDM `e41e501`.
 The 10.10% HTTP improvement is the measured combined result, not a sum of the
 individual optimization experiments and not a per-feature causal estimate.
+
+#### Descriptive comparison with the official execution path
+
+The final-PR `default` selector, which exposes the pinned official OpenDM model
+path from the same final ApxInf source, separately passed an HTTP
+correctness/lifecycle sentinel with a 694.982 ms median. The combined selector's
+formal-run median was 144.479 ms. Taken descriptively, the latter is 0.20789 of
+the `default` latency: about 79.21% lower latency, or 4.81x faster.
+
+This is useful evidence that the optimized path improves performance relative
+to the official execution path for the frozen request, but it is not the formal
+speedup claim. The `default` sentinel and combined formal arm were not collected
+as a balanced, matched ABBA comparison and have different sample populations.
+The only promotion-qualified performance claim is therefore the 10.10% HTTP
+improvement over accepted R5 reported above. The `default` sentinel preserves
+and checks the official rollback path; it does not establish a second formal
+speedup ratio.
 
 Cold initialization remains a deliberate limitation. Median excluded warmup
 latency was 3,251.220 ms for R5 and 5,562.208 ms for the combined selector, an
@@ -738,8 +755,23 @@ curl -fsS http://127.0.0.1:7891/v1/infer \
 Checkpoint and license boundary: the weights are not vendored in ApxInf. The
 Hugging Face metadata for the pinned `Dexmal/DM05-libero` revision declares
 `license: gemma`; users must obtain and use the weights under that license.
-ApxInf source code remains Apache-2.0. An HTTP shape/correctness check does not
-establish LIBERO task-success accuracy; that requires a separate rollout.
+ApxInf source code remains Apache-2.0.
+
+### Official LIBERO rollout status
+
+This qualification did not run OpenDM's official closed-loop LIBERO evaluation.
+That evaluation is intentionally delegated to ApxInf maintainers: run
+`dexbotic-benchmark` with 50 trials per task across `libero_spatial`,
+`libero_goal`, `libero_object`, and `libero_10`, then retain the resulting
+`results.json`, configuration, logs, and rollout videos. Those simulator
+rollouts exercise changing images and robot state, repeated replanning, and
+task completion; the frozen HTTP request and bitwise oracle checks above do not
+replace them.
+
+Accordingly, this PR makes no claim that it reproduces, preserves, or improves
+the reported 99.0% LIBERO task-success rate. It establishes only the stated
+fixed-request numerical equivalence and RTX 4090 latency results. Maintainers
+should use the official rollout artifacts to decide task-success acceptance.
 
 ## License
 
