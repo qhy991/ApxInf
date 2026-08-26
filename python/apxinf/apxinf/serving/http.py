@@ -58,6 +58,7 @@ class Dm05HttpService:
                 "runtime_selector",
                 "host_thread_policy",
                 "torch_intraop_threads",
+                "process_inference_policy",
             ]
             for field in fields:
                 if field not in policy_metadata:

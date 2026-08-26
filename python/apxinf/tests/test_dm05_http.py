@@ -41,6 +41,7 @@ def test_dm05_combined_http_exposes_outer_contract_and_independent_proofs():
     assert policy["runtime_selector"] == "default_exact_combined"
     assert policy["host_thread_policy"] == "fixed_intraop_2"
     assert policy["torch_intraop_threads"] == 2
+    assert policy["process_inference_policy"] == "serialized_all_dm05"
     assert policy["path_proof"]["initialized"] is False
 
     _, first_response = api.handle("POST", "/v1/infer", request_body())
@@ -50,6 +51,10 @@ def test_dm05_combined_http_exposes_outer_contract_and_independent_proofs():
     assert first_response["metadata"]["runtime_selector"] == "default_exact_combined"
     assert first_response["metadata"]["host_thread_policy"] == "fixed_intraop_2"
     assert first_response["metadata"]["torch_intraop_threads"] == 2
+    assert (
+        first_response["metadata"]["process_inference_policy"]
+        == "serialized_all_dm05"
+    )
     assert first_response["metadata"]["precision"] == "bf16"
     assert first_response["metadata"]["llm_attention"] == "eager"
     assert first_response["metadata"]["vision_attention"] == "sdpa"

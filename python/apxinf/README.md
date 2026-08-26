@@ -16,7 +16,10 @@ apxinf/
 │   ├── auto.py       AutoPolicy: checkpoint -> concrete policy by config type
 │   └── impls/        concrete per-model policies (the part that grows)
 │       ├── pi05.py       Pi05Policy (native ApxInf runtime)
-│       └── dm05.py       Dm05Policy (pinned base graph + runtime factory seam)
+│       ├── dm05.py       Dm05Policy (pinned base graph + factory seam)
+│       ├── dm05_runtime.py              two-selector lazy factory
+│       ├── dm05_static_mask_prefix_graph.py  exact graph carrier
+│       └── dm05_combined_runtime.py     model-local combined runtime
 ├── adapters/     downstream: expose a Policy through a foreign API (lazy imports)
 │   └── lerobot.py   ApxInfPolicy — drop-in policy for a lerobot control loop
 └── __init__.py   facade: Model (lazy), concrete policies, AutoPolicy, steps
@@ -132,7 +135,8 @@ For `config.json:model_type == "dm05"`, `AutoPolicy` selects `Dm05Policy`.
 DM05-libero support is fixed to BF16, two ordered images, an 8D Franka state,
 ten diffusion steps, and a 10x7 action chunk. `execution_backend="default"`
 uses the official model path; `"default_exact_combined"` is opt-in and
-fail-closed behind the neutral `RuntimeFactory` seam. See the root README's
+uses ApxInf's model-local fail-closed implementation behind the neutral
+`RuntimeFactory` seam. See the root README's
 **DM05-libero HTTP deployment** section for the immutable source/checkpoint
 identity, license boundary, server command, and request schema.
 

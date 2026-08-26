@@ -55,11 +55,17 @@ EXACT_SEED = 7
 EXACT_PREFIX_LEN = 564
 HISTORY_PAD_TOKEN_ID = 7
 
+# The combined runtime installs module-global capture bindings temporarily.
+# Serializing every ApxInf-owned DM05 inference makes lazy capture exclusive to
+# all default and combined readers in this process.
+_DM05_PROCESS_INFERENCE_LOCK = threading.Lock()
+
 _PROTECTED_POLICY_METADATA = {
     "execution_backend",
     "runtime_selector",
     "host_thread_policy",
     "torch_intraop_threads",
+    "process_inference_policy",
     "opendm_commit",
     "precision",
     "llm_attention",
@@ -137,13 +143,8 @@ class RuntimeFactory(Protocol):
 
 
 def _load_default_runtime_factory() -> RuntimeFactory:
-    try:
-        from opendm.infer.dm05_runtime import create_dm05_runtime
-    except ImportError as exc:
-        raise RuntimeError(
-            "the pinned OpenDM checkout does not expose "
-            "opendm.infer.dm05_runtime.create_dm05_runtime"
-        ) from exc
+    from .dm05_runtime import create_dm05_runtime
+
     if not callable(create_dm05_runtime):
         raise RuntimeError("DM05 runtime factory is not callable")
     return create_dm05_runtime
@@ -450,7 +451,7 @@ def _set_config_attention(config) -> None:
     for target, implementation in assignments:
         target._attn_implementation_internal = implementation
 
-_COMBINED_SCHEMA = "opendm.dm05.exact-combined.v1"
+_COMBINED_SCHEMA = "apxinf.dm05.exact-combined.v1"
 _COMBINED_RUNTIME_VERSIONS = {
     "torch": "2.11.0+cu130",
     "torch_cuda": "13.0",
@@ -506,6 +507,9 @@ _COMBINED_READY_FIELDS = {
     "combined_ready": True,
     "combined_capture_census_exact": True,
     "combined_patches_restored": True,
+    "dm05_arch_source_sha256": (
+        "b5ab170374fbc965aa86d7d370075e8c8bc21bcf46bc6de34e7e336df1af9ce8"
+    ),
     "prefix_startup_capture_count": 1,
     "suffix_startup_capture_count": 1,
     "prefix_capture_execution_count": 1,
@@ -521,18 +525,30 @@ _COMBINED_READY_FIELDS = {
     "modulation_table_immutable": True,
     "metadata_owner_tensor_count": 7,
     "metadata_owner_addresses_stable": True,
-    "metadata_owner_initial_replay_exact": True,
+    "replay_content_baseline_established": True,
+    "metadata_owner_second_replay_exact": True,
     "metadata_owner_bytes_are_request_dynamic": True,
     "pack_workspace_count": 2,
     "pack_workspace_addresses_stable": True,
+    "pack_workspace_second_replay_exact": True,
     "affine_output_count": 690,
     "affine_output_addresses_stable": True,
+    "affine_output_second_replay_exact": True,
     "exact_affine_compile_count": 1,
     "exact_affine_fallback_count": 0,
-    "exact_affine_codegen_verified": True,
+    "exact_affine_ptx_codegen_verified": True,
+    "sass_external_receipt_required": True,
+    "source_candidate_gpu_validation_required": True,
     "startup_native_suffix_reference_count": 1,
-    "startup_capture_output_bitwise_exact": True,
-    "startup_replay_output_bitwise_exact": True,
+    "startup_graph_replay_count": 4,
+    "startup_first_replay_output_bitwise_exact": True,
+    "startup_second_replay_output_bitwise_exact": True,
+    "startup_changed_noise_control_count": 1,
+    "startup_changed_noise_graph_vs_eager_bitwise_exact": True,
+    "startup_changed_noise_differs_from_zero_baseline": True,
+    "startup_static_zero_input_restored": True,
+    "startup_static_zero_repeat_bitwise_exact": True,
+    "startup_output_poison_count": 4,
     "startup_native_reference_bitwise": True,
     "request_prefix_length": EXACT_PREFIX_LEN,
     "selected_prefix_length": EXACT_PREFIX_LEN,
@@ -643,6 +659,18 @@ def _require_nonnegative_counter(proof: Mapping[str, Any], name: str) -> int:
     return proof[name]
 
 
+def _require_sha256_field(proof: Mapping[str, Any], name: str) -> None:
+    value = proof.get(name)
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise RuntimeError(
+            f"DM05 combined path proof {name} must be a lowercase SHA-256"
+        )
+
+
 def _validate_combined_ready_proof(proof: dict[str, Any]) -> dict[str, Any]:
     for name, expected in _COMBINED_READY_FIELDS.items():
         _require_proof_field(proof, name, expected)
@@ -657,6 +685,8 @@ def _validate_combined_ready_proof(proof: dict[str, Any]) -> dict[str, Any]:
         _require_proof_field(proof, name, 0)
     for name in _COMBINED_REQUEST_DELTAS:
         _require_nonnegative_counter(proof, name)
+    _require_sha256_field(proof, "exact_affine_ptx_sha256")
+    _require_sha256_field(proof, "exact_affine_cubin_sha256")
     return proof
 
 
@@ -811,6 +841,7 @@ class OpenDMBackend:
             "vision_attention": "sdpa",
             "action_attention": "sdpa",
             "model_revision": MODEL_REVISION,
+            "process_inference_policy": "serialized_all_dm05",
         }
         if _uses_combined_runtime(execution_backend):
             self.metadata.update(
@@ -890,15 +921,16 @@ class OpenDMBackend:
         num_steps: int,
         seed: int,
     ) -> tuple[np.ndarray, float]:
-        with self._inference_lock:
-            return self._infer_locked(
-                prompt=prompt,
-                state=state,
-                images=images,
-                robot_type=robot_type,
-                num_steps=num_steps,
-                seed=seed,
-            )
+        with _DM05_PROCESS_INFERENCE_LOCK:
+            with self._inference_lock:
+                return self._infer_locked(
+                    prompt=prompt,
+                    state=state,
+                    images=images,
+                    robot_type=robot_type,
+                    num_steps=num_steps,
+                    seed=seed,
+                )
 
     def _infer_locked(
         self,
@@ -1063,6 +1095,7 @@ class Dm05Policy:
                 "runtime_selector": EXECUTION_BACKEND_COMBINED,
                 "host_thread_policy": HOST_THREAD_POLICY,
                 "torch_intraop_threads": HOST_TORCH_INTRAOP_THREADS,
+                "process_inference_policy": "serialized_all_dm05",
             }
             for field, value in expected.items():
                 if backend_metadata.get(field) != value:

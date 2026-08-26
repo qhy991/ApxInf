@@ -576,15 +576,15 @@ replace `127.0.0.1` with the server's reachable IP address.
 DM05 is a separate VLA family, not a PI0.5 checkpoint alias. ApxInf owns model
 selection, the fixed LIBERO observation/action contract, runtime selection, and
 the serial HTTP transport. The base model graph is loaded from the pinned
-official OpenDM source; selected execution is isolated behind a neutral
-`RuntimeFactory` boundary.
+official OpenDM source. The optimized execution implementation is model-local
+to ApxInf and isolated behind a neutral `RuntimeFactory` boundary.
 
 The first supported deployment cell is:
 
 ```text
 model       Dexmal/DM05-libero@25a8e0d38a8eaeaae41a44d7b4a2378fd8ce1088
 base graph  dexmal/opendm@e41e501bb82e9c3cb8138c0fb4687faa5f98c690
-hardware    one CUDA GPU; optimized selector qualified for RTX 4090 / SM89
+hardware    one CUDA GPU; optimized selector scoped to RTX 4090 / SM89
 precision   BF16; eager/SDPA/SDPA attention
 request     B=1, two ordered 448x448 images, 8D Franka state
 sampling    10 diffusion steps; optimized selector requires seed 7
@@ -613,8 +613,9 @@ The adapter verifies these files before importing the GPU runtime:
 daab2354f8a74e70d70b4d1f804939b68a8c9624dd06cb7858e52dd8970e9726  tokenizer.json
 ```
 
-Use the dependency versions required by the pinned OpenDM checkout, keep that
-checkout clean, and install ApxInf's lightweight policy frontend:
+Use the fixed combined-runtime environment—PyTorch `2.11.0+cu130`, CUDA `13.0`,
+Transformers `5.3.0`, and Triton `3.6.0`—keep the official OpenDM checkout
+clean, and install ApxInf's policy frontend:
 
 ```bash
 export OPENDM_ROOT=/path/to/opendm-e41e501b
@@ -636,14 +637,35 @@ There are exactly two public runtime selectors:
 - `default` runs the pinned official model path and accepts any integer seed.
 - `default_exact_combined` is opt-in and fail-closed. It fixes seed 7, processed
   prefix length 564, ten diffusion steps, and the qualified host intra-op policy
-  of two threads. Runtime construction and proof are provided through the
-  neutral `RuntimeFactory` seam; unsupported shape, source, or runtime drift
-  raises an error instead of falling back to `default`.
+  of two threads. ApxInf owns the static prefix/suffix graphs, fixed modulation
+  table, suffix metadata owners, expanded K/V workspaces, and exact
+  post-reduction affine kernel behind the neutral `RuntimeFactory` seam.
+  Unsupported shape, source, code generation, or runtime drift raises an error
+  instead of falling back to `default`.
+
+The model-local runtime calls the official Euler suffix mathematics without
+patching OpenDM. It verifies the official e41 `dm05_arch.py` digest as
+`b5ab170374fbc965aa86d7d370075e8c8bc21bcf46bc6de34e7e336df1af9ce8`;
+temporary capture specializations bind only the module globals consumed by that
+official path and are restored before serving.
 
 The combined selector sets `OMP_NUM_THREADS=2` and `MKL_NUM_THREADS=2` before
 PyTorch import. `/health` and successful inference responses include a
 pointer-free execution proof; raw process addresses are rejected at the ApxInf
 boundary.
+
+One ApxInf process owns one serialized DM05 inference stream. A process-wide
+lock covers both selectors so combined lazy initialization/capture cannot
+overlap another ApxInf-owned DM05 call. Calling OpenDM directly from another
+thread in that same process during capture bypasses this ownership boundary and
+is unsupported; use the ApxInf policy/HTTP path or a separate process.
+
+The runtime verifies generated PTX structure and binds both PTX and cubin
+SHA-256 identities, but it does not ship `nvdisasm` or claim that PTX inspection
+is a SASS proof. An external cubin/SASS receipt remains mandatory before the
+combined candidate may be promoted; runtime readiness and promotion evidence
+are deliberately separate. Until that target qualification is accepted, the
+combined selector remains default-off source-candidate functionality.
 
 ```bash
 curl -fsS http://127.0.0.1:7891/health

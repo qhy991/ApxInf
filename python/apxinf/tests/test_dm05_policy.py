@@ -5,7 +5,9 @@ import builtins
 import importlib.util
 import io
 import os
+import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,7 +35,7 @@ def agreed_external_combined_proof(count: int) -> dict:
     """Literal fixture frozen from OpenDM's public exact-combined proof schema."""
 
     proof = {
-        "schema": "opendm.dm05.exact-combined.v1",
+        "schema": "apxinf.dm05.exact-combined.v1",
         "execution_backend": "default_exact_combined",
         "selector": "default_exact_combined",
         "no_fallback": True,
@@ -113,6 +115,9 @@ def agreed_external_combined_proof(count: int) -> dict:
             "combined_expected_census": dict(census),
             "combined_capture_census_exact": True,
             "combined_patches_restored": True,
+            "dm05_arch_source_sha256": (
+                "b5ab170374fbc965aa86d7d370075e8c8bc21bcf46bc6de34e7e336df1af9ce8"
+            ),
             "prefix_startup_capture_count": 1,
             "suffix_startup_capture_count": 1,
             "prefix_capture_execution_count": 1,
@@ -128,18 +133,32 @@ def agreed_external_combined_proof(count: int) -> dict:
             "modulation_table_immutable": True,
             "metadata_owner_tensor_count": 7,
             "metadata_owner_addresses_stable": True,
-            "metadata_owner_initial_replay_exact": True,
+            "replay_content_baseline_established": True,
+            "metadata_owner_second_replay_exact": True,
             "metadata_owner_bytes_are_request_dynamic": True,
             "pack_workspace_count": 2,
             "pack_workspace_addresses_stable": True,
+            "pack_workspace_second_replay_exact": True,
             "affine_output_count": 690,
             "affine_output_addresses_stable": True,
+            "affine_output_second_replay_exact": True,
             "exact_affine_compile_count": 1,
             "exact_affine_fallback_count": 0,
-            "exact_affine_codegen_verified": True,
+            "exact_affine_ptx_codegen_verified": True,
+            "exact_affine_ptx_sha256": "a" * 64,
+            "exact_affine_cubin_sha256": "b" * 64,
+            "sass_external_receipt_required": True,
+            "source_candidate_gpu_validation_required": True,
             "startup_native_suffix_reference_count": 1,
-            "startup_capture_output_bitwise_exact": True,
-            "startup_replay_output_bitwise_exact": True,
+            "startup_graph_replay_count": 4,
+            "startup_first_replay_output_bitwise_exact": True,
+            "startup_second_replay_output_bitwise_exact": True,
+            "startup_changed_noise_control_count": 1,
+            "startup_changed_noise_graph_vs_eager_bitwise_exact": True,
+            "startup_changed_noise_differs_from_zero_baseline": True,
+            "startup_static_zero_input_restored": True,
+            "startup_static_zero_repeat_bitwise_exact": True,
+            "startup_output_poison_count": 4,
             "startup_native_reference_bitwise": True,
             "request_prefix_length": 564,
             "selected_prefix_length": 564,
@@ -160,6 +179,7 @@ class FakeCombinedBackend(FakeBackend):
         "runtime_selector": "default_exact_combined",
         "host_thread_policy": "fixed_intraop_2",
         "torch_intraop_threads": 2,
+        "process_inference_policy": "serialized_all_dm05",
         "precision": "bf16",
         "llm_attention": "eager",
         "vision_attention": "sdpa",
@@ -215,7 +235,20 @@ def test_dm05_registration_is_runtime_lazy():
 
     assert get_policy("dm05") is Dm05Policy
     assert "dm05" in available_policies()
-    assert "opendm.infer.dm05_runtime" not in sys.modules
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, apxinf; "
+                "assert 'apxinf.policies.impls.dm05_runtime' not in sys.modules; "
+                "assert 'apxinf.policies.impls.dm05_combined_runtime' not in sys.modules; "
+                "assert 'apxinf.policies.impls.dm05_static_mask_prefix_graph' "
+                "not in sys.modules"
+            ),
+        ],
+        check=True,
+    )
 
 
 def test_dm05_public_selector_set_is_exact():
@@ -441,6 +474,7 @@ def test_dm05_combined_metadata_is_fail_closed():
         "runtime_selector",
         "host_thread_policy",
         "torch_intraop_threads",
+        "process_inference_policy",
     ):
         backend = FakeCombinedBackend()
         backend.metadata = dict(backend.metadata)
@@ -456,6 +490,7 @@ def test_dm05_combined_metadata_is_fail_closed():
         "runtime_selector",
         "host_thread_policy",
         "torch_intraop_threads",
+        "process_inference_policy",
         "opendm_commit",
         "precision",
         "llm_attention",
@@ -637,3 +672,46 @@ def test_dm05_host_policy_fails_closed_on_wrong_torch_threads():
     with pytest.raises(RuntimeError, match="intra-op threads=2"):
         _validate_host_thread_policy(wrong, "default_exact_combined")
     assert _validate_host_thread_policy(wrong, "default") is None
+
+
+def test_dm05_process_lock_serializes_default_and_combined_readers():
+    from apxinf.policies.impls import dm05
+
+    backend = dm05.OpenDMBackend.__new__(dm05.OpenDMBackend)
+    backend._inference_lock = threading.Lock()
+    entered = threading.Event()
+    finished = threading.Event()
+    errors = []
+
+    def fake_infer_locked(**_kwargs):
+        entered.set()
+        return np.zeros((10, 7), dtype=np.float32), 1.0
+
+    backend._infer_locked = fake_infer_locked
+
+    def worker():
+        try:
+            backend.infer(
+                prompt="task",
+                state=np.zeros(8, dtype=np.float32),
+                images=(),
+                robot_type="Franka",
+                num_steps=10,
+                seed=7,
+            )
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    dm05._DM05_PROCESS_INFERENCE_LOCK.acquire()
+    try:
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert not entered.wait(0.05)
+    finally:
+        dm05._DM05_PROCESS_INFERENCE_LOCK.release()
+    assert finished.wait(1.0)
+    thread.join()
+    assert errors == []
+    assert entered.is_set()
