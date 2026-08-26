@@ -2186,7 +2186,15 @@ impl GeneralQwen35 {
         self.metal_w8_lm_head_stats
     }
 
-    fn forward_layer(&mut self, x: &Tensor, layer_index: usize, start_pos: u32) -> Result<Tensor> {
+    fn forward_layer(
+        &mut self,
+        x: &Tensor,
+        layer_index: usize,
+        start_pos: u32,
+        rope_table: &Qwen35TextRopeTable,
+    ) -> Result<Tensor> {
+        #[cfg(not(feature = "metal-w8"))]
+        let _ = start_pos;
         let text = &self.config.text;
         let backend = &*self.backend;
         let layer = &self.weights.layers[layer_index];
@@ -2410,11 +2418,11 @@ impl GeneralQwen35 {
                 run_full_attention(
                     backend,
                     text,
+                    rope_table,
                     &normed,
                     weights,
                     &mut *self.state.kv,
                     cache_index,
-                    start_pos,
                     max_context,
                 )?
             }
@@ -2461,7 +2469,7 @@ impl GeneralQwen35 {
         &mut self,
         x: &Tensor,
         layer_index: usize,
-        start_pos: u32,
+        rope_table: &Qwen35TextRopeTable,
     ) -> Result<Tensor> {
         let text = &self.config.text;
         let layer = self.weights.layers.get(layer_index).ok_or_else(|| {
@@ -2487,11 +2495,11 @@ impl GeneralQwen35 {
         let attention = run_full_attention(
             &*self.backend,
             text,
+            rope_table,
             &normed,
             attention_weights,
             &mut *self.state.kv,
             cache_index,
-            start_pos,
             max_context,
         )?;
         self.backend.add(x, &attention)
@@ -2502,12 +2510,12 @@ impl GeneralQwen35 {
         &mut self,
         x: &Tensor,
         layer_index: usize,
-        start_pos: u32,
+        rope_table: &Qwen35TextRopeTable,
     ) -> Result<Tensor> {
         let residual = self.forward_full_attention_residual_for_mlp_stack3_boundary_body_v1(
             x,
             layer_index,
-            start_pos,
+            rope_table,
         )?;
         let normed = self.backend.rms_norm_offset(
             &residual,
@@ -2565,6 +2573,7 @@ impl GeneralQwen35 {
             ));
         }
         self.state.validate_forward(start_pos, sequence_length)?;
+        let rope_table = Qwen35TextRopeTable::new(&self.config.text, sequence_length, start_pos)?;
 
         #[cfg(feature = "metal-w8")]
         let lane_versions_before = self.complete_linear_layer_lane_versions();
@@ -2599,7 +2608,7 @@ impl GeneralQwen35 {
                                 .forward_full_attention_residual_for_mlp_stack3_boundary_body_v1(
                                     &hidden,
                                     layer_index,
-                                    start_pos,
+                                    &rope_table,
                                 )?;
                             let completed_layers = self
                                 .metal_w8_mlp_stack3_boundary_tail_head_v1
@@ -2623,7 +2632,7 @@ impl GeneralQwen35 {
                                 .forward_full_attention_residual_for_mlp_stack3_boundary_body_v1(
                                     &hidden,
                                     layer_index,
-                                    start_pos,
+                                    &rope_table,
                                 )?;
                             layer_index += 1;
                             continue;
@@ -2654,7 +2663,7 @@ impl GeneralQwen35 {
                                 .forward_full_attention_residual_for_mlp_stack3_boundary_body_v1(
                                     &hidden,
                                     layer_index,
-                                    start_pos,
+                                    &rope_table,
                                 )?;
                             let completed_layers = self
                                 .metal_w8_mlp_stack3_boundary_body_v1
@@ -2678,7 +2687,7 @@ impl GeneralQwen35 {
                                 .forward_final_full_attention_mlp_for_mlp_stack3_boundary_body_v1(
                                     &hidden,
                                     layer_index,
-                                    start_pos,
+                                    &rope_table,
                                 )?;
                             layer_index += 1;
                             continue;
@@ -2723,7 +2732,7 @@ impl GeneralQwen35 {
                         continue;
                     }
                 }
-                hidden = self.forward_layer(&hidden, layer_index, start_pos)?;
+                hidden = self.forward_layer(&hidden, layer_index, start_pos, &rope_table)?;
                 #[cfg(all(test, debug_assertions, feature = "metal-w8"))]
                 if self.fail_after_layer_once_for_test == Some(layer_index) {
                     self.fail_after_layer_once_for_test = None;
@@ -3790,60 +3799,141 @@ fn run_linear_attention(
     Ok(output)
 }
 
+/// One text-position table shared by every full-attention layer in a forward.
+/// Qwen3.5 uses the same RoPE parameters for Q and K in all six full layers.
+struct Qwen35TextRopeTable {
+    sequence_length: usize,
+    head_dim: usize,
+    rotary_dim: usize,
+    trig_table: Vec<(f32, f32)>,
+}
+
+impl Qwen35TextRopeTable {
+    fn new(config: &Qwen35TextConfig, sequence_length: usize, start_pos: u32) -> Result<Self> {
+        let head_dim = config.head_dim;
+        let rotary_dim = config.rotary_dim();
+        if sequence_length == 0 {
+            return Err(Error::Other(
+                "qwen3.5 shared text RoPE requires a non-empty sequence".into(),
+            ));
+        }
+        if rotary_dim == 0 || rotary_dim > head_dim || rotary_dim % 2 != 0 {
+            return Err(Error::Other(format!(
+                "qwen3.5 shared text RoPE requires a non-zero, even rotary_dim <= head_dim; got {rotary_dim} and {head_dim}"
+            )));
+        }
+        if !config.rope.theta.is_finite() || config.rope.theta <= 0.0 {
+            return Err(Error::Other(format!(
+                "qwen3.5 shared text RoPE requires finite positive theta; got {}",
+                config.rope.theta
+            )));
+        }
+
+        let pair_count = rotary_dim / 2;
+        let table_len = sequence_length
+            .checked_mul(pair_count)
+            .ok_or_else(|| Error::Other("qwen3.5 shared text RoPE table length overflow".into()))?;
+        let mut trig_table = vec![(0.0f32, 0.0f32); table_len];
+        for pair_idx in 0..pair_count {
+            let inv_freq = 1.0f32
+                / config
+                    .rope
+                    .theta
+                    .powf(2.0 * pair_idx as f32 / rotary_dim as f32);
+            for seq_idx in 0..sequence_length {
+                let position = (start_pos as u64 + seq_idx as u64) as f32;
+                trig_table[seq_idx * pair_count + pair_idx] = (position * inv_freq).sin_cos();
+            }
+        }
+
+        Ok(Self {
+            sequence_length,
+            head_dim,
+            rotary_dim,
+            trig_table,
+        })
+    }
+
+    fn apply_in_place(&self, tensor: &mut Tensor, n_heads: usize) -> Result<()> {
+        let expected = [self.sequence_length, n_heads, self.head_dim];
+        if tensor.shape().dims() != expected {
+            return Err(Error::ShapeMismatch {
+                expected: format!("[{}, {}, {}]", self.sequence_length, n_heads, self.head_dim),
+                got: format!("qwen3.5 shared text RoPE input {}", tensor.shape()),
+            });
+        }
+
+        let pair_count = self.rotary_dim / 2;
+        let data = tensor.as_f32_mut()?;
+        for seq_idx in 0..self.sequence_length {
+            for head_idx in 0..n_heads {
+                let base = (seq_idx * n_heads + head_idx) * self.head_dim;
+                for pair_idx in 0..pair_count {
+                    let (sin, cos) = self.trig_table[seq_idx * pair_count + pair_idx];
+                    let first_idx = base + pair_idx;
+                    let second_idx = base + pair_count + pair_idx;
+                    let first = data[first_idx];
+                    let second = data[second_idx];
+                    data[first_idx] = first * cos - second * sin;
+                    data[second_idx] = first * sin + second * cos;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_full_attention(
     backend: &dyn Backend,
     config: &Qwen35TextConfig,
+    rope_table: &Qwen35TextRopeTable,
     hidden: &Tensor,
     weights: &RuntimeFullWeights,
     kv: &mut dyn apxinf_core::KvCache,
     cache_index: usize,
-    start_pos: u32,
     max_context: usize,
 ) -> Result<Tensor> {
     let sequence_length = hidden.shape().dims()[0];
-    let query = backend.matmul(hidden, &weights.query_projection)?;
-    let query = query.reshape(vec![
-        sequence_length * config.n_attention_heads,
-        config.head_dim,
-    ])?;
-    let query =
-        backend.rms_norm_offset(&query, &weights.query_norm_weight, config.rms_norm_eps, 1.0)?;
-    let query = query.reshape(vec![
-        sequence_length,
-        config.n_attention_heads,
-        config.head_dim,
-    ])?;
+    // Keep the reshape inputs as expression temporaries so their Arc-backed
+    // storage is dropped before `apply_in_place`; otherwise mutable access
+    // would silently trigger Tensor's copy-on-write path.
+    let mut query = backend
+        .rms_norm_offset(
+            &backend
+                .matmul(hidden, &weights.query_projection)?
+                .reshape(vec![
+                    sequence_length * config.n_attention_heads,
+                    config.head_dim,
+                ])?,
+            &weights.query_norm_weight,
+            config.rms_norm_eps,
+            1.0,
+        )?
+        .reshape(vec![
+            sequence_length,
+            config.n_attention_heads,
+            config.head_dim,
+        ])?;
 
-    let key = backend
-        .matmul(hidden, &weights.key_projection)?
-        .reshape(vec![sequence_length * config.n_kv_heads, config.head_dim])?;
-    let key = backend.rms_norm_offset(&key, &weights.key_norm_weight, config.rms_norm_eps, 1.0)?;
-    let key = key.reshape(vec![sequence_length, config.n_kv_heads, config.head_dim])?;
+    let mut key = backend
+        .rms_norm_offset(
+            &backend
+                .matmul(hidden, &weights.key_projection)?
+                .reshape(vec![sequence_length * config.n_kv_heads, config.head_dim])?,
+            &weights.key_norm_weight,
+            config.rms_norm_eps,
+            1.0,
+        )?
+        .reshape(vec![sequence_length, config.n_kv_heads, config.head_dim])?;
     let value = backend
         .matmul(hidden, &weights.value_projection)?
         .reshape(vec![sequence_length, config.n_kv_heads, config.head_dim])?;
 
     // For text all T/H/W positions are identical, so interleaved-axis mRoPE
     // reduces exactly to scalar rotate-half partial RoPE.
-    let query = backend.rope_partial(
-        &query,
-        config.n_attention_heads,
-        config.head_dim,
-        config.rotary_dim(),
-        config.rope.theta,
-        start_pos,
-        false,
-    )?;
-    let key = backend.rope_partial(
-        &key,
-        config.n_kv_heads,
-        config.head_dim,
-        config.rotary_dim(),
-        config.rope.theta,
-        start_pos,
-        false,
-    )?;
+    rope_table.apply_in_place(&mut query, config.n_attention_heads)?;
+    rope_table.apply_in_place(&mut key, config.n_kv_heads)?;
 
     backend.kv_append(kv, cache_index, &key, &value, sequence_length)?;
     let kv_length = kv.seq_len() + sequence_length;
@@ -7192,6 +7282,112 @@ mod tests {
             })
             .collect();
         (config, tensors)
+    }
+
+    fn shared_rope_input(sequence_length: usize, n_heads: usize, head_dim: usize) -> Tensor {
+        let count = sequence_length * n_heads * head_dim;
+        let values = (0..count)
+            .map(|index| {
+                let phase = ((index as u32).wrapping_mul(37).wrapping_add(11) % 101) as f32;
+                (phase - 50.0) * 0.03125
+            })
+            .collect();
+        Tensor::from_f32_vec(vec![sequence_length, n_heads, head_dim], values).unwrap()
+    }
+
+    fn assert_shared_rope_matches_cpu_oracle_bitwise(
+        config: &Qwen35TextConfig,
+        sequence_length: usize,
+        start_pos: u32,
+    ) {
+        let backend = apxinf_core::CpuBackend;
+        let table = Qwen35TextRopeTable::new(config, sequence_length, start_pos).unwrap();
+        for n_heads in [config.n_attention_heads, config.n_kv_heads] {
+            let input = shared_rope_input(sequence_length, n_heads, config.head_dim);
+            let expected = backend
+                .rope_partial(
+                    &input,
+                    n_heads,
+                    config.head_dim,
+                    config.rotary_dim(),
+                    config.rope.theta,
+                    start_pos,
+                    false,
+                )
+                .unwrap();
+            let mut actual = input;
+            table.apply_in_place(&mut actual, n_heads).unwrap();
+
+            assert_eq!(
+                actual
+                    .as_f32()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                expected
+                    .as_f32()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn qwen35_shared_rope_matches_cpu_oracle_bitwise_for_decode_one() {
+        let config = Qwen35Config::from_json_str(MINI_CONFIG).unwrap();
+        assert_shared_rope_matches_cpu_oracle_bitwise(&config.text, 1, 73);
+    }
+
+    #[test]
+    fn qwen35_shared_rope_matches_cpu_oracle_bitwise_for_prefill_thirteen() {
+        let config = Qwen35Config::from_json_str(MINI_CONFIG).unwrap();
+        assert_shared_rope_matches_cpu_oracle_bitwise(&config.text, 13, 7);
+    }
+
+    #[test]
+    fn qwen35_shared_rope_preserves_unique_reshaped_tensor_allocation() {
+        let config = Qwen35Config::from_json_str(MINI_CONFIG).unwrap();
+        let sequence_length = 1;
+        let n_heads = config.text.n_attention_heads;
+        let values = shared_rope_input(sequence_length, n_heads, config.text.head_dim)
+            .as_f32()
+            .unwrap()
+            .to_vec();
+        let mut tensor = Tensor::from_f32_vec(
+            vec![sequence_length * n_heads, config.text.head_dim],
+            values,
+        )
+        .unwrap()
+        .reshape(vec![sequence_length, n_heads, config.text.head_dim])
+        .unwrap();
+        let allocation_before = tensor.as_f32().unwrap().as_ptr();
+
+        Qwen35TextRopeTable::new(&config.text, sequence_length, 73)
+            .unwrap()
+            .apply_in_place(&mut tensor, n_heads)
+            .unwrap();
+
+        assert_eq!(tensor.as_f32().unwrap().as_ptr(), allocation_before);
+    }
+
+    #[test]
+    fn qwen35_shared_rope_rejects_an_incompatible_shape() {
+        let config = Qwen35Config::from_json_str(MINI_CONFIG).unwrap();
+        let table = Qwen35TextRopeTable::new(&config.text, 1, 0).unwrap();
+        let mut tensor = Tensor::from_f32(
+            vec![2, config.text.n_attention_heads, config.text.head_dim],
+            &vec![0.0; 2 * config.text.n_attention_heads * config.text.head_dim],
+        )
+        .unwrap();
+
+        let error = table
+            .apply_in_place(&mut tensor, config.text.n_attention_heads)
+            .unwrap_err();
+
+        assert!(matches!(error, Error::ShapeMismatch { .. }));
     }
 
     #[cfg(all(feature = "metal-w8", target_os = "macos"))]
