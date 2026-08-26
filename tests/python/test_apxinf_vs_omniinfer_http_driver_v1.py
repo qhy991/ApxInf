@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 
 DRIVER_PATH = (
@@ -84,6 +86,7 @@ class FakeSocket:
     def __init__(self) -> None:
         self.sent: list[bytes] = []
         self.closed = False
+        self.peer_port = 9001
 
     def fileno(self) -> int:
         return -1 if self.closed else 23
@@ -92,7 +95,7 @@ class FakeSocket:
         return ("127.0.0.1", 43123)
 
     def getpeername(self) -> tuple[str, int]:
-        return ("127.0.0.1", 9001)
+        return ("127.0.0.1", self.peer_port)
 
     def setsockopt(self, *_: object) -> None:
         return None
@@ -105,11 +108,18 @@ class FakeSocket:
 
 
 class FakeResponse:
-    def __init__(self, raw: bytes) -> None:
+    def __init__(
+        self,
+        raw: bytes,
+        *,
+        status: int = 200,
+        on_close: object | None = None,
+    ) -> None:
         self.raw = raw
-        self.status = 200
+        self.status = status
         self.version = 11
         self.will_close = False
+        self.on_close = on_close
 
     def begin(self) -> None:
         return None
@@ -124,7 +134,8 @@ class FakeResponse:
         return self.raw
 
     def close(self) -> None:
-        return None
+        if callable(self.on_close):
+            self.on_close()
 
 
 class ContractAndParserTests(unittest.TestCase):
@@ -134,6 +145,26 @@ class ContractAndParserTests(unittest.TestCase):
         self.assertEqual(receipt["request_sha256"], driver.REQUEST_SHA256)
         self.assertEqual(
             driver.REQUEST_BYTES, driver.canonical_json_bytes(driver.REQUEST)
+        )
+
+    def test_tokenize_request_is_frozen_from_the_rendered_prompt_contract(self) -> None:
+        receipt = driver.validate_static_contract()
+        self.assertEqual(
+            driver.OMNI_TOKENIZE_REQUEST,
+            {
+                "add_special": False,
+                "content": driver.RENDERED_PROMPT,
+                "parse_special": True,
+                "with_pieces": False,
+            },
+        )
+        self.assertEqual(len(driver.OMNI_TOKENIZE_REQUEST_BYTES), 156)
+        self.assertEqual(
+            receipt["omniinfer_tokenize_request_sha256"],
+            driver.OMNI_TOKENIZE_REQUEST_SHA256,
+        )
+        self.assertEqual(
+            receipt["prompt_token_ids_sha256"], driver.PROMPT_TOKEN_IDS_SHA256
         )
 
     def test_strict_json_rejects_duplicates_nonfinite_and_trailing_data(self) -> None:
@@ -317,6 +348,253 @@ class PersistentTransportTests(unittest.TestCase):
         )
 
 
+class OmniTokenizePreflightTests(unittest.TestCase):
+    def make_connection(
+        self,
+        raw: bytes,
+        *,
+        status: int = 200,
+        on_close: object | None = None,
+    ) -> tuple[driver.PersistentHttpConnection, FakeSocket]:
+        fake_socket = FakeSocket()
+        connection = driver.PersistentHttpConnection(
+            "http://127.0.0.1:9001",
+            "omniinfer-generation",
+            socket_factory=lambda *_args, **_kwargs: fake_socket,
+            response_factory=lambda _socket: FakeResponse(
+                raw, status=status, on_close=on_close
+            ),
+        )
+        connection.connect()
+        return connection, fake_socket
+
+    def test_positive_receipt_observes_exact_ids_hash_and_count_outside_timing(
+        self,
+    ) -> None:
+        raw = driver.canonical_json_bytes({"tokens": driver.PROMPT_TOKEN_IDS})
+        connection, fake_socket = self.make_connection(raw)
+        receipt = driver.run_omni_tokenize_preflight(connection)
+        validated = receipt["validated"]
+        transport = receipt["transport"]
+        self.assertEqual(
+            validated["observed_prompt_token_ids"], driver.PROMPT_TOKEN_IDS
+        )
+        self.assertEqual(validated["observed_prompt_token_count"], 13)
+        self.assertEqual(
+            validated["observed_prompt_token_ids_sha256"],
+            driver.PROMPT_TOKEN_IDS_SHA256,
+        )
+        self.assertTrue(validated["outside_primary_timed_interval"])
+        self.assertTrue(validated["exact_match_with_apxinf_prompt_token_contract"])
+        self.assertFalse(transport["primary_timed_interval"])
+        self.assertEqual(transport["method"], "POST")
+        self.assertEqual(transport["path"], "/tokenize")
+        self.assertEqual(transport["status"], 200)
+        self.assertEqual(
+            transport["request_body_sha256"],
+            driver.OMNI_TOKENIZE_REQUEST_SHA256,
+        )
+        self.assertEqual(transport["response_headers_ordered"][0][0], "Content-Type")
+        self.assertEqual(transport["response_base64"], base64.b64encode(raw).decode())
+        self.assertEqual(len(fake_socket.sent), 1)
+        self.assertIn(b"POST /tokenize HTTP/1.1\r\n", fake_socket.sent[0])
+        self.assertTrue(
+            fake_socket.sent[0].endswith(driver.OMNI_TOKENIZE_REQUEST_BYTES)
+        )
+        connection.close()
+
+    def test_wrong_ids_and_wrong_count_fail_closed(self) -> None:
+        wrong_id = list(driver.PROMPT_TOKEN_IDS)
+        wrong_id[-1] += 1
+        raw = driver.canonical_json_bytes({"tokens": wrong_id})
+        connection, _ = self.make_connection(raw)
+        with self.assertRaises(driver.TransportFailure) as caught:
+            driver.run_omni_tokenize_preflight(connection)
+        observation = caught.exception.observation
+        self.assertEqual(observation["stage"], "semantic-validation-after-wall")
+        self.assertEqual(observation["method"], "POST")
+        self.assertEqual(observation["path"], "/tokenize")
+        self.assertEqual(observation["status"], 200)
+        self.assertEqual(observation["raw_response_sha256"], driver.sha256_bytes(raw))
+        connection.close()
+
+        for tokens, message in (
+            (driver.PROMPT_TOKEN_IDS[:-1], "count"),
+            ([*driver.PROMPT_TOKEN_IDS[:-1], True], "invalid token ID"),
+        ):
+            with (
+                self.subTest(message=message),
+                self.assertRaisesRegex(driver.AdmissionError, message),
+            ):
+                driver.validate_omni_tokenize({"tokens": tokens})
+
+    def test_non_200_preserves_method_path_status_headers_and_response(self) -> None:
+        raw = b'{"error":"fixture"}'
+        connection, _ = self.make_connection(raw, status=503)
+        with self.assertRaises(driver.TransportFailure) as caught:
+            driver.run_omni_tokenize_preflight(connection)
+        observation = caught.exception.observation
+        self.assertEqual(observation["method"], "POST")
+        self.assertEqual(observation["path"], "/tokenize")
+        self.assertEqual(observation["status"], 503)
+        self.assertEqual(
+            observation["response_headers"]["content-length"], [str(len(raw))]
+        )
+        self.assertEqual(
+            observation["response_headers_ordered"][0],
+            ("Content-Type", "application/json"),
+        )
+        self.assertEqual(observation["raw_response_sha256"], driver.sha256_bytes(raw))
+        self.assertEqual(
+            observation["raw_response_base64"], base64.b64encode(raw).decode()
+        )
+        connection.close()
+
+    def test_malformed_json_preserves_complete_http_receipt(self) -> None:
+        raw = b'{"tokens":[248045,}'
+        connection, _ = self.make_connection(raw)
+        with self.assertRaises(driver.TransportFailure) as caught:
+            driver.run_omni_tokenize_preflight(connection)
+        observation = caught.exception.observation
+        self.assertEqual(observation["stage"], "strict-json-parse-after-wall")
+        self.assertEqual(observation["status"], 200)
+        self.assertEqual(observation["path"], "/tokenize")
+        self.assertEqual(observation["raw_response_size_bytes"], len(raw))
+        self.assertEqual(
+            observation["response_headers"]["content-type"], ["application/json"]
+        )
+        connection.close()
+
+    def test_socket_identity_change_is_a_terminal_no_reconnect_failure(self) -> None:
+        raw = driver.canonical_json_bytes({"tokens": driver.PROMPT_TOKEN_IDS})
+        fake_socket = FakeSocket()
+        connection = driver.PersistentHttpConnection(
+            "http://127.0.0.1:9001",
+            "omniinfer-generation",
+            socket_factory=lambda *_args, **_kwargs: fake_socket,
+            response_factory=lambda _socket: FakeResponse(
+                raw,
+                on_close=lambda: setattr(fake_socket, "peer_port", 9002),
+            ),
+        )
+        connection.connect()
+        with self.assertRaises(driver.TransportFailure) as caught:
+            driver.run_omni_tokenize_preflight(connection)
+        observation = caught.exception.observation
+        self.assertEqual(observation["path"], "/tokenize")
+        self.assertEqual(observation["attempted_request_index_on_connection"], 1)
+        self.assertIn("reconnected or closed", observation["message"])
+        self.assertEqual(connection.request_count, 0)
+        self.assertEqual(len(fake_socket.sent), 1)
+        connection.close()
+
+    def test_tokenize_failure_occurs_before_schedule_or_any_generation(self) -> None:
+        class ScriptedConnection:
+            def __init__(self, label: str) -> None:
+                self.label = label
+                self.calls: list[tuple[str, str]] = []
+                self.request_count = 0
+
+            def connect(self) -> dict:
+                return {"label": self.label}
+
+            def request_json(
+                self,
+                method: str,
+                path: str,
+                _body: bytes | None,
+                **_kwargs: object,
+            ) -> tuple[dict, dict, dict]:
+                self.calls.append((method, path))
+                if self.label == "omniinfer-generation" and path == "/tokenize":
+                    raise driver.TransportFailure(
+                        "tokenize fixture rejected",
+                        {
+                            "method": method,
+                            "path": path,
+                            "status": 200,
+                            "response_headers": {"content-type": ["application/json"]},
+                            "raw_response_base64": "fixture",
+                        },
+                    )
+                self.request_count += 1
+                if path == "/omni/state":
+                    validated = {"client_endpoint": "http://127.0.0.1:51090"}
+                else:
+                    validated = {}
+                return {}, validated, {}
+
+            def close(self) -> None:
+                return None
+
+        connections = {
+            label: ScriptedConnection(label)
+            for label in ("apxinf-single", "omniinfer-generation", "omniinfer-clear")
+        }
+
+        def connection_factory(
+            _endpoint: str, label: str, **_kwargs: object
+        ) -> ScriptedConnection:
+            return connections[label]
+
+        original_schedule = driver.declared_schedule
+        schedule_calls = 0
+
+        def guarded_schedule() -> list[dict]:
+            nonlocal schedule_calls
+            schedule_calls += 1
+            if schedule_calls > 1:
+                raise AssertionError("generation schedule was entered")
+            return original_schedule()
+
+        args = argparse.Namespace(
+            apx_endpoint="http://127.0.0.1:9100",
+            omni_endpoint="http://127.0.0.1:9000",
+            omni_clear_endpoint="http://127.0.0.1:9000",
+            omni_health_path="/health?deep=true",
+            omni_state_path="/omni/state",
+            omni_clear_path="/omni/cache/clear",
+            omni_clear_contract="omni-gateway",
+            omni_clear_body="empty-object",
+            timeout_seconds=1.0,
+            quiet_host_status="not-evaluated",
+            quiet_host_receipt=None,
+        )
+        progress = {
+            "stage": "fixture",
+            "preflight": None,
+            "warmup_pairs": [],
+            "measured_pairs": [],
+            "postflight": None,
+        }
+        with (
+            mock.patch.object(
+                driver, "PersistentHttpConnection", side_effect=connection_factory
+            ),
+            mock.patch.object(
+                driver, "declared_schedule", side_effect=guarded_schedule
+            ),
+            self.assertRaises(driver.TransportFailure),
+        ):
+            driver.run_diagnostic(args, progress)
+        self.assertEqual(schedule_calls, 1)
+        self.assertEqual(progress["stage"], "preflight-omniinfer-tokenize")
+        self.assertEqual(progress["warmup_pairs"], [])
+        self.assertEqual(progress["measured_pairs"], [])
+        self.assertEqual(
+            connections["omniinfer-generation"].calls,
+            [
+                ("GET", "/health?deep=true"),
+                ("GET", "/omni/state"),
+                ("POST", "/tokenize"),
+            ],
+        )
+        self.assertNotIn(
+            ("POST", "/v1/chat/completions"),
+            connections["omniinfer-generation"].calls,
+        )
+
+
 class SemanticAndStatisticsTests(unittest.TestCase):
     def test_omni_state_cross_checks_backend_endpoint_and_runtime_identity(
         self,
@@ -390,7 +668,14 @@ class SemanticAndStatisticsTests(unittest.TestCase):
 
     def test_both_policy_encodings_normalize_to_the_same_five_eog_tokens(self) -> None:
         apx = driver.validate_chat_response(response_fixture("B"), "B")
-        omni = driver.validate_chat_response(response_fixture("G", token=8), "G")
+        omni_tokenize = driver.validate_omni_tokenize(
+            {"tokens": driver.PROMPT_TOKEN_IDS}
+        )
+        omni = driver.validate_chat_response(
+            response_fixture("G", token=8),
+            "G",
+            omni_prompt_contract=omni_tokenize,
+        )
         self.assertEqual(
             apx["generation_policy"]["suppressed_eog_token_ids"],
             driver.SUPPRESSED_EOG_TOKEN_IDS,
@@ -402,10 +687,21 @@ class SemanticAndStatisticsTests(unittest.TestCase):
         self.assertTrue(apx["prompt_token_ids_observed_in_response"])
         self.assertEqual(apx["prompt_token_ids"], driver.PROMPT_TOKEN_IDS)
         self.assertFalse(omni["prompt_token_ids_observed_in_response"])
-        self.assertIsNone(omni["prompt_token_ids"])
+        self.assertEqual(omni["prompt_token_ids"], driver.PROMPT_TOKEN_IDS)
+        self.assertEqual(
+            omni["prompt_token_ids_observation"]["source"],
+            "omniinfer-generation-gateway-tokenize-preflight",
+        )
+        self.assertTrue(
+            omni["prompt_token_ids_observation"]["observed_before_any_generation"]
+        )
         self.assertNotEqual(
             apx["generated_token_ids_sha256"], omni["generated_token_ids_sha256"]
         )
+
+    def test_omni_generation_rejects_missing_tokenize_preflight_receipt(self) -> None:
+        with self.assertRaisesRegex(driver.AdmissionError, "mandatory tokenize"):
+            driver.validate_chat_response(response_fixture("G"), "G")
 
     def test_eog_token_in_raw_output_is_rejected(self) -> None:
         with self.assertRaises(driver.AdmissionError):
@@ -416,6 +712,9 @@ class SemanticAndStatisticsTests(unittest.TestCase):
     def test_omni_response_rejects_warm_wrong_slot_or_truncated_generation(
         self,
     ) -> None:
+        omni_tokenize = driver.validate_omni_tokenize(
+            {"tokens": driver.PROMPT_TOKEN_IDS}
+        )
         mutations = (
             ("usage", "prompt_tokens_details", "cached_tokens", 13),
             ("timings", "cache_n", None, 13),
@@ -434,7 +733,11 @@ class SemanticAndStatisticsTests(unittest.TestCase):
                 self.subTest(field=(outer, inner, leaf)),
                 self.assertRaises(driver.AdmissionError),
             ):
-                driver.validate_chat_response(response, "G")
+                driver.validate_chat_response(
+                    response,
+                    "G",
+                    omni_prompt_contract=omni_tokenize,
+                )
 
     def test_block_statistics_use_omni_minus_apx_without_ranking_claim(self) -> None:
         pairs: list[dict] = []

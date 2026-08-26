@@ -7,6 +7,9 @@ each measurement connection exactly once, clears the corresponding cache
 outside the primary interval before every generation, and times one complete
 pre-serialized HTTP/1.1 request wire through the complete response-body read.
 JSON parsing and semantic validation intentionally happen after the end clock.
+Before any warmup or measured generation, the OmniInfer generation connection
+also performs one strict untimed ``POST /tokenize`` of the frozen rendered
+prompt and requires the exact ApxInf 13-token prompt-ID contract.
 
 This driver can never produce formal evidence or an engine-ranking claim.  It
 does not require the two engines to produce the same trajectory.  Instead, it
@@ -61,6 +64,20 @@ PROMPT_TOKEN_IDS = [
     248069,
     271,
 ]
+PROMPT_TOKEN_IDS_SHA256 = (
+    "4b890fa15ee3d7db4e9dd18bd79c6362d40e9e016ae4f9f74cb7fc420ef3b6d3"
+)
+OMNI_TOKENIZE_PATH = "/tokenize"
+OMNI_TOKENIZE_REQUEST: dict[str, Any] = {
+    "add_special": False,
+    "content": RENDERED_PROMPT,
+    "parse_special": True,
+    "with_pieces": False,
+}
+OMNI_TOKENIZE_REQUEST_SIZE = 156
+OMNI_TOKENIZE_REQUEST_SHA256 = (
+    "617df3df640c21bf6c3c6460f78589476d50f0ee149e1d5699ff41f99502677b"
+)
 SUPPRESSED_EOG_TOKEN_IDS = [248044, 248046, 248063, 248064, 248065]
 REQUEST: dict[str, Any] = {
     "cache_prompt": False,
@@ -121,6 +138,7 @@ def canonical_json_bytes(value: Any) -> bytes:
 
 
 REQUEST_BYTES = canonical_json_bytes(REQUEST)
+OMNI_TOKENIZE_REQUEST_BYTES = canonical_json_bytes(OMNI_TOKENIZE_REQUEST)
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -171,6 +189,28 @@ def validate_static_contract() -> dict[str, Any]:
         json.loads(REQUEST_BYTES) == REQUEST, "canonical request does not round-trip"
     )
     require(len(PROMPT_TOKEN_IDS) == 13, "prompt token contract drifted")
+    require(
+        sha256_bytes(canonical_json_bytes(PROMPT_TOKEN_IDS)) == PROMPT_TOKEN_IDS_SHA256,
+        "prompt token ID SHA drifted",
+    )
+    require(
+        OMNI_TOKENIZE_REQUEST
+        == {
+            "add_special": False,
+            "content": RENDERED_PROMPT,
+            "parse_special": True,
+            "with_pieces": False,
+        },
+        "OmniInfer tokenize request differs from the rendered prompt contract",
+    )
+    require(
+        len(OMNI_TOKENIZE_REQUEST_BYTES) == OMNI_TOKENIZE_REQUEST_SIZE,
+        "OmniInfer tokenize request size drifted",
+    )
+    require(
+        sha256_bytes(OMNI_TOKENIZE_REQUEST_BYTES) == OMNI_TOKENIZE_REQUEST_SHA256,
+        "OmniInfer tokenize request SHA drifted",
+    )
     require(len(SUPPRESSED_EOG_TOKEN_IDS) == 5, "EOG policy count drifted")
     require(
         len(set(SUPPRESSED_EOG_TOKEN_IDS)) == len(SUPPRESSED_EOG_TOKEN_IDS),
@@ -190,6 +230,11 @@ def validate_static_contract() -> dict[str, Any]:
     return {
         "request_size_bytes": len(REQUEST_BYTES),
         "request_sha256": sha256_bytes(REQUEST_BYTES),
+        "rendered_prompt": RENDERED_PROMPT,
+        "prompt_token_count": len(PROMPT_TOKEN_IDS),
+        "prompt_token_ids_sha256": PROMPT_TOKEN_IDS_SHA256,
+        "omniinfer_tokenize_request_size_bytes": len(OMNI_TOKENIZE_REQUEST_BYTES),
+        "omniinfer_tokenize_request_sha256": sha256_bytes(OMNI_TOKENIZE_REQUEST_BYTES),
         "warmup_pairs": len(warmups),
         "measured_pairs": len(measured),
         "requests_per_arm": EXPECTED_REQUESTS_PER_ARM,
@@ -382,6 +427,8 @@ class PersistentHttpConnection:
             version = response.version
             will_close = response.will_close
             headers = response.getheaders()
+            for name, value in headers:
+                header_map.setdefault(name.lower(), []).append(value)
             stage = "response-body"
             try:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
@@ -402,8 +449,6 @@ class PersistentHttpConnection:
             require(status == 200, f"{self.label} returned HTTP {status}")
             require(version == 11, f"{self.label} response is not HTTP/1.1")
             require(will_close is False, f"{self.label} response closes the connection")
-            for name, value in headers:
-                header_map.setdefault(name.lower(), []).append(value)
             content_types = header_map.get("content-type", [])
             require(
                 len(content_types) == 1
@@ -453,6 +498,7 @@ class PersistentHttpConnection:
                 "status": status,
                 "http_version": version,
                 "response_will_close": will_close,
+                "response_headers_ordered": headers,
                 "response_headers": header_map,
                 "raw_response_size_bytes": len(raw),
                 "raw_response_sha256": sha256_bytes(raw),
@@ -499,6 +545,7 @@ class PersistentHttpConnection:
             "timing_event_order": timing_events,
             "status": status,
             "http_version": version,
+            "response_headers_ordered": headers,
             "response_headers": header_map,
             "response_size_bytes": len(raw),
             "response_sha256": sha256_bytes(raw),
@@ -645,6 +692,52 @@ def validate_omni_state(payload: dict[str, Any]) -> dict[str, Any]:
         "client_endpoint": client_endpoint,
         "runtime_identity_cross_checked": True,
         "model_path": model_path,
+    }
+
+
+def validate_omni_tokenize(payload: dict[str, Any]) -> dict[str, Any]:
+    """Admit one exact llama.cpp /tokenize response for the rendered prompt."""
+
+    require(
+        set(payload) == {"tokens"},
+        "OmniInfer tokenize response must contain only the tokens field",
+    )
+    tokens = payload.get("tokens")
+    require(isinstance(tokens, list), "OmniInfer tokenize tokens are not an array")
+    require(
+        all(is_int(token) and token >= 0 for token in tokens),
+        "OmniInfer tokenize response contains an invalid token ID",
+    )
+    require(
+        len(tokens) == len(PROMPT_TOKEN_IDS),
+        "OmniInfer rendered prompt token count differs",
+    )
+    require(
+        tokens == PROMPT_TOKEN_IDS,
+        "OmniInfer rendered prompt token IDs differ from ApxInf",
+    )
+    observed = list(tokens)
+    observed_sha256 = sha256_bytes(canonical_json_bytes(observed))
+    require(
+        observed_sha256 == PROMPT_TOKEN_IDS_SHA256,
+        "OmniInfer rendered prompt token ID SHA differs",
+    )
+    return {
+        "authority": "omniinfer-generation-gateway",
+        "endpoint_contract": "llama.cpp-b10280-post-tokenize",
+        "path": OMNI_TOKENIZE_PATH,
+        "request_content_equals_rendered_generation_prompt": True,
+        "request_options": {
+            "add_special": False,
+            "parse_special": True,
+            "with_pieces": False,
+        },
+        "observed_prompt_token_ids": observed,
+        "observed_prompt_token_count": len(observed),
+        "observed_prompt_token_ids_sha256": observed_sha256,
+        "exact_match_with_apxinf_prompt_token_contract": True,
+        "outside_primary_timed_interval": True,
+        "generation_request_count_increment": 0,
     }
 
 
@@ -807,7 +900,12 @@ def validate_generation_policy(settings: Any, arm: str) -> dict[str, Any]:
     }
 
 
-def validate_chat_response(response: dict[str, Any], arm: str) -> dict[str, Any]:
+def validate_chat_response(
+    response: dict[str, Any],
+    arm: str,
+    *,
+    omni_prompt_contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     runtime = "apxinf" if arm == "B" else "omniinfer"
     require(response.get("object") == "chat.completion", f"{runtime} object differs")
     require(response.get("model") == MODEL_ALIAS, f"{runtime} response model differs")
@@ -890,6 +988,33 @@ def validate_chat_response(response: dict[str, Any], arm: str) -> dict[str, Any]
         )
     else:
         require(
+            isinstance(omni_prompt_contract, dict),
+            "OmniInfer generation lacks the mandatory tokenize preflight receipt",
+        )
+        require(
+            omni_prompt_contract.get("observed_prompt_token_ids") == PROMPT_TOKEN_IDS,
+            "OmniInfer tokenize preflight IDs differ at generation admission",
+        )
+        require(
+            omni_prompt_contract.get("observed_prompt_token_count")
+            == len(PROMPT_TOKEN_IDS),
+            "OmniInfer tokenize preflight count differs at generation admission",
+        )
+        require(
+            omni_prompt_contract.get("observed_prompt_token_ids_sha256")
+            == PROMPT_TOKEN_IDS_SHA256,
+            "OmniInfer tokenize preflight SHA differs at generation admission",
+        )
+        require(
+            omni_prompt_contract.get("exact_match_with_apxinf_prompt_token_contract")
+            is True,
+            "OmniInfer tokenize preflight did not prove exact prompt token equality",
+        )
+        require(
+            omni_prompt_contract.get("outside_primary_timed_interval") is True,
+            "OmniInfer tokenize preflight was not outside primary timing",
+        )
+        require(
             is_int(verbose.get("id_slot")) and verbose.get("id_slot") == 0,
             "OmniInfer verbose slot differs",
         )
@@ -909,7 +1034,19 @@ def validate_chat_response(response: dict[str, Any], arm: str) -> dict[str, Any]
         "runtime": runtime,
         "finish_reason": "length",
         "usage": {"prompt_tokens": 13, "completion_tokens": 128, "total_tokens": 141},
-        "prompt_token_ids": list(PROMPT_TOKEN_IDS) if arm == "B" else None,
+        "prompt_token_ids": list(PROMPT_TOKEN_IDS),
+        "prompt_token_ids_sha256": PROMPT_TOKEN_IDS_SHA256,
+        "prompt_token_ids_observation": {
+            "source": (
+                "apxinf-generation-response"
+                if arm == "B"
+                else "omniinfer-generation-gateway-tokenize-preflight"
+            ),
+            "observed_in_generation_response": arm == "B",
+            "observed_before_any_generation": arm == "G",
+            "outside_primary_timed_interval": arm == "G",
+            "exact_match_with_apxinf_prompt_token_contract": True,
+        },
         "prompt_token_ids_observed_in_response": arm == "B",
         "generated_token_ids": list(tokens),
         "generated_token_ids_sha256": token_hash,
@@ -1224,6 +1361,42 @@ def _control_request(
     return {"response": response, "validated": validated, "transport": transport}
 
 
+def run_omni_tokenize_preflight(
+    connection: PersistentHttpConnection,
+) -> dict[str, Any]:
+    """Tokenize the frozen rendered prompt once, before any generation."""
+
+    receipt = _control_request(
+        connection,
+        "POST",
+        OMNI_TOKENIZE_PATH,
+        OMNI_TOKENIZE_REQUEST_BYTES,
+        validate_omni_tokenize,
+    )
+    transport = receipt["transport"]
+    require(
+        transport.get("primary_timed_interval") is False,
+        "OmniInfer tokenize preflight entered the primary timed interval",
+    )
+    require(
+        transport.get("method") == "POST"
+        and transport.get("path") == OMNI_TOKENIZE_PATH,
+        "OmniInfer tokenize transport route differs",
+    )
+    require(
+        transport.get("request_body_size_bytes") == OMNI_TOKENIZE_REQUEST_SIZE
+        and transport.get("request_body_sha256") == OMNI_TOKENIZE_REQUEST_SHA256,
+        "OmniInfer tokenize transport body differs from the frozen request",
+    )
+    require(
+        transport.get("connection") == "omniinfer-generation"
+        and transport.get("connection_generation") == 1
+        and transport.get("reconnect_count") == 0,
+        "OmniInfer tokenize preflight did not use the generation authority connection",
+    )
+    return receipt
+
+
 def run_one_sample(
     *,
     arm: str,
@@ -1233,6 +1406,7 @@ def run_one_sample(
     omni: PersistentHttpConnection,
     omni_clear: PersistentHttpConnection,
     args: argparse.Namespace,
+    omni_prompt_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if arm == "B":
         clear_response, clear_validated, clear_transport = apx.request_json(
@@ -1264,7 +1438,11 @@ def run_one_sample(
             "/v1/chat/completions",
             REQUEST_BYTES,
             primary_timed=schedule_entry["phase"] == "measured",
-            semantic_validator=lambda value: validate_chat_response(value, arm),
+            semantic_validator=lambda value: validate_chat_response(
+                value,
+                arm,
+                omni_prompt_contract=omni_prompt_contract,
+            ),
         )
     except TransportFailure as error:
         error.observation["sample_context"] = {
@@ -1327,6 +1505,7 @@ def run_diagnostic(
     validate_http_path(args.omni_health_path, "OmniInfer health path")
     validate_http_path(args.omni_state_path, "OmniInfer state path")
     validate_http_path(args.omni_clear_path, "OmniInfer clear path")
+    validate_http_path(OMNI_TOKENIZE_PATH, "OmniInfer tokenize path")
     if args.omni_clear_contract == "omni-gateway":
         require(
             args.omni_clear_body == "empty-object",
@@ -1357,7 +1536,9 @@ def run_diagnostic(
         connections["omniinfer_generation"] = omni.connect()
         connections["omniinfer_clear"] = omni_clear.connect()
         progress["stage"] = "preflight"
+        progress["preflight"] = {}
         apx_health = _control_request(apx, "GET", "/health", None, validate_apx_health)
+        progress["preflight"]["apxinf_health"] = apx_health
         apx_state_start = _control_request(
             apx,
             "GET",
@@ -1365,25 +1546,33 @@ def run_diagnostic(
             None,
             lambda value: validate_apx_state(value, expected_completed=0),
         )
+        progress["preflight"]["apxinf_state"] = apx_state_start
         omni_health = _control_request(
             omni, "GET", args.omni_health_path, None, validate_omni_health
         )
+        progress["preflight"]["omniinfer_health"] = omni_health
         omni_state_start = _control_request(
             omni, "GET", args.omni_state_path, None, validate_omni_state
         )
+        progress["preflight"]["omniinfer_state"] = omni_state_start
         omni_clear_binding = validate_omni_clear_binding(
             generation_endpoint=args.omni_endpoint,
             clear_endpoint=args.omni_clear_endpoint,
             resident_backend_endpoint=omni_state_start["validated"]["client_endpoint"],
             clear_contract=args.omni_clear_contract,
         )
-        progress["preflight"] = {
-            "apxinf_health": apx_health,
-            "apxinf_state": apx_state_start,
-            "omniinfer_health": omni_health,
-            "omniinfer_state": omni_state_start,
-            "omniinfer_clear_binding": omni_clear_binding,
+        progress["preflight"]["omniinfer_clear_binding"] = omni_clear_binding
+        progress["stage"] = "preflight-omniinfer-tokenize"
+        omni_tokenize = run_omni_tokenize_preflight(omni)
+        omni_tokenize["authority_binding"] = {
+            "endpoint": args.omni_endpoint,
+            "connection": "omniinfer-generation",
+            "same_persistent_connection_as_generation": True,
+            "selected_backend_authority_established_by_omni_state": True,
+            "direct_resident_backend_endpoint_not_used": True,
         }
+        progress["preflight"]["omniinfer_tokenize"] = omni_tokenize
+        omni_prompt_contract = omni_tokenize["validated"]
         sequence = {"B": 0, "G": 0}
         for entry in declared_schedule():
             progress["stage"] = (
@@ -1407,6 +1596,7 @@ def run_diagnostic(
                         omni=omni,
                         omni_clear=omni_clear,
                         args=args,
+                        omni_prompt_contract=omni_prompt_contract,
                     )
                 )
         require(
@@ -1434,7 +1624,7 @@ def run_diagnostic(
         require(
             apx.request_count == 139, "ApxInf single-connection request count differs"
         )
-        require(omni.request_count == 71, "OmniInfer generation request count differs")
+        require(omni.request_count == 72, "OmniInfer generation request count differs")
         require(omni_clear.request_count == 68, "OmniInfer clear request count differs")
         progress["postflight"] = {
             "apxinf_state": apx_state_end,
@@ -1486,6 +1676,25 @@ def run_diagnostic(
                 "no_generated_eog_required": True,
                 "cross_runtime_trajectory_equality_required": False,
             },
+            "prompt_tokenization_contract": {
+                "rendered_prompt": RENDERED_PROMPT,
+                "apxinf_fixed_prompt_token_ids": PROMPT_TOKEN_IDS,
+                "apxinf_fixed_prompt_token_count": len(PROMPT_TOKEN_IDS),
+                "apxinf_fixed_prompt_token_ids_sha256": PROMPT_TOKEN_IDS_SHA256,
+                "omniinfer_observed_prompt_token_ids": omni_prompt_contract[
+                    "observed_prompt_token_ids"
+                ],
+                "omniinfer_observed_prompt_token_count": omni_prompt_contract[
+                    "observed_prompt_token_count"
+                ],
+                "omniinfer_observed_prompt_token_ids_sha256": omni_prompt_contract[
+                    "observed_prompt_token_ids_sha256"
+                ],
+                "exact_cross_runtime_match": True,
+                "observed_through_generation_gateway": True,
+                "preflight_outside_primary_timed_interval": True,
+                "preflight_before_any_warmup_or_measured_generation": True,
+            },
             "timing_contract": {
                 "start": "immediately before one sendall of the complete serialized request wire",
                 "end": "immediately after complete response body read",
@@ -1493,6 +1702,7 @@ def run_diagnostic(
                 "semantic_validation_after_end": True,
                 "cache_clear_outside_primary_interval": True,
                 "request_authority_header_inside_primary_interval": True,
+                "omniinfer_tokenize_preflight_outside_primary_interval": True,
             },
             "schedule": {
                 "warmup_orders": list(WARMUP_ORDERS),
@@ -1513,6 +1723,7 @@ def run_diagnostic(
                 "omniinfer_clear_path": args.omni_clear_path,
                 "omniinfer_clear_contract": args.omni_clear_contract,
                 "omniinfer_clear_body": args.omni_clear_body,
+                "omniinfer_tokenize_path": OMNI_TOKENIZE_PATH,
             },
             "connections": connections,
             "clock": clock_receipt(),

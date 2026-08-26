@@ -11,7 +11,9 @@ The ApxInf server must be started with
 `--expected-generation-requests 68`. The driver uses its one ApxInf connection
 for health, state, every checked reset, every generation, and final state. It
 opens one persistent OmniInfer generation connection and one explicitly named
-clear connection. Four fixed warmup pairs precede 16 balanced four-pair
+clear connection. Before any generation, the OmniInfer generation connection
+also sends one strict, untimed `POST /tokenize` preflight through the gateway.
+Four fixed warmup pairs precede 16 balanced four-pair
 `BG`/`GB` blocks. There is no retry, resampling, or outlier removal.
 
 Run zero-network checks and unit tests first:
@@ -60,6 +62,16 @@ diagnostic gate receipt only and never promotes the campaign to formal status.
 
 Both arms receive the exact 383-byte canonical request (SHA-256
 `7773f5337693843f1e8cf3017b98868517cbddd3bc32649e550d8f2fec1d5cf6`).
+The tokenizer preflight sends the current frozen rendered prompt directly in an
+exact 156-byte body (SHA-256
+`617df3df640c21bf6c3c6460f78589476d50f0ee149e1d5699ff41f99502677b`),
+with `add_special=false`, `parse_special=true`, and `with_pieces=false`. Its
+observed 13 IDs must exactly equal the ApxInf prompt-ID contract (SHA-256
+`4b890fa15ee3d7db4e9dd18bd79c6362d40e9e016ae4f9f74cb7fc420ef3b6d3`).
+Wrong IDs/count, a malformed/non-200 response, or a changed connection fails
+closed before warmup; the HTTP method, path, status, headers, and raw response
+receipt remain in the terminal failure record.
+
 The driver verifies 128 returned raw tokens, length termination, 13/128/141
 usage, absence of the five EOG tokens, and equivalent five-token `-inf` policy
 receipts. Each runtime must be deterministic independently. Cross-runtime
