@@ -674,7 +674,7 @@ external OpenDM/Triton adapter. Measurements from that removed implementation
 are not evidence for this Rust runtime and are intentionally not reproduced
 here.
 
-Current native evidence on the declared RTX 4090 / SM89 cell:
+Current-head (`becab8d`) native evidence on the declared RTX 4090 / SM89 cell:
 
 - the full CUDA build, including regular, split-KV, and causal BF16 FA2
   translation units, compiles with `APXINF_CUDA_ARCH=sm_89`;
@@ -687,11 +687,35 @@ Current native evidence on the declared RTX 4090 / SM89 cell:
   official demo frames 0 and 14, including exact input latents, processor
   tensors, selected intermediate tensors, and final normalized/LIBERO actions.
 
-The final deterministic action tolerance and current-head latency result are
-reported in PR #17 after replaying all three explicit-latent fixtures through
-the public native path. Until that receipt is present, treat native numerical
-and performance qualification as pending rather than inheriting the old
-adapter result.
+Using the exact same explicit BF16 latent in OpenDM, eager native, and CUDA
+Graph native execution produced:
+
+| fixture | prefix | max abs | RMSE | relative L2 | cosine | graph vs eager |
+|---|---:|---:|---:|---:|---:|---:|
+| official demo frame 0 | 557 | 0.005615 | 0.000871 | 0.004665 | 0.999989 | exact |
+| official demo frame 14 | 559 | 0.006836 | 0.001252 | 0.006104 | 0.999982 | exact |
+| frozen LIBERO request | 564 | 0.005859 | 0.001096 | 0.005872 | 0.999983 | exact |
+
+The initially proposed near-bitwise limits (`max_abs <= 5e-4`,
+`RMSE <= 1e-4`) failed and are reported as failed: both limits are smaller than
+one BF16 output bin, so they require effectively bitwise identity across
+different GEMM/attention kernels. The explicit BF16 representability
+interpretation (`max_abs <= 1/128`, `RMSE <= 0.0015`, `relative L2 <= 0.008`,
+`cosine >= 0.999`) passed all three fixtures. This distinction is deliberate;
+the BF16 result must not be described as bitwise OpenDM equivalence.
+
+For prefix 557/559/564, the graph used 8.83/8.85/8.89 GB of its
+8.97/8.99/9.04 GB checked arena. Peak process GPU memory was 19,261 MiB. The
+frozen request's retained 12-request HTTP result was 111.950 ms p50,
+112.319 ms p95, and 0.191% population CV; internal model p50 was 93.493 ms.
+
+Same-host descriptive controls on the same request shape measured 143.645 ms
+p50 for the removed `cbbd8cb` external combined path and 692.658 ms p50 for the
+pinned official OpenDM e41 path. Native was respectively 22.06% and 83.84%
+lower latency (1.28x and 6.19x faster). A five-pair post-warmup screen against
+the removed combined path was positive 5/5. These are cross-source deployment
+comparisons, not per-kernel causal estimates; generated samples remain outside
+the product repository.
 
 ```bash
 curl -fsS http://127.0.0.1:7891/health
