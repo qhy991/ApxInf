@@ -109,6 +109,22 @@ fn main() {
     )
     .expect("write the generated Metal tail MLP+head v1 shader include");
 
+    let q4_0_tied_head_shader = std::fs::read_to_string("src/metal_q4_0_tied_head_v1.metal")
+        .expect("read the Metal Q4_0 tied-head v1 shader source");
+    assert!(
+        !q4_0_tied_head_shader.contains(&format!("){}\"", DELIMITER)),
+        "Metal Q4_0 tied-head v1 shader contains the generated C++ raw-string delimiter"
+    );
+    let combined_q4_tail_mlp_head_shader =
+        format!("{mlp_shader}\n{linear_layer_shader}\n{q4_0_tied_head_shader}");
+    std::fs::write(
+        output_dir.join("metal_w8_q4_tail_mlp_head_v2_source.inc"),
+        format!(
+            "constexpr const char *kMetalW8Q4TailMlpHeadSourceV2 = R\"{DELIMITER}({combined_q4_tail_mlp_head_shader}){DELIMITER}\";\n"
+        ),
+    )
+    .expect("write the generated Metal W8+Q4_0 tail MLP+head v2 shader include");
+
     let full_attention_shader = std::fs::read_to_string("src/metal_full_attention_decode_v1.metal")
         .expect("read the Metal full-attention decode v1 shader source");
     assert!(
@@ -123,12 +139,6 @@ fn main() {
     )
     .expect("write the generated Metal full-attention decode v1 shader include");
 
-    let q4_0_tied_head_shader = std::fs::read_to_string("src/metal_q4_0_tied_head_v1.metal")
-        .expect("read the Metal Q4_0 tied-head v1 shader source");
-    assert!(
-        !q4_0_tied_head_shader.contains(&format!("){}\"", DELIMITER)),
-        "Metal Q4_0 tied-head v1 shader contains the generated C++ raw-string delimiter"
-    );
     std::fs::write(
         output_dir.join("metal_q4_0_tied_head_v1_source.inc"),
         format!(

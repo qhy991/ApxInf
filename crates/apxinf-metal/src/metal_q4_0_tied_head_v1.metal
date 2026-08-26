@@ -148,6 +148,79 @@ kernel void q4_0_tied_head_rows_v1(
     }
 }
 
+// Production tail v2 variant. Unlike the isolated correctness primitive
+// above, this kernel deliberately does not materialize full-vocabulary
+// scores. Each SIMD-group computes one row and the threadgroup publishes only
+// its deterministic top-4 list for the global reducer.
+kernel void q4_0_tied_head_rows_partial_v2(
+    device const uchar *packed [[buffer(0)]],
+    device const float *hidden [[buffer(1)]],
+    device Q4_0CandidateV1 *partial [[buffer(2)]],
+    constant Q4_0TiedHeadParamsV1& params [[buffer(3)]],
+    device atomic_uint *status [[buffer(4)]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simdgroup [[simdgroup_index_in_threadgroup]],
+    uint group [[threadgroup_position_in_grid]]) {
+    threadgroup float row_scores[q4_0_rows_per_threadgroup_v1];
+    threadgroup uint row_tokens[q4_0_rows_per_threadgroup_v1];
+
+    const uint row = group * q4_0_rows_per_threadgroup_v1 + simdgroup;
+    float sum = 0.0f;
+    if (row < params.rows) {
+        const ulong row_block_base = ulong(row) * ulong(params.blocks_per_row);
+        for (uint block = 0; block < params.blocks_per_row; ++block) {
+            const ulong block_byte_base =
+                (row_block_base + ulong(block)) * ulong(q4_0_block_bytes_v1);
+            const ushort scale_bits =
+                ushort(packed[block_byte_base]) |
+                (ushort(packed[block_byte_base + 1]) << 8);
+            const float scale = float(as_type<half>(scale_bits));
+            const uchar nibbles =
+                packed[block_byte_base + 2 + (lane & 15)];
+            const int quantized = lane < 16
+                ? int(nibbles & 15)
+                : int(nibbles >> 4);
+            sum += float(quantized - 8) * scale *
+                   hidden[block * q4_0_block_size_v1 + lane];
+        }
+    }
+    sum = simd_sum(sum);
+
+    if (lane == 0) {
+        const bool score_is_finite = row < params.rows && isfinite(sum);
+        if (row < params.rows && !score_is_finite) {
+            atomic_store_explicit(status, 1u, memory_order_relaxed);
+        }
+        const bool row_is_allowed =
+            score_is_finite && !q4_0_token_is_excluded_v1(row, params);
+        row_scores[simdgroup] = row_is_allowed ? sum : -INFINITY;
+        row_tokens[simdgroup] = row_is_allowed ? row : UINT_MAX;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid == 0) {
+        float scores[q4_0_top_k_v1] = {
+            -INFINITY, -INFINITY, -INFINITY, -INFINITY};
+        uint tokens[q4_0_top_k_v1] = {
+            UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX};
+        for (uint index = 0;
+             index < q4_0_rows_per_threadgroup_v1;
+             ++index) {
+            q4_0_insert_candidate_v1(
+                scores,
+                tokens,
+                row_scores[index],
+                row_tokens[index]);
+        }
+        const uint base = group * q4_0_top_k_v1;
+        for (uint index = 0; index < q4_0_top_k_v1; ++index) {
+            partial[base + index] =
+                Q4_0CandidateV1{scores[index], tokens[index]};
+        }
+    }
+}
+
 // Fold every per-eight-row list into one deterministic global top-4. The
 // score/token ordering is total for finite scores: descending score, then the
 // lowest token ID for exact ties.

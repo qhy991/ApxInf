@@ -19,6 +19,7 @@ mod linear_layer;
 mod q4_0_rows_v1;
 mod q4_0_tied_head_metal_v1;
 mod tail_mlp_head_v1;
+mod tail_mlp_q4_head_v2;
 
 pub use full_attention_decode_v1::*;
 pub use gdn::{
@@ -51,6 +52,11 @@ pub use q4_0_tied_head_metal_v1::{
 pub use tail_mlp_head_v1::{
     MetalW8TailMlpHeadV1, PackedW8TailMlpHeadV1, TailMlpHeadBufferLedgerV1,
     TailMlpHeadDecodeResultV1, TailMlpHeadDecodeViewV1, TailMlpHeadMetalStatsV1,
+};
+pub use tail_mlp_q4_head_v2::{
+    MetalW8TailMlpQ4HeadV2, PackedW8TailMlpQ4HeadV2, TailMlpQ4HeadBufferLedgerV2,
+    TailMlpQ4HeadDecodeResultV2, TailMlpQ4HeadDecodeViewV2, TailMlpQ4HeadMetalStatsV2,
+    W8_Q4_TAIL_ABI_VERSION_V2,
 };
 
 pub const W8_GROUP_SIZE: usize = 64;

@@ -18,6 +18,9 @@ constexpr uint32_t kTopK = 4;
 constexpr uint32_t kTopKThreads = 256;
 constexpr uint32_t kMaxExcludedTokens = 5;
 constexpr uint32_t kAllOutputsMask = 0b11;
+constexpr uint32_t kQ4BlockSizeV2 = 32;
+constexpr uint32_t kQ4BlockBytesV2 = 18;
+constexpr uint32_t kQ4TailAbiVersionV2 = 2;
 
 struct LinearLayerParams {
     uint32_t hidden_size;
@@ -53,6 +56,22 @@ struct TailDescriptorV1 {
     uint32_t intermediate_size;
     uint32_t vocab_size;
     float rms_norm_eps;
+};
+
+struct Q4TailDescriptorV2 {
+    const int8_t *gate_up_weights;
+    const float *gate_up_scales;
+    const int8_t *down_weights;
+    const float *down_scales;
+    const float *post_attention_rms_weight;
+    const float *final_rms_weight;
+    const uint8_t *q4_vocab_blocks;
+    size_t q4_vocab_byte_count;
+    uint32_t hidden_size;
+    uint32_t intermediate_size;
+    uint32_t vocab_size;
+    float rms_norm_eps;
+    uint32_t abi_version;
 };
 
 struct TailExecutionReceiptV1 {
@@ -97,7 +116,37 @@ struct ApxinfMetalW8TailMlpHeadHandleV1 {
     bool terminal_error;
 };
 
+struct ApxinfMetalW8Q4TailMlpHeadHandleV2 {
+    id<MTLDevice> device;
+    id<MTLCommandQueue> queue;
+    id<MTLComputePipelineState> rms_pipeline;
+    id<MTLComputePipelineState> gate_up_pipeline;
+    id<MTLComputePipelineState> activation_pipeline;
+    id<MTLComputePipelineState> down_pipeline;
+    id<MTLComputePipelineState> residual_pipeline;
+    id<MTLComputePipelineState> rows_topk_pipeline;
+    id<MTLComputePipelineState> final_topk_pipeline;
+    id<MTLBuffer> rms_weights;
+    id<MTLBuffer> gate_up_weights;
+    id<MTLBuffer> gate_up_scales;
+    id<MTLBuffer> down_weights;
+    id<MTLBuffer> down_scales;
+    id<MTLBuffer> q4_vocab_blocks;
+    id<MTLBuffer> hidden_a;
+    id<MTLBuffer> hidden_b;
+    id<MTLBuffer> output_tokens;
+    id<MTLBuffer> gate_up;
+    id<MTLBuffer> activated;
+    id<MTLBuffer> partial_topk;
+    id<MTLBuffer> status;
+    LinearLayerParams layer_params;
+    MlpParams mlp_params;
+    KernelParams head_params;
+    bool terminal_error;
+};
+
 #include "metal_w8_tail_mlp_head_v1_source.inc"
+#include "metal_w8_q4_tail_mlp_head_v2_source.inc"
 
 void write_error(char *output, size_t capacity, const char *message) {
     if (output == nullptr || capacity == 0) {
@@ -333,6 +382,155 @@ void encode_tail(ApxinfMetalW8TailMlpHeadHandleV1 *handle,
     [encoder setBytes:&head_params
                 length:sizeof(head_params)
                atIndex:2];
+    [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+             threadsPerThreadgroup:MTLSizeMake(kTopKThreads, 1, 1)];
+}
+
+bool configure_q4_exclusions_v2(
+    const KernelParams& base, const uint32_t *excluded_tokens,
+    uint32_t excluded_count, KernelParams *output, char *error_output,
+    size_t error_capacity) {
+    if (output == nullptr || excluded_count > kMaxExcludedTokens ||
+        (excluded_count != 0 && excluded_tokens == nullptr) ||
+        base.rows < kTopK) {
+        write_error(error_output, error_capacity,
+                    "invalid Metal W8+Q4_0 tail v2 top-4 exclusion contract");
+        return false;
+    }
+    *output = base;
+    for (uint32_t index = 0; index < kMaxExcludedTokens; ++index) {
+        output->excluded_tokens[index] = UINT32_MAX;
+    }
+    for (uint32_t index = 0; index < excluded_count; ++index) {
+        const uint32_t token = excluded_tokens[index];
+        if (token >= base.rows) {
+            write_error(error_output, error_capacity,
+                        "Metal W8+Q4_0 tail v2 exclusion token is outside vocabulary");
+            return false;
+        }
+        for (uint32_t earlier = 0; earlier < index; ++earlier) {
+            if (token == excluded_tokens[earlier]) {
+                write_error(error_output, error_capacity,
+                            "Metal W8+Q4_0 tail v2 exclusion tokens contain a duplicate");
+                return false;
+            }
+        }
+        output->excluded_tokens[index] = token;
+    }
+    if (excluded_count > base.rows - kTopK) {
+        write_error(error_output, error_capacity,
+                    "Metal W8+Q4_0 tail v2 exclusions leave fewer than four vocabulary rows");
+        return false;
+    }
+    output->excluded_count = excluded_count;
+    return true;
+}
+
+bool q4_tail_buffers_valid_v2(
+    const ApxinfMetalW8Q4TailMlpHeadHandleV2 *handle) {
+    return handle->rms_weights != nil && handle->gate_up_weights != nil &&
+           handle->gate_up_scales != nil && handle->down_weights != nil &&
+           handle->down_scales != nil && handle->q4_vocab_blocks != nil &&
+           handle->hidden_a != nil && handle->hidden_b != nil &&
+           handle->output_tokens != nil && handle->gate_up != nil &&
+           handle->activated != nil && handle->partial_topk != nil &&
+           handle->status != nil;
+}
+
+void encode_q4_tail_v2(ApxinfMetalW8Q4TailMlpHeadHandleV2 *handle,
+                       id<MTLComputeCommandEncoder> encoder,
+                       const KernelParams& head_params) {
+    const size_t hidden_bytes =
+        static_cast<size_t>(handle->layer_params.hidden_size) * sizeof(float);
+
+    [encoder setComputePipelineState:handle->rms_pipeline];
+    [encoder setBuffer:handle->hidden_a offset:0 atIndex:0];
+    [encoder setBuffer:handle->rms_weights offset:0 atIndex:1];
+    [encoder setBuffer:handle->hidden_b offset:0 atIndex:2];
+    [encoder setBytes:&handle->layer_params
+                length:sizeof(handle->layer_params)
+               atIndex:3];
+    [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+             threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
+    buffer_barrier(encoder);
+
+    [encoder setComputePipelineState:handle->gate_up_pipeline];
+    [encoder setBuffer:handle->gate_up_weights offset:0 atIndex:0];
+    [encoder setBuffer:handle->gate_up_scales offset:0 atIndex:1];
+    [encoder setBuffer:handle->hidden_b offset:0 atIndex:2];
+    [encoder setBuffer:handle->gate_up offset:0 atIndex:3];
+    [encoder setBytes:&handle->mlp_params
+                length:sizeof(handle->mlp_params)
+               atIndex:4];
+    const uint32_t gate_up_rows = handle->mlp_params.intermediate_size * 2;
+    [encoder dispatchThreadgroups:MTLSizeMake(
+                (gate_up_rows + kRowsPerThreadgroup - 1) / kRowsPerThreadgroup,
+                1, 1)
+             threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
+    buffer_barrier(encoder);
+
+    [encoder setComputePipelineState:handle->activation_pipeline];
+    [encoder setBuffer:handle->gate_up offset:0 atIndex:0];
+    [encoder setBuffer:handle->activated offset:0 atIndex:1];
+    [encoder setBytes:&handle->mlp_params
+                length:sizeof(handle->mlp_params)
+               atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(handle->mlp_params.intermediate_size, 1,
+                                         1)
+          threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
+    buffer_barrier(encoder);
+
+    [encoder setComputePipelineState:handle->down_pipeline];
+    [encoder setBuffer:handle->down_weights offset:0 atIndex:0];
+    [encoder setBuffer:handle->down_scales offset:0 atIndex:1];
+    [encoder setBuffer:handle->activated offset:0 atIndex:2];
+    [encoder setBuffer:handle->hidden_b offset:0 atIndex:3];
+    [encoder setBytes:&handle->mlp_params
+                length:sizeof(handle->mlp_params)
+               atIndex:4];
+    [encoder dispatchThreadgroups:MTLSizeMake(
+                (handle->mlp_params.hidden_size + kRowsPerThreadgroup - 1) /
+                    kRowsPerThreadgroup,
+                1, 1)
+             threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
+    buffer_barrier(encoder);
+
+    [encoder setComputePipelineState:handle->residual_pipeline];
+    [encoder setBuffer:handle->hidden_a offset:0 atIndex:0];
+    [encoder setBuffer:handle->hidden_b offset:0 atIndex:1];
+    [encoder setBuffer:handle->hidden_b offset:0 atIndex:2];
+    [encoder setBytes:&handle->layer_params
+                length:sizeof(handle->layer_params)
+               atIndex:3];
+    [encoder dispatchThreads:MTLSizeMake(handle->layer_params.hidden_size, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
+    buffer_barrier(encoder);
+
+    [encoder setComputePipelineState:handle->rms_pipeline];
+    [encoder setBuffer:handle->hidden_b offset:0 atIndex:0];
+    [encoder setBuffer:handle->rms_weights offset:hidden_bytes atIndex:1];
+    [encoder setBuffer:handle->hidden_a offset:0 atIndex:2];
+    [encoder setBytes:&handle->layer_params
+                length:sizeof(handle->layer_params)
+               atIndex:3];
+    [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+             threadsPerThreadgroup:MTLSizeMake(kElementThreads, 1, 1)];
+    buffer_barrier(encoder);
+
+    [encoder setComputePipelineState:handle->rows_topk_pipeline];
+    [encoder setBuffer:handle->q4_vocab_blocks offset:0 atIndex:0];
+    [encoder setBuffer:handle->hidden_a offset:0 atIndex:1];
+    [encoder setBuffer:handle->partial_topk offset:0 atIndex:2];
+    [encoder setBytes:&head_params length:sizeof(head_params) atIndex:3];
+    [encoder setBuffer:handle->status offset:0 atIndex:4];
+    [encoder dispatchThreadgroups:MTLSizeMake(head_params.partial_count, 1, 1)
+             threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
+    buffer_barrier(encoder);
+
+    [encoder setComputePipelineState:handle->final_topk_pipeline];
+    [encoder setBuffer:handle->partial_topk offset:0 atIndex:0];
+    [encoder setBuffer:handle->output_tokens offset:0 atIndex:1];
+    [encoder setBytes:&head_params length:sizeof(head_params) atIndex:2];
     [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kTopKThreads, 1, 1)];
 }
@@ -684,5 +882,394 @@ extern "C" void apxinf_metal_w8_tail_mlp_head_destroy_v1(
     void *opaque_handle) {
     auto handle =
         static_cast<ApxinfMetalW8TailMlpHeadHandleV1 *>(opaque_handle);
+    delete handle;
+}
+
+extern "C" int apxinf_metal_w8_q4_tail_mlp_head_create_v2(
+    const Q4TailDescriptorV2 *descriptor, void **output,
+    char *error_output, size_t error_capacity) {
+    @autoreleasepool {
+        if (output == nullptr) {
+            write_error(error_output, error_capacity,
+                        "Metal W8+Q4_0 tail v2 output handle is null");
+            return 1;
+        }
+        *output = nullptr;
+        if (descriptor == nullptr || descriptor->gate_up_weights == nullptr ||
+            descriptor->gate_up_scales == nullptr ||
+            descriptor->down_weights == nullptr ||
+            descriptor->down_scales == nullptr ||
+            descriptor->post_attention_rms_weight == nullptr ||
+            descriptor->final_rms_weight == nullptr ||
+            descriptor->q4_vocab_blocks == nullptr ||
+            descriptor->hidden_size == 0 ||
+            descriptor->intermediate_size == 0 ||
+            descriptor->vocab_size < kTopK ||
+            descriptor->hidden_size % kGroupSize != 0 ||
+            descriptor->hidden_size % kQ4BlockSizeV2 != 0 ||
+            descriptor->intermediate_size % kGroupSize != 0 ||
+            descriptor->intermediate_size > UINT32_MAX / 2 ||
+            descriptor->abi_version != kQ4TailAbiVersionV2 ||
+            !std::isfinite(descriptor->rms_norm_eps) ||
+            descriptor->rms_norm_eps < 0.0f) {
+            write_error(error_output, error_capacity,
+                        "invalid Metal W8+Q4_0 tail v2 packed contract");
+            return 1;
+        }
+
+        const size_t hidden_size = descriptor->hidden_size;
+        const size_t intermediate_size = descriptor->intermediate_size;
+        const size_t vocab_size = descriptor->vocab_size;
+        size_t hidden_intermediate = 0;
+        size_t gate_up_weight_bytes = 0;
+        size_t gate_up_scale_count = 0;
+        size_t down_scale_count = 0;
+        size_t q4_blocks_per_row = hidden_size / kQ4BlockSizeV2;
+        size_t q4_row_bytes = 0;
+        size_t q4_vocab_bytes = 0;
+        if (!checked_product(hidden_size, intermediate_size,
+                             &hidden_intermediate) ||
+            !checked_product(hidden_intermediate, 2, &gate_up_weight_bytes) ||
+            !checked_product(2 * intermediate_size, hidden_size / kGroupSize,
+                             &gate_up_scale_count) ||
+            !checked_product(hidden_size, intermediate_size / kGroupSize,
+                             &down_scale_count) ||
+            !checked_product(q4_blocks_per_row, kQ4BlockBytesV2,
+                             &q4_row_bytes) ||
+            !checked_product(vocab_size, q4_row_bytes, &q4_vocab_bytes) ||
+            descriptor->q4_vocab_byte_count != q4_vocab_bytes) {
+            write_error(error_output, error_capacity,
+                        "Metal W8+Q4_0 tail v2 buffer dimensions overflow or mismatch");
+            return 1;
+        }
+        if (!all_finite(descriptor->post_attention_rms_weight, hidden_size) ||
+            !all_finite(descriptor->final_rms_weight, hidden_size) ||
+            !all_positive_finite(descriptor->gate_up_scales,
+                                 gate_up_scale_count) ||
+            !all_positive_finite(descriptor->down_scales, down_scale_count)) {
+            write_error(error_output, error_capacity,
+                        "Metal W8+Q4_0 tail v2 parameters are non-finite or invalid");
+            return 1;
+        }
+        for (size_t offset = 0; offset < q4_vocab_bytes;
+             offset += kQ4BlockBytesV2) {
+            const uint16_t scale_bits =
+                static_cast<uint16_t>(descriptor->q4_vocab_blocks[offset]) |
+                (static_cast<uint16_t>(
+                     descriptor->q4_vocab_blocks[offset + 1]) << 8);
+            if ((scale_bits & 0x7c00u) == 0x7c00u) {
+                write_error(error_output, error_capacity,
+                            "Metal W8+Q4_0 tail v2 packed stream contains a non-finite FP16 scale");
+                return 1;
+            }
+        }
+
+        auto handle =
+            new (std::nothrow) ApxinfMetalW8Q4TailMlpHeadHandleV2{};
+        if (handle == nullptr) {
+            write_error(error_output, error_capacity,
+                        "allocate Metal W8+Q4_0 tail v2 handle failed");
+            return 1;
+        }
+        handle->device = MTLCreateSystemDefaultDevice();
+        if (handle->device == nil) {
+            delete handle;
+            write_error(error_output, error_capacity,
+                        "no system Metal device is available");
+            return 1;
+        }
+        NSError *error = nil;
+        NSString *source =
+            [NSString stringWithUTF8String:kMetalW8Q4TailMlpHeadSourceV2];
+        id<MTLLibrary> library =
+            [handle->device newLibraryWithSource:source options:nil error:&error];
+        if (library == nil) {
+            delete handle;
+            write_nserror(error_output, error_capacity, error);
+            return 1;
+        }
+        handle->rms_pipeline = make_pipeline(
+            handle->device, library, @"linear_layer_rms_norm", &error);
+        handle->gate_up_pipeline = make_pipeline(
+            handle->device, library, @"w8_mlp_gate_up", &error);
+        handle->activation_pipeline = make_pipeline(
+            handle->device, library, @"w8_mlp_silu_mul", &error);
+        handle->down_pipeline = make_pipeline(
+            handle->device, library, @"w8_mlp_down", &error);
+        handle->residual_pipeline = make_pipeline(
+            handle->device, library, @"linear_layer_residual_add", &error);
+        handle->rows_topk_pipeline = make_pipeline(
+            handle->device, library, @"q4_0_tied_head_rows_partial_v2", &error);
+        handle->final_topk_pipeline = make_pipeline(
+            handle->device, library, @"q4_0_tied_head_final_topk4_v1", &error);
+        if (handle->rms_pipeline == nil || handle->gate_up_pipeline == nil ||
+            handle->activation_pipeline == nil || handle->down_pipeline == nil ||
+            handle->residual_pipeline == nil ||
+            handle->rows_topk_pipeline == nil ||
+            handle->final_topk_pipeline == nil ||
+            handle->rows_topk_pipeline.threadExecutionWidth != 32 ||
+            handle->rows_topk_pipeline.maxTotalThreadsPerThreadgroup <
+                kMatVecThreads ||
+            handle->final_topk_pipeline.maxTotalThreadsPerThreadgroup <
+                kTopKThreads) {
+            delete handle;
+            if (error != nil) {
+                write_nserror(error_output, error_capacity, error);
+            } else {
+                write_error(error_output, error_capacity,
+                            "Metal W8+Q4_0 tail v2 requires all kernels, SIMD32, and 256-thread head pipelines");
+            }
+            return 1;
+        }
+        handle->queue = [handle->device newCommandQueue];
+        const MTLResourceOptions shared = MTLResourceStorageModeShared;
+        const MTLResourceOptions private_storage = MTLResourceStorageModePrivate;
+        const size_t hidden_bytes = hidden_size * sizeof(float);
+        handle->rms_weights =
+            [handle->device newBufferWithLength:2 * hidden_bytes options:shared];
+        if (handle->rms_weights != nil) {
+            std::memcpy(handle->rms_weights.contents,
+                        descriptor->post_attention_rms_weight, hidden_bytes);
+            std::memcpy(static_cast<uint8_t *>(handle->rms_weights.contents) +
+                            hidden_bytes,
+                        descriptor->final_rms_weight, hidden_bytes);
+        }
+        handle->gate_up_weights =
+            [handle->device newBufferWithBytes:descriptor->gate_up_weights
+                                        length:gate_up_weight_bytes
+                                       options:shared];
+        handle->gate_up_scales =
+            [handle->device newBufferWithBytes:descriptor->gate_up_scales
+                                        length:gate_up_scale_count * sizeof(float)
+                                       options:shared];
+        handle->down_weights =
+            [handle->device newBufferWithBytes:descriptor->down_weights
+                                        length:hidden_intermediate
+                                       options:shared];
+        handle->down_scales =
+            [handle->device newBufferWithBytes:descriptor->down_scales
+                                        length:down_scale_count * sizeof(float)
+                                       options:shared];
+        handle->q4_vocab_blocks =
+            [handle->device newBufferWithBytes:descriptor->q4_vocab_blocks
+                                        length:q4_vocab_bytes
+                                       options:shared];
+        handle->hidden_a =
+            [handle->device newBufferWithLength:hidden_bytes options:shared];
+        handle->hidden_b =
+            [handle->device newBufferWithLength:hidden_bytes options:shared];
+        handle->output_tokens = [handle->device
+            newBufferWithLength:kTopK * sizeof(uint32_t)
+                         options:shared];
+        handle->gate_up = [handle->device
+            newBufferWithLength:2 * intermediate_size * sizeof(float)
+                         options:private_storage];
+        handle->activated = [handle->device
+            newBufferWithLength:intermediate_size * sizeof(float)
+                         options:private_storage];
+        const uint32_t partial_count =
+            static_cast<uint32_t>((vocab_size + kRowsPerThreadgroup - 1) /
+                                  kRowsPerThreadgroup);
+        handle->partial_topk = [handle->device
+            newBufferWithLength:static_cast<size_t>(partial_count) * kTopK * 8
+                         options:private_storage];
+        handle->status = [handle->device
+            newBufferWithLength:sizeof(uint32_t) options:shared];
+        if (handle->queue == nil || !q4_tail_buffers_valid_v2(handle)) {
+            delete handle;
+            write_error(error_output, error_capacity,
+                        "allocate persistent Metal W8+Q4_0 tail v2 buffers failed");
+            return 1;
+        }
+        handle->layer_params = LinearLayerParams{
+            descriptor->hidden_size, descriptor->rms_norm_eps};
+        handle->mlp_params = MlpParams{
+            descriptor->hidden_size,
+            descriptor->intermediate_size,
+            descriptor->hidden_size / kGroupSize,
+            descriptor->intermediate_size / kGroupSize,
+        };
+        handle->head_params = KernelParams{
+            descriptor->hidden_size,
+            descriptor->vocab_size,
+            descriptor->hidden_size / kQ4BlockSizeV2,
+            partial_count,
+            {},
+            0,
+        };
+        std::memset(handle->hidden_a.contents, 0, hidden_bytes);
+        std::memset(handle->hidden_b.contents, 0, hidden_bytes);
+        std::memset(handle->output_tokens.contents, 0xff,
+                    kTopK * sizeof(uint32_t));
+        std::memset(handle->status.contents, 0, sizeof(uint32_t));
+        handle->terminal_error = false;
+        *output = handle;
+        return 0;
+    }
+}
+
+extern "C" int apxinf_metal_w8_q4_tail_mlp_head_decode_excluding_v2(
+    void *opaque_handle, const float *input, uint32_t input_count,
+    float *normalized_hidden, uint32_t normalized_hidden_count,
+    uint32_t *candidate_token_ids, uint32_t candidate_count,
+    const uint32_t *excluded_tokens, uint32_t excluded_count,
+    uint32_t fault_mode, TailExecutionReceiptV1 *receipt,
+    char *error_output, size_t error_capacity) {
+    @autoreleasepool {
+        if (receipt == nullptr) {
+            write_error(error_output, error_capacity,
+                        "Metal W8+Q4_0 tail v2 execution receipt is null");
+            return 1;
+        }
+        *receipt = TailExecutionReceiptV1{};
+        auto handle =
+            static_cast<ApxinfMetalW8Q4TailMlpHeadHandleV2 *>(opaque_handle);
+        if (handle == nullptr || input == nullptr || normalized_hidden == nullptr ||
+            candidate_token_ids == nullptr || fault_mode > 4 ||
+            (handle != nullptr && input_count != handle->layer_params.hidden_size) ||
+            normalized_hidden_count != input_count || candidate_count != kTopK) {
+            write_error(error_output, error_capacity,
+                        "invalid Metal W8+Q4_0 tail v2 decode input or output");
+            return 1;
+        }
+        KernelParams head_params{};
+        if (!configure_q4_exclusions_v2(
+                handle->head_params, excluded_tokens, excluded_count,
+                &head_params, error_output, error_capacity)) {
+            return 1;
+        }
+        if (handle->terminal_error) {
+            write_error(error_output, error_capacity,
+                        "Metal W8+Q4_0 tail v2 is terminal until reset");
+            return 1;
+        }
+        if (!all_finite(input, input_count)) {
+            write_error(error_output, error_capacity,
+                        "Metal W8+Q4_0 tail v2 input is non-finite");
+            return 1;
+        }
+        id<MTLCommandBuffer> command = [handle->queue commandBuffer];
+        if (command == nil) {
+            handle->terminal_error = true;
+            write_error(error_output, error_capacity,
+                        "create Metal W8+Q4_0 tail v2 command buffer failed");
+            return 1;
+        }
+        receipt->command_buffers = 1;
+        id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+        if (encoder == nil) {
+            handle->terminal_error = true;
+            write_error(error_output, error_capacity,
+                        "create Metal W8+Q4_0 tail v2 compute encoder failed");
+            return 1;
+        }
+        receipt->compute_encoders = 1;
+
+        const size_t hidden_bytes =
+            static_cast<size_t>(input_count) * sizeof(float);
+        std::memcpy(handle->hidden_a.contents, input, hidden_bytes);
+        std::memset(handle->output_tokens.contents, 0xff,
+                    kTopK * sizeof(uint32_t));
+        std::memset(handle->status.contents, 0, sizeof(uint32_t));
+        receipt->host_to_device_bytes =
+            hidden_bytes + kTopK * sizeof(uint32_t) + sizeof(uint32_t);
+        encode_q4_tail_v2(handle, encoder, head_params);
+        receipt->kernel_dispatches = 8;
+        receipt->buffer_barriers = 7;
+        [encoder endEncoding];
+        [command commit];
+        receipt->commits = 1;
+        [command waitUntilCompleted];
+        receipt->waits = 1;
+        if (command.status != MTLCommandBufferStatusCompleted) {
+            handle->terminal_error = true;
+            write_nserror(error_output, error_capacity, command.error);
+            return 1;
+        }
+        const uint32_t score_status =
+            *static_cast<const uint32_t *>(handle->status.contents);
+        if (score_status != 0) {
+            handle->terminal_error = true;
+            write_error(error_output, error_capacity,
+                        "Metal W8+Q4_0 tail v2 produced a non-finite score");
+            return 1;
+        }
+        if (fault_mode == 1) {
+            handle->terminal_error = true;
+            write_error(error_output, error_capacity,
+                        "injected Metal W8+Q4_0 tail v2 failure after GPU execution");
+            return 1;
+        }
+        if (fault_mode == 2) {
+            static_cast<float *>(handle->hidden_a.contents)[0] = NAN;
+        } else if (fault_mode == 3) {
+            uint32_t *tokens =
+                static_cast<uint32_t *>(handle->output_tokens.contents);
+            tokens[1] = tokens[0];
+        } else if (fault_mode == 4) {
+            static_cast<uint32_t *>(handle->output_tokens.contents)[0] =
+                handle->head_params.rows;
+        }
+        const float *published_hidden =
+            static_cast<const float *>(handle->hidden_a.contents);
+        const uint32_t *published_tokens =
+            static_cast<const uint32_t *>(handle->output_tokens.contents);
+        if (!all_finite(published_hidden, input_count) ||
+            !valid_candidates(published_tokens, handle->head_params.rows,
+                              excluded_tokens, excluded_count)) {
+            handle->terminal_error = true;
+            write_error(error_output, error_capacity,
+                        "Metal W8+Q4_0 tail v2 GPU output failed validation");
+            return 1;
+        }
+        std::memcpy(normalized_hidden, published_hidden, hidden_bytes);
+        std::memcpy(candidate_token_ids, published_tokens,
+                    kTopK * sizeof(uint32_t));
+        receipt->device_to_host_bytes =
+            hidden_bytes + kTopK * sizeof(uint32_t) + sizeof(uint32_t);
+        receipt->output_commits = 2;
+        receipt->output_commit_mask = kAllOutputsMask;
+        return 0;
+    }
+}
+
+extern "C" int apxinf_metal_w8_q4_tail_mlp_head_decode_v2(
+    void *opaque_handle, const float *input, uint32_t input_count,
+    float *normalized_hidden, uint32_t normalized_hidden_count,
+    uint32_t *candidate_token_ids, uint32_t candidate_count,
+    uint32_t fault_mode, TailExecutionReceiptV1 *receipt,
+    char *error_output, size_t error_capacity) {
+    return apxinf_metal_w8_q4_tail_mlp_head_decode_excluding_v2(
+        opaque_handle, input, input_count, normalized_hidden,
+        normalized_hidden_count, candidate_token_ids, candidate_count,
+        nullptr, 0, fault_mode, receipt, error_output, error_capacity);
+}
+
+extern "C" int apxinf_metal_w8_q4_tail_mlp_head_reset_v2(
+    void *opaque_handle, char *error_output, size_t error_capacity) {
+    @autoreleasepool {
+        auto handle =
+            static_cast<ApxinfMetalW8Q4TailMlpHeadHandleV2 *>(opaque_handle);
+        if (handle == nullptr) {
+            write_error(error_output, error_capacity,
+                        "Metal W8+Q4_0 tail v2 reset handle is null");
+            return 1;
+        }
+        const size_t hidden_bytes =
+            static_cast<size_t>(handle->layer_params.hidden_size) * sizeof(float);
+        std::memset(handle->hidden_a.contents, 0, hidden_bytes);
+        std::memset(handle->hidden_b.contents, 0, hidden_bytes);
+        std::memset(handle->output_tokens.contents, 0xff,
+                    kTopK * sizeof(uint32_t));
+        std::memset(handle->status.contents, 0, sizeof(uint32_t));
+        handle->terminal_error = false;
+        return 0;
+    }
+}
+
+extern "C" void apxinf_metal_w8_q4_tail_mlp_head_destroy_v2(
+    void *opaque_handle) {
+    auto handle =
+        static_cast<ApxinfMetalW8Q4TailMlpHeadHandleV2 *>(opaque_handle);
     delete handle;
 }

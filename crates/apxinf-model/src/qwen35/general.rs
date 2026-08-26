@@ -432,6 +432,23 @@ const fn qwen35_boundary_tail_head_mechanism_for_gdn_core_profile_v1(
 }
 
 #[cfg(feature = "metal-w8")]
+const fn qwen35_boundary_tail_q4_head_mechanism_for_gdn_core_profile_v2(
+    profile: apxinf_metal::GdnCoreProfileV1,
+) -> &'static str {
+    match profile {
+        apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch => {
+            "metal-w8-mlp-stack3-boundary-tail-q4-head-v2"
+        }
+        apxinf_metal::GdnCoreProfileV1::Fused128 => {
+            "metal-w8-mlp-stack3-boundary-tail-q4-head-gdn-core-fused-v2"
+        }
+        apxinf_metal::GdnCoreProfileV1::QkStagedFourDispatch => {
+            "invalid-production-qk-staged-control"
+        }
+    }
+}
+
+#[cfg(feature = "metal-w8")]
 fn validate_qwen35_production_gdn_core_profile_v1(
     profile: apxinf_metal::GdnCoreProfileV1,
 ) -> Result<()> {
@@ -610,12 +627,58 @@ pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
 }
 
 #[cfg(feature = "metal-w8")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Qwen35MetalW8MlpStack3BoundaryTailQ4HeadV2Stats {
+    pub mechanism: &'static str,
+    pub gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+    pub gdn_function_chain: &'static str,
+    pub initial_stack: Qwen35MetalW8LinearLayerStack3V1Stats,
+    pub boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionV1Stats>,
+    pub tail_layer_index: usize,
+    pub tail: apxinf_metal::TailMlpQ4HeadMetalStatsV2,
+    pub prefill_body_calls: usize,
+    pub prefill_cpu_head_calls: usize,
+    pub decode_calls: usize,
+    pub excluded_decode_calls: usize,
+    pub teacher_calls: usize,
+    pub rerank_elapsed_ns: u128,
+    pub terminal_error: bool,
+}
+
+#[cfg(feature = "metal-w8")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Qwen35MetalW8MlpStack3BoundaryTailQ4HeadV2AggregateLedger {
+    pub scope: &'static str,
+    pub exclusions: &'static str,
+    pub includes_lm_head: bool,
+    pub gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+    pub gdn_function_chain: &'static str,
+    pub initial_stack: Qwen35MetalW8LinearLayerStack3BufferLedger,
+    pub boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionBufferLedgerV1>,
+    pub tail_layer_index: usize,
+    pub tail: apxinf_metal::TailMlpQ4HeadBufferLedgerV2,
+    pub total_persistent_mtlbuffer_bytes: usize,
+    pub allocated_buffers: usize,
+    pub shared_buffers: usize,
+    pub private_buffers: usize,
+    pub host_to_device_bytes_per_decode: usize,
+    pub device_to_host_bytes_per_decode: usize,
+    pub state_host_transfer_bytes_per_decode: usize,
+    pub command_buffers_per_decode: usize,
+    pub compute_encoders_per_decode: usize,
+    pub kernel_dispatches_per_decode: usize,
+    pub explicit_buffer_barriers_per_decode: usize,
+    pub commits_per_decode: usize,
+    pub waits_per_decode: usize,
+}
+
+#[cfg(feature = "metal-w8")]
 struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
     gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
     initial_stack: Qwen35MetalW8LinearLayerStack3V1,
     boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionV1>,
     tail_layer_index: usize,
-    tail: apxinf_metal::MetalW8TailMlpHeadV1,
+    tail: Qwen35MetalW8BoundaryTailCandidateHead,
     prefill_body_calls: usize,
     prefill_cpu_head_calls: usize,
     decode_calls: usize,
@@ -623,6 +686,19 @@ struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
     teacher_calls: usize,
     rerank_elapsed_ns: u128,
     terminal_error: bool,
+}
+
+#[cfg(feature = "metal-w8")]
+enum Qwen35MetalW8BoundaryTailCandidateHead {
+    W8V1(apxinf_metal::MetalW8TailMlpHeadV1),
+    Q4V2(apxinf_metal::MetalW8TailMlpQ4HeadV2),
+}
+
+#[cfg(feature = "metal-w8")]
+#[derive(Clone, Copy)]
+enum Qwen35BoundaryTailCandidatePacking {
+    W8V1,
+    Q4V2,
 }
 
 /// Receipt for the CPU implementation of the exact packed W8 complete-layer
@@ -1095,6 +1171,40 @@ impl GeneralQwen35 {
             max_context,
             apxinf_metal::GdnCoreProfileV1::Fused128,
         )
+    }
+
+    /// Explicit production candidate that keeps the existing W8 layer-23 MLP
+    /// and exact F32 rerank, but replaces the W8 vocabulary projection with a
+    /// canonical Q4_0 block32 candidate head inside the same tail command
+    /// buffer, encoder, commit, and wait. Ordinary constructors never select
+    /// this lane.
+    #[cfg(feature = "metal-w8")]
+    pub fn from_weights_with_metal_w8_mlp_stack3_boundary_tail_q4_head_gdn_core_fused_v2(
+        config: Qwen35Config,
+        tensors: HashMap<String, Tensor>,
+        device: Device,
+        max_context: usize,
+    ) -> Result<Self> {
+        let gdn_core_profile = apxinf_metal::GdnCoreProfileV1::Fused128;
+        validate_qwen35_production_gdn_core_profile_v1(gdn_core_profile)?;
+        validate_qwen35_gdn_core_fused_v1_shape(&config.text)?;
+        if !config.text.tie_word_embeddings {
+            return Err(Error::Other(
+                "qwen3.5 Metal W8 boundary + tail-Q4-head v2 requires tied word embeddings".into(),
+            ));
+        }
+        Qwen35MetalW8MlpStack3BoundaryBodyV1::validate_config_schedule(&config.text)?;
+        let backend = create_backend(device)?;
+        let weights = Qwen35TextWeights::from_map(&config, tensors)?;
+        let lane = Qwen35MetalW8MlpStack3BoundaryTailHeadV1::pack_q4_head_v2(
+            &weights,
+            &config.text,
+            gdn_core_profile,
+        )?;
+        let mut model =
+            Self::new_with_metal_options(config, weights, backend, max_context, false, None, None)?;
+        model.metal_w8_mlp_stack3_boundary_tail_head_v1 = Some(lane);
+        Ok(model)
     }
 
     #[cfg(feature = "metal-w8")]
@@ -1651,7 +1761,7 @@ impl GeneralQwen35 {
     ) -> Option<Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats> {
         self.metal_w8_mlp_stack3_boundary_tail_head_v1
             .as_ref()
-            .map(Qwen35MetalW8MlpStack3BoundaryTailHeadV1::stats)
+            .and_then(Qwen35MetalW8MlpStack3BoundaryTailHeadV1::stats_v1)
     }
 
     #[cfg(feature = "metal-w8")]
@@ -1660,7 +1770,25 @@ impl GeneralQwen35 {
     ) -> Option<Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger> {
         self.metal_w8_mlp_stack3_boundary_tail_head_v1
             .as_ref()
-            .and_then(|lane| lane.aggregate_ledger().ok())
+            .and_then(|lane| lane.aggregate_ledger_v1().ok().flatten())
+    }
+
+    #[cfg(feature = "metal-w8")]
+    pub fn metal_w8_mlp_stack3_boundary_tail_q4_head_v2_stats(
+        &self,
+    ) -> Option<Qwen35MetalW8MlpStack3BoundaryTailQ4HeadV2Stats> {
+        self.metal_w8_mlp_stack3_boundary_tail_head_v1
+            .as_ref()
+            .and_then(Qwen35MetalW8MlpStack3BoundaryTailHeadV1::stats_q4_v2)
+    }
+
+    #[cfg(feature = "metal-w8")]
+    pub fn metal_w8_mlp_stack3_boundary_tail_q4_head_v2_aggregate_ledger(
+        &self,
+    ) -> Option<Qwen35MetalW8MlpStack3BoundaryTailQ4HeadV2AggregateLedger> {
+        self.metal_w8_mlp_stack3_boundary_tail_head_v1
+            .as_ref()
+            .and_then(|lane| lane.aggregate_ledger_q4_v2().ok().flatten())
     }
 
     #[cfg(feature = "metal-w8")]
@@ -2146,20 +2274,12 @@ impl GeneralQwen35 {
                 .as_mut()
                 .expect("boundary + tail-head v1 presence checked before body advancement")
                 .tail;
-            let output = if excluded_token_ids.is_empty() {
-                tail.decode(input)
-            } else {
-                tail.decode_excluding(input, excluded_token_ids)
-            }
-            .map_err(|error| {
-                Error::Other(format!(
-                    "qwen3.5 Metal W8 tail-head v1 transaction failed: {error}"
-                ))
-            })?;
-            (
-                output.normalized_hidden.to_vec(),
-                output.candidate_token_ids,
-            )
+            tail.decode_excluding(input, excluded_token_ids)
+                .map_err(|error| {
+                    Error::Other(format!(
+                        "qwen3.5 Metal W8 tail-head v1 transaction failed: {error}"
+                    ))
+                })?
         };
         Ok(Qwen35BoundaryTailHeadOutputV1 {
             normalized_hidden: tensor_from_owned_metal_output_row(
@@ -3556,6 +3676,147 @@ impl LlmTrait for GeneralQwen35 {
     fn generation_path_receipt(&self) -> Option<serde_json::Value> {
         #[cfg(feature = "metal-w8")]
         {
+            if let Some(lane) = self.metal_w8_mlp_stack3_boundary_tail_q4_head_v2_stats() {
+                let aggregate =
+                    self.metal_w8_mlp_stack3_boundary_tail_q4_head_v2_aggregate_ledger()?;
+                let initial_execution = lane.initial_stack.execution;
+                let boundaries = lane
+                    .boundaries
+                    .iter()
+                    .map(|region| {
+                        let execution = region.execution;
+                        serde_json::json!({
+                            "boundary_mlp_layer_index": region.boundary_mlp_layer_index,
+                            "stack_layer_indices": region.stack_layer_indices,
+                            "mechanism": region.mechanism,
+                            "gdn_core_profile": qwen35_gdn_core_profile_v1_label(region.gdn_core_profile),
+                            "gdn_function_chain": region.gdn_function_chain,
+                            "last_gdn_core_receipt": qwen35_gdn_core_production_receipt_v1_json(region.last_gdn_core_receipt),
+                            "kernel_dispatches_per_decode": region.kernel_dispatches_per_decode,
+                            "explicit_buffer_barriers_per_decode": region.explicit_buffer_barriers_per_decode,
+                            "prefill_seed_calls": region.prefill_seed_calls,
+                            "decode_calls": execution.decode_calls,
+                            "successful_decodes": execution.successful_decodes,
+                            "failed_decodes": execution.failed_decodes,
+                            "command_buffers": execution.command_buffers,
+                            "compute_encoders": execution.compute_encoders,
+                            "commits": execution.commits,
+                            "waits": execution.waits,
+                            "host_to_device_bytes": execution.host_to_device_bytes,
+                            "device_to_host_bytes": execution.device_to_host_bytes,
+                            "state_commits": execution.state_commits,
+                            "last_state_commit_mask": execution.last_state_commit_mask,
+                            "committed_stack_version": execution.committed_stack_version,
+                            "terminal_error": region.terminal_error,
+                            "block_elapsed_ns": region.block_elapsed_ns,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                return Some(serde_json::json!({
+                    "format": "apxinf-qwen35-mlp-stack3-boundary-tail-q4-head-generation-path-v2",
+                    "mechanism": lane.mechanism,
+                    "gdn_core_profile": qwen35_gdn_core_profile_v1_label(lane.gdn_core_profile),
+                    "gdn_function_chain": lane.gdn_function_chain,
+                    "cpu_full_attention_and_kv": true,
+                    "cpu_prefill_all_24_layers": true,
+                    "metal_w8_initial_complete_linear_layer_stack3": true,
+                    "metal_w8_mlp_stack3_boundaries": true,
+                    "metal_w8_tail_layer23_mlp_final_rms": true,
+                    "metal_q4_0_tied_candidate_head": true,
+                    "q4_0_block_size": apxinf_metal::Q4_0_BLOCK_SIZE_V1,
+                    "q4_0_fp16_scale": true,
+                    "q4_0_full_score_scratch": false,
+                    "standalone_layer23_mlp": false,
+                    "standalone_metal_lm_head": false,
+                    "f32_tied_four_candidate_rerank": true,
+                    "initial_stack": {
+                        "layer_indices": lane.initial_stack.layer_indices,
+                        "mechanism": lane.initial_stack.mechanism,
+                        "gdn_core_profile": qwen35_gdn_core_profile_v1_label(lane.initial_stack.gdn_core_profile),
+                        "gdn_function_chain": lane.initial_stack.gdn_function_chain,
+                        "last_gdn_core_receipt": qwen35_gdn_core_production_receipt_v1_json(lane.initial_stack.last_gdn_core_receipt),
+                        "kernel_dispatches_per_decode": lane.initial_stack.kernel_dispatches_per_decode,
+                        "explicit_buffer_barriers_per_decode": lane.initial_stack.explicit_buffer_barriers_per_decode,
+                        "prefill_seed_calls": lane.initial_stack.prefill_seed_calls,
+                        "decode_calls": initial_execution.decode_calls,
+                        "successful_decodes": initial_execution.successful_decodes,
+                        "failed_decodes": initial_execution.failed_decodes,
+                        "command_buffers": initial_execution.command_buffers,
+                        "compute_encoders": initial_execution.compute_encoders,
+                        "commits": initial_execution.commits,
+                        "waits": initial_execution.waits,
+                        "host_to_device_bytes": initial_execution.host_to_device_bytes,
+                        "device_to_host_bytes": initial_execution.device_to_host_bytes,
+                        "state_commits": initial_execution.state_commits,
+                        "last_state_commit_mask": initial_execution.last_state_commit_mask,
+                        "committed_stack_version": initial_execution.committed_stack_version,
+                        "terminal_error": lane.initial_stack.terminal_error,
+                        "block_elapsed_ns": lane.initial_stack.block_elapsed_ns,
+                    },
+                    "boundaries": boundaries,
+                    "prefill_body_calls": lane.prefill_body_calls,
+                    "prefill_head": {
+                        "mechanism": "cpu-f32-tied",
+                        "calls": lane.prefill_cpu_head_calls,
+                        "tail_transactions": 0,
+                    },
+                    "decode_head": {
+                        "mechanism": "metal-w8-mlp-q4_0-candidate-tail-v2",
+                        "layer_index": lane.tail_layer_index,
+                        "calls": lane.decode_calls,
+                        "excluded_calls": lane.excluded_decode_calls,
+                        "teacher_calls": lane.teacher_calls,
+                        "tail_transactions": lane.tail.decode_calls,
+                        "successful_transactions": lane.tail.successful_decodes,
+                        "failed_transactions": lane.tail.failed_decodes,
+                        "command_buffers": lane.tail.command_buffers,
+                        "compute_encoders": lane.tail.compute_encoders,
+                        "kernel_dispatches": lane.tail.kernel_dispatches,
+                        "commits": lane.tail.commits,
+                        "waits": lane.tail.waits,
+                        "host_to_device_bytes": lane.tail.host_to_device_bytes,
+                        "device_to_host_bytes": lane.tail.device_to_host_bytes,
+                        "output_commits": lane.tail.output_commits,
+                        "last_output_commit_mask": lane.tail.last_output_commit_mask,
+                        "rerank_elapsed_ns": lane.rerank_elapsed_ns,
+                        "terminal_error": lane.tail.terminal_error,
+                    },
+                    "tail_ledger": {
+                        "abi_version": aggregate.tail.abi_version,
+                        "w8_mlp_weight_bytes": aggregate.tail.w8_mlp_weight_bytes,
+                        "w8_mlp_scale_bytes": aggregate.tail.w8_mlp_scale_bytes,
+                        "q4_vocab_weight_bytes": aggregate.tail.q4_vocab_weight_bytes,
+                        "w8_vocab_weight_bytes": aggregate.tail.w8_vocab_weight_bytes,
+                        "w8_vocab_scale_bytes": aggregate.tail.w8_vocab_scale_bytes,
+                        "full_score_scratch_bytes": aggregate.tail.full_score_scratch_bytes,
+                        "partial_topk_bytes": aggregate.tail.partial_topk_bytes,
+                        "command_buffers_per_decode": aggregate.tail.command_buffers_per_decode,
+                        "compute_encoders_per_decode": aggregate.tail.compute_encoders_per_decode,
+                        "commits_per_decode": aggregate.tail.commits_per_decode,
+                        "waits_per_decode": aggregate.tail.waits_per_decode,
+                    },
+                    "aggregate": {
+                        "scope": aggregate.scope,
+                        "includes_lm_head": aggregate.includes_lm_head,
+                        "persistent_mtlbuffer_bytes": aggregate.total_persistent_mtlbuffer_bytes,
+                        "allocated_buffers": aggregate.allocated_buffers,
+                        "shared_buffers": aggregate.shared_buffers,
+                        "private_buffers": aggregate.private_buffers,
+                        "host_to_device_bytes_per_decode": aggregate.host_to_device_bytes_per_decode,
+                        "device_to_host_bytes_per_decode": aggregate.device_to_host_bytes_per_decode,
+                        "state_host_transfer_bytes_per_decode": aggregate.state_host_transfer_bytes_per_decode,
+                        "command_buffers_per_decode": aggregate.command_buffers_per_decode,
+                        "compute_encoders_per_decode": aggregate.compute_encoders_per_decode,
+                        "kernel_dispatches_per_decode": aggregate.kernel_dispatches_per_decode,
+                        "explicit_buffer_barriers_per_decode": aggregate.explicit_buffer_barriers_per_decode,
+                        "gdn_core_profile": qwen35_gdn_core_profile_v1_label(aggregate.gdn_core_profile),
+                        "gdn_function_chain": aggregate.gdn_function_chain,
+                        "commits_per_decode": aggregate.commits_per_decode,
+                        "waits_per_decode": aggregate.waits_per_decode,
+                    },
+                    "terminal_error": lane.terminal_error,
+                }));
+            }
             if let Some(lane) = self.metal_w8_mlp_stack3_boundary_tail_head_v1_stats() {
                 let aggregate =
                     self.metal_w8_mlp_stack3_boundary_tail_head_v1_aggregate_ledger()?;
@@ -5878,6 +6139,33 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
         config: &Qwen35TextConfig,
         gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
     ) -> Result<Self> {
+        Self::pack_with_candidate_head(
+            weights,
+            config,
+            gdn_core_profile,
+            Qwen35BoundaryTailCandidatePacking::W8V1,
+        )
+    }
+
+    fn pack_q4_head_v2(
+        weights: &Qwen35TextWeights,
+        config: &Qwen35TextConfig,
+        gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+    ) -> Result<Self> {
+        Self::pack_with_candidate_head(
+            weights,
+            config,
+            gdn_core_profile,
+            Qwen35BoundaryTailCandidatePacking::Q4V2,
+        )
+    }
+
+    fn pack_with_candidate_head(
+        weights: &Qwen35TextWeights,
+        config: &Qwen35TextConfig,
+        gdn_core_profile: apxinf_metal::GdnCoreProfileV1,
+        candidate_packing: Qwen35BoundaryTailCandidatePacking,
+    ) -> Result<Self> {
         validate_qwen35_production_gdn_core_profile_v1(gdn_core_profile)?;
         if gdn_core_profile == apxinf_metal::GdnCoreProfileV1::Fused128 {
             validate_qwen35_gdn_core_fused_v1_shape(config)?;
@@ -5962,30 +6250,72 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
             &weights.token_embedding,
             "Metal W8 tail-head v1 tied embedding",
         )?;
-        let vocab =
-            apxinf_metal::PackedW8Rows::pack_f32(&embedding, config.vocab_size, config.hidden_size)
+        let tail = match candidate_packing {
+            Qwen35BoundaryTailCandidatePacking::W8V1 => {
+                let vocab = apxinf_metal::PackedW8Rows::pack_f32(
+                    &embedding,
+                    config.vocab_size,
+                    config.hidden_size,
+                )
                 .map_err(|error| {
                     Error::Other(format!(
                         "qwen3.5 Metal W8 tail-head v1 tied embedding packing failed: {error}"
                     ))
                 })?;
-        let packed = apxinf_metal::PackedW8TailMlpHeadV1::new(
-            mlp,
-            &post_attention_rms_weight,
-            &final_rms_weight,
-            config.rms_norm_eps,
-            vocab,
-        )
-        .map_err(|error| {
-            Error::Other(format!(
-                "qwen3.5 Metal W8 tail-head v1 assembly failed: {error}"
-            ))
-        })?;
-        let tail = apxinf_metal::MetalW8TailMlpHeadV1::from_packed(&packed).map_err(|error| {
-            Error::Other(format!(
-                "qwen3.5 Metal W8 tail-head v1 construction failed: {error}"
-            ))
-        })?;
+                let packed = apxinf_metal::PackedW8TailMlpHeadV1::new(
+                    mlp,
+                    &post_attention_rms_weight,
+                    &final_rms_weight,
+                    config.rms_norm_eps,
+                    vocab,
+                )
+                .map_err(|error| {
+                    Error::Other(format!(
+                        "qwen3.5 Metal W8 tail-head v1 assembly failed: {error}"
+                    ))
+                })?;
+                Qwen35MetalW8BoundaryTailCandidateHead::W8V1(
+                    apxinf_metal::MetalW8TailMlpHeadV1::from_packed(&packed).map_err(|error| {
+                        Error::Other(format!(
+                            "qwen3.5 Metal W8 tail-head v1 construction failed: {error}"
+                        ))
+                    })?,
+                )
+            }
+            Qwen35BoundaryTailCandidatePacking::Q4V2 => {
+                let vocab = apxinf_metal::PackedQ4_0RowsV1::pack_f32(
+                    &embedding,
+                    config.vocab_size,
+                    config.hidden_size,
+                )
+                .map_err(|error| {
+                    Error::Other(format!(
+                        "qwen3.5 Metal W8+Q4_0 tail v2 tied embedding packing failed: {error}"
+                    ))
+                })?;
+                let packed = apxinf_metal::PackedW8TailMlpQ4HeadV2::new(
+                    mlp,
+                    &post_attention_rms_weight,
+                    &final_rms_weight,
+                    config.rms_norm_eps,
+                    vocab,
+                )
+                .map_err(|error| {
+                    Error::Other(format!(
+                        "qwen3.5 Metal W8+Q4_0 tail v2 assembly failed: {error}"
+                    ))
+                })?;
+                Qwen35MetalW8BoundaryTailCandidateHead::Q4V2(
+                    apxinf_metal::MetalW8TailMlpQ4HeadV2::from_packed(&packed).map_err(
+                        |error| {
+                            Error::Other(format!(
+                                "qwen3.5 Metal W8+Q4_0 tail v2 construction failed: {error}"
+                            ))
+                        },
+                    )?,
+                )
+            }
+        };
         Ok(Self {
             gdn_core_profile,
             initial_stack,
@@ -6002,8 +6332,11 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
         })
     }
 
-    fn stats(&self) -> Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
-        Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
+    fn stats_v1(&self) -> Option<Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats> {
+        let Qwen35MetalW8BoundaryTailCandidateHead::W8V1(tail) = &self.tail else {
+            return None;
+        };
+        Some(Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
             mechanism: qwen35_boundary_tail_head_mechanism_for_gdn_core_profile_v1(
                 self.gdn_core_profile,
             ),
@@ -6016,7 +6349,7 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                 .map(|region| region.stats())
                 .collect(),
             tail_layer_index: self.tail_layer_index,
-            tail: self.tail.stats(),
+            tail: tail.stats(),
             prefill_body_calls: self.prefill_body_calls,
             prefill_cpu_head_calls: self.prefill_cpu_head_calls,
             decode_calls: self.decode_calls,
@@ -6026,8 +6359,39 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
             terminal_error: self.terminal_error
                 || self.initial_stack.terminal_error
                 || self.boundaries.iter().any(|region| region.terminal_error)
-                || self.tail.stats().terminal_error,
-        }
+                || tail.stats().terminal_error,
+        })
+    }
+
+    fn stats_q4_v2(&self) -> Option<Qwen35MetalW8MlpStack3BoundaryTailQ4HeadV2Stats> {
+        let Qwen35MetalW8BoundaryTailCandidateHead::Q4V2(tail) = &self.tail else {
+            return None;
+        };
+        Some(Qwen35MetalW8MlpStack3BoundaryTailQ4HeadV2Stats {
+            mechanism: qwen35_boundary_tail_q4_head_mechanism_for_gdn_core_profile_v2(
+                self.gdn_core_profile,
+            ),
+            gdn_core_profile: self.gdn_core_profile,
+            gdn_function_chain: self.gdn_core_profile.expected_function_chain(),
+            initial_stack: self.initial_stack.stats(),
+            boundaries: self
+                .boundaries
+                .iter()
+                .map(|region| region.stats())
+                .collect(),
+            tail_layer_index: self.tail_layer_index,
+            tail: tail.stats(),
+            prefill_body_calls: self.prefill_body_calls,
+            prefill_cpu_head_calls: self.prefill_cpu_head_calls,
+            decode_calls: self.decode_calls,
+            excluded_decode_calls: self.excluded_decode_calls,
+            teacher_calls: self.teacher_calls,
+            rerank_elapsed_ns: self.rerank_elapsed_ns,
+            terminal_error: self.terminal_error
+                || self.initial_stack.terminal_error
+                || self.boundaries.iter().any(|region| region.terminal_error)
+                || tail.stats().terminal_error,
+        })
     }
 
     fn selected_linear_slot(&self, layer_index: usize) -> Option<(Option<usize>, usize)> {
@@ -6079,7 +6443,7 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
         self.terminal_error
             || self.initial_stack.terminal_error
             || self.boundaries.iter().any(|region| region.terminal_error)
-            || self.tail.stats().terminal_error
+            || self.tail.is_terminal()
     }
 
     fn latch_terminal(&mut self) {
@@ -6113,7 +6477,12 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
         Ok(())
     }
 
-    fn aggregate_ledger(&self) -> Result<Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger> {
+    fn aggregate_ledger_v1(
+        &self,
+    ) -> Result<Option<Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger>> {
+        let Qwen35MetalW8BoundaryTailCandidateHead::W8V1(tail) = &self.tail else {
+            return Ok(None);
+        };
         Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger::new(
             Qwen35MetalW8LinearLayerStack3BufferLedger {
                 layer_indices: self.initial_stack.layer_indices,
@@ -6130,8 +6499,121 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
                 )
                 .collect(),
             self.tail_layer_index,
-            self.tail.buffer_ledger(),
+            tail.buffer_ledger(),
         )
+        .map(Some)
+    }
+
+    fn aggregate_ledger_q4_v2(
+        &self,
+    ) -> Result<Option<Qwen35MetalW8MlpStack3BoundaryTailQ4HeadV2AggregateLedger>> {
+        let Qwen35MetalW8BoundaryTailCandidateHead::Q4V2(tail) = &self.tail else {
+            return Ok(None);
+        };
+        Qwen35MetalW8MlpStack3BoundaryTailQ4HeadV2AggregateLedger::new(
+            Qwen35MetalW8LinearLayerStack3BufferLedger {
+                layer_indices: self.initial_stack.layer_indices,
+                ledger: self.initial_stack.block.buffer_ledger(),
+            },
+            self.boundaries
+                .iter()
+                .map(
+                    |region| Qwen35MetalW8MlpStack3BoundaryRegionBufferLedgerV1 {
+                        boundary_mlp_layer_index: region.boundary_mlp_layer_index,
+                        stack_layer_indices: region.stack_layer_indices,
+                        ledger: region.block.buffer_ledger(),
+                    },
+                )
+                .collect(),
+            self.tail_layer_index,
+            tail.buffer_ledger(),
+        )
+        .map(Some)
+    }
+}
+
+#[cfg(feature = "metal-w8")]
+impl Qwen35MetalW8BoundaryTailCandidateHead {
+    fn decode_excluding(
+        &mut self,
+        input: &[f32],
+        excluded_tokens: &[u32],
+    ) -> std::result::Result<(Vec<f32>, [u32; apxinf_metal::W8_TOP_K]), apxinf_metal::MetalW8Error>
+    {
+        match self {
+            Self::W8V1(tail) => {
+                let output = tail.decode_excluding(input, excluded_tokens)?;
+                Ok((
+                    output.normalized_hidden.to_vec(),
+                    output.candidate_token_ids,
+                ))
+            }
+            Self::Q4V2(tail) => {
+                let output = tail.decode_excluding(input, excluded_tokens)?;
+                Ok((
+                    output.normalized_hidden.to_vec(),
+                    output.candidate_token_ids,
+                ))
+            }
+        }
+    }
+
+    fn reset(&mut self) -> std::result::Result<(), apxinf_metal::MetalW8Error> {
+        match self {
+            Self::W8V1(tail) => tail.reset(),
+            Self::Q4V2(tail) => tail.reset(),
+        }
+    }
+
+    fn is_terminal(&self) -> bool {
+        match self {
+            Self::W8V1(tail) => tail.stats().terminal_error,
+            Self::Q4V2(tail) => tail.stats().terminal_error,
+        }
+    }
+
+    #[cfg(all(test, debug_assertions))]
+    fn inject_failure_after_gpu_execution_for_testing(
+        &mut self,
+        input: &[f32],
+    ) -> std::result::Result<(), apxinf_metal::MetalW8Error> {
+        match self {
+            Self::W8V1(tail) => tail.inject_failure_after_gpu_execution_for_testing(input),
+            Self::Q4V2(tail) => tail.inject_failure_after_gpu_execution_for_testing(input),
+        }
+    }
+
+    #[cfg(all(test, debug_assertions))]
+    fn inject_nonfinite_normalized_output_for_testing(
+        &mut self,
+        input: &[f32],
+    ) -> std::result::Result<(), apxinf_metal::MetalW8Error> {
+        match self {
+            Self::W8V1(tail) => tail.inject_nonfinite_normalized_output_for_testing(input),
+            Self::Q4V2(tail) => tail.inject_nonfinite_normalized_output_for_testing(input),
+        }
+    }
+
+    #[cfg(all(test, debug_assertions))]
+    fn inject_duplicate_candidate_output_for_testing(
+        &mut self,
+        input: &[f32],
+    ) -> std::result::Result<(), apxinf_metal::MetalW8Error> {
+        match self {
+            Self::W8V1(tail) => tail.inject_duplicate_candidate_output_for_testing(input),
+            Self::Q4V2(tail) => tail.inject_duplicate_candidate_output_for_testing(input),
+        }
+    }
+
+    #[cfg(all(test, debug_assertions))]
+    fn inject_out_of_range_candidate_output_for_testing(
+        &mut self,
+        input: &[f32],
+    ) -> std::result::Result<(), apxinf_metal::MetalW8Error> {
+        match self {
+            Self::W8V1(tail) => tail.inject_out_of_range_candidate_output_for_testing(input),
+            Self::Q4V2(tail) => tail.inject_out_of_range_candidate_output_for_testing(input),
+        }
     }
 }
 
@@ -6233,6 +6715,137 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger {
             device_to_host_bytes_per_decode: total!(
                 host_output_bytes_per_decode,
                 host_output_bytes_per_decode
+            ),
+            state_host_transfer_bytes_per_decode: total!(
+                state_host_transfer_bytes_per_decode,
+                state_host_transfer_bytes_per_decode
+            ),
+            command_buffers_per_decode,
+            compute_encoders_per_decode,
+            kernel_dispatches_per_decode,
+            explicit_buffer_barriers_per_decode,
+            commits_per_decode,
+            waits_per_decode,
+            initial_stack,
+            boundaries,
+            tail_layer_index,
+            tail,
+        })
+    }
+}
+
+#[cfg(feature = "metal-w8")]
+impl Qwen35MetalW8MlpStack3BoundaryTailQ4HeadV2AggregateLedger {
+    fn new(
+        initial_stack: Qwen35MetalW8LinearLayerStack3BufferLedger,
+        boundaries: Vec<Qwen35MetalW8MlpStack3BoundaryRegionBufferLedgerV1>,
+        tail_layer_index: usize,
+        tail: apxinf_metal::TailMlpQ4HeadBufferLedgerV2,
+    ) -> Result<Self> {
+        fn add(left: usize, right: usize, label: &str) -> Result<usize> {
+            left.checked_add(right).ok_or_else(|| {
+                Error::Other(format!(
+                    "qwen3.5 Metal W8 boundary + tail-Q4-head v2 {label} overflow"
+                ))
+            })
+        }
+        macro_rules! total {
+            ($field:ident, $tail_field:ident) => {{
+                let mut sum = initial_stack.ledger.$field;
+                for boundary in &boundaries {
+                    sum = add(sum, boundary.ledger.$field, stringify!($field))?;
+                }
+                add(sum, tail.$tail_field, stringify!($field))?
+            }};
+        }
+        validate_qwen35_production_gdn_core_profile_v1(initial_stack.ledger.gdn_core_profile)?;
+        let gdn_core_profile = initial_stack.ledger.gdn_core_profile;
+        let gdn_function_chain = gdn_core_profile.expected_function_chain();
+        if initial_stack.ledger.gdn_function_chain != gdn_function_chain
+            || boundaries.len() != QWEN35_MLP_STACK3_BOUNDARY_REGIONS_V1.len()
+            || boundaries.iter().any(|boundary| {
+                boundary.ledger.gdn_core_profile != gdn_core_profile
+                    || boundary.ledger.gdn_function_chain != gdn_function_chain
+            })
+        {
+            return Err(Error::Other(
+                "qwen3.5 Metal W8 boundary + tail-Q4-head v2 requires one consistent production GDN core profile across the initial stack and all five boundaries"
+                    .into(),
+            ));
+        }
+        if tail.abi_version != apxinf_metal::W8_Q4_TAIL_ABI_VERSION_V2
+            || tail.w8_vocab_weight_bytes != 0
+            || tail.w8_vocab_scale_bytes != 0
+            || tail.full_score_scratch_bytes != 0
+            || tail.command_buffers_per_decode != 1
+            || tail.compute_encoders_per_decode != 1
+            || tail.commits_per_decode != 1
+            || tail.waits_per_decode != 1
+        {
+            return Err(Error::Other(
+                "qwen3.5 Metal W8 boundary + tail-Q4-head v2 tail ledger violates the no-W8-vocab/no-full-score/single-submit contract"
+                    .into(),
+            ));
+        }
+        let kernel_dispatches_per_decode =
+            total!(kernel_dispatches_per_decode, kernel_dispatches_per_decode);
+        let explicit_buffer_barriers_per_decode = total!(
+            explicit_buffer_barriers_per_decode,
+            buffer_barriers_per_decode
+        );
+        let expected_topology = match gdn_core_profile {
+            apxinf_metal::GdnCoreProfileV1::LegacyFourDispatch => (267, 243),
+            apxinf_metal::GdnCoreProfileV1::Fused128 => (213, 189),
+            apxinf_metal::GdnCoreProfileV1::QkStagedFourDispatch => unreachable!(
+                "qk-staged production profile was rejected before aggregate construction"
+            ),
+        };
+        if (
+            kernel_dispatches_per_decode,
+            explicit_buffer_barriers_per_decode,
+        ) != expected_topology
+        {
+            return Err(Error::Other(format!(
+                "qwen3.5 Metal W8 boundary + tail-Q4-head v2 profile {} topology is {kernel_dispatches_per_decode} dispatches/{explicit_buffer_barriers_per_decode} barriers, expected {}/{}",
+                qwen35_gdn_core_profile_v1_label(gdn_core_profile),
+                expected_topology.0,
+                expected_topology.1,
+            )));
+        }
+        let command_buffers_per_decode =
+            total!(command_buffers_per_decode, command_buffers_per_decode);
+        let compute_encoders_per_decode =
+            total!(compute_encoders_per_decode, compute_encoders_per_decode);
+        let commits_per_decode = total!(commits_per_decode, commits_per_decode);
+        let waits_per_decode = total!(waits_per_decode, waits_per_decode);
+        if (
+            command_buffers_per_decode,
+            compute_encoders_per_decode,
+            commits_per_decode,
+            waits_per_decode,
+        ) != (7, 24, 7, 7)
+        {
+            return Err(Error::Other(format!(
+                "qwen3.5 Metal W8 boundary + tail-Q4-head v2 submission topology is {command_buffers_per_decode} command buffers/{compute_encoders_per_decode} encoders/{commits_per_decode} commits/{waits_per_decode} waits, expected 7/24/7/7"
+            )));
+        }
+        Ok(Self {
+            scope: "resident-mtlbuffer-only",
+            exclusions: "CPU F32 weights, host F32 tied embedding and exact four-candidate rerank, host allocations, Metal pipelines/libraries/queues/commands, driver allocations, full attention/KV, model loader, and prefill CPU head",
+            includes_lm_head: true,
+            gdn_core_profile,
+            gdn_function_chain,
+            total_persistent_mtlbuffer_bytes: total!(total_persistent_bytes, total_persistent_bytes),
+            allocated_buffers: total!(allocated_buffers, allocated_buffers),
+            shared_buffers: total!(shared_buffers, shared_buffers),
+            private_buffers: total!(private_buffers, private_buffers),
+            host_to_device_bytes_per_decode: total!(
+                host_input_bytes_per_decode,
+                host_to_device_bytes_per_decode
+            ),
+            device_to_host_bytes_per_decode: total!(
+                host_output_bytes_per_decode,
+                device_to_host_bytes_per_decode
             ),
             state_host_transfer_bytes_per_decode: total!(
                 state_host_transfer_bytes_per_decode,
@@ -10548,6 +11161,18 @@ mod tests {
         assert!(shape_error
             .to_string()
             .contains("fixed to H=1024/KH=16/VH=16/KD=128/VD=128/conv=4/eps=1e-6"));
+        let q4_shape_error =
+            GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_q4_head_gdn_core_fused_v2(
+                config.clone(),
+                HashMap::new(),
+                Device::Cpu,
+                16,
+            )
+            .err()
+            .expect("small-shape Q4 tail production candidate must fail closed");
+        assert!(q4_shape_error
+            .to_string()
+            .contains("fixed to H=1024/KH=16/VH=16/KD=128/VD=128/conv=4/eps=1e-6"));
 
         let qk_error = GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_profile_v1(
             config,
@@ -10571,6 +11196,12 @@ mod tests {
                 apxinf_metal::GdnCoreProfileV1::Fused128,
             ),
             "metal-w8-mlp-stack3-boundary-tail-head-gdn-core-fused-v1"
+        );
+        assert_eq!(
+            qwen35_boundary_tail_q4_head_mechanism_for_gdn_core_profile_v2(
+                apxinf_metal::GdnCoreProfileV1::Fused128,
+            ),
+            "metal-w8-mlp-stack3-boundary-tail-q4-head-gdn-core-fused-v2"
         );
         assert_eq!(
             qwen35_stack3_mechanism_for_gdn_core_profile_v1(
@@ -10731,6 +11362,16 @@ mod tests {
             let tail =
                 apxinf_metal::TailMlpHeadBufferLedgerV1::from_dimensions(1_024, 3_584, 248_320)
                     .unwrap();
+            let q4_tail =
+                apxinf_metal::TailMlpQ4HeadBufferLedgerV2::from_dimensions(1_024, 3_584, 248_320)
+                    .unwrap();
+            let q4_aggregate = Qwen35MetalW8MlpStack3BoundaryTailQ4HeadV2AggregateLedger::new(
+                initial_stack,
+                boundaries.clone(),
+                23,
+                q4_tail,
+            )
+            .unwrap();
             let aggregate = Qwen35MetalW8MlpStack3BoundaryTailHeadV1AggregateLedger::new(
                 initial_stack,
                 boundaries,
@@ -10762,6 +11403,30 @@ mod tests {
             assert_eq!(aggregate.waits_per_decode, 7);
             assert!(aggregate.exclusions.contains("F32 tied embedding"));
             assert!(aggregate.exclusions.contains("four-candidate rerank"));
+
+            assert_eq!(q4_aggregate.gdn_core_profile, profile);
+            assert_eq!(q4_aggregate.total_persistent_mtlbuffer_bytes, 672_403_476);
+            assert_eq!(q4_aggregate.allocated_buffers, 494);
+            assert_eq!(q4_aggregate.shared_buffers, 443);
+            assert_eq!(q4_aggregate.private_buffers, 51);
+            assert_eq!(q4_aggregate.host_to_device_bytes_per_decode, 28_692);
+            assert_eq!(q4_aggregate.device_to_host_bytes_per_decode, 28_692);
+            assert_eq!(q4_aggregate.command_buffers_per_decode, 7);
+            assert_eq!(q4_aggregate.compute_encoders_per_decode, 24);
+            assert_eq!(
+                q4_aggregate.kernel_dispatches_per_decode,
+                expected_dispatches
+            );
+            assert_eq!(
+                q4_aggregate.explicit_buffer_barriers_per_decode,
+                expected_barriers
+            );
+            assert_eq!(q4_aggregate.commits_per_decode, 7);
+            assert_eq!(q4_aggregate.waits_per_decode, 7);
+            assert_eq!(q4_aggregate.tail.q4_vocab_weight_bytes, 143_032_320);
+            assert_eq!(q4_aggregate.tail.w8_vocab_weight_bytes, 0);
+            assert_eq!(q4_aggregate.tail.w8_vocab_scale_bytes, 0);
+            assert_eq!(q4_aggregate.tail.full_score_scratch_bytes, 0);
         }
     }
 

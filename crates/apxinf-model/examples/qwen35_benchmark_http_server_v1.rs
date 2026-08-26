@@ -58,6 +58,7 @@ struct Args {
     source_lock: PathBuf,
     bind: SocketAddr,
     expected_generation_requests: usize,
+    q4_tail_v2: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -293,6 +294,7 @@ struct ApxInfEngine {
     model_dir: PathBuf,
     source_lock: SourceLockReceipt,
     candidate_commit: String,
+    runtime_lane: &'static str,
 }
 
 #[derive(Debug)]
@@ -360,12 +362,27 @@ impl ApxInfEngine {
             apxinf_loader::safetensors::load_native_path_filtered(&model_dir, |name| {
                 name.starts_with("model.language_model.") || name == "lm_head.weight"
             })?;
-        let model = GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_fused_v1(
-            config,
-            tensors,
-            Device::Cpu,
-            MAX_CONTEXT,
-        )?;
+        let (model, runtime_lane) = if args.q4_tail_v2 {
+            (
+                GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_q4_head_gdn_core_fused_v2(
+                    config,
+                    tensors,
+                    Device::Cpu,
+                    MAX_CONTEXT,
+                )?,
+                "metal-w8-mlp-stack3-boundary-tail-q4-head-gdn-core-fused-v2",
+            )
+        } else {
+            (
+                GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_fused_v1(
+                    config,
+                    tensors,
+                    Device::Cpu,
+                    MAX_CONTEXT,
+                )?,
+                "metal-w8-mlp-stack3-boundary-tail-head-gdn-core-fused-v1",
+            )
+        };
         let source_lock = source_lock_receipt(&args.source_lock)?;
         Ok(Self {
             model,
@@ -373,6 +390,7 @@ impl ApxInfEngine {
             model_dir,
             source_lock,
             candidate_commit,
+            runtime_lane,
         })
     }
 }
@@ -467,6 +485,7 @@ impl ResidentBenchmarkEngine for ApxInfEngine {
                 "custody_status": "read-only diagnostic receipt; not frozen GateCustody",
             },
             "candidate_commit": self.candidate_commit,
+            "runtime_lane": self.runtime_lane,
             "generation_policy": GENERATION_POLICY,
             "suppressed_eog_token_ids": SUPPRESSED_EOG_TOKEN_IDS,
             "resident_model": true,
@@ -986,7 +1005,8 @@ fn usage() -> &'static str {
   --model-dir PATH \\
   --source-lock PATH \\
   --bind 127.0.0.1:PORT \\
-  --expected-generation-requests N\n\
+  --expected-generation-requests N \\
+  [--q4-tail-v2]\n\
 \n\
 Build and run with --release, features accelerate,metal-w8, and a 40-hex \
 APXINF_CANDIDATE_COMMIT embedded at compile time. This adapter is NON_FORMAL."
@@ -1000,6 +1020,7 @@ where
     let mut source_lock = None;
     let mut bind = None;
     let mut expected_generation_requests = None;
+    let mut q4_tail_v2 = false;
     let mut iter = arguments.into_iter();
     while let Some(raw_flag) = iter.next() {
         let flag = raw_flag.to_string_lossy();
@@ -1048,6 +1069,12 @@ where
                 }
                 expected_generation_requests = Some(parsed);
             }
+            "--q4-tail-v2" => {
+                if q4_tail_v2 {
+                    return Err("--q4-tail-v2 may be specified only once".into());
+                }
+                q4_tail_v2 = true;
+            }
             "-h" | "--help" => return Err(usage().to_owned()),
             other => return Err(format!("unknown argument {other}\n{}", usage())),
         }
@@ -1059,6 +1086,7 @@ where
         bind: bind.ok_or_else(|| format!("--bind is required\n{}", usage()))?,
         expected_generation_requests: expected_generation_requests
             .ok_or_else(|| format!("--expected-generation-requests is required\n{}", usage()))?,
+        q4_tail_v2,
     })
 }
 
@@ -1526,6 +1554,22 @@ mod tests {
         let args = parse_args_from(valid).unwrap();
         assert_eq!(args.expected_generation_requests, 4);
         assert!(args.bind.ip().is_loopback());
+        assert!(!args.q4_tail_v2);
+
+        let q4 = [
+            "--model-dir",
+            "/model",
+            "--source-lock",
+            "/lock.json",
+            "--bind",
+            "127.0.0.1:0",
+            "--expected-generation-requests",
+            "4",
+            "--q4-tail-v2",
+        ]
+        .into_iter()
+        .map(OsString::from);
+        assert!(parse_args_from(q4).unwrap().q4_tail_v2);
 
         let non_loopback = [
             "--model-dir",
