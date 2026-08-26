@@ -22,7 +22,7 @@
     "apxinf_decode": "deployed-vision-full-fa2-decode.json",
     "apxinf_context": "promotion-request-scoped-fa2.json",
     "apxinf_context_32k": "promotion-m1-packed-mlp.json",
-    "apxinf_multimodal": "promotion-grouped-varlen-fa2.json",
+    "apxinf_multimodal": "promotion-vision-prepacked-qkv.json",
     "vllm_quick": "vllm-omni-0.26.0-kv2g-quick.json",
     "vllm_decode": "vllm-omni-0.26.0-kv2g-decode.json",
     "vllm_context": "vllm-omni-0.26.0-kv2g-context.json",
@@ -148,9 +148,10 @@
       "workload": "real_png_1760+16",
       "semantic_result": "both read the visible chart title",
       "apxinf": {
-        "ttft_ms": 257.305729,
-        "tpot_ms": 10.387854333333333,
-        "wall_ms": 580.5624350905418
+        "ttft_ms": 225.605286,
+        "tpot_ms": 8.976329666666666,
+        "wall_p50_ms": 552.3248761892319,
+        "wall_admission": "not a stable ApxInf-to-ApxInf improvement; 3/5 internal wall pairs win"
       },
       "vllm_omni": {
         "ttft_ms": 231.9645881652832,
@@ -158,9 +159,9 @@
         "wall_ms": 564.7583678364754
       },
       "speedup": {
-        "vllm_ttft": 1.1092,
-        "apxinf_tpot": 2.1099,
-        "vllm_wall": 1.028
+        "apxinf_ttft": 1.0282,
+        "apxinf_tpot": 2.4417,
+        "apxinf_wall_p50": 1.0225
       }
     },
     {
@@ -221,12 +222,12 @@
     ]
   },
   "decision": {
-    "apxinf_strength": "all frozen single-request text TTFT, TPOT and wall cells, real-audio service latency, and near-parity real-image wall time",
-    "vllm_omni_strength": "slightly lower real-image TTFT and wall time",
+    "apxinf_strength": "all frozen single-request text cells, real-audio service latency, and the frozen real-image TTFT, TPOT and wall-p50 records",
+    "vllm_omni_strength": "general-purpose serving features outside the frozen single-request thinker-only contract",
     "next_apxinf_priorities": [
       "rank the remaining post-packed-MLP 32K attention and GEMV costs before selecting another rewrite",
       "replace the resident Python processor only if CPU/RSS or multi-request evidence makes it material",
-      "re-profile the post-FA2 image path before selecting another vision change"
+      "admit another vision rewrite only when stable no-profiler timing and node-level attribution agree"
     ]
   }
 }

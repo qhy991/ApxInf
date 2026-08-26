@@ -222,6 +222,124 @@ impl CudaBackend {
         self.ctx.device_id()
     }
 
+    fn vision_position_cache(
+        &self,
+        positions: &[u32],
+        sequence: usize,
+    ) -> Result<std::sync::MutexGuard<'_, Option<TmropePositionCache>>> {
+        if positions.len() != sequence * 2 {
+            return Err(Error::Other(format!(
+                "Qwen2.5-Omni vision position length {} != {sequence} * 2",
+                positions.len()
+            )));
+        }
+        let mut cache = self
+            .vision_positions
+            .lock()
+            .map_err(|_| Error::Other("vision position cache lock poisoned".into()))?;
+        if cache
+            .as_ref()
+            .is_none_or(|cached| cached.values.as_slice() != positions)
+        {
+            let bytes = u32_bytes(positions);
+            let buffer = CudaBuffer::alloc_stream_ordered(
+                bytes.len(),
+                self.ctx.device_id(),
+                self.ctx.stream(),
+            )
+            .map_err(Error::Cuda)?;
+            buffer
+                .copy_from_host_async(&bytes, self.ctx.stream())
+                .map_err(Error::Cuda)?;
+            *cache = Some(TmropePositionCache {
+                values: positions.to_vec(),
+                _source_bytes: bytes,
+                buffer,
+            });
+        }
+        Ok(cache)
+    }
+
+    fn vision_group_cache(
+        &self,
+        group_ids: &[u32],
+        grouped_fa2: bool,
+    ) -> Result<std::sync::MutexGuard<'_, Option<VisionGroupCache>>> {
+        let mut cache = self
+            .vision_groups
+            .lock()
+            .map_err(|_| Error::Other("vision group cache lock poisoned".into()))?;
+        if cache
+            .as_ref()
+            .is_none_or(|cached| cached.values.as_slice() != group_ids)
+        {
+            let (offset_values, index_values) = vision_group_plan(group_ids)?;
+            let group_count = offset_values.len() - 1;
+            let max_group_size = offset_values
+                .windows(2)
+                .map(|window| (window[1] - window[0]) as usize)
+                .max()
+                .ok_or_else(|| Error::Other("vision group plan has no groups".into()))?;
+            if grouped_fa2
+                && offset_values
+                    .windows(2)
+                    .any(|window| window[0] >= window[1])
+            {
+                return Err(Error::Other(
+                    "grouped vision FA2 requires nonempty contiguous groups".into(),
+                ));
+            }
+            if grouped_fa2 {
+                eprintln!(
+                    "ApxInf grouped vision FA2: {group_count} groups, max {max_group_size} tokens, total {}",
+                    group_ids.len()
+                );
+            }
+            let group_bytes = u32_bytes(group_ids);
+            let offset_bytes = u32_bytes(&offset_values);
+            let index_bytes = u32_bytes(&index_values);
+            let groups = CudaBuffer::alloc_stream_ordered(
+                group_bytes.len(),
+                self.ctx.device_id(),
+                self.ctx.stream(),
+            )
+            .map_err(Error::Cuda)?;
+            let offsets = CudaBuffer::alloc_stream_ordered(
+                offset_bytes.len(),
+                self.ctx.device_id(),
+                self.ctx.stream(),
+            )
+            .map_err(Error::Cuda)?;
+            let indices = CudaBuffer::alloc_stream_ordered(
+                index_bytes.len(),
+                self.ctx.device_id(),
+                self.ctx.stream(),
+            )
+            .map_err(Error::Cuda)?;
+            groups
+                .copy_from_host_async(&group_bytes, self.ctx.stream())
+                .map_err(Error::Cuda)?;
+            offsets
+                .copy_from_host_async(&offset_bytes, self.ctx.stream())
+                .map_err(Error::Cuda)?;
+            indices
+                .copy_from_host_async(&index_bytes, self.ctx.stream())
+                .map_err(Error::Cuda)?;
+            *cache = Some(VisionGroupCache {
+                values: group_ids.to_vec(),
+                _group_source_bytes: group_bytes,
+                _offset_source_bytes: offset_bytes,
+                _index_source_bytes: index_bytes,
+                groups,
+                offsets,
+                indices,
+                group_count,
+                max_group_size,
+            });
+        }
+        Ok(cache)
+    }
+
     pub fn qwen25_omni_vision_bias_residual_exact(
         &self,
         projection: &Tensor,
@@ -265,36 +383,7 @@ impl CudaBackend {
         positions: &[u32],
     ) -> Result<(Tensor, Tensor, Tensor)> {
         let sequence = query.shape().dims().first().copied().unwrap_or(0);
-        if positions.len() != sequence * 2 {
-            return Err(Error::Other(format!(
-                "Qwen2.5-Omni vision position length {} != {sequence} * 2",
-                positions.len()
-            )));
-        }
-        let mut cache = self
-            .vision_positions
-            .lock()
-            .map_err(|_| Error::Other("vision position cache lock poisoned".into()))?;
-        if cache
-            .as_ref()
-            .is_none_or(|cached| cached.values.as_slice() != positions)
-        {
-            let bytes = u32_bytes(positions);
-            let buffer = CudaBuffer::alloc_stream_ordered(
-                bytes.len(),
-                self.ctx.device_id(),
-                self.ctx.stream(),
-            )
-            .map_err(Error::Cuda)?;
-            buffer
-                .copy_from_host_async(&bytes, self.ctx.stream())
-                .map_err(Error::Cuda)?;
-            *cache = Some(TmropePositionCache {
-                values: positions.to_vec(),
-                _source_bytes: bytes,
-                buffer,
-            });
-        }
+        let cache = self.vision_position_cache(positions, sequence)?;
         kernels::qwen25_omni_vision::qkv_bias_rope(
             &self.ctx,
             query,
@@ -306,6 +395,98 @@ impl CudaBackend {
             theta,
             &cache.as_ref().expect("vision position cache populated").buffer,
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn qwen25_omni_vision_grouped_qkv_bias_rope(
+        &self,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        query_bias: &Tensor,
+        key_bias: &Tensor,
+        value_bias: &Tensor,
+        theta: f32,
+        positions: &[u32],
+        group_ids: &[u32],
+    ) -> Result<(Tensor, Tensor, Tensor)> {
+        let sequence = query.shape().dims().first().copied().unwrap_or(0);
+        if group_ids.len() != sequence {
+            return Err(Error::Other(format!(
+                "Qwen2.5-Omni vision group length {} != sequence {sequence}",
+                group_ids.len()
+            )));
+        }
+        let groups = self.vision_group_cache(group_ids, true)?;
+        let positions = self.vision_position_cache(positions, sequence)?;
+        kernels::qwen25_omni_vision::grouped_qkv_bias_rope(
+            &self.ctx,
+            query,
+            key,
+            value,
+            query_bias,
+            key_bias,
+            value_bias,
+            theta,
+            &positions
+                .as_ref()
+                .expect("vision position cache populated")
+                .buffer,
+            &groups
+                .as_ref()
+                .expect("vision group cache populated")
+                .indices,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn qwen25_omni_vision_grouped_sdpa_prepacked(
+        &self,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        sequence: usize,
+        heads: usize,
+        head_dim: usize,
+        group_ids: &[u32],
+    ) -> Result<Tensor> {
+        if !vision_grouped_sparse_enabled()? || !vision_grouped_fa2_enabled()? {
+            return Err(Error::Other(
+                "prepacked grouped vision attention requires accepted grouped FA2 selectors"
+                    .into(),
+            ));
+        }
+        if group_ids.len() != sequence {
+            return Err(Error::Other(format!(
+                "prepacked grouped vision attention has {} groups for {sequence} tokens",
+                group_ids.len()
+            )));
+        }
+        let cache = self.vision_group_cache(group_ids, true)?;
+        let cached = cache.as_ref().expect("vision group cache populated");
+        #[cfg(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80))]
+        {
+            kernels::attention::grouped_varlen_fa2(
+                &self.ctx,
+                query,
+                key,
+                value,
+                sequence,
+                heads,
+                head_dim,
+                &cached.offsets,
+                &cached.indices,
+                cached.group_count,
+                cached.max_group_size,
+                true,
+            )
+        }
+        #[cfg(not(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80)))]
+        {
+            Err(Error::Other(
+                "prepacked grouped vision attention requires an SM80-family FA2 build".into(),
+            ))
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -677,77 +858,7 @@ impl Backend for CudaBackend {
             );
         }
 
-        let mut cache = self
-            .vision_groups
-            .lock()
-            .map_err(|_| Error::Other("vision group cache lock poisoned".into()))?;
-        if cache
-            .as_ref()
-            .is_none_or(|cached| cached.values.as_slice() != group_ids)
-        {
-            let (offset_values, index_values) = vision_group_plan(group_ids)?;
-            let group_count = offset_values.len() - 1;
-            let max_group_size = offset_values
-                .windows(2)
-                .map(|window| (window[1] - window[0]) as usize)
-                .max()
-                .ok_or_else(|| Error::Other("vision group plan has no groups".into()))?;
-            if grouped_fa2
-                && offset_values
-                    .windows(2)
-                    .any(|window| window[0] >= window[1])
-            {
-                return Err(Error::Other(
-                    "grouped vision FA2 requires nonempty contiguous groups".into(),
-                ));
-            }
-            if grouped_fa2 {
-                eprintln!(
-                    "ApxInf grouped vision FA2: {group_count} groups, max {max_group_size} tokens, total {seq_len}"
-                );
-            }
-            let group_bytes = u32_bytes(group_ids);
-            let offset_bytes = u32_bytes(&offset_values);
-            let index_bytes = u32_bytes(&index_values);
-            let groups = CudaBuffer::alloc_stream_ordered(
-                group_bytes.len(),
-                self.ctx.device_id(),
-                self.ctx.stream(),
-            )
-            .map_err(Error::Cuda)?;
-            let offsets = CudaBuffer::alloc_stream_ordered(
-                offset_bytes.len(),
-                self.ctx.device_id(),
-                self.ctx.stream(),
-            )
-            .map_err(Error::Cuda)?;
-            let indices = CudaBuffer::alloc_stream_ordered(
-                index_bytes.len(),
-                self.ctx.device_id(),
-                self.ctx.stream(),
-            )
-            .map_err(Error::Cuda)?;
-            groups
-                .copy_from_host_async(&group_bytes, self.ctx.stream())
-                .map_err(Error::Cuda)?;
-            offsets
-                .copy_from_host_async(&offset_bytes, self.ctx.stream())
-                .map_err(Error::Cuda)?;
-            indices
-                .copy_from_host_async(&index_bytes, self.ctx.stream())
-                .map_err(Error::Cuda)?;
-            *cache = Some(VisionGroupCache {
-                values: group_ids.to_vec(),
-                _group_source_bytes: group_bytes,
-                _offset_source_bytes: offset_bytes,
-                _index_source_bytes: index_bytes,
-                groups,
-                offsets,
-                indices,
-                group_count,
-                max_group_size,
-            });
-        }
+        let cache = self.vision_group_cache(group_ids, grouped_fa2)?;
         let cached = cache.as_ref().expect("vision group cache populated");
         if grouped_fa2 {
             #[cfg(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80))]
@@ -764,6 +875,7 @@ impl Backend for CudaBackend {
                     &cached.indices,
                     cached.group_count,
                     cached.max_group_size,
+                    false,
                 );
             }
             #[cfg(not(any(apxinf_fa2_sm80, apxinf_fa2_vision_sm80)))]
