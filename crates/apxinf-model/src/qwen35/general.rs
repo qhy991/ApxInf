@@ -790,6 +790,10 @@ pub struct Qwen35MetalTeacherStep {
     pub cpu_token: u32,
     pub w8_candidates: [u32; apxinf_metal::W8_TOP_K],
     pub reranked_token: u32,
+    /// Copy of the exact final normalized hidden row consumed by both the
+    /// full-F32 tied head and accelerator candidate head. This diagnostic
+    /// surface is never populated by ordinary prefill or decode entrypoints.
+    pub normalized_hidden_f32: Vec<f32>,
     /// Backward-compatible field name; see [`Self::accelerator_candidate_elapsed_ns`].
     pub topk_elapsed_ns: u128,
     /// Exact four-row F32 tied-embedding rerank only.
@@ -2974,6 +2978,7 @@ impl GeneralQwen35 {
             let result = (|| {
                 let output =
                     self.run_boundary_tail_head_v1_excluding(&residual, excluded_token_ids)?;
+                let normalized_hidden_f32 = output.normalized_hidden.as_f32()?.to_vec();
                 let cpu_logits = self.project_normalized_logits(&output.normalized_hidden)?;
                 let cpu_token = if excluded_token_ids.is_empty() {
                     argmax_f32_row(&cpu_logits, self.config.text.vocab_size)?
@@ -2998,6 +3003,7 @@ impl GeneralQwen35 {
                     cpu_token,
                     w8_candidates: output.candidates,
                     reranked_token,
+                    normalized_hidden_f32,
                     topk_elapsed_ns: output.tail_elapsed_ns,
                     rerank_elapsed_ns,
                 })
@@ -3012,6 +3018,7 @@ impl GeneralQwen35 {
         let hidden = self.forward_hidden(&[token], pos)?;
         let result = (|| {
             let normalized = self.normalize_output(&hidden)?;
+            let normalized_hidden_f32 = normalized.as_f32()?.to_vec();
             let cpu_logits = self.project_normalized_logits(&normalized)?;
             let cpu_token = if excluded_token_ids.is_empty() {
                 argmax_f32_row(&cpu_logits, self.config.text.vocab_size)?
@@ -3067,6 +3074,7 @@ impl GeneralQwen35 {
                 cpu_token,
                 w8_candidates: candidates,
                 reranked_token: reranked,
+                normalized_hidden_f32,
                 topk_elapsed_ns,
                 rerank_elapsed_ns,
             })
@@ -8803,6 +8811,14 @@ mod tests {
             assert_eq!(comparison.cpu_token, expected);
             assert!(comparison.w8_candidates.contains(&comparison.cpu_token));
             assert_eq!(comparison.reranked_token, comparison.cpu_token);
+            assert_eq!(
+                comparison.normalized_hidden_f32.len(),
+                diagnostic.config.text.hidden_size
+            );
+            assert!(comparison
+                .normalized_hidden_f32
+                .iter()
+                .all(|value| value.is_finite()));
         }
 
         let decoded = diagnostic
@@ -10210,6 +10226,14 @@ mod tests {
 
         assert_eq!(comparison.reranked_token, comparison.cpu_token);
         assert!(comparison.w8_candidates.contains(&comparison.cpu_token));
+        assert_eq!(
+            comparison.normalized_hidden_f32.len(),
+            diagnostic.config.text.hidden_size
+        );
+        assert!(comparison
+            .normalized_hidden_f32
+            .iter()
+            .all(|value| value.is_finite()));
         let head = diagnostic.metal_w8_lm_head_stats().unwrap();
         assert_eq!(head.prefill_calls, 0);
         assert_eq!(head.decode_calls, 0);

@@ -4,6 +4,9 @@
 //! symmetric signed int8, 64 consecutive columns per group, and one little-
 //! endian F32 scale per row/group. Values use `round()` followed by clamping
 //! to `[-127, 127]`; an all-zero group records scale `1.0`.
+//!
+//! The crate also exposes a separately versioned, CPU-only Q4_0 block32
+//! correctness oracle. It has no Metal handle and is not a production path.
 
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -13,6 +16,7 @@ mod gdn;
 mod gdn_core_fused_profile_v1;
 mod gdn_recurrent_profile_v1;
 mod linear_layer;
+mod q4_0_rows_v1;
 mod tail_mlp_head_v1;
 
 pub use full_attention_decode_v1::*;
@@ -34,6 +38,10 @@ pub use linear_layer::{
     MetalW8LinearLayerBlock, MetalW8LinearLayerStack3, MetalW8MlpStack3BoundaryV1,
     MlpStack3BoundaryBufferLedgerV1, MlpStack3BoundaryDecodeResultV1,
     MlpStack3BoundaryMetalStatsV1, PackedW8LinearLayerBlock, PackedW8MlpStack3BoundaryV1,
+};
+pub use q4_0_rows_v1::{
+    PackedQ4_0BlockV1, PackedQ4_0RowsV1, Q4_0RowsErrorV1, Q4_0_BLOCK_SIZE_V1,
+    Q4_0_PACKED_BYTES_PER_BLOCK_V1, Q4_0_QUANT_BYTES_PER_BLOCK_V1,
 };
 pub use tail_mlp_head_v1::{
     MetalW8TailMlpHeadV1, PackedW8TailMlpHeadV1, TailMlpHeadBufferLedgerV1,
