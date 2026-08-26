@@ -23,10 +23,14 @@ tokenizer = ["sentencepiece>=0.1.99"]
 policy = ["apxinf-py>=0.1.0"]
 # The OpenPI-compatible websocket server (apxinf.serving) needs the transport deps.
 serving = ["msgpack>=1.0.5", "websockets>=14.0"]
-# The pinned DM05 environment owns torch/transformers/triton versions. ApxInf
-# imports OpenCV directly for fixed image preprocessing and owns the selected
-# runtime code behind RuntimeFactory without repinning that external stack here.
-dm05 = ["opencv-python-headless>=4.8"]
+# Native DM05 uses the PyO3 VLA runtime; Python retains only exact Gemma3
+# tokenization plus fixed image preprocessing and action postprocessing.
+dm05 = [
+    "apxinf-py>=0.1.0",
+    "opencv-python-headless>=4.8",
+    "transformers==5.3.0",
+    "tokenizers==0.22.1",
+]
 # The lerobot adapter (apxinf.adapters.lerobot) returns torch tensors, and its
 # build_inference_frame delegates to lerobot's own build_dataset_frame. lerobot
 # itself is deliberately *not* pinned here: the adapter is built against a moving

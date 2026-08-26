@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import math
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -21,16 +20,10 @@ class Dm05HttpService:
         self.max_body_bytes = int(max_body_bytes)
 
     def health(self) -> dict[str, Any]:
-        policy_metadata = dict(self.policy.metadata)
-        snapshot = getattr(self.policy, "path_proof_snapshot", None)
-        if callable(snapshot):
-            path_proof = snapshot()
-            if path_proof is not None:
-                policy_metadata["path_proof"] = copy.deepcopy(path_proof)
         return {
             "status": "ok",
-            "schema": "apxinf.dm05.libero.http.v1",
-            "policy": policy_metadata,
+            "schema": "apxinf.dm05.libero.http.v2",
+            "policy": dict(self.policy.metadata),
         }
 
     def infer(self, body: Mapping[str, Any]) -> dict[str, Any]:
@@ -49,38 +42,13 @@ class Dm05HttpService:
         metadata = {
             "latency_ms": latency_ms,
             "model_latency_ms": float(result["timing"]["model_ms"]),
-            "schema": "apxinf.dm05.libero.response.v1",
+            "schema": "apxinf.dm05.libero.response.v2",
         }
         policy_metadata = dict(getattr(self.policy, "metadata", {}))
-        if policy_metadata.get("execution_backend") == "default_exact_combined":
-            fields = [
-                "execution_backend",
-                "runtime_selector",
-                "host_thread_policy",
-                "torch_intraop_threads",
-                "process_inference_policy",
-            ]
-            for field in fields:
-                if field not in policy_metadata:
-                    raise RuntimeError(
-                        f"DM05 optimized policy metadata omitted {field}"
-                    )
-                metadata[field] = copy.deepcopy(policy_metadata[field])
-        path_proof = result.get("path_proof")
-        if path_proof is not None:
-            if not isinstance(path_proof, Mapping):
-                raise RuntimeError("policy returned invalid path proof")
-            path_proof = copy.deepcopy(dict(path_proof))
-            metadata["path_proof"] = path_proof
-            for field in (
-                "precision",
-                "llm_attention",
-                "vision_attention",
-                "action_attention",
-            ):
-                if field not in policy_metadata:
-                    raise RuntimeError(f"DM05 policy metadata omitted {field}")
-                metadata[field] = copy.deepcopy(policy_metadata[field])
+        for field in ("backend", "model_revision", "precision"):
+            if field not in policy_metadata:
+                raise RuntimeError(f"native DM05 policy metadata omitted {field}")
+            metadata[field] = policy_metadata[field]
         return {
             "actions": actions.tolist(),
             "metadata": metadata,
