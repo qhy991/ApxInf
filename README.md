@@ -695,25 +695,25 @@ excluded warmup per process:
 
 | metric | accepted R5 A | combined B | result |
 |---|---:|---:|---:|
-| HTTP action-chunk median | 160.439 ms | 144.143 ms | 16.296 ms saved; B/A 0.89843 |
-| model median | 145.410 ms | 127.521 ms | 17.889 ms saved |
-| population CV | 2.512% | 2.334% | both within the 3% client gate |
+| HTTP action-chunk median | 160.706 ms | 144.479 ms | 16.227 ms saved; B/A 0.89903 |
+| model median | 145.471 ms | 127.741 ms | 17.730 ms saved |
+| population CV | 2.528% | 2.115% | both within the 3% client gate |
 
 All four paired blocks were positive. Every excluded warmup and all 40 retained
 responses matched the official seed-7 oracle bitwise; the negative control was
 rejected. Peak process memory was 12,282 MiB. The final-PR `default` selector
-also passed a separate HTTP correctness/lifecycle sentinel (695.192 ms median,
+also passed a separate HTTP correctness/lifecycle sentinel (694.982 ms median,
 descriptive only), preserving the official rollback path.
 
 This is an integrated source-plus-runtime comparison: A used the accepted R5
 source commits, while B used this ApxInf source with official OpenDM `e41e501`.
-The 10.16% HTTP improvement is the measured combined result, not a sum of the
+The 10.10% HTTP improvement is the measured combined result, not a sum of the
 individual optimization experiments and not a per-feature causal estimate.
 
 Cold initialization remains a deliberate limitation. Median excluded warmup
-latency was 3,270.257 ms for R5 and 5,549.558 ms for the combined selector, an
-incremental cost of 2,279.301 ms. At the measured steady saving, that difference
-is recovered after about 140 subsequent requests (about 141 total requests
+latency was 3,251.220 ms for R5 and 5,562.208 ms for the combined selector, an
+incremental cost of 2,310.988 ms. At the measured steady saving, that difference
+is recovered after about 143 subsequent requests (about 144 total requests
 including the cold one). Short-lived or cold-first-request deployments should
 keep `default` or measure their own workload before selecting the combined path.
 
