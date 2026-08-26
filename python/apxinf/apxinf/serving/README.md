@@ -4,8 +4,11 @@ DM05-libero uses a separate serial JSON endpoint owned by
 `Dm05HttpService`: `GET /health` (or `/healthz`) and `POST /v1/infer`. Start it
 with `scripts/dm05_http_server.py`; the root README's **DM05-libero HTTP
 deployment** section defines the pinned model/source identity, two runtime
-selectors, request schema, and checkpoint license boundary. The transport calls
-only the policy contract and does not import the model runtime itself.
+selectors, request schema, and checkpoint license boundary. This is an external
+OpenDM adapter, not a native Rust `VlaRuntime` port. Its required 8D state field
+is validated but not consumed because the pinned checkpoint has
+`add_state=False`. The transport calls only the policy contract and does not
+import the model runtime itself.
 
 ## Serving PI0.5 over the OpenPI websocket protocol
 

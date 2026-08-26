@@ -573,11 +573,17 @@ replace `127.0.0.1` with the server's reachable IP address.
 
 ## DM05-libero HTTP deployment
 
-DM05 is a separate VLA family, not a PI0.5 checkpoint alias. ApxInf owns model
-selection, the fixed LIBERO observation/action contract, runtime selection, and
-the serial HTTP transport. The base model graph is loaded from the pinned
-official OpenDM source. The optimized execution implementation is model-local
-to ApxInf and isolated behind a neutral `RuntimeFactory` boundary.
+This integration is a pinned **external OpenDM deployment adapter**, not a
+completed native ApxInf model port under
+[`doc/porting-workflow.md`](doc/porting-workflow.md). It does not add
+`crates/apxinf-model/src/dm05/`, implement Rust `VlaRuntime`, or route its
+specialized Triton kernel through ApxInf's safe-Rust kernel layer. The pinned
+official OpenDM/PyTorch source remains the owner of the base model graph,
+weights, and denoising schedule. ApxInf owns model selection, the fixed LIBERO
+wire contract, runtime selection, serial HTTP transport, and the default-off
+Python/Triton execution specialization. A native DM05 port is separate future
+work; review of this change therefore requires maintainers to accept the
+bounded external-runtime adapter boundary.
 
 The first supported deployment cell is:
 
@@ -586,11 +592,16 @@ model       Dexmal/DM05-libero@25a8e0d38a8eaeaae41a44d7b4a2378fd8ce1088
 base graph  dexmal/opendm@e41e501bb82e9c3cb8138c0fb4687faa5f98c690
 hardware    one CUDA GPU; optimized selector scoped to RTX 4090 / SM89
 precision   BF16; eager/SDPA/SDPA attention
-request     B=1, two ordered 448x448 images, 8D Franka state
+request     B=1, two ordered 448x448 images, required 8D Franka state field
 sampling    10 diffusion steps; optimized selector requires seed 7
 output      finite float32 LIBERO actions with shape 10x7
 transport   POST /v1/infer, concurrency 1
 ```
+
+The 8D state is validated for wire compatibility but is intentionally not
+consumed by this pinned checkpoint: the official LIBERO configuration has
+`add_state=False`. The current output is therefore not state-conditioned, and
+the qualification below does not establish dynamic-state behavior.
 
 Download the immutable model revision. A Hugging Face mirror may be selected
 without changing the checkpoint identity:
@@ -627,14 +638,38 @@ the complete snapshot surface used by model and processor construction:
 | `tokenizer.json` | 33,384,567 | `daab2354f8a74e70d70b4d1f804939b68a8c9624dd06cb7858e52dd8970e9726` |
 | `tokenizer_config.json` | 715 | `eb28e3a9807f77cd74dce1b8aed91884621c0302941794470c5a46f884462615` |
 
-Use the fixed combined-runtime environment—PyTorch `2.11.0+cu130`, CUDA `13.0`,
-Transformers `5.3.0`, and Triton `3.6.0`—keep the official OpenDM checkout
-clean, and install ApxInf's policy frontend:
+Clone and detach the exact official OpenDM source, then install its declared
+environment plus the combined runtime's Triton dependency. The checked-out
+`pyproject.toml` is the owner of the OpenDM dependency set; ApxInf's `dm05`
+extra installs only the directly imported OpenCV package, not OpenDM, PyTorch,
+Transformers, or Triton.
 
 ```bash
 export OPENDM_ROOT=/path/to/opendm-e41e501b
+export APXINF_DM05_VENV=/path/to/apxinf-dm05-py312
+python3.12 -m venv "$APXINF_DM05_VENV"
+. "$APXINF_DM05_VENV/bin/activate"
+
+git clone https://github.com/Dexmal/OpenDM.git "$OPENDM_ROOT"
+git -C "$OPENDM_ROOT" checkout --detach \
+  e41e501bb82e9c3cb8138c0fb4687faa5f98c690
+python3 -m pip install \
+  'torch==2.11.0' 'torchvision==0.26.0' \
+  --index-url https://download.pytorch.org/whl/cu130
+python3 -m pip install -e "$OPENDM_ROOT"
+python3 -m pip install 'triton==3.6.0'
+
 git -C "$OPENDM_ROOT" rev-parse HEAD
 # e41e501bb82e9c3cb8138c0fb4687faa5f98c690
+git -C "$OPENDM_ROOT" status --short
+
+python3 - <<'PY'
+import torch, transformers, triton
+assert torch.__version__ == "2.11.0+cu130", torch.__version__
+assert torch.version.cuda == "13.0", torch.version.cuda
+assert transformers.__version__ == "5.3.0", transformers.__version__
+assert triton.__version__ == "3.6.0", triton.__version__
+PY
 
 python3 -m pip install -e 'python/apxinf[dm05]'
 PYTHONPATH="python/apxinf:$OPENDM_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
@@ -648,7 +683,8 @@ python3 scripts/dm05_http_server.py \
 
 There are exactly two public runtime selectors:
 
-- `default` runs the pinned official model path and accepts any integer seed.
+- `default` runs the pinned official model path and accepts any seed in
+  PyTorch's inclusive integer range `[-2^63, 2^64-1]`.
 - `default_exact_combined` is opt-in and fail-closed. It fixes seed 7, processed
   prefix length 564, ten diffusion steps, and the qualified host intra-op policy
   of two threads. ApxInf owns the static prefix/suffix graphs, fixed modulation
@@ -686,14 +722,14 @@ and cubin, disassembled the cubin, and verified exactly two scalar `FMUL`, two
 scalar `FADD`, BF16 round-to-nearest output, 17 registers, zero stack/local
 storage, and no FFMA/FMA/MAD or spill path.
 
-### RTX 4090 qualification
+### Owner-measured RTX 4090 fixed-cell qualification
 
-#### Formal promotion result: accepted R5 versus combined
+#### Owner-measured formal result: accepted private R5 versus combined
 
-The opt-in combined selector passed a balanced eight-process formal comparison
-against the previously accepted static-mask dual-graph R5 deployment. Each arm
-retained 20 requests (five per process) in `A,B,B,A,A,B,B,A` order after one
-excluded warmup per process:
+The opt-in combined selector passed the owner's balanced eight-process formal
+comparison against the previously accepted private static-mask dual-graph R5
+deployment. Each arm retained 20 requests (five per process) in
+`A,B,B,A,A,B,B,A` order after one excluded warmup per process:
 
 | metric | accepted R5 A | combined B | result |
 |---|---:|---:|---:|
@@ -704,6 +740,12 @@ excluded warmup per process:
 All four paired blocks were positive. Every excluded warmup and all 40 retained
 responses matched the official seed-7 oracle bitwise; the negative control was
 rejected. Peak process memory was 12,282 MiB.
+
+This is single-fixture evidence: all requests use one frozen prompt/image pair
+and layout. Raw samples and compiler/lifecycle artifacts remain owner-retained
+outside this repository, with a public content-hash manifest in the OMoE
+archive linked from PR #17. Maintainer reproduction is pending, so this result
+is not independent evidence of a general or native DM05 port.
 
 This is an integrated source-plus-runtime comparison: A used the accepted R5
 source commits, while B used this ApxInf source with official OpenDM `e41e501`.
@@ -722,10 +764,10 @@ This is useful evidence that the optimized path improves performance relative
 to the official execution path for the frozen request, but it is not the formal
 speedup claim. The `default` sentinel and combined formal arm were not collected
 as a balanced, matched ABBA comparison and have different sample populations.
-The only promotion-qualified performance claim is therefore the 10.10% HTTP
-improvement over accepted R5 reported above. The `default` sentinel preserves
-and checks the official rollback path; it does not establish a second formal
-speedup ratio.
+The owner's only formal performance result is therefore the 10.10% HTTP
+improvement over private accepted R5 reported above. The `default` sentinel
+preserves and checks the official rollback path; it does not establish a
+second formal speedup ratio.
 
 Cold initialization remains a deliberate limitation. Median excluded warmup
 latency was 3,251.220 ms for R5 and 5,562.208 ms for the combined selector, an
@@ -764,9 +806,10 @@ That evaluation is intentionally delegated to ApxInf maintainers: run
 `dexbotic-benchmark` with 50 trials per task across `libero_spatial`,
 `libero_goal`, `libero_object`, and `libero_10`, then retain the resulting
 `results.json`, configuration, logs, and rollout videos. Those simulator
-rollouts exercise changing images and robot state, repeated replanning, and
-task completion; the frozen HTTP request and bitwise oracle checks above do not
-replace them.
+rollouts exercise changing images, repeated replanning, robot interaction, and
+task completion; the pinned checkpoint still validates but does not consume
+the state field because `add_state=False`. The frozen HTTP request and bitwise
+oracle checks above do not replace closed-loop evaluation.
 
 Accordingly, this PR makes no claim that it reproduces, preserves, or improves
 the reported 99.0% LIBERO task-success rate. It establishes only the stated

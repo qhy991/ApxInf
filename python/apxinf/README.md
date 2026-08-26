@@ -25,9 +25,14 @@ apxinf/
 └── __init__.py   facade: Model (lazy), concrete policies, AutoPolicy, steps
 ```
 
-**Adding a model:** drop `apxinf/policies/impls/<name>.py` following `pi05.py`
-(decorate the class with `@register_policy("<name>")`), then re-export it from
-`apxinf/policies/impls/__init__.py`. `AutoPolicy` picks it up automatically.
+**Adding a policy adapter:** after its model runtime is maintained, add
+`apxinf/policies/impls/<name>.py` following `pi05.py` (decorate the class with
+`@register_policy("<name>")`), then re-export it from
+`apxinf/policies/impls/__init__.py`. `AutoPolicy` picks it up automatically. A
+complete model port follows [`doc/porting-workflow.md`](../../doc/porting-workflow.md):
+new VLA architectures ordinarily start in `crates/apxinf-model/src/<model>/`
+and implement Rust `VlaRuntime`; adding only a Python policy is not completion
+of that workflow.
 
 ## Layers
 
@@ -132,11 +137,14 @@ result["timing"]    # {"model_ms": ..., "total_ms": ...}
 ```
 
 For `config.json:model_type == "dm05"`, `AutoPolicy` selects `Dm05Policy`.
-DM05-libero support is fixed to BF16, two ordered images, an 8D Franka state,
-ten diffusion steps, and a 10x7 action chunk. `execution_backend="default"`
-uses the official model path; `"default_exact_combined"` is opt-in and
-uses ApxInf's model-local fail-closed implementation behind the neutral
-`RuntimeFactory` seam. See the root README's
+DM05-libero is intentionally a pinned external OpenDM deployment adapter, not a
+native ApxInf `VlaRuntime` port. Its wire contract is fixed to BF16, two ordered
+images, a required 8D Franka state field, ten diffusion steps, and a 10x7 action
+chunk. The state is shape-validated but not consumed because the pinned
+checkpoint uses `add_state=False`. `execution_backend="default"` uses the
+official model path; `"default_exact_combined"` is opt-in and uses ApxInf's
+Python/Triton fail-closed specialization behind the neutral `RuntimeFactory`
+seam. See the root README's
 **DM05-libero HTTP deployment** section for the immutable source/checkpoint
 identity, license boundary, server command, and request schema.
 
