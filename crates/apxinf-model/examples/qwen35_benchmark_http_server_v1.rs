@@ -528,32 +528,61 @@ fn compact_generation_path_receipt(receipt: Value) -> Result<Value, String> {
                 && boundary["terminal_error"] == false
         });
     let decode_api_calls = decode.get("calls").and_then(Value::as_u64).unwrap_or(0);
+    let teacher_calls = decode
+        .get("teacher_calls")
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::MAX);
     let tail_transactions = decode
         .get("tail_transactions")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let successful_tail_transactions = decode
+        .get("successful_transactions")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let failed_tail_transactions = decode
+        .get("failed_transactions")
+        .and_then(Value::as_u64)
+        .unwrap_or(u64::MAX);
+    let prefill_body_calls = object
+        .get("prefill_body_calls")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let prefill_head_calls = object
+        .get("prefill_head")
+        .and_then(|head| head.get("calls"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let terminal_clear = object.get("terminal_error") == Some(&Value::Bool(false))
         && decode.get("terminal_error") == Some(&Value::Bool(false));
     if !initial_valid
         || !boundaries_valid
+        || prefill_body_calls != 1
+        || prefill_head_calls != 1
+        || decode_api_calls != expected_decode_calls
+        || teacher_calls != 0
         || tail_transactions != expected_decode_calls
+        || successful_tail_transactions != expected_decode_calls
+        || failed_tail_transactions != 0
         || !terminal_clear
     {
-        return Err("generation path receipt failed body/tail/terminal postconditions".into());
+        return Err(
+            "generation path receipt failed prefill/body/decode/tail/terminal postconditions"
+                .into(),
+        );
     }
     Ok(json!({
         "format": object.get("format"),
         "mechanism": object.get("mechanism"),
         "gdn_core_profile": object.get("gdn_core_profile"),
-        "prefill_body_calls": object.get("prefill_body_calls"),
-        "prefill_head_calls": object
-            .get("prefill_head")
-            .and_then(|head| head.get("calls")),
+        "prefill_body_calls": prefill_body_calls,
+        "prefill_head_calls": prefill_head_calls,
         "expected_decode_calls": expected_decode_calls,
         "decode_api_calls": decode_api_calls,
+        "teacher_calls": teacher_calls,
         "tail_transactions": tail_transactions,
-        "successful_tail_transactions": decode.get("successful_transactions"),
-        "failed_tail_transactions": decode.get("failed_transactions"),
+        "successful_tail_transactions": successful_tail_transactions,
+        "failed_tail_transactions": failed_tail_transactions,
         "initial_valid": initial_valid,
         "boundaries_valid": boundaries_valid,
         "optimized_excluding_decode_api_hit": decode_api_calls == expected_decode_calls,
@@ -1432,6 +1461,7 @@ mod tests {
             "boundaries": vec![boundary; 5],
             "decode_head": {
                 "calls": 127,
+                "teacher_calls": 0,
                 "tail_transactions": 127,
                 "successful_transactions": 127,
                 "failed_transactions": 0,
@@ -1443,11 +1473,28 @@ mod tests {
         assert_eq!(compact["prefill_body_calls"], 1);
         assert_eq!(compact["prefill_head_calls"], 1);
         assert_eq!(compact["decode_api_calls"], 127);
+        assert_eq!(compact["teacher_calls"], 0);
         assert_eq!(compact["optimized_excluding_decode_api_hit"], true);
 
-        let mut invalid = receipt;
-        invalid["boundaries"][3]["failed_decodes"] = json!(1);
-        assert!(compact_generation_path_receipt(invalid).is_err());
+        let mut invalid_boundary = receipt.clone();
+        invalid_boundary["boundaries"][3]["failed_decodes"] = json!(1);
+        assert!(compact_generation_path_receipt(invalid_boundary).is_err());
+
+        let mut invalid_prefill = receipt.clone();
+        invalid_prefill["prefill_head"]["calls"] = json!(0);
+        assert!(compact_generation_path_receipt(invalid_prefill).is_err());
+
+        let mut invalid_decode = receipt.clone();
+        invalid_decode["decode_head"]["calls"] = json!(126);
+        assert!(compact_generation_path_receipt(invalid_decode).is_err());
+
+        let mut invalid_teacher = receipt.clone();
+        invalid_teacher["decode_head"]["teacher_calls"] = json!(1);
+        assert!(compact_generation_path_receipt(invalid_teacher).is_err());
+
+        let mut invalid_tail = receipt;
+        invalid_tail["decode_head"]["successful_transactions"] = json!(126);
+        assert!(compact_generation_path_receipt(invalid_tail).is_err());
     }
 
     #[test]
