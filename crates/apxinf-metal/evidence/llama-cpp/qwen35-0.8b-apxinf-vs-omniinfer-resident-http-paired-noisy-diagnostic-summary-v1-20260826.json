@@ -1,0 +1,214 @@
+{
+  "format": "apxinf-qwen35-apxinf-vs-omniinfer-resident-http-paired-noisy-diagnostic-summary-v1",
+  "schema_version": 1,
+  "created_at_utc": "2026-08-26T08:49:39Z",
+  "created_at_local": "2026-08-26T16:49:39+0800",
+  "status": "COMPLETE_NON_FORMAL_DIAGNOSTIC_UNSTABLE_NO_RANKING",
+  "qualification": "NON_FORMAL_DIAGNOSTIC_NOT_IN_FROZEN_GATE_CUSTODY",
+  "decision": {
+    "publish_named_deployment_observations": true,
+    "formal_evidence_eligible": false,
+    "formal_summary_allowed": false,
+    "engine_winner_or_ranking_claim_allowed": false,
+    "production_superiority_or_default_activation_allowed": false,
+    "reason": "The quiet-host receipt failed and every predeclared diagnostic stability gate failed. The observations are useful for optimization direction only."
+  },
+  "evidence_chain": {
+    "candidate_commit": "be3b3b3bb68248f6f34f151ba87ee7c5d2078d1d",
+    "driver": {
+      "path": "benchmarks/cross_runtime/apxinf_vs_omniinfer_http_driver_v1.py",
+      "size_bytes": 65263,
+      "sha256": "efc7fe43582b2519290172196d93b4e1e1cd62573e1004dda2c40ad25a728fde"
+    },
+    "apxinf_http_adapter_binary": {
+      "build_profile": "release",
+      "embedded_candidate_commit": "be3b3b3bb68248f6f34f151ba87ee7c5d2078d1d",
+      "size_bytes": 7827040,
+      "sha256": "e35e72629f7087fe1782a9fd5ce4a514979d7825187c1ece48bb805c4f628fa3"
+    },
+    "raw_receipt": {
+      "repository_copy_committed": false,
+      "capture_path": "/private/tmp/apxinf-vs-omni-http-v5-paired-noisy-run1.json",
+      "size_bytes": 2282562,
+      "sha256": "3da4c6bb63fc0282b84a7444fb43a4e71332f9276a4fb947835df09b8110030e"
+    },
+    "quiet_host_receipt": {
+      "path": "/private/tmp/apxinf-v5-quiet-host-failed-20260826T1635.json",
+      "size_bytes": 724,
+      "sha256": "2cd801b8e067659f5cd3601676c6a7b3e1092269bb263e658d0798023fb3819f",
+      "passed": false
+    }
+  },
+  "named_deployments": {
+    "B_apxinf": {
+      "description": "ApxInf resident HTTP adapter with the production Metal fused-C candidate path",
+      "model_revision": "Qwen/Qwen3.5-0.8B@2fc06364715b967f1860aea9cf38778875588b17",
+      "actual_model_dir": "/Users/haiyan-mini/Agent4Kernel/.apxinf-models/Qwen3.5-0.8B-2fc063647",
+      "weight_regime": "custom G32/G64 W8 hybrid with CPU F32 remainder and tied-F32 exact candidate rerank",
+      "source_lock": {
+        "path": "/Users/haiyan-mini/Agent4Kernel/ApxInf/.apxinf/onboarding/qwen35-0.8b/source-lock.json",
+        "size_bytes": 40486,
+        "sha256": "55a43c039fe03cbe0c5a2feefffa46eba526db394a2ce3fa03075945d50ca268",
+        "custody_status": "read-only diagnostic receipt; not frozen GateCustody"
+      },
+      "resident_model": true,
+      "resident_tokenizer": true
+    },
+    "G_omniinfer": {
+      "description": "OmniInfer v0.3.26 gateway with its managed llama.cpp-mac b10280 backend",
+      "omniinfer_binary": {
+        "size_bytes": 9719136,
+        "sha256": "65487424ca9179850b80079beafa5ad69a66e0841d328ee8dd8a1fd4b613d661"
+      },
+      "llama_cpp_backend_binary": {
+        "release": "b10280",
+        "source_commit": "61881b1f7f0b13d9e46d561fc25afcd6bbaec479",
+        "size_bytes": 33472,
+        "sha256": "02723fc39fbeebd9849ce4c9ca3799649df3cf91f101c2cd56b8756e1db54d28"
+      },
+      "gguf": {
+        "path": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+        "quantization": "Q8_0",
+        "size_bytes": 811843072,
+        "sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c"
+      },
+      "runtime_identity_cross_checked": true,
+      "resident_identity_start_end_equal": true
+    },
+    "artifact_boundary": {
+      "same_upstream_model_revision": true,
+      "same_serialized_weight_artifact": false,
+      "interpretation": "This is a comparison of two named resident deployments, not a same-engine gateway increment or an identical-artifact kernel comparison."
+    }
+  },
+  "fixed_request_contract": {
+    "semantic_prompt": "Hello",
+    "prompt_tokens_reported_by_both_deployments": 13,
+    "completion_tokens": 128,
+    "stream": false,
+    "temperature": 0,
+    "seed": 0,
+    "concurrency": 1,
+    "same_canonical_body_for_both_arms": true,
+    "canonical_body_size_bytes": 383,
+    "canonical_body_sha256": "7773f5337693843f1e8cf3017b98868517cbddd3bc32649e550d8f2fec1d5cf6",
+    "suppressed_eog_policy": {
+      "semantics": "negative infinity before greedy selection",
+      "token_ids": [248044, 248046, 248063, 248064, 248065],
+      "generated_eog_hits_required": 0
+    },
+    "cross_runtime_trajectory_equality_required": false,
+    "reason_cross_runtime_equality_is_not_required": "The named deployments use different serialized weight formats and numerical regimes; each runtime must instead be deterministic and satisfy the same request and EOG policy."
+  },
+  "sampling_contract": {
+    "warmup_pairs": 4,
+    "measured_pairs": 64,
+    "measured_blocks": 16,
+    "pairs_per_block": 4,
+    "requests_per_arm_including_warmup": 68,
+    "paired_order": "balanced alternating BG/GB within every block",
+    "cache_reset": "acknowledged slot-0 clear immediately before every request and outside the primary timed interval",
+    "no_retry": true,
+    "no_resample": true,
+    "no_outlier_removal": true,
+    "timing_start": "immediately before one sendall of the complete pre-serialized HTTP request wire",
+    "timing_end": "immediately after the complete response body was read",
+    "json_parse_and_semantic_validation_after_timing_end": true
+  },
+  "contract_audit": {
+    "all_136_generation_requests_http_200": true,
+    "all_generation_wires_same_383_byte_body": true,
+    "all_generation_connections_had_zero_reconnects": true,
+    "all_generation_requests_used_one_sendall": true,
+    "all_cache_clear_receipts_acknowledged_slot_0": true,
+    "all_omniinfer_requests_reported_cache_n_0_and_usage_cached_tokens_0": true,
+    "all_omniinfer_requests_reported_tokens_cached_140_after_generation": true,
+    "all_requests_returned_13_prompt_and_128_completion_tokens": true,
+    "all_requests_generated_no_suppressed_eog": true,
+    "apxinf_unique_trajectory_hash_count": 1,
+    "omniinfer_unique_trajectory_hash_count": 1,
+    "apxinf_generated_token_ids_sha256": "d36c8570e71953db5f5bc919b45108dee47a704b975c3b5785f0063519ce46d0",
+    "omniinfer_generated_token_ids_sha256": "0a8a6c5ceeb831528480ebcad172fbcdda4ac23478ab051b1f74a00ec6d4f8e4",
+    "per_runtime_determinism_passed": true,
+    "raw_statistics_independently_recomputed": true,
+    "embedded_core_statistics_exactly_matched": true
+  },
+  "results": {
+    "primary_metric": "client-observed full HTTP response wall for 128 returned tokens",
+    "B_apxinf_client_wall_ms": {
+      "count": 64,
+      "mean": 2078.619153703125,
+      "median": 2148.2012295,
+      "min": 1842.753125,
+      "max": 2482.013,
+      "population_cv": 0.07902969955670845,
+      "derived_completion_tokens_per_client_wall_second": 61.57934211852325
+    },
+    "G_omniinfer_client_wall_ms": {
+      "count": 64,
+      "mean": 1582.44716728125,
+      "median": 1591.3850415000002,
+      "min": 1463.069875,
+      "max": 1748.674625,
+      "population_cv": 0.04147759778909034,
+      "derived_completion_tokens_per_client_wall_second": 80.88737661928553
+    },
+    "paired_G_omniinfer_minus_B_apxinf_client_wall_ms": {
+      "unit_of_analysis": "16 four-pair block means",
+      "degrees_of_freedom": 15,
+      "mean": -496.17198642187503,
+      "sample_sd": 124.37542239795577,
+      "standard_error": 31.093855599488943,
+      "ci95_lower": -562.4469708090929,
+      "ci95_upper": -429.89700203465713
+    },
+    "paired_G_omniinfer_over_B_apxinf_client_wall_ratio": {
+      "unit_of_analysis": "16 means of four pairwise log ratios",
+      "degrees_of_freedom": 15,
+      "geometric_mean_ratio": 0.7630344811012699,
+      "ci95_ratio_lower": 0.7404269568878412,
+      "ci95_ratio_upper": 0.7863322829258881
+    },
+    "runtime_reported_secondary_diagnostic_only": {
+      "B_apxinf_mean_tpot_ms": 15.385861484374999,
+      "B_apxinf_median_tpot_ms": 15.904469500000001,
+      "B_apxinf_mean_ttft_ms": 112.38755659375,
+      "G_omniinfer_mean_predicted_per_token_ms": 12.014136352539063,
+      "G_omniinfer_median_predicted_per_token_ms": 12.07234375,
+      "G_omniinfer_mean_prompt_ms": 43.034078125,
+      "warning": "These are runtime-native secondary fields with different implementations; the paired client wall above is the only shared timing boundary."
+    }
+  },
+  "admission_and_stability": {
+    "quiet_host_gate": {
+      "passed": false,
+      "maximum_observed_webkit_gpu_cpu_percent": 100.0,
+      "maximum_observed_logitech_cpu_percent": 81.3,
+      "reason": "A non-allowlisted process exceeded the 5 percent CPU threshold."
+    },
+    "all_diagnostic_stability_gates_passed": false,
+    "gates": {
+      "quiet_host_operator_gate_passed": false,
+      "apxinf_wall_population_cv_le_1pct": false,
+      "omniinfer_wall_population_cv_le_1pct": false,
+      "paired_delta_sd_over_pooled_wall_le_1pct": false,
+      "primary_ci95_half_width_le_2ms": false,
+      "order_stratum_difference_within_threshold": false,
+      "front_back_block_difference_within_threshold": false
+    },
+    "observed_order_stratum_difference_ms": 9.720160218749982,
+    "observed_front_back_block_difference_ms": 65.37831378125003,
+    "predeclared_order_and_drift_threshold_ms": 3.661066320984375
+  },
+  "interpretation": {
+    "supported": "Under this exact noisy-host diagnostic run, the OmniInfer named deployment had the lower paired full-response wall time. Both deployments were internally deterministic and satisfied the shared request, cold-cache, completion-count, and five-EOG suppression contracts.",
+    "not_supported": "The run does not establish a formal engine winner, production ranking, quality equivalence, identical-artifact performance, or a default-activation decision. Its host admission and stability gates failed, and the two deployments use different serialized weight regimes and different deterministic token trajectories.",
+    "formal_follow_up": "Run a separately frozen ApxInf-versus-OmniInfer formal campaign with schema-validated quiet-host custody, continuous host monitoring, live binary/source/model file-descriptor custody, externally observed OmniInfer tokenization, crash-safe one-shot raw receipts, and the same paired HTTP wall boundary."
+  },
+  "shutdown": {
+    "apxinf_adapter_completed_exactly_68_requests_and_exited_naturally": true,
+    "omniinfer_gateway_stopped_with_its_supported_cli": true,
+    "ports_9000_and_9100_verified_closed": true,
+    "unrelated_user_or_system_processes_modified_or_terminated": false
+  }
+}
