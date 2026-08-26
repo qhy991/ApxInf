@@ -1,0 +1,35 @@
+{
+  "format": "apxinf-qwen35-full-attention-inplace-predeclared-diagnostic-v1",
+  "date": "2026-08-26",
+  "qualification": "real-model paired diagnostic on a noisy host; not formal promotion or cross-runtime evidence",
+  "base_commit": "8454f46151a882f141acc11beda9cb1515617155",
+  "hypothesis": "reusing uniquely owned CPU F32 activation allocations for full-attention normalization, sigmoid, gating, and residual arithmetic removes 30 allocations and 184320 written bytes per decode token without changing arithmetic",
+  "scope": {
+    "full_attention_layers": 6,
+    "allocations_removed_per_layer": 5,
+    "bytes_removed_per_layer": 30720,
+    "allocations_removed_per_decode_token": 30,
+    "bytes_removed_per_decode_token": 184320,
+    "unchanged": [
+      "projection weight traffic and FLOPs",
+      "KV cache layout and append ordering",
+      "Metal command, dispatch, and wait topology",
+      "CUDA and other Backend implementations use allocation-preserving default fallbacks"
+    ]
+  },
+  "correctness_gate": {
+    "in_place_outputs_bitwise_equal_to_allocating_CPU_references": true,
+    "pointer_receipts_prove_unique_allocations_are_retained": true,
+    "all_existing_core_and_Qwen35_feature_tests_pass": true,
+    "all_eight_real_model_path_receipts_pass": true,
+    "all_eight_128_token_trajectory_hashes_match": true
+  },
+  "performance_gate": {
+    "workload": "Qwen/Qwen3.5-0.8B, prompt Hello/raw13, 128 greedy output tokens, current boundary-tail plus fused-GDN path",
+    "slot_order": ["A", "B", "B", "A", "B", "A", "A", "B"],
+    "four_paired_blocks_all_positive": true,
+    "A_vs_B_even_median_tpot_improvement_at_least_percent": 0.5,
+    "no_outlier_removal_or_replacement_samples": true
+  },
+  "decision_rule": "retain the runtime route only if every correctness and performance gate passes; otherwise revert the route and publish a rejection record"
+}

@@ -1,0 +1,111 @@
+{
+  "format": "apxinf-qwen35-full-attention-inplace-rejected-diagnostic-v1",
+  "date": "2026-08-26",
+  "qualification": "real-model paired diagnostic on a noisy host; not formal promotion or cross-runtime evidence",
+  "predeclaration": "doc/20260823-qwen35-macos-bringup/qwen35-full-attention-inplace-predeclared-diagnostic-20260826.json",
+  "predeclaration_sha256": "a567177b16d8ce7f99897b8ec78d81377cc8dc198259c3ca556a41ad4b40aaab",
+  "base_commit": "8454f46151a882f141acc11beda9cb1515617155",
+  "candidate": {
+    "hypothesis": "reuse uniquely owned CPU F32 activation allocations in the six full-attention layers",
+    "static_savings_per_decode_token": {
+      "allocations": 30,
+      "written_bytes": 184320
+    },
+    "runtime_change_retained": false
+  },
+  "fixed_workload": {
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "checkpoint_sha256": "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
+    "path": "metal-w8-mlp-stack3-boundary-tail-head-gdn-core-fused-v1",
+    "prompt": "Hello",
+    "prompt_token_count": 13,
+    "output_tokens": 128,
+    "ordering": ["A", "B", "B", "A", "B", "A", "A", "B"],
+    "host": "not quiet: WebKit GPU remained near 100%; paired diagnostic only",
+    "outlier_removal": false,
+    "replacement_or_additional_samples_after_gate_failure": false
+  },
+  "arm_semantics": {
+    "A": "base commit 8454f46151a882f141acc11beda9cb1515617155",
+    "B": "candidate with CPU assign primitives and owned full-attention activation reuse",
+    "shared": "same checkpoint, prompt, tokenizer, output count, execution-lane source, and release features"
+  },
+  "source_identity": {
+    "screen_source": "crates/apxinf-model/examples/qwen35_short_sdpa_boundary_tail_screen.rs",
+    "screen_source_sha256": "753a3721cecbf89c1372e53f7f74b5e779705d7fa067c7dd1c7433edade47a7d",
+    "candidate_source_patch_sha256": null,
+    "candidate_source_custody_limit": "the candidate patch was not separately hashed before the predeclared failure triggered its required revert; the frozen single-link candidate binary is the retained candidate identity"
+  },
+  "binaries": {
+    "A": {
+      "sha256": "90fd71dc7e0d54570e6d1677ec1503daf68d1c6746360b8928aa8f7aada73665",
+      "size_bytes": 7642176,
+      "nlink": 1,
+      "inode": 5247670345
+    },
+    "B": {
+      "sha256": "e6daecb10b1490294058d057594cd09dd55db2bce834c41311253b8023ca845a",
+      "size_bytes": 7658880,
+      "nlink": 1,
+      "inode": 5247669380
+    }
+  },
+  "candidate_correctness": {
+    "assign_primitive_tests_passed": 2,
+    "core_default_tests_passed": 38,
+    "core_accelerate_tests_passed": 39,
+    "qwen35_filtered_tests_passed": 91,
+    "openblas_only_check_passed": true,
+    "model_default_check_passed": true,
+    "model_accelerate_metal_check_passed": true,
+    "cuda_library_check_passed_without_hardware": true,
+    "full_model_pointer_receipt_collected": false,
+    "all_eight_path_receipts_passed": true,
+    "all_eight_token_trajectories_match": true
+  },
+  "slots": [
+    {"slot": 1, "arm": "A", "tpot_ms": 14.4729977007874, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+    {"slot": 2, "arm": "B", "tpot_ms": 14.214760503937008, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+    {"slot": 3, "arm": "B", "tpot_ms": 13.966458007874015, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+    {"slot": 4, "arm": "A", "tpot_ms": 13.739110236220473, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+    {"slot": 5, "arm": "B", "tpot_ms": 13.854183724409449, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+    {"slot": 6, "arm": "A", "tpot_ms": 13.702932740157479, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+    {"slot": 7, "arm": "A", "tpot_ms": 13.735162070866142, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+    {"slot": 8, "arm": "B", "tpot_ms": 13.70354987401575, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"}
+  ],
+  "result": {
+    "paired_improvement_percent": [
+      1.7842688998447351,
+      -1.6547488719770582,
+      -1.1037854970178567,
+      0.23015525180766488
+    ],
+    "positive_pairs": 2,
+    "required_positive_pairs": 4,
+    "A_even_median_tpot_ms": 13.737136153543307,
+    "B_even_median_tpot_ms": 13.910320866141731,
+    "even_median_improvement_percent": -1.26070463787136,
+    "required_even_median_improvement_percent": 0.5,
+    "all_pairs_positive": false,
+    "all_pairs_positive_gate_passed": false,
+    "even_median_threshold_gate_passed": false,
+    "performance_gate_passed": false,
+    "token_trajectory_hash_encoding": "SHA-256 of the generated token ID array serialized as compact JSON with no trailing newline"
+  },
+  "decision": {
+    "status": "REJECTED_UNSTABLE",
+    "runtime_change_retained": false,
+    "reason": "two of four paired blocks regressed and the pooled even-median TPOT regressed by 1.26%; the predeclared all-positive and >=0.5% median rules both failed, and no replacement samples are allowed",
+    "post_revert_runtime_blobs": {
+      "crates/apxinf-core/src/backend.rs": "181778d116a695ea532f541ab1024667a0ca7bd7",
+      "crates/apxinf-core/src/op_impls/cpu.rs": "9da6179d7f79f82944e73457591aa57dda2212ad",
+      "crates/apxinf-model/src/qwen35/general.rs": "3d6077d13fce86fca4dcc06d20a1c2f514e78f49"
+    },
+    "post_revert_runtime_matches_base": true
+  },
+  "formal_gate": {
+    "run": false,
+    "reason": "the frozen full-attention one-shot host-quiet gate remained noisy and unconsumed"
+  }
+}

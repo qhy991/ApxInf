@@ -457,3 +457,10 @@ Its two single-observation lanes reproduce the exact same frozen 128-token
 free-run trajectory, while remaining explicitly non-formal because the host,
 thread-policy, repetition, and teacher-forced cross-runtime gates are not yet
 closed.
+
+A follow-up CPU activation-reuse candidate was also rejected under its
+predeclared paired gate. Although all eight path receipts and 128-token
+trajectories matched, only two of four paired blocks improved and even-median
+TPOT regressed by 1.26%. The assign/runtime changes were removed; the fixed
+eight-slot receipt is preserved in
+[`qwen35-full-attention-inplace-rejected-diagnostic-20260826.json`](./qwen35-full-attention-inplace-rejected-diagnostic-20260826.json).
