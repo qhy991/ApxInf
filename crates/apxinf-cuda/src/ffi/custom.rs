@@ -87,6 +87,39 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_static_qwen25_omni_vision_packed_qkv_bias_rope_bf16(
+        packed_qkv: *const c_void,
+        query_bias: *const c_void,
+        key_bias: *const c_void,
+        value_bias: *const c_void,
+        query_output: *mut c_void,
+        key_output: *mut c_void,
+        value_output: *mut c_void,
+        sequence: i32,
+        heads: i32,
+        head_dim: i32,
+        theta: f32,
+        positions: *const c_void,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
+    pub fn apxinf_static_qwen25_omni_vision_packed_grouped_qkv_bias_rope_bf16(
+        packed_qkv: *const c_void,
+        query_bias: *const c_void,
+        key_bias: *const c_void,
+        value_bias: *const c_void,
+        query_output: *mut c_void,
+        key_output: *mut c_void,
+        value_output: *mut c_void,
+        sequence: i32,
+        heads: i32,
+        head_dim: i32,
+        theta: f32,
+        positions: *const c_void,
+        group_indices: *const c_void,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_static_qwen25_omni_vision_bias_residual_exact_bf16(
         projection: *const c_void,
         bias: *const c_void,

@@ -108,6 +108,7 @@ pub struct GeneralQwen25Omni {
     vision_bias_residual: bool,
     vision_gate_up_bias_silu_mul: bool,
     vision_grouped_qkv_layout: bool,
+    vision_packed_qkv: bool,
     #[cfg(feature = "cuda")]
     decode_graph: Option<Qwen25OmniDecodeGraph>,
     #[cfg(feature = "cuda")]
@@ -307,6 +308,8 @@ impl GeneralQwen25Omni {
         let mut text = text;
         let vision =
             Qwen25OmniVisionWeights::from_map(&config, &mut tensors)?.to_device(&*backend)?;
+        #[cfg(feature = "cuda")]
+        let mut vision = vision;
         let audio =
             Qwen25OmniAudioWeights::from_map(&config, &mut tensors)?.to_device(&*backend)?;
         if !tensors.is_empty() {
@@ -426,6 +429,26 @@ impl GeneralQwen25Omni {
         };
         #[cfg(not(feature = "cuda"))]
         let vision_grouped_qkv_layout = false;
+        #[cfg(feature = "cuda")]
+        let vision_packed_qkv = {
+            let enabled = parse_binary_env("APXINF_QWEN25_VISION_PACKED_QKV")
+                .map_err(Error::Other)?;
+            if enabled {
+                if !vision_grouped_qkv_layout {
+                    return Err(Error::Other(
+                        "APXINF_QWEN25_VISION_PACKED_QKV=1 requires APXINF_QWEN25_VISION_GROUPED_QKV_LAYOUT=1"
+                            .into(),
+                    ));
+                }
+                vision = vision.into_packed_qkv(&*backend)?;
+                eprintln!(
+                    "ApxInf Qwen2.5-Omni vision packed QKV: one projection with direct epilogue consumption"
+                );
+            }
+            enabled
+        };
+        #[cfg(not(feature = "cuda"))]
+        let vision_packed_qkv = false;
         #[cfg(feature = "cuda")]
         let long_decode_split_cta = if long_decode_split_cta_enabled()? {
             if !parse_binary_env("APXINF_TMROPE_POSITION_CACHE").map_err(Error::Other)? {
@@ -664,6 +687,7 @@ impl GeneralQwen25Omni {
             vision_bias_residual,
             vision_gate_up_bias_silu_mul,
             vision_grouped_qkv_layout,
+            vision_packed_qkv,
             #[cfg(feature = "cuda")]
             decode_graph,
             #[cfg(feature = "cuda")]
@@ -972,6 +996,7 @@ impl GeneralQwen25Omni {
                 self.vision_bias_residual,
                 self.vision_gate_up_bias_silu_mul,
                 self.vision_grouped_qkv_layout,
+                self.vision_packed_qkv,
             )?;
             hidden = scatter_replace(&hidden, &positions, &encoded, &*self.backend)?;
         }

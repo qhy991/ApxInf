@@ -3,7 +3,7 @@
 // Qwen2.5-Omni vision Q/K/V projection epilogue. The projection output is
 // first bias-added and rounded to BF16, then Q/K apply the incumbent 2-D RoPE
 // pair order while V publishes the rounded value directly.
-template <int kHeads, int kHeadDim, bool kGrouped>
+template <int kHeads, int kHeadDim, bool kGrouped, bool kPackedProjection>
 __global__ void qwen25_omni_vision_qkv_bias_rope_bf16_kernel(
     const __nv_bfloat16* query, const __nv_bfloat16* key,
     const __nv_bfloat16* value, const __nv_bfloat16* query_bias,
@@ -18,14 +18,17 @@ __global__ void qwen25_omni_vision_qkv_bias_rope_bf16_kernel(
   const int projection = blockIdx.z;
   if (output_token >= sequence) return;
   const int token = kGrouped ? group_indices[output_token] : output_token;
+  const int input_stride = kPackedProjection ? 3 * kHidden : kHidden;
+  const int projection_offset = kPackedProjection ? projection * kHidden : 0;
 
   if (projection == 2) {
     if (item >= kHidden) return;
-    const int64_t input_index = static_cast<int64_t>(token) * kHidden + item;
+    const int64_t input_index =
+        static_cast<int64_t>(token) * input_stride + projection_offset + item;
     const int64_t output_index =
         static_cast<int64_t>(output_token) * kHidden + item;
     value_output[output_index] = __float2bfloat16(
-        __bfloat162float(value[input_index]) +
+        __bfloat162float((kPackedProjection ? query : value)[input_index]) +
         __bfloat162float(value_bias[item]));
     return;
   }
@@ -33,13 +36,16 @@ __global__ void qwen25_omni_vision_qkv_bias_rope_bf16_kernel(
   if (item >= kHeads * kHalf) return;
   const int head = item / kHalf;
   const int pair = item - head * kHalf;
-  const int input_base = token * kHidden + head * kHeadDim;
+  const int input_base =
+      token * input_stride + projection_offset + head * kHeadDim;
   const int output_base = output_token * kHidden + head * kHeadDim;
   const int input_index0 = input_base + pair;
   const int input_index1 = input_base + kHalf + pair;
   const int output_index0 = output_base + pair;
   const int output_index1 = output_base + kHalf + pair;
-  const __nv_bfloat16* input = projection == 0 ? query : key;
+  const __nv_bfloat16* input = kPackedProjection
+      ? query
+      : (projection == 0 ? query : key);
   const __nv_bfloat16* bias = projection == 0 ? query_bias : key_bias;
   __nv_bfloat16* output = projection == 0 ? query_output : key_output;
   const __nv_bfloat16 rounded0 = __float2bfloat16(

@@ -177,7 +177,7 @@ extern "C" cudaError_t apxinf_static_qwen25_omni_vision_qkv_bias_rope_bf16(
   constexpr int kHidden = 16 * 80;
   constexpr int kThreads = 256;
   dim3 grid((kHidden + kThreads - 1) / kThreads, sequence, 3);
-  qwen25_omni_vision_qkv_bias_rope_bf16_kernel<16, 80, false><<<
+  qwen25_omni_vision_qkv_bias_rope_bf16_kernel<16, 80, false, false><<<
       grid, kThreads, 0, stream>>>(
       static_cast<const __nv_bfloat16*>(query),
       static_cast<const __nv_bfloat16*>(key),
@@ -209,11 +209,71 @@ apxinf_static_qwen25_omni_vision_grouped_qkv_bias_rope_bf16(
   constexpr int kHidden = 16 * 80;
   constexpr int kThreads = 256;
   dim3 grid((kHidden + kThreads - 1) / kThreads, sequence, 3);
-  qwen25_omni_vision_qkv_bias_rope_bf16_kernel<16, 80, true><<<
+  qwen25_omni_vision_qkv_bias_rope_bf16_kernel<16, 80, true, false><<<
       grid, kThreads, 0, stream>>>(
       static_cast<const __nv_bfloat16*>(query),
       static_cast<const __nv_bfloat16*>(key),
       static_cast<const __nv_bfloat16*>(value),
+      static_cast<const __nv_bfloat16*>(query_bias),
+      static_cast<const __nv_bfloat16*>(key_bias),
+      static_cast<const __nv_bfloat16*>(value_bias),
+      static_cast<__nv_bfloat16*>(query_output),
+      static_cast<__nv_bfloat16*>(key_output),
+      static_cast<__nv_bfloat16*>(value_output), sequence, theta,
+      static_cast<const uint32_t*>(positions),
+      static_cast<const uint32_t*>(group_indices));
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t
+apxinf_static_qwen25_omni_vision_packed_qkv_bias_rope_bf16(
+    const void* packed_qkv, const void* query_bias, const void* key_bias,
+    const void* value_bias, void* query_output, void* key_output,
+    void* value_output, int sequence, int heads, int head_dim, float theta,
+    const void* positions, cudaStream_t stream) {
+  if (packed_qkv == nullptr || query_bias == nullptr || key_bias == nullptr ||
+      value_bias == nullptr || query_output == nullptr || key_output == nullptr ||
+      value_output == nullptr || positions == nullptr || sequence <= 0 ||
+      sequence > 65535 || heads != 16 || head_dim != 80 || theta != 10000.0f) {
+    return cudaErrorInvalidValue;
+  }
+  constexpr int kHidden = 16 * 80;
+  constexpr int kThreads = 256;
+  dim3 grid((kHidden + kThreads - 1) / kThreads, sequence, 3);
+  const auto* input = static_cast<const __nv_bfloat16*>(packed_qkv);
+  qwen25_omni_vision_qkv_bias_rope_bf16_kernel<16, 80, false, true><<<
+      grid, kThreads, 0, stream>>>(
+      input, input, input,
+      static_cast<const __nv_bfloat16*>(query_bias),
+      static_cast<const __nv_bfloat16*>(key_bias),
+      static_cast<const __nv_bfloat16*>(value_bias),
+      static_cast<__nv_bfloat16*>(query_output),
+      static_cast<__nv_bfloat16*>(key_output),
+      static_cast<__nv_bfloat16*>(value_output), sequence, theta,
+      static_cast<const uint32_t*>(positions), nullptr);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t
+apxinf_static_qwen25_omni_vision_packed_grouped_qkv_bias_rope_bf16(
+    const void* packed_qkv, const void* query_bias, const void* key_bias,
+    const void* value_bias, void* query_output, void* key_output,
+    void* value_output, int sequence, int heads, int head_dim, float theta,
+    const void* positions, const void* group_indices, cudaStream_t stream) {
+  if (packed_qkv == nullptr || query_bias == nullptr || key_bias == nullptr ||
+      value_bias == nullptr || query_output == nullptr || key_output == nullptr ||
+      value_output == nullptr || positions == nullptr || group_indices == nullptr ||
+      sequence <= 0 || sequence > 65535 || heads != 16 || head_dim != 80 ||
+      theta != 10000.0f) {
+    return cudaErrorInvalidValue;
+  }
+  constexpr int kHidden = 16 * 80;
+  constexpr int kThreads = 256;
+  dim3 grid((kHidden + kThreads - 1) / kThreads, sequence, 3);
+  const auto* input = static_cast<const __nv_bfloat16*>(packed_qkv);
+  qwen25_omni_vision_qkv_bias_rope_bf16_kernel<16, 80, true, true><<<
+      grid, kThreads, 0, stream>>>(
+      input, input, input,
       static_cast<const __nv_bfloat16*>(query_bias),
       static_cast<const __nv_bfloat16*>(key_bias),
       static_cast<const __nv_bfloat16*>(value_bias),
