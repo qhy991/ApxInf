@@ -1056,11 +1056,11 @@ class Qwen35CrossRuntimeFormalV3DriverTests(unittest.TestCase):
         )
         self.assertEqual(
             loaded["contract_file"]["sha256"],
-            "b9ec4c08ba19f50e23205c40d279165079db6aeaf8cf795bd9bd750fd010786c",
+            "caa46b953f0abc0e58ffaa3725257fbbfabe4be49ca84aa0c523de8a16efb301",
         )
         self.assertEqual(
             loaded["validator_file"]["sha256"],
-            "f2a2b5abf102575e600ea5ff9d0a888754c8ecace3d18f4a236aa17abfb70fff",
+            "9e4586d60839180cf7be55b63f53ac0c9dea811149ee3b4b1c9c9ccd6f9a11cf",
         )
         self.assertTrue(loaded["validation"]["valid"])
 

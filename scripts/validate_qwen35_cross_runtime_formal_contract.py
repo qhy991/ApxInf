@@ -13,7 +13,7 @@ import sys
 CONTRACT_FORMAT = "apxinf-qwen35-cross-runtime-formal-predeclaration-v3"
 VALIDATION_FORMAT = "apxinf-qwen35-cross-runtime-formal-validation-v3"
 PINNED_CANONICAL_CONTRACT_SHA256 = (
-    "3b21953eb5eaa59fbdc7296ee5ddb7e70597427a1aeb49b28813660db1b89243"
+    "d2cc254970d6b856a976068b90dfe93b3daaa3206664520bdddcca3187e5d8fd"
 )
 _CAMPAIGN_ID = "qwen35-0.8b-cross-runtime-formal-v3-20260826"
 _SCOPE_SHA256 = "5a9869cdd6866bef4c030ba98144d98963d2a03a14bcded6ee12f0f180f51d18"
@@ -41,11 +41,11 @@ _CORE_CONTRACT_SHA256 = {
 _GATEWAY_CONTRACT_SHA256 = {
     "arm_B": "9e4ae268962dfe86c4853e7c5a943835124b621cd947a193bb0916e4979cb827",
     "arm_G": "473e476e15cec0fc12c8144571165a3b5ab5760c3f2772753da55e88e1bff850",
-    "edge": "891abaaacd9b5cc382b843be3a4c9afd2cf175b9cad65d6caa36e5848da24b1f",
+    "edge": "fe0c9e24118e9e44213a9bd89d455345efbc0ca86facdbd6ef9b1b3f0838235e",
     "workload": "6cbbea28e0022bba95e943b92f5c3d4073892370875ceb14993f7a58587d1085",
     "runtime": "6fc68682b83633524b81a27b8d6fa66f4e840d0612da72830bf4967a913df820",
     "execution": "08cb4a5be8a812252dd9917472bdb459df90ff5fbbc6966bf217e65105a5ab60",
-    "timing": "ebd4fad4c98d85cfbe9f67bc7067479596a5c929b9a046316e837b0aad1647ae",
+    "timing": "6a3289a219b8f0ad2e2f281c20e7675c144ca07706b63ecdd505805d63c35f37",
 }
 _DYNAMIC_RECEIPT_SHA256 = (
     "ce1de36206d2a242c3680a7159d2a6dabb0967e9f10193565dbb1347b6ed7e0d"
@@ -65,6 +65,57 @@ _CANONICAL_FREE128_PREFIX127_SHA256 = (
 _NATIVE_DEPLOYMENTS_SHA256 = (
     "d44bec19694ff2451c963136333d80b0ee5da9c4e86cc68d11d7625019a2b7f7"
 )
+_GATEWAY_MODEL_CUSTODY_PROOF_ID = (
+    "GATEWAY_CONTROLLER_HELD_VNODE_AND_BACKEND_FD_V3"
+)
+_GATEWAY_MODEL_FD_CHECKPOINTS_V3 = [
+    "prepare-before-any-generation",
+    "runtime-preflight-start",
+    "runtime-preflight-end",
+    "before-first-generation",
+    "after-warmups",
+    *[f"after-timed-macroblock-{index}" for index in range(16)],
+    "runtime-postflight-before-cleanup",
+]
+_GATEWAY_MODEL_CUSTODY_CONTRACT_V3 = {
+    "proof_id": _GATEWAY_MODEL_CUSTODY_PROOF_ID,
+    "controller_preload_fd": {
+        "owner": "driver-owned-custodian-daemon",
+        "required_open_flags": ["O_RDONLY", "O_NOFOLLOW", "O_CLOEXEC"],
+        "required_file_type": "single-link-regular",
+        "required_hard_link_count": 1,
+        "full_sha256_required": True,
+        "open_and_full_hash_must_complete_before": "gateway-and-backend-launch",
+        "held_continuously_from": "prepare-before-runtime-launch",
+        "held_continuously_through": "run-raw-receipt-durable-before-cleanup",
+    },
+    "backend_loaded_fd": {
+        "required_access_mode": "read-only",
+        "required_file_type": "single-link-regular",
+        "independent_observers": [
+            "libproc-PROC_PIDLISTFDS+PROC_PIDFDVNODEPATHINFO",
+            "lsof",
+        ],
+        "observers_must_agree": True,
+        "required_vnode_identity_fields": [
+            "device",
+            "inode",
+            "mode",
+            "link_count",
+            "size_bytes",
+            "ctime_ns",
+            "absolute_path",
+        ],
+        "must_equal_controller_preload_fd_vnode_identity": True,
+        "required_checkpoints": _GATEWAY_MODEL_FD_CHECKPOINTS_V3,
+    },
+    "claim_semantics": {
+        "same_backend_loaded_model_fd_shared_by_B_and_G_required": True,
+        "controller_and_backend_same_vnode_identity_required": True,
+        "controller_and_backend_same_open_file_description_required": False,
+        "controller_and_backend_same_open_file_description_claim_allowed": False,
+    },
+}
 _TOP_LEVEL_FIELDS = {
     "format",
     "schema_version",
@@ -1169,6 +1220,11 @@ def _validate_activation_and_custody(
         backend.get(field) != expected for field, expected in backend_expected.items()
     ):
         _fail("runtime custody gateway backend identity drifted")
+    if (
+        runtime.get("gateway_controller_backend_model_custody_v3")
+        != _GATEWAY_MODEL_CUSTODY_CONTRACT_V3
+    ):
+        _fail("runtime custody gateway controller/backend model proof drifted")
 
     required_executable_fields = {
         "absolute_path",
@@ -1218,7 +1274,11 @@ def _validate_gateway_edge(
         "estimand": "incremental client-observed full-response OmniInfer gateway-path latency over the exact same resident llama-server backend",
         "workload_id": "GATEWAY_RAW13_FREE128_V3",
         "same_backend_process_required": True,
-        "same_loaded_model_file_description_required": True,
+        "same_loaded_model_file_description_required": False,
+        "same_backend_loaded_model_fd_for_B_and_G_required": True,
+        "controller_and_backend_same_open_file_description_claim_allowed": False,
+        "controller_and_backend_same_vnode_identity_required": True,
+        "model_custody_proof_id": _GATEWAY_MODEL_CUSTODY_PROOF_ID,
         "engine_ranking_edge": False,
     }
     if any(edge.get(field) != expected for field, expected in edge_expected.items()):
@@ -1281,11 +1341,16 @@ def _validate_gateway_edge(
     timing = _object(timing_value, "gateway timing contract")
     gateway_timing = _object(timing.get("GATEWAY_B_VS_G"), "gateway timing boundary")
     timing_expected = {
-        "start": "immediately-before-writing-the-first-byte-of-the-identical-canonical-request-on-a-warmed-persistent-client-connection",
+        "start": "immediately-before-the-single-sendall-call-for-the-complete-pre-serialized-arm-specific-HTTP/1.1-request-wire-containing-the-identical-canonical-383-byte-JSON-body-on-a-warmed-persistent-client-connection",
         "end": "after-reading-the-full-response-body-and-validating-and-parsing-the-complete-JSON-response",
         "primary_metric": "client_full_response_wall_ms",
         "paired_delta_ms": "G_client_full_response_wall_ms - B_client_full_response_wall_ms",
         "paired_ratio": "G_client_full_response_wall_ms / B_client_full_response_wall_ms",
+        "complete_HTTP_request_wire_serialization_before_start": True,
+        "single_sendall_call_for_complete_request_wire_required": True,
+        "canonical_383_byte_JSON_body_identical_between_B_and_G": True,
+        "arm_specific_HTTP_authority_header_difference_is_inside_timed_region": True,
+        "body_only_timing_allowed": False,
         "backend_native_prompt_and_predicted_ms_are_sensitivity_metrics_only": True,
         "gateway_overhead_subtraction_from_ApxInf_or_llama_core_allowed": False,
         "pure_gateway_CPU_time_claim_allowed": False,

@@ -120,7 +120,11 @@
         "estimand": "incremental client-observed full-response OmniInfer gateway-path latency over the exact same resident llama-server backend",
         "workload_id": "GATEWAY_RAW13_FREE128_V3",
         "same_backend_process_required": true,
-        "same_loaded_model_file_description_required": true,
+        "same_loaded_model_file_description_required": false,
+        "same_backend_loaded_model_fd_for_B_and_G_required": true,
+        "controller_and_backend_same_open_file_description_claim_allowed": false,
+        "controller_and_backend_same_vnode_identity_required": true,
+        "model_custody_proof_id": "GATEWAY_CONTROLLER_HELD_VNODE_AND_BACKEND_FD_V3",
         "engine_ranking_edge": false
       }
     },
@@ -678,6 +682,68 @@
         "future_resolution_may_be_proven_in_campaign_start_without_editing_this_contract": true
       }
     },
+    "gateway_controller_backend_model_custody_v3": {
+      "proof_id": "GATEWAY_CONTROLLER_HELD_VNODE_AND_BACKEND_FD_V3",
+      "controller_preload_fd": {
+        "owner": "driver-owned-custodian-daemon",
+        "required_open_flags": ["O_RDONLY", "O_NOFOLLOW", "O_CLOEXEC"],
+        "required_file_type": "single-link-regular",
+        "required_hard_link_count": 1,
+        "full_sha256_required": true,
+        "open_and_full_hash_must_complete_before": "gateway-and-backend-launch",
+        "held_continuously_from": "prepare-before-runtime-launch",
+        "held_continuously_through": "run-raw-receipt-durable-before-cleanup"
+      },
+      "backend_loaded_fd": {
+        "required_access_mode": "read-only",
+        "required_file_type": "single-link-regular",
+        "independent_observers": [
+          "libproc-PROC_PIDLISTFDS+PROC_PIDFDVNODEPATHINFO",
+          "lsof"
+        ],
+        "observers_must_agree": true,
+        "required_vnode_identity_fields": [
+          "device",
+          "inode",
+          "mode",
+          "link_count",
+          "size_bytes",
+          "ctime_ns",
+          "absolute_path"
+        ],
+        "must_equal_controller_preload_fd_vnode_identity": true,
+        "required_checkpoints": [
+          "prepare-before-any-generation",
+          "runtime-preflight-start",
+          "runtime-preflight-end",
+          "before-first-generation",
+          "after-warmups",
+          "after-timed-macroblock-0",
+          "after-timed-macroblock-1",
+          "after-timed-macroblock-2",
+          "after-timed-macroblock-3",
+          "after-timed-macroblock-4",
+          "after-timed-macroblock-5",
+          "after-timed-macroblock-6",
+          "after-timed-macroblock-7",
+          "after-timed-macroblock-8",
+          "after-timed-macroblock-9",
+          "after-timed-macroblock-10",
+          "after-timed-macroblock-11",
+          "after-timed-macroblock-12",
+          "after-timed-macroblock-13",
+          "after-timed-macroblock-14",
+          "after-timed-macroblock-15",
+          "runtime-postflight-before-cleanup"
+        ]
+      },
+      "claim_semantics": {
+        "same_backend_loaded_model_fd_shared_by_B_and_G_required": true,
+        "controller_and_backend_same_vnode_identity_required": true,
+        "controller_and_backend_same_open_file_description_required": false,
+        "controller_and_backend_same_open_file_description_claim_allowed": false
+      }
+    },
     "required_for_every_executable_or_library": [
       "absolute_path",
       "lstat_device_inode_mode_size_ctime",
@@ -848,11 +914,16 @@
       "model_load_time_is_primary": false
     },
     "GATEWAY_B_VS_G": {
-      "start": "immediately-before-writing-the-first-byte-of-the-identical-canonical-request-on-a-warmed-persistent-client-connection",
+      "start": "immediately-before-the-single-sendall-call-for-the-complete-pre-serialized-arm-specific-HTTP/1.1-request-wire-containing-the-identical-canonical-383-byte-JSON-body-on-a-warmed-persistent-client-connection",
       "end": "after-reading-the-full-response-body-and-validating-and-parsing-the-complete-JSON-response",
       "primary_metric": "client_full_response_wall_ms",
       "paired_delta_ms": "G_client_full_response_wall_ms - B_client_full_response_wall_ms",
       "paired_ratio": "G_client_full_response_wall_ms / B_client_full_response_wall_ms",
+      "complete_HTTP_request_wire_serialization_before_start": true,
+      "single_sendall_call_for_complete_request_wire_required": true,
+      "canonical_383_byte_JSON_body_identical_between_B_and_G": true,
+      "arm_specific_HTTP_authority_header_difference_is_inside_timed_region": true,
+      "body_only_timing_allowed": false,
       "backend_native_prompt_and_predicted_ms_are_sensitivity_metrics_only": true,
       "gateway_overhead_subtraction_from_ApxInf_or_llama_core_allowed": false,
       "pure_gateway_CPU_time_claim_allowed": false

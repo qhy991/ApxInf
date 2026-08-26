@@ -1146,10 +1146,16 @@ class Qwen35CrossRuntimeFormalContractTests(unittest.TestCase):
                 ].__setitem__("same_backend_process_required", False),
             ),
             (
-                "same model",
+                "controller/backend same open file description",
                 lambda contract: contract["comparison_graph"]["edges"][
                     "GATEWAY_B_VS_G"
-                ].__setitem__("same_loaded_model_file_description_required", False),
+                ].__setitem__("same_loaded_model_file_description_required", True),
+            ),
+            (
+                "gateway model custody proof",
+                lambda contract: contract["runtime_custody"][
+                    "gateway_controller_backend_model_custody_v3"
+                ].__setitem__("proof_id", "synthetic-proof"),
             ),
             (
                 "engine ranking",
@@ -1183,6 +1189,20 @@ class Qwen35CrossRuntimeFormalContractTests(unittest.TestCase):
                 lambda contract: contract["timing_contract"][
                     "GATEWAY_B_VS_G"
                 ].__setitem__("end", "after-response-headers"),
+            ),
+            (
+                "body-only timing",
+                lambda contract: contract["timing_contract"][
+                    "GATEWAY_B_VS_G"
+                ].__setitem__("body_only_timing_allowed", True),
+            ),
+            (
+                "split request wire writes",
+                lambda contract: contract["timing_contract"][
+                    "GATEWAY_B_VS_G"
+                ].__setitem__(
+                    "single_sendall_call_for_complete_request_wire_required", False
+                ),
             ),
             (
                 "cross-edge subtraction",
