@@ -1,0 +1,84 @@
+{
+  "format": "apxinf-qwen35-omniinfer-tokenize-preflight-diagnostic-v1",
+  "schema_version": 1,
+  "created_at_utc": "2026-08-26T09:09:48Z",
+  "created_at_local": "2026-08-26T17:09:48+0800",
+  "status": "COMPLETE_NON_FORMAL_PREFLIGHT",
+  "qualification": "NON_FORMAL_DIAGNOSTIC_TOKENIZATION_RECEIPT_NOT_IN_FROZEN_GATE_CUSTODY",
+  "claim_boundary": "One real OmniInfer gateway tokenization preflight only; no generation or performance sample was taken.",
+  "driver": {
+    "path": "benchmarks/cross_runtime/apxinf_vs_omniinfer_http_driver_v1.py",
+    "commit": "3e5294f72b859c9f988c328f9cf495ff7037196d",
+    "size_bytes": 74072,
+    "sha256": "ef3eb6359671d3ac8380114d4f2b0d5fb4aa1eab57f6d09cbda37fe6db95cf6a"
+  },
+  "runtime": {
+    "gateway": "OmniInfer v0.3.26",
+    "gateway_binary_sha256": "65487424ca9179850b80079beafa5ad69a66e0841d328ee8dd8a1fd4b613d661",
+    "backend": "llama.cpp-mac b10280",
+    "backend_source_commit": "61881b1f7f0b13d9e46d561fc25afcd6bbaec479",
+    "backend_binary_sha256": "02723fc39fbeebd9849ce4c9ca3799649df3cf91f101c2cd56b8756e1db54d28",
+    "model": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+    "model_sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c",
+    "model_restored_by_gateway": true,
+    "frozen_runtime_custody": false
+  },
+  "request": {
+    "authority": "http://127.0.0.1:9000",
+    "method": "POST",
+    "path": "/tokenize",
+    "body": {
+      "add_special": false,
+      "content": "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "parse_special": true,
+      "with_pieces": false
+    },
+    "size_bytes": 156,
+    "sha256": "617df3df640c21bf6c3c6460f78589476d50f0ee149e1d5699ff41f99502677b",
+    "outside_primary_generation_timing": true,
+    "generation_requests_before_or_during_preflight": 0
+  },
+  "transport": {
+    "http_status": 200,
+    "response_size_bytes": 82,
+    "response_sha256": "e39f6da548d1b9bef117e5f41a764f37a63a3838966226cc406725160a0765f1",
+    "connection": "omniinfer-generation",
+    "connection_generation": 1,
+    "reconnect_count": 0,
+    "socket_start_end_equal": true,
+    "direct_backend_endpoint_used": false
+  },
+  "validation": {
+    "observed_prompt_token_ids": [
+      248045,
+      846,
+      198,
+      9419,
+      248046,
+      198,
+      248045,
+      74455,
+      198,
+      248068,
+      271,
+      248069,
+      271
+    ],
+    "observed_prompt_token_count": 13,
+    "observed_prompt_token_ids_sha256": "4b890fa15ee3d7db4e9dd18bd79c6362d40e9e016ae4f9f74cb7fc420ef3b6d3",
+    "apxinf_fixed_prompt_token_ids_sha256": "4b890fa15ee3d7db4e9dd18bd79c6362d40e9e016ae4f9f74cb7fc420ef3b6d3",
+    "exact_cross_runtime_prompt_token_match": true,
+    "passed": true
+  },
+  "performance": {
+    "generation_samples": 0,
+    "latency_samples": 0,
+    "throughput_samples": 0,
+    "formal_result": false
+  },
+  "shutdown": {
+    "gateway_stopped_with_supported_omniinfer_cli": true,
+    "port_9000_verified_closed": true,
+    "unrelated_user_or_system_processes_modified_or_terminated": false
+  }
+}
