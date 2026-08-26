@@ -106,3 +106,7 @@ required-features = ["accelerate", "metal-w8"]
 [[example]]
 name = "qwen35_full_attention_decode_count6_ab_v1"
 required-features = ["accelerate", "metal-w8"]
+
+[[example]]
+name = "qwen35_short_sdpa_boundary_tail_screen"
+required-features = ["accelerate", "metal-w8"]

@@ -1,0 +1,166 @@
+{
+  "format": "apxinf-qwen35-short-gqa-sdpa-accelerate-diagnostic-v2",
+  "date": "2026-08-26",
+  "qualification": "checkpoint-free primitive screen plus real-model paired diagnostics on a noisy host; not formal promotion or cross-runtime evidence",
+  "scope": {
+    "change": "use grouped GQA BLAS from the first cached token only for Apple Accelerate and Qwen3.5-0.8B's exact 8Q/2KV/256D decode geometry",
+    "unchanged": [
+      "prefill keeps the 128-token grouped-BLAS cutoff",
+      "all other attention geometries keep the 128-token decode cutoff",
+      "OpenBLAS-only builds keep the 128-token decode cutoff",
+      "non-BLAS builds keep the scalar path"
+    ],
+    "base_commit": "bf663e4ee0396dd782fbd2c7278efd0a226202df",
+    "source_identity": {
+      "cpu_source_sha256": "ff875bbde5e6f7e317e91abda5ff2335b8382aa2ce02d036b3f280b7fa58bf8e",
+      "primitive_screen_sha256": "cfe9b68dc3e296cbecb6039c982d75ceb6cc158ea233ba6ef0dd7e3bff5dc4fe",
+      "real_screen_sha256": "753a3721cecbf89c1372e53f7f74b5e779705d7fa067c7dd1c7433edade47a7d"
+    }
+  },
+  "arm_semantics": {
+    "A": "base commit bf663e4 with the legacy 128-token decode cutoff",
+    "B": "the source-identified candidate with the 8Q/2KV/256D Accelerate decode cutoff set to one",
+    "shared": "same checkpoint, prompt, tokenizer, output count, execution-lane source, release features, and direct single-link binary size within each screen"
+  },
+  "predeclared_admission": {
+    "primitive": "grouped BLAS must be at least 10% faster at every admitted short-context point and max_abs must be <= 2e-5",
+    "target_real_model": "on the current boundary-tail plus fused-GDN topology, all four paired blocks must be positive, even-median TPOT improvement must be >= 2%, every lane receipt must pass, and all 128-token trajectory hashes must match",
+    "passed": true
+  },
+  "static_path_arithmetic": {
+    "prompt_tokens": 13,
+    "output_tokens": 128,
+    "decode_steps": 127,
+    "decode_kv_lengths": "14..140 inclusive",
+    "full_attention_layers": 6,
+    "calls_changed_by_candidate": 684,
+    "calls_changed_formula": "114 decode steps at kv_len 14..127 inclusive * 6 layers",
+    "already_grouped_legacy_calls": 78,
+    "already_grouped_formula": "13 decode steps at kv_len 128..140 inclusive * 6 layers",
+    "candidate_total_decode_sdpa_calls": 762,
+    "qualification": "static source/config arithmetic; the benchmark lane receipt does not directly count the SDPA branch"
+  },
+  "primitive_screen": {
+    "source": "crates/apxinf-core/examples/sdpa_screen.rs",
+    "backend": "Apple Accelerate CBLAS",
+    "shape": {
+      "query_heads": 8,
+      "kv_heads": 2,
+      "head_dim": 256,
+      "max_context": 256
+    },
+    "per_run_ordering": "ABBA/BAAB batches, six batch means per arm, central-two mean",
+    "runs": 5,
+    "all_tested_lengths_positive_in_every_run": true,
+    "worst_max_abs": 5.364e-7,
+    "max_abs_limit": 2e-5,
+    "representative_run": [
+      {"kv_len": 1, "grouped_us": 0.843, "scalar_us": 2.229, "speedup_x": 2.643, "max_abs": 0.0},
+      {"kv_len": 4, "grouped_us": 4.863, "scalar_us": 10.441, "speedup_x": 2.147, "max_abs": 1.192e-7},
+      {"kv_len": 8, "grouped_us": 2.939, "scalar_us": 14.398, "speedup_x": 4.899, "max_abs": 5.364e-7},
+      {"kv_len": 13, "grouped_us": 6.486, "scalar_us": 22.684, "speedup_x": 3.497, "max_abs": 3.278e-7},
+      {"kv_len": 14, "grouped_us": 7.143, "scalar_us": 22.934, "speedup_x": 3.211, "max_abs": 3.874e-7},
+      {"kv_len": 16, "grouped_us": 4.541, "scalar_us": 25.337, "speedup_x": 5.579, "max_abs": 4.955e-7},
+      {"kv_len": 24, "grouped_us": 6.768, "scalar_us": 50.750, "speedup_x": 7.498, "max_abs": 5.364e-7},
+      {"kv_len": 31, "grouped_us": 8.179, "scalar_us": 60.713, "speedup_x": 7.423, "max_abs": 1.490e-7},
+      {"kv_len": 32, "grouped_us": 6.594, "scalar_us": 56.258, "speedup_x": 8.532, "max_abs": 1.341e-7},
+      {"kv_len": 48, "grouped_us": 8.284, "scalar_us": 73.379, "speedup_x": 8.858, "max_abs": 1.490e-7},
+      {"kv_len": 64, "grouped_us": 11.405, "scalar_us": 112.840, "speedup_x": 9.894, "max_abs": 1.304e-7},
+      {"kv_len": 76, "grouped_us": 13.332, "scalar_us": 153.142, "speedup_x": 11.487, "max_abs": 9.779e-8},
+      {"kv_len": 77, "grouped_us": 11.602, "scalar_us": 117.589, "speedup_x": 10.135, "max_abs": 8.754e-8},
+      {"kv_len": 96, "grouped_us": 15.040, "scalar_us": 172.515, "speedup_x": 11.470, "max_abs": 7.451e-8},
+      {"kv_len": 112, "grouped_us": 16.584, "scalar_us": 205.177, "speedup_x": 12.372, "max_abs": 6.706e-8},
+      {"kv_len": 126, "grouped_us": 15.648, "scalar_us": 188.184, "speedup_x": 12.026, "max_abs": 9.686e-8},
+      {"kv_len": 127, "grouped_us": 16.680, "scalar_us": 218.818, "speedup_x": 13.119, "max_abs": 9.453e-8},
+      {"kv_len": 128, "grouped_us": 15.358, "scalar_us": 192.675, "speedup_x": 12.546, "max_abs": 1.118e-7},
+      {"kv_len": 140, "grouped_us": 19.983, "scalar_us": 248.712, "speedup_x": 12.447, "max_abs": 8.274e-8},
+      {"kv_len": 256, "grouped_us": 32.200, "scalar_us": 462.065, "speedup_x": 14.350, "max_abs": 5.402e-8}
+    ],
+    "rounded_speedup_x_by_kv_len_across_five_runs": {
+      "1": [2.643, 3.069, 2.761, 2.752, 2.708],
+      "4": [2.147, 2.520, 1.851, 2.200, 1.997],
+      "8": [4.899, 4.727, 4.570, 5.200, 4.637],
+      "13": [3.497, 3.103, 3.134, 3.246, 3.204],
+      "14": [3.211, 2.960, 2.979, 3.409, 3.261],
+      "16": [5.579, 5.630, 5.621, 5.711, 5.734],
+      "24": [7.498, 6.266, 6.185, 9.028, 6.205],
+      "31": [7.423, 8.509, 7.920, 6.885, 7.700],
+      "32": [8.532, 8.186, 10.195, 7.416, 8.754],
+      "48": [8.858, 8.847, 9.218, 8.899, 8.810],
+      "64": [9.894, 10.412, 10.741, 10.263, 9.689],
+      "76": [11.487, 10.005, 9.933, 10.737, 10.125],
+      "77": [10.135, 10.168, 10.197, 10.262, 9.931],
+      "96": [11.470, 11.272, 14.175, 12.176, 11.684],
+      "112": [12.372, 13.791, 11.771, 13.700, 12.490],
+      "126": [12.026, 12.225, 13.336, 12.080, 12.208],
+      "127": [13.119, 13.215, 12.206, 12.303, 12.374],
+      "128": [12.546, 13.074, 14.256, 12.605, 12.553],
+      "140": [12.447, 12.284, 12.185, 12.778, 12.362],
+      "256": [14.350, 15.905, 11.740, 14.948, 14.442]
+    }
+  },
+  "target_real_model_screen": {
+    "source": "crates/apxinf-model/examples/qwen35_short_sdpa_boundary_tail_screen.rs",
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "checkpoint_sha256": "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
+    "path": "metal-w8-mlp-stack3-boundary-tail-head-gdn-core-fused-v1",
+    "prompt": "Hello",
+    "prompt_token_count": 13,
+    "output_tokens": 128,
+    "ordering": ["A", "B", "B", "A", "B", "A", "A", "B"],
+    "host": "not quiet: WebKit GPU remained near 100%; paired diagnostic only",
+    "binaries": {
+      "A_sha256": "6ada308a32eb59c45cf0cee8a10133fb8a6f7cb6f5422c8afa58ba3e180079d3",
+      "B_sha256": "752eba00006b512469f34dbff695f0d9022637b92362076c1d7f555f2496e43e",
+      "size_bytes_each": 7642176,
+      "nlink_each": 1
+    },
+    "slots": [
+      {"slot": 1, "arm": "A", "tpot_ms": 15.755551181102362, "generation_tps": 63.46969322148674, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+      {"slot": 2, "arm": "B", "tpot_ms": 14.335577425196849, "generation_tps": 69.75652046232581, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+      {"slot": 3, "arm": "B", "tpot_ms": 14.143731960629921, "generation_tps": 70.70269733501532, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+      {"slot": 4, "arm": "A", "tpot_ms": 15.055120078740158, "generation_tps": 66.42258545729793, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+      {"slot": 5, "arm": "B", "tpot_ms": 14.383694551181103, "generation_tps": 69.52316711410464, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+      {"slot": 6, "arm": "A", "tpot_ms": 14.41253937007874, "generation_tps": 69.38402555735996, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+      {"slot": 7, "arm": "A", "tpot_ms": 14.840688314960628, "generation_tps": 67.38231938958775, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"},
+      {"slot": 8, "arm": "B", "tpot_ms": 14.27042092913386, "generation_tps": 70.07501775637496, "path_passed": true, "token_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe"}
+    ],
+    "receipt_contract": {
+      "benchmark_lane_path_receipts_passed": 8,
+      "each": "one CPU prefill, 127 successful initial Stack3 calls, 127 successful calls in each of five boundaries, 127 successful tail calls, zero teacher calls, no terminal error",
+      "sdpa_branch_receipt": false
+    },
+    "paired_improvement_percent": [
+      9.01252986698852,
+      6.053675515994314,
+      0.2001369651591074,
+      3.842593912924462
+    ],
+    "all_pairs_positive": true,
+    "A_even_median_tpot_ms": 14.947904196850393,
+    "B_even_median_tpot_ms": 14.302999177165354,
+    "even_median_improvement_percent": 4.314350769126044,
+    "pair_improvement_even_median_percent": 4.948134714459388,
+    "complete_token_trajectory_hashes_matching": 8,
+    "token_trajectory_hash_encoding": "SHA-256 of the generated token ID array serialized as compact JSON with no trailing newline"
+  },
+  "secondary_legacy_lane_screen": {
+    "qualification": "the older 24 standalone MLP plus lm-head lane is not the current fastest topology and failed the preregistered end-to-end gate; retained to prevent cherry-picking",
+    "binaries": {
+      "A_sha256": "ebcab9f5e9a8260fc8440c4b1a8c873d2d578cf7b79ab33b8123cd2f823bd0dc",
+      "B_sha256": "d3c7193465bfa7cf10ecab3073811a17bb3e958bfe5fa03e866591688de37907"
+    },
+    "A_even_median_tpot_ms": 30.291047244094486,
+    "B_even_median_tpot_ms": 30.020454397637792,
+    "even_median_improvement_percent": 0.8933096445169895,
+    "paired_improvement_percent": [0.6884914700081632, 3.4973049877403017, -0.029535201939680362, 0.02374339177390429],
+    "all_pairs_positive": false,
+    "passed": false,
+    "complete_token_trajectory_hashes_matching": 8
+  },
+  "formal_gate": {
+    "run": false,
+    "reason": "the frozen full-attention one-shot host-quiet gate remained noisy and unconsumed"
+  }
+}

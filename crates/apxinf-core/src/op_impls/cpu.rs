@@ -3,9 +3,23 @@
 use crate::kv_cache::{CpuKVCache, KvCache};
 use crate::{Backend, Device, Error, Graph, Result, Tensor};
 
-/// Below this length, small BLAS calls cost more than the scalar GQA loop.
-/// Long-context decode groups every set of query heads sharing a KV head.
-const GQA_BLAS_MIN_KV_LEN: usize = 128;
+const GQA_BLAS_DEFAULT_MIN_DECODE_KV_LEN: usize = 128;
+
+/// Accelerate's grouped GQA matmuls beat the scalar decode loop even at one
+/// cached token for Qwen3.5-0.8B's exact 8Q/2KV/256D shape. Keep the prior
+/// conservative cutoff for every unmeasured geometry and builds without
+/// Accelerate.
+#[inline]
+fn gqa_blas_min_decode_kv_len(n_heads: usize, n_kv_heads: usize, head_dim: usize) -> usize {
+    if cfg!(feature = "accelerate") && (n_heads, n_kv_heads, head_dim) == (8, 2, 256) {
+        return 1;
+    }
+    GQA_BLAS_DEFAULT_MIN_DECODE_KV_LEN
+}
+
+/// Prefill issues one attention pair per prompt position and has a different
+/// small-matrix crossover. Preserve its independently established cutoff.
+const GQA_BLAS_MIN_PREFILL_KV_LEN: usize = 128;
 
 /// CPU backend — all ops execute synchronously on the host.
 pub struct CpuBackend;
@@ -716,7 +730,7 @@ impl Backend for CpuBackend {
         if cfg!(any(feature = "accelerate", feature = "openblas"))
             && n_kv_heads > 0
             && n_heads % n_kv_heads == 0
-            && kv_len >= GQA_BLAS_MIN_KV_LEN
+            && kv_len >= gqa_blas_min_decode_kv_len(n_heads, n_kv_heads, head_dim)
         {
             let queries_per_kv = n_heads / n_kv_heads;
             let mut grouped_scores = vec![0.0f32; n_heads * kv_len];
@@ -820,7 +834,7 @@ impl Backend for CpuBackend {
 
         for s in 0..seq_len {
             let valid_len = kv_len.min(s + 1 + kv_len - seq_len);
-            if grouped && valid_len >= GQA_BLAS_MIN_KV_LEN {
+            if grouped && valid_len >= GQA_BLAS_MIN_PREFILL_KV_LEN {
                 for kv_h in 0..n_kv_heads {
                     let query_head = kv_h * queries_per_kv;
                     let query_start = s * n_heads * head_dim + query_head * head_dim;
@@ -1073,13 +1087,13 @@ mod tests {
         assert!(backend.matmul_rhs_transposed(&rank_three, &a).is_err());
     }
 
-    #[test]
-    fn long_context_gqa_decode_matches_scalar_reference() {
+    fn assert_gqa_decode_matches_scalar_reference(
+        sequence_length: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+    ) {
         let backend = CpuBackend;
-        let sequence_length = GQA_BLAS_MIN_KV_LEN;
-        let n_heads = 4;
-        let n_kv_heads = 2;
-        let head_dim = 4;
 
         let q_values: Vec<f32> = (0..n_heads * head_dim)
             .map(|index| ((index as f32 + 1.0) * 0.17).sin())
@@ -1139,9 +1153,22 @@ mod tests {
     }
 
     #[test]
+    fn long_context_gqa_decode_matches_scalar_reference() {
+        assert_gqa_decode_matches_scalar_reference(128, 4, 2, 4);
+    }
+
+    #[cfg(feature = "accelerate")]
+    #[test]
+    fn accelerate_short_context_gqa_decode_matches_scalar_reference() {
+        assert_eq!(gqa_blas_min_decode_kv_len(8, 2, 256), 1);
+        assert_eq!(gqa_blas_min_decode_kv_len(16, 4, 128), 128);
+        assert_gqa_decode_matches_scalar_reference(13, 8, 2, 256);
+    }
+
+    #[test]
     fn long_context_gqa_prefill_matches_causal_scalar_reference() {
         let backend = CpuBackend;
-        let sequence_length = GQA_BLAS_MIN_KV_LEN;
+        let sequence_length = GQA_BLAS_MIN_PREFILL_KV_LEN;
         let n_heads = 4;
         let n_kv_heads = 2;
         let head_dim = 4;

@@ -153,6 +153,12 @@ The native CPU/Accelerate slice now includes:
   same-device transfer no longer duplicate activation or weight buffers;
 - flat contiguous K/V storage with bulk row appends and reused attention-score
   scratch, replacing pointer-heavy nested vectors and per-head allocations;
+- Apple Accelerate decode now uses grouped GQA BLAS from the first cached
+  token for Qwen3.5-0.8B's exact `8Q/2KV/256D` geometry; prefill, other
+  geometries, and OpenBLAS-only builds retain the conservative
+  128-token cutoff. The target-shape primitive and noisy-host real-model paired
+  screen are recorded in
+  [`qwen35-short-gqa-sdpa-accelerate-diagnostic-20260826.json`](./qwen35-short-gqa-sdpa-accelerate-diagnostic-20260826.json);
 - tied embedding/output projection sharing through a transpose-B GEMM, avoiding
   an approximately 0.95 GiB duplicate for the official checkpoint.
 

@@ -3,6 +3,8 @@ use std::time::Instant;
 
 use apxinf_core::{Backend, CpuBackend, CpuKVCache, KvCache, Tensor};
 
+const MAX_CONTEXT: usize = 256;
+
 fn scalar(
     q: &[f32],
     cache: &CpuKVCache,
@@ -41,11 +43,17 @@ fn scalar(
 }
 
 fn main() {
+    assert!(
+        cfg!(feature = "accelerate"),
+        "sdpa_screen requires --features accelerate"
+    );
     let backend = CpuBackend;
     let n_heads = 8;
     let n_kv_heads = 2;
     let head_dim = 256;
-    for kv_len in [128, 512, 1024, 4096] {
+    for kv_len in [
+        1, 4, 8, 13, 14, 16, 24, 31, 32, 48, 64, 76, 77, 96, 112, 126, 127, 128, 140, 256,
+    ] {
         let q_values: Vec<f32> = (0..n_heads * head_dim)
             .map(|i| ((i as f32 + 1.0) * 0.017).sin())
             .collect();
@@ -58,12 +66,19 @@ fn main() {
         let q = Tensor::from_f32(vec![1, n_heads, head_dim], &q_values).unwrap();
         let k = Tensor::from_f32(vec![kv_len, n_kv_heads, head_dim], &k_values).unwrap();
         let v = Tensor::from_f32(vec![kv_len, n_kv_heads, head_dim], &v_values).unwrap();
-        let mut cache = CpuKVCache::new(1, n_kv_heads, head_dim, kv_len);
+        let mut cache = CpuKVCache::new(1, n_kv_heads, head_dim, MAX_CONTEXT);
         cache.append(0, &k, &v, kv_len).unwrap();
         cache.advance(kv_len);
         let grouped_reference = backend
             .sdpa_decode(
-                &q, &mut cache, 0, n_heads, n_kv_heads, head_dim, kv_len, kv_len,
+                &q,
+                &mut cache,
+                0,
+                n_heads,
+                n_kv_heads,
+                head_dim,
+                kv_len,
+                MAX_CONTEXT,
             )
             .unwrap();
         let scalar_reference = scalar(&q_values, &cache, n_heads, n_kv_heads, head_dim, kv_len);
@@ -75,17 +90,25 @@ fn main() {
             .map(|(grouped, scalar)| (grouped - scalar).abs())
             .fold(0.0f32, f32::max);
         assert!(max_abs_error <= 2.0e-5, "max_abs_error={max_abs_error}");
-        let reps = match kv_len {
-            128 => 300,
-            512 => 120,
-            1024 => 60,
-            _ => 20,
+        let reps = if kv_len <= 32 {
+            1_000
+        } else if kv_len <= 128 {
+            500
+        } else {
+            250
         };
         for _ in 0..5 {
             black_box(
                 backend
                     .sdpa_decode(
-                        &q, &mut cache, 0, n_heads, n_kv_heads, head_dim, kv_len, kv_len,
+                        &q,
+                        &mut cache,
+                        0,
+                        n_heads,
+                        n_kv_heads,
+                        head_dim,
+                        kv_len,
+                        MAX_CONTEXT,
                     )
                     .unwrap(),
             );
@@ -102,7 +125,14 @@ fn main() {
                     black_box(
                         backend
                             .sdpa_decode(
-                                &q, &mut cache, 0, n_heads, n_kv_heads, head_dim, kv_len, kv_len,
+                                &q,
+                                &mut cache,
+                                0,
+                                n_heads,
+                                n_kv_heads,
+                                head_dim,
+                                kv_len,
+                                MAX_CONTEXT,
                             )
                             .unwrap(),
                     );
@@ -128,7 +158,14 @@ fn main() {
                     black_box(
                         backend
                             .sdpa_decode(
-                                &q, &mut cache, 0, n_heads, n_kv_heads, head_dim, kv_len, kv_len,
+                                &q,
+                                &mut cache,
+                                0,
+                                n_heads,
+                                n_kv_heads,
+                                head_dim,
+                                kv_len,
+                                MAX_CONTEXT,
                             )
                             .unwrap(),
                     );
