@@ -118,3 +118,7 @@ required-features = ["accelerate", "metal-w8"]
 [[example]]
 name = "qwen35_benchmark_http_server_v1"
 required-features = ["accelerate", "metal-w8"]
+
+[[example]]
+name = "qwen35_omniinfer_suppressed_free128_gate_v1"
+required-features = ["accelerate", "metal-w8"]
