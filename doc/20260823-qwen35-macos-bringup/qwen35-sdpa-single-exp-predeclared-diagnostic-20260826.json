@@ -1,0 +1,29 @@
+{
+  "format": "apxinf-qwen35-sdpa-single-exp-predeclared-diagnostic-v1",
+  "date": "2026-08-26",
+  "qualification": "checkpoint-free exact-path diagnostic on a noisy host; not formal promotion or cross-runtime evidence",
+  "base_commit": "ee3217ba3eb1ac8ec4ae4fa9933d3b08239db626",
+  "hypothesis": "the grouped decode softmax computes each exponential twice; storing the first exponential in place removes half of those calls without changing the f32 result",
+  "single_changed_variable": "grouped CpuBackend::sdpa_decode softmax implementation only",
+  "fixed_workload": {
+    "geometry": "8Q/2KV/256D",
+    "full_attention_layers": 6,
+    "decode_kv_lengths_inclusive": [14, 140],
+    "calls_per_trajectory": 762,
+    "repetitions_per_batch": 8,
+    "batches_per_slot": 6,
+    "slot_order": ["A", "B", "B", "A", "B", "A", "A", "B"],
+    "A": "base commit with two exp calls per score",
+    "B": "candidate with one in-place exp call per score"
+  },
+  "correctness_gate": {
+    "exact_output_fnv1a64_digest_equal_across_all_slots": true,
+    "existing_decode_and_prefill_numerical_tests_must_pass": true
+  },
+  "performance_gate": {
+    "four_paired_blocks_all_positive": true,
+    "A_vs_B_even_median_ns_per_call_improvement_at_least_percent": 1.0,
+    "no_outlier_removal_or_replacement_samples": true
+  },
+  "decision_rule": "admit to a real-model diagnostic only if every correctness and primitive performance gate passes; otherwise reject and do not wire the change"
+}

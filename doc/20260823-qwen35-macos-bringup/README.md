@@ -159,6 +159,10 @@ The native CPU/Accelerate slice now includes:
   128-token cutoff. The target-shape primitive and noisy-host real-model paired
   screen are recorded in
   [`qwen35-short-gqa-sdpa-accelerate-diagnostic-20260826.json`](./qwen35-short-gqa-sdpa-accelerate-diagnostic-20260826.json);
+- a follow-up attempt to retain each grouped-softmax exponential in place was
+  bit-identical but failed its all-positive paired trajectory gate, so the
+  runtime change was rejected; see
+  [`qwen35-sdpa-single-exp-rejected-diagnostic-20260826.json`](./qwen35-sdpa-single-exp-rejected-diagnostic-20260826.json);
 - tied embedding/output projection sharing through a transpose-B GEMM, avoiding
   an approximately 0.95 GiB duplicate for the official checkpoint.
 

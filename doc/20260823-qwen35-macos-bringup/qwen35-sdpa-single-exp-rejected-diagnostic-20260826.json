@@ -1,0 +1,48 @@
+{
+  "format": "apxinf-qwen35-sdpa-single-exp-rejected-diagnostic-v1",
+  "date": "2026-08-26",
+  "qualification": "checkpoint-free exact-path diagnostic on a noisy host; not formal promotion or cross-runtime evidence",
+  "predeclaration": "doc/20260823-qwen35-macos-bringup/qwen35-sdpa-single-exp-predeclared-diagnostic-20260826.json",
+  "base_commit": "ee3217ba3eb1ac8ec4ae4fa9933d3b08239db626",
+  "screen_source_sha256": "38c22f278044b0bb627f5ada0d386001ed904c298b8f56e7d1d7c26a2b91f57b",
+  "binaries": {
+    "A_sha256": "bf6b0f03f1fb617d130549e3a7e826739c97259516e1ac05e8c7968bccc01808",
+    "B_sha256": "2283486714ca396af559c6cdcc6844146272a680e3bf6962f79a0b4c85198b75",
+    "size_bytes_each": 495824,
+    "nlink_each": 1
+  },
+  "fixed_workload": {
+    "geometry": "8Q/2KV/256D",
+    "full_attention_layers": 6,
+    "decode_kv_lengths_inclusive": [14, 140],
+    "calls_per_trajectory": 762,
+    "repetitions_per_batch": 8,
+    "batches_per_slot": 6,
+    "ordering": ["A", "B", "B", "A", "B", "A", "A", "B"]
+  },
+  "slots": [
+    {"slot": 1, "arm": "A", "median_ns_per_call": 11673.587, "output_fnv1a64": "020dc935f8ec2874"},
+    {"slot": 2, "arm": "B", "median_ns_per_call": 12140.543, "output_fnv1a64": "020dc935f8ec2874"},
+    {"slot": 3, "arm": "B", "median_ns_per_call": 10980.335, "output_fnv1a64": "020dc935f8ec2874"},
+    {"slot": 4, "arm": "A", "median_ns_per_call": 11382.676, "output_fnv1a64": "020dc935f8ec2874"},
+    {"slot": 5, "arm": "B", "median_ns_per_call": 12302.709, "output_fnv1a64": "020dc935f8ec2874"},
+    {"slot": 6, "arm": "A", "median_ns_per_call": 13716.317, "output_fnv1a64": "020dc935f8ec2874"},
+    {"slot": 7, "arm": "A", "median_ns_per_call": 12411.479, "output_fnv1a64": "020dc935f8ec2874"},
+    {"slot": 8, "arm": "B", "median_ns_per_call": 10408.564, "output_fnv1a64": "020dc935f8ec2874"}
+  ],
+  "result": {
+    "A_even_median_ns_per_call": 12042.533,
+    "B_even_median_ns_per_call": 11560.439,
+    "even_median_improvement_percent": 4.003260775785302,
+    "paired_improvement_percent": [-4.000107250667684, 3.5346784886084817, 10.3060318597186, 16.137601328576547],
+    "positive_pairs": 3,
+    "required_positive_pairs": 4,
+    "output_digests_all_equal": true,
+    "performance_gate_passed": false
+  },
+  "decision": {
+    "status": "REJECTED_UNSTABLE",
+    "runtime_change_retained": false,
+    "reason": "the pooled median exceeded the 1% threshold, but the first paired block regressed by 4.00%; the predeclared all-positive rule failed and no replacement samples are allowed"
+  }
+}
