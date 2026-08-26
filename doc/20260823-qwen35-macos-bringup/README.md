@@ -464,3 +464,62 @@ trajectories matched, only two of four paired blocks improved and even-median
 TPOT regressed by 1.26%. The assign/runtime changes were removed; the fixed
 eight-slot receipt is preserved in
 [`qwen35-full-attention-inplace-rejected-diagnostic-20260826.json`](./qwen35-full-attention-inplace-rejected-diagnostic-20260826.json).
+
+## Cross-runtime formal v3 predeclaration
+
+The machine-readable
+[`qwen35-0.8b-cross-runtime-formal-v3.json`](../../configs/qwen35-0.8b-cross-runtime-formal-v3.json)
+separates three questions that must not be combined into one ranking:
+
+- `NATIVE_A_VS_L` compares the two fully disclosed native deployment
+  configurations on the same raw-token workload.  A result applies only to
+  those named configurations because their quantization, prefill, KV, and
+  output-head mechanisms differ.
+- `CORE_A_VS_L` reserves an engine-isolating comparison for a future ApxInf
+  lane that consumes the exact pinned GGUF Q8_0 payload and matches the F16 KV
+  policy.  The predeclaration records the current blockers, so this edge cannot
+  be sampled or ranked yet.
+- `GATEWAY_B_VS_G` measures the client-observed increment from routing one
+  identical request through OmniInfer to the same resident llama.cpp backend.
+  It is a gateway-path experiment, not an OmniInfer-versus-llama.cpp engine
+  comparison.
+
+The native and exact-core edges require frozen raw token IDs and trajectories
+with a common next-greedy-token-ready timing boundary.  The gateway edge uses
+one frozen canonical chat request and a common client full-response wall-time
+boundary instead.  Every edge requires its predeclared ABBA/BAAB schedule,
+continuous quiet-host checks, and start/end artifact custody.  The static
+validator rejects missing disclosures or any attempt to promote the blocked
+exact-Q8 edge:
+
+### OmniInfer gateway formal-v3 lifecycle
+
+The concrete gateway campaign is bound by the tracked
+[`execution plan`](../../crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-increment-formal-v3-execution-plan-20260826.json)
+and the fail-closed
+[`gateway driver`](../../benchmarks/cross_runtime/omniinfer_gateway_formal_v3_driver.py).
+Its lifecycle is strictly ordered:
+
+1. Run the fixture-only `self-test`; it must not open the model, start a
+   runtime, use the network, initialize the fixed campaign root, or create a
+   marker.
+2. Only from the required quiet host and validated live `main`, run `prepare`.
+   It performs the pinned OmniInfer model-select/load and all custody and host
+   proofs with zero generation requests, then creates a new marker.
+3. Commit and push that marker, and prove that the activated live `main`
+   contains the exact marker/plan/driver/contract bytes before any generation.
+4. Only then run `run`, which consumes the one-shot formal schedule and writes
+   its crash-safe raw receipt before shutting down the bound runtime.
+
+As of this update, only static validation, fixture tests, and `self-test` have
+been run for this plan. Neither `prepare` nor `run` has been invoked, no marker
+or raw campaign receipt exists, and there is no OmniInfer gateway formal-v3
+performance result to report.
+
+```sh
+/usr/bin/python3 -I -B scripts/validate_qwen35_cross_runtime_formal_contract.py \
+  --contract configs/qwen35-0.8b-cross-runtime-formal-v3.json
+```
+
+The predeclaration contains no v3 timing result.  Existing diagnostic samples
+are not reused as formal observations.

@@ -110,3 +110,7 @@ required-features = ["accelerate", "metal-w8"]
 [[example]]
 name = "qwen35_short_sdpa_boundary_tail_screen"
 required-features = ["accelerate", "metal-w8"]
+
+[[example]]
+name = "qwen35_native_raw_token_runner_v3"
+required-features = ["accelerate", "metal-w8"]

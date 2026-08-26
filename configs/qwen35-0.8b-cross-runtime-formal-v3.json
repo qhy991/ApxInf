@@ -1,0 +1,1543 @@
+{
+  "format": "apxinf-qwen35-cross-runtime-formal-predeclaration-v3",
+  "schema_version": 3,
+  "campaign_id": "qwen35-0.8b-cross-runtime-formal-v3-20260826",
+  "authored_at_utc": "2026-08-25T21:07:10Z",
+  "document_role": "PREDECLARATION_ONLY",
+  "result_status": "NO_V3_PERFORMANCE_RESULT",
+  "sampling_state_at_authoring": {
+    "v3_generation_requests": 0,
+    "v3_warmup_samples": 0,
+    "v3_timed_samples": 0,
+    "performance_numbers_in_this_document": false
+  },
+  "activation_contract": {
+    "path": "configs/qwen35-0.8b-cross-runtime-formal-v3.json",
+    "repository": "https://github.com/qhy991/ApxInf.git",
+    "authored_from_commit": "df5c55a06140107b24964d9e4abbefd9fa2a4733",
+    "predeclaration_must_be_committed_and_pushed_before_any_v3_generation_request": true,
+    "campaign_start_receipt_must_record_predeclaration_commit_size_and_sha256": true,
+    "campaign_start_receipt_must_prove_head_equals_origin_main": true,
+    "frozen_origin_remote_url": "https://github.com/qhy991/ApxInf.git",
+    "frozen_live_remote_ref": "refs/heads/main",
+    "remote_origin_url_normalization": {
+      "allowed": false,
+      "rule_id": "EXACT_UTF8_BYTE_EQUALITY_NO_NORMALIZATION",
+      "required_value": "https://github.com/qhy991/ApxInf.git"
+    },
+    "campaign_start_receipt_must_record_actual_remote_origin_url": true,
+    "campaign_start_receipt_must_prove_remote_origin_url_exact": true,
+    "campaign_start_receipt_must_run_live_ls_remote": true,
+    "campaign_start_receipt_live_ls_remote_argv": [
+      "git",
+      "ls-remote",
+      "--exit-code",
+      "https://github.com/qhy991/ApxInf.git",
+      "refs/heads/main"
+    ],
+    "campaign_start_receipt_must_prove_head_activation_and_live_remote_main_equal": true,
+    "local_tracking_ref_equality_is_sufficient_publication_proof": false,
+    "campaign_start_receipt_must_prove_clean_worktree": true,
+    "editing_this_contract_after_the_first_v3_generation_request_allowed": false,
+    "activation_is_not_proven_by_this_document_alone": true
+  },
+  "lineage": {
+    "comparison_contract_v1": {
+      "path": "configs/qwen35-0.8b-llamacpp-comparison-v1.json",
+      "size_bytes": 19825,
+      "sha256": "f3b2057fc9b5be3211c6aa4ba73965c4554de8c9b882fbf70bc3a606b6ae3973"
+    },
+    "v2_diagnostics_are_inputs_not_formal_samples": true,
+    "v2_samples_reused_by_v3": false,
+    "v3_supersedes_or_relabels_v2_results": false
+  },
+  "scope": {
+    "model_repo_id": "Qwen/Qwen3.5-0.8B",
+    "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "host": {
+      "model_identifier": "Mac16,10",
+      "chip": "Apple M4",
+      "architecture": "arm64",
+      "logical_cpu_count": 10,
+      "memory_bytes": 17179869184,
+      "os_product": "macOS",
+      "os_version": "26.2",
+      "os_build": "25C56",
+      "same_physical_host_for_all_arms": true
+    },
+    "concurrency": 1,
+    "ollama_arm_in_scope": false,
+    "ollama_exclusion_code": "NO_RAW_TOKEN_AND_GENERATED_TOKEN_TRAJECTORY_ADMISSION_ON_PINNED_LOCAL_BUILD"
+  },
+  "comparison_graph": {
+    "arms": {
+      "AN": {
+        "name": "ApxInf_native_hybrid_G32_G64_W8_CPU_F32_remainder_F32_KV",
+        "kind": "named_native_deployment",
+        "transport_in_primary_timing": "none"
+      },
+      "A": {
+        "name": "ApxInf_future_exact_GGUF_Q8_0_F16_KV_core",
+        "kind": "future_matched_inference_core",
+        "transport_in_primary_timing": "none"
+      },
+      "L": {
+        "name": "pinned_llama_cpp_core",
+        "kind": "inference_core",
+        "transport_in_primary_timing": "none"
+      },
+      "B": {
+        "name": "direct_resident_llama_server",
+        "kind": "direct_http_path_to_gateway_cohort_backend"
+      },
+      "G": {
+        "name": "omniinfer_gateway_to_same_resident_llama_server",
+        "kind": "gateway_http_path_to_gateway_cohort_backend"
+      }
+    },
+    "edges": {
+      "NATIVE_A_VS_L": {
+        "subcampaign_id": "qwen35-0.8b-native-apxinf-vs-llamacpp-formal-v3-20260826",
+        "members": ["AN", "L"],
+        "estimand": "performance ratio of two explicitly named native deployment configurations",
+        "workload_id": "NATIVE_RAW13_FREE128_V3",
+        "rankable_only_after_all_declared_native-deployment_gates": true,
+        "engine_only_ranking_edge": false,
+        "identical_weight_quantization_kv_or_placement_edge": false,
+        "omniinfer_gateway_included": false
+      },
+      "CORE_A_VS_L": {
+        "subcampaign_id": "qwen35-0.8b-core-apxinf-vs-llamacpp-formal-v3-20260826",
+        "members": ["A", "L"],
+        "estimand": "matched-workload core inference latency ratio",
+        "workload_id": "CORE_RAW13_FREE128_V3",
+        "rankable_only_after_all_declared_gates": true,
+        "omniinfer_gateway_included": false
+      },
+      "GATEWAY_B_VS_G": {
+        "subcampaign_id": "qwen35-0.8b-omniinfer-gateway-increment-formal-v3-20260826",
+        "members": ["B", "G"],
+        "estimand": "incremental client-observed full-response OmniInfer gateway-path latency over the exact same resident llama-server backend",
+        "workload_id": "GATEWAY_RAW13_FREE128_V3",
+        "same_backend_process_required": true,
+        "same_loaded_model_file_description_required": false,
+        "same_backend_loaded_model_fd_for_B_and_G_required": true,
+        "controller_and_backend_same_open_file_description_claim_allowed": false,
+        "controller_and_backend_same_vnode_identity_required": true,
+        "model_custody_proof_id": "GATEWAY_CONTROLLER_HELD_VNODE_AND_BACKEND_FD_V3",
+        "engine_ranking_edge": false
+      }
+    },
+    "forbidden_edges": [
+      "NATIVE_EDGE_RELABELED_AS_ENGINE_ONLY",
+      "NATIVE_EDGE_RELABELED_AS_MATCHED_QUANTIZATION",
+      "NATIVE_EDGE_JOINED_TO_CORE_EDGE",
+      "NATIVE_EDGE_JOINED_TO_GATEWAY_EDGE",
+      "A_VS_G_END_TO_END",
+      "A_VS_B_END_TO_END",
+      "L_VS_G_END_TO_END",
+      "CORE_EDGE_JOINED_TO_GATEWAY_EDGE"
+    ],
+    "cross_edge_result_join_allowed": false,
+    "reason_cross_edge_join_is_forbidden": "the native edge compares unmatched but fully named deployments, the future core edge requires exact Q8_0 and F16-KV parity, and the gateway edge uses a different backend build, timing boundary, EOG policy, and trajectory"
+  },
+  "source_model_custody": {
+    "checkpoint": {
+      "name": "model.safetensors-00001-of-00001.safetensors",
+      "size_bytes": 1746942600,
+      "sha256": "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696"
+    },
+    "tokenizer_and_config_manifest_sha256_required": true,
+    "network_download_during_campaign_allowed": false,
+    "artifact_mutation_after_campaign_start_allowed": false
+  },
+  "workload_contracts": {
+    "shared_prompt": {
+      "ingress_semantics": "raw-token-ids",
+      "token_count": 13,
+      "token_ids": [
+        248045,
+        846,
+        198,
+        9419,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ],
+      "canonicalization": "UTF-8 bytes of compact JSON array with no whitespace",
+      "sha256": "4b890fa15ee3d7db4e9dd18bd79c6362d40e9e016ae4f9f74cb7fc420ef3b6d3"
+    },
+    "NATIVE_RAW13_FREE128_V3": {
+      "arms": ["AN", "L"],
+      "prompt_binding": "workload_contracts.shared_prompt",
+      "both_arms_receive_raw_token_ids_directly": true,
+      "generation": {
+        "generated_token_count": 128,
+        "sampling": "unbiased-greedy-argmax",
+        "temperature": 0,
+        "seed_effect": "none",
+        "eog_policy": "select-and-feed-back-eog-without-termination-and-without-eog-logit-suppression",
+        "speculative_decoding_allowed": false,
+        "continuous_batching_allowed": false,
+        "sequence_count": 1,
+        "requested_context_tokens": 256,
+        "effective_context_tokens": 256,
+        "requested_batch_tokens": 13,
+        "effective_batch_tokens": 13,
+        "requested_ubatch_tokens": 13,
+        "effective_ubatch_tokens": 13,
+        "empty_kv_and_GDN_state_before_prefill": true,
+        "prompt_cache_reuse_allowed": false
+      },
+      "teacher_forced_admission": {
+        "must_complete_before_timed_campaign_marker": true,
+        "steps": 128,
+        "reference": "same-revision ApxInf CPU/F32 oracle",
+        "teacher_input_derivation": "shared_prompt.token_ids[-1] followed by the first 127 token IDs of the frozen canonical free-run trajectory",
+        "teacher_input_derivation_shared_prompt_last_token_id": 271,
+        "teacher_input_derivation_free_run_trajectory_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe",
+        "teacher_input_token_ids_count": 128,
+        "teacher_input_token_ids": [271, 9419, 0, 2500, 628, 353, 1438, 488, 3242, 30, 25677, 232, 248046, 198, 248044, 248045, 2570, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271, 9419, 0, 2500, 628, 353, 7543, 488, 3242, 30, 25677, 232, 248046, 198, 248044, 248045, 2570, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271, 9419, 0, 2500, 628, 353, 1438, 488, 3242, 30, 25677, 232, 248046, 198, 248044, 248045, 2570, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271, 9419, 0, 2500, 628, 353, 7543, 488, 3242, 30, 25677, 232, 248046, 198, 248044, 248045, 2570, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271, 9419, 0, 2500, 628, 353, 1438, 488, 3242, 30, 25677, 232, 248046, 198, 248044, 248045, 2570, 198, 9419, 248046],
+        "teacher_input_token_ids_canonicalization": "UTF-8 bytes of compact JSON array with no whitespace",
+        "teacher_input_token_ids_sha256": "c33b70a7626fbf3aaa9b8b09e03ce55b5d0e9a1b6ba7068d29067ccb6209a70d",
+        "teacher_input_derivation_must_be_recomputed_and_match_before_each_receipt": true,
+        "same_teacher_input_token_ids_for_AN_and_L": true,
+        "required_receipt_fields": [
+          "teacher_input_token_ids",
+          "reference_argmax_token_ids",
+          "observed_argmax_token_ids",
+          "mismatch_positions",
+          "first_mismatch",
+          "reference_receipt_size_bytes",
+          "reference_receipt_sha256",
+          "runtime_receipt_size_bytes",
+          "runtime_receipt_sha256"
+        ],
+        "AN_zero_argmax_mismatches_required": true,
+        "L_zero_argmax_mismatches_required": true,
+        "AN_and_L_observed_argmax_token_ids_must_be_bitwise_equal": true,
+        "receipts_must_be_committed_and_pushed_before_performance_sampling": true,
+        "prior_v2_llama_teacher_receipt_exists": false,
+        "prior_free_run_identity_is_not_a_substitute": true
+      },
+      "free_run_trajectory_admission": {
+        "required_for_every_warmup_and_timed_sample": true,
+        "generated_token_ids_must_be_recorded": true,
+        "generated_token_ids_count": 128,
+        "canonicalization": "UTF-8 bytes of compact JSON array with no whitespace",
+        "expected_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe",
+        "pairwise_AN_L_token_ids_must_be_bitwise_equal": true,
+        "hash_only_without_raw_ids_is_sufficient": false
+      }
+    },
+    "CORE_RAW13_FREE128_V3": {
+      "arms": ["A", "L"],
+      "prompt_binding": "workload_contracts.shared_prompt",
+      "both_arms_receive_raw_token_ids_directly": true,
+      "generation": {
+        "generated_token_count": 128,
+        "sampling": "unbiased-greedy-argmax",
+        "temperature": 0,
+        "seed_effect": "none",
+        "eog_policy": "select-and-feed-back-eog-without-termination-and-without-eog-logit-suppression",
+        "speculative_decoding_allowed": false,
+        "continuous_batching_allowed": false,
+        "sequence_count": 1,
+        "requested_context_tokens": 256,
+        "effective_context_tokens": 256,
+        "requested_batch_tokens": 13,
+        "effective_batch_tokens": 13,
+        "requested_ubatch_tokens": 13,
+        "effective_ubatch_tokens": 13,
+        "empty_kv_before_prefill": true,
+        "prompt_cache_reuse_allowed": false
+      },
+      "trajectory_admission": {
+        "required_for_every_warmup_and_timed_sample": true,
+        "generated_token_ids_must_be_recorded": true,
+        "generated_token_ids_count": 128,
+        "canonicalization": "UTF-8 bytes of compact JSON array with no whitespace",
+        "expected_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe",
+        "pairwise_A_L_token_ids_must_be_bitwise_equal": true,
+        "hash_only_without_raw_ids_is_sufficient": false
+      }
+    },
+    "GATEWAY_RAW13_FREE128_V3": {
+      "arms": ["B", "G"],
+      "prompt_binding": "workload_contracts.shared_prompt",
+      "client_ingress": "identical-canonical-chat-json",
+      "backend_rendered_prompt_token_ids_must_equal_shared_prompt": true,
+      "request": {
+        "method": "POST",
+        "endpoint": "/v1/chat/completions",
+        "canonicalization": "UTF-8 JSON with sorted keys, ensure_ascii=false, and compact separators",
+        "size_bytes": 383,
+        "sha256": "7773f5337693843f1e8cf3017b98868517cbddd3bc32649e550d8f2fec1d5cf6",
+        "canonical_json_object": {
+          "cache_prompt": false,
+          "chat_template_kwargs": {
+            "enable_thinking": false
+          },
+          "id_slot": 0,
+          "ignore_eos": true,
+          "max_tokens": 128,
+          "messages": [
+            {
+              "content": "Hello",
+              "role": "user"
+            }
+          ],
+          "model": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+          "reasoning_format": "none",
+          "return_tokens": true,
+          "seed": 0,
+          "stream": false,
+          "temperature": 0,
+          "verbose": true
+        },
+        "canonical_json_object_must_reconstruct_size_and_sha256": true,
+        "same_client_body_for_B_and_G": true,
+        "temperature": 0,
+        "seed": 0,
+        "max_tokens": 128,
+        "stream": false,
+        "ignore_eos": true,
+        "cache_prompt": false,
+        "enable_thinking": false,
+        "reasoning_format": "none",
+        "return_tokens": true
+      },
+      "generation": {
+        "generated_token_count": 128,
+        "finish_reason": "length",
+        "usage_prompt_completion_total": [13, 128, 141],
+        "native_prompt_predicted_cache_n": [13, 128, 0],
+        "cache_clear_acknowledgement_before_every_arm": [0]
+      },
+      "trajectory_admission": {
+        "required_for_every_warmup_and_timed_sample": true,
+        "generated_token_ids_must_be_recorded": true,
+        "generated_token_ids_count": 128,
+        "canonicalization": "UTF-8 bytes of compact JSON array with no whitespace",
+        "expected_sha256": "0a8a6c5ceeb831528480ebcad172fbcdda4ac23478ab051b1f74a00ec6d4f8e4",
+        "pairwise_B_G_token_ids_must_be_bitwise_equal": true,
+        "pairwise_content_and_usage_must_be_equal": true,
+        "hash_only_without_raw_ids_is_sufficient": false
+      },
+      "same_as_core_trajectory": false,
+      "cross_cohort_trajectory_comparison_allowed": false
+    }
+  },
+  "native_deployment_contract": {
+    "comparison_edge": "NATIVE_A_VS_L",
+    "comparison_class": "FORMAL_NAMED_DEPLOYMENT_COMPARISON_WITH_DISCLOSED_NUMERICAL_REGIME_DIFFERENCES",
+    "same_model_revision_required": true,
+    "same_raw_prompt_and_generation_contract_required": true,
+    "same_teacher_forced_128_and_free_run_128_admission_required": true,
+    "same_next_greedy_token_ready_timing_boundary_required": true,
+    "same_weights_quantization_kv_or_placement_claim_allowed": false,
+    "deployments": {
+      "AN": {
+        "configuration_id": "ApxInf-native-hybrid-G32-G64-W8-CPU-F32-remainder-F32-KV-v3",
+        "source_weights": {
+          "container": "SafeTensors",
+          "checkpoint_sha256": "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696"
+        },
+        "weight_regime": {
+          "classification": "custom-hybrid-not-GGUF-Q8_0",
+          "quantized_owned_projections": "symmetric signed int8 per-row-group with F32 scale, round, and clamp to [-127,+127]",
+          "group_sizes_present": [32, 64],
+          "unowned_or_oracle_weights": "F32",
+          "serialized_artifact_sha256_required_at_campaign_start": true
+        },
+        "prefill": {
+          "device": "CPU",
+          "weight_and_compute_precision": "F32"
+        },
+        "decode": {
+          "GDN_and_MLP_owned_projections": "Metal custom G32/G64 W8",
+          "full_attention": "CPU/F32",
+          "head": "F32 tied embedding top-4 exact rerank",
+          "next_token_selection": "unbiased greedy after F32 exact top-4 rerank"
+        },
+        "kv_cache": {
+          "key_dtype": "F32",
+          "value_dtype": "F32",
+          "capacity_tokens": 256,
+          "empty_before_each_sample": true
+        },
+        "placement": "hybrid Metal owned kernels plus disclosed CPU/F32 remainder",
+        "thread_policy": "record exact effective policy; equality to L is not claimed"
+      },
+      "L": {
+        "configuration_id": "llama.cpp-f280b269-Q8_0-Metal-F16-KV-threads4-v3",
+        "source_weights": {
+          "container": "GGUF",
+          "artifact_size_bytes": 811843072,
+          "artifact_sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c"
+        },
+        "weight_regime": {
+          "classification": "llama.cpp-pure-Q8_0",
+          "runtime_requantization_allowed": false
+        },
+        "prefill": {
+          "device": "Metal-with-observed-input-embedding-CPU-fallback",
+          "weight_precision": "GGUF-Q8_0-with-artifact-declared-unquantized-tensors"
+        },
+        "decode": {
+          "transformer_layers": "24 layers requested and proved on MTL0",
+          "head": "GGUF artifact head path",
+          "next_token_selection": "llama.cpp sampler or full-vocabulary greedy argmax"
+        },
+        "kv_cache": {
+          "key_dtype": "F16",
+          "value_dtype": "F16",
+          "capacity_tokens": 256,
+          "empty_before_each_sample": true
+        },
+        "placement": "Metal all transformer layers with disclosed CPU input-embedding buffer",
+        "thread_policy": {
+          "threads": 4,
+          "batch_threads": 4
+        }
+      }
+    },
+    "machine_disclosures": {
+      "same_source_revision": true,
+      "same_source_checkpoint_lineage": true,
+      "same_serialized_artifact": false,
+      "same_logical_weight_payload": false,
+      "same_quantization_scheme": false,
+      "same_prefill_precision_or_placement": false,
+      "same_KV_dtype": false,
+      "same_output_head_mechanism": false,
+      "same_effective_CPU_thread_policy_claimed": false,
+      "same_128_token_free_run_trajectory_required": true,
+      "same_128_step_teacher_argmax_trajectory_required": true,
+      "same_timing_endpoint_required": true,
+      "same_physical_host_required": true
+    },
+    "current_readiness": {
+      "named_deployment_implementations_exist": true,
+      "formally_admitted": false,
+      "formal_campaign_may_start_now": false,
+      "blocker_codes": [
+        "LLAMA_CPP_TEACHER_FORCED_128_RECEIPT_NOT_CAPTURED",
+        "V3_NATIVE_DRIVER_AND_BINARY_HASHES_NOT_CAPTURED",
+        "NATIVE_SUBCAMPAIGN_NOT_PUBLICLY_ACTIVATED",
+        "QUIET_HOST_GATE_NOT_YET_PASSED"
+      ],
+      "existing_v2_free_run_receipts_reusable_as_formal_v3_samples": false,
+      "future_resolution_may_be_proven_without_changing_named_deployment_semantics": true
+    },
+    "claim_scope": {
+      "allowed_subject": "only AN configuration_id versus L configuration_id on the frozen workload and host",
+      "engine_only_conclusion_allowed": false,
+      "identical_quantization_or_KV_conclusion_allowed": false,
+      "general_model_or_prompt_conclusion_allowed": false
+    }
+  },
+  "core_parity_contract": {
+    "selected_lane": "MATCHED_GGUF_Q8_0_F16_KV_METAL_V1",
+    "model_artifact": {
+      "name": "Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+      "observed_path": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+      "size_bytes": 811843072,
+      "sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c",
+      "parent_f32_gguf_sha256": "69ad6b3ef11f0fb4d9af2d9f59a235c8576d9ef2e64b4375274ca35fc34530e4",
+      "secondary_quantization_allowed": false
+    },
+    "logical_weights": {
+      "same_source_revision_is_sufficient_for_equality": false,
+      "same_serialized_container_bytes_required": false,
+      "reason_container_identity_is_not_required": "ApxInf may losslessly repack the exact GGUF blocks for kernel layout, while tensor names, shapes, quantized payload values, and scale bits remain identical",
+      "canonical_tensor_manifest_required_for_each_arm": true,
+      "canonical_logical_tensor_manifest_fields": [
+        "canonical_tensor_name",
+        "dimensions",
+        "source_ggml_type",
+        "element_count",
+        "source_payload_size_bytes",
+        "source_payload_sha256",
+        "quantized_value_payload_sha256",
+        "scale_payload_sha256"
+      ],
+      "quantized_value_and_scale_hashes_are_null_only_for_unquantized_source_tensors": true,
+      "manifest_order": "ascending UTF-8 canonical_tensor_name bytes",
+      "manifest_encoding": "compact JSON UTF-8 with sorted object keys and no insignificant whitespace",
+      "logical_manifest_root_sha256_required": true,
+      "A_and_L_logical_manifest_root_sha256_must_equal": true,
+      "runtime_storage_manifest_required_per_arm": true,
+      "runtime_storage_manifest_fields": [
+        "canonical_tensor_name",
+        "runtime_buffer_size_bytes",
+        "runtime_buffer_sha256",
+        "lossless_repack_recipe_id",
+        "source_payload_sha256"
+      ],
+      "runtime_storage_manifest_roots_may_differ": true,
+      "ApxInf_must_trace_every_runtime_tensor_to_exact_GGUF_source_payload": true,
+      "missing_extra_duplicated_or_requantized_tensor_allowed": false
+    },
+    "quantization": {
+      "scheme": "llama.cpp-GGML_TYPE_Q8_0",
+      "same_scheme_required": true,
+      "same_tensor_type_map_required": true,
+      "same_block_size_required": true,
+      "same_signed_q8_values_required": true,
+      "same_f16_scale_bits_required": true,
+      "same_unquantized_tensor_dtype_and_bits_required": true,
+      "rounding_or_clamping_differences_allowed": false,
+      "runtime_requantization_allowed": false,
+      "lossless_memory_layout_repack_allowed": true,
+      "dequantized_value_tolerance_is_not_a_substitute_for_payload_identity": true
+    },
+    "kv_cache": {
+      "key_dtype": "f16",
+      "value_dtype": "f16",
+      "same_dtype_required": true,
+      "same_capacity_tokens": 256,
+      "same_initial_logical_length": 0,
+      "same_final_logical_length": 140,
+      "kv_quantization_allowed": false,
+      "prefix_or_cross_sample_reuse_allowed": false,
+      "kv_offload_required": true,
+      "same_physical_layout_required": false,
+      "physical_layout_and_allocated_bytes_must_be_reported": true,
+      "logical_value_bit_identity_required": false,
+      "logical_value_bit_identity_reason": "kernel accumulation order is an engine implementation choice; trajectory identity is the output-quality admission"
+    },
+    "prefill_and_recurrent_state": {
+      "same_raw_prompt_tokens_required": true,
+      "ApxInf_CPU_F32_prefill_allowed": false,
+      "both_arms_must_use_exact_selected_GGUF_Q8_0_tensor_payloads_during_prefill": true,
+      "prefill_runtime_requantization_allowed": false,
+      "prefill_precision_and_accumulation_policy_must_be_recorded_per_arm": true,
+      "GDN_recurrent_state_storage_dtype_must_be_equal": true,
+      "GDN_recurrent_state_initialization_policy_must_be_equal": true,
+      "GDN_recurrent_state_update_precision_policy_must_be_equal": true,
+      "GDN_state_policy_manifest_fields": [
+        "state_tensor_names_and_shapes",
+        "initialization_values_and_dtype",
+        "storage_dtype",
+        "update_input_dtype",
+        "update_accumulator_dtype",
+        "rounding_policy",
+        "prompt_end_logical_positions"
+      ],
+      "GDN_state_policy_manifest_sha256_required_per_arm": true,
+      "A_and_L_GDN_state_policy_manifest_sha256_must_equal": true,
+      "KV_policy_binding": "core_parity_contract.kv_cache",
+      "trajectory_identity_alone_is_sufficient_proof": false
+    },
+    "output_head_and_selection": {
+      "same_exact_GGUF_output_or_tied_embedding_payload_required": true,
+      "ApxInf_F32_tied_embedding_top4_rerank_allowed": false,
+      "ApxInf_must_use_exact_selected_GGUF_Q8_0_head_path": true,
+      "full_vocabulary_logits_required": true,
+      "unbiased_full_vocabulary_greedy_argmax_required": true,
+      "EOG_logit_suppression_allowed": false,
+      "head_and_argmax_policy_manifest_fields": [
+        "head_or_tied_embedding_source_payload_sha256",
+        "source_ggml_type",
+        "dequantization_formula_id",
+        "logits_output_dtype",
+        "vocabulary_size",
+        "argmax_tie_break_policy",
+        "EOG_logit_policy"
+      ],
+      "head_tensor_and_argmax_policy_manifest_sha256_required_per_arm": true,
+      "A_and_L_head_and_argmax_policy_manifest_sha256_must_equal": true,
+      "trajectory_identity_alone_is_sufficient_proof": false
+    },
+    "execution": {
+      "device": "same-physical-Apple-M4-GPU",
+      "all_24_transformer_layers_requested_on_gpu": true,
+      "runtime_placement_receipt_required": true,
+      "placement_receipt_must_cover_embedding_layers_output_and_kv": true,
+      "extra_accelerator_allowed": false,
+      "cpu_worker_threads": 4,
+      "batch_worker_threads": 4,
+      "thread_policy_must_be_explicit_and_equal": true,
+      "flash_attention_policy_must_be_explicitly_recorded": true,
+      "mmap_model_load_in_primary_timing": false,
+      "model_load_in_primary_timing": false,
+      "shader_or_pipeline_compilation_in_primary_timing": false
+    },
+    "current_readiness": {
+      "formally_admitted": false,
+      "selected_lane_instantiable_now": false,
+      "formal_campaign_may_start_now": false,
+      "common_parameters_manifest_root_sha256": null,
+      "null_common_parameters_hash_is_intentional_and_blocks_sampling": true,
+      "blocker_codes": [
+        "APXINF_EXACT_GGUF_Q8_0_LOSSLESS_LANE_NOT_YET_PROVEN",
+        "MATCHED_TENSOR_MANIFEST_ROOTS_NOT_CAPTURED",
+        "APXINF_Q8_0_PREFILL_STATE_PARITY_NOT_PROVEN",
+        "APXINF_CPU_F32_PREFILL_DIFFERS_FROM_LLAMA_Q8_0_PREFILL",
+        "APXINF_F32_GDN_STATE_POLICY_DIFFERS_FROM_REQUIRED_MATCHED_STATE_POLICY",
+        "APXINF_F16_KV_PARITY_NOT_PROVEN",
+        "APXINF_Q8_0_HEAD_ARGMAX_PARITY_NOT_PROVEN",
+        "APXINF_F32_TIED_EMBEDDING_TOP4_RERANK_DIFFERS_FROM_LLAMA_Q8_0_FULL_VOCAB_ARGMAX",
+        "EXACT_Q8_0_HEAD_AND_ARGMAX_PARITY_NOT_PROVEN",
+        "APXINF_EXPLICIT_FOUR_THREAD_POLICY_NOT_PROVEN",
+        "V3_CORE_DRIVER_AND_BINARY_HASHES_NOT_CAPTURED",
+        "CORE_SUBCAMPAIGN_PUBLIC_ACTIVATION_NOT_PROVEN",
+        "QUIET_HOST_GATE_NOT_YET_PASSED"
+      ],
+      "existing_custom_G32_G64_W8_hybrid_is_eligible": false,
+      "existing_custom_G32_G64_W8_reason": "its quantization payload, group sizes, unowned F32 operations, and F32 KV differ from pinned llama.cpp Q8_0 plus F16 KV",
+      "existing_prefill_and_state_reason": "ApxInf currently performs CPU/F32 prefill and creates initial KV and GDN state under a different precision path than llama.cpp Q8_0 prefill",
+      "existing_output_head_reason": "ApxInf currently uses the F32 tied embedding for top-4 exact reranking, while the selected strict lane requires the exact GGUF Q8_0 head path and full-vocabulary greedy argmax",
+      "matching_the_128_token_trajectory_does_not_clear_weight_prefill_state_kv_or_head_gates": true,
+      "future_resolution_may_be_proven_in_campaign_start_without_editing_this_contract": true
+    }
+  },
+  "runtime_custody": {
+    "ApxInf_native": {
+      "repository": "https://github.com/qhy991/ApxInf.git",
+      "predeclaration_base_commit": "df5c55a06140107b24964d9e4abbefd9fa2a4733",
+      "campaign_commit_required": true,
+      "campaign_tree_required": true,
+      "clean_checkout_required": true,
+      "named_configuration_id": "ApxInf-native-hybrid-G32-G64-W8-CPU-F32-remainder-F32-KV-v3",
+      "runner_source_path": "benchmarks/cross_runtime/formal_v3_driver.py",
+      "runner_source_sha256": null,
+      "release_binary_sha256": null,
+      "loaded_non_system_library_closure_sha256": null,
+      "packed_weight_and_resident_buffer_manifest_sha256": null,
+      "null_hashes_block_sampling": true
+    },
+    "ApxInf_exact_Q8_core": {
+      "repository": "https://github.com/qhy991/ApxInf.git",
+      "predeclaration_base_commit": "df5c55a06140107b24964d9e4abbefd9fa2a4733",
+      "campaign_commit_required": true,
+      "campaign_tree_required": true,
+      "clean_checkout_required": true,
+      "runner_source_path": "benchmarks/cross_runtime/formal_v3_driver.py",
+      "runner_source_sha256": null,
+      "release_binary_sha256": null,
+      "loaded_non_system_library_closure_sha256": null,
+      "null_hashes_block_sampling": true
+    },
+    "pinned_llama_cpp_core": {
+      "repository": "https://github.com/ggml-org/llama.cpp.git",
+      "source_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+      "source_tree": "21045aed8b426d7a5e25a98e646054cbd9487e81",
+      "clean_detached_checkout_required": true,
+      "runner_binary_name": "apxinf-llama-cpp-raw-token-runner",
+      "runner_binary_size_bytes": 6535088,
+      "runner_binary_sha256": "cdf46814c70a30f9e183c83d5aa9617698137567697403406c987b3c0e4793a4",
+      "loaded_non_system_library_closure_sha256_required": true,
+      "GGML_BACKEND_PATH_must_be_unset": true,
+      "dynamic_backend_scan_allowed": false
+    },
+    "gateway_cohort": {
+      "omniinfer": {
+        "repository": "https://github.com/omnimind-ai/OmniInfer.git",
+        "release": "v0.3.26",
+        "source_commit": "79af77228f329a79ac665014089e23983e69e79f",
+        "release_archive_sha256": "0f83ea36aad7126976ff2a53a58f0ce20e934d2bd0133d40f4ce974658a48cf4",
+        "cli_size_bytes": 9719136,
+        "cli_sha256": "65487424ca9179850b80079beafa5ad69a66e0841d328ee8dd8a1fd4b613d661"
+      },
+      "backend": {
+        "runtime": "llama.cpp-mac",
+        "release": "b10280",
+        "source_commit": "61881b1f7f0b13d9e46d561fc25afcd6bbaec479",
+        "release_archive_sha256": "5dc4b11192ef34895c7f92a9f1dd3bd3d5864a63976ea2327fe2e0944891cb75",
+        "llama_server_size_bytes": 33472,
+        "llama_server_sha256": "02723fc39fbeebd9849ce4c9ca3799649df3cf91f101c2cd56b8756e1db54d28",
+        "build_info": "b10280-61881b1f7",
+        "model_artifact_sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c",
+        "same_pid_start_time_argv_environment_and_loaded_model_fd_for_B_and_G": true,
+        "same_runtime_closure_start_and_end_sha256_required": true,
+        "slots": 1,
+        "effective_context_tokens": 256,
+        "batch_tokens": 13,
+        "ubatch_tokens": 13,
+        "threads": 4,
+        "batch_threads": 4
+      },
+      "request_history_disabled": true,
+      "request_defaults_exact": {},
+      "effective_parameters_exact": {},
+      "proxy_model_exact": null,
+      "gateway_and_backend_mutable_logs_excluded_but_start_end_hashed": true,
+      "current_readiness": {
+        "formally_admitted": false,
+        "same_resident_backend_design_proven_by_v1_diagnostic": true,
+        "v1_diagnostic_samples_reusable": false,
+        "blocker_codes": [
+          "V3_GATEWAY_SUBCAMPAIGN_NOT_PUBLICLY_ACTIVATED",
+          "V3_FORMAL_DRIVER_HASH_NOT_CAPTURED",
+          "QUIET_HOST_GATE_NOT_YET_PASSED"
+        ],
+        "future_resolution_may_be_proven_in_campaign_start_without_editing_this_contract": true
+      }
+    },
+    "gateway_controller_backend_model_custody_v3": {
+      "proof_id": "GATEWAY_CONTROLLER_HELD_VNODE_AND_BACKEND_FD_V3",
+      "controller_preload_fd": {
+        "owner": "driver-owned-custodian-daemon",
+        "required_open_flags": ["O_RDONLY", "O_NOFOLLOW", "O_CLOEXEC"],
+        "required_file_type": "single-link-regular",
+        "required_hard_link_count": 1,
+        "full_sha256_required": true,
+        "open_and_full_hash_must_complete_before": "gateway-and-backend-launch",
+        "held_continuously_from": "prepare-before-runtime-launch",
+        "held_continuously_through": "run-raw-receipt-durable-before-cleanup"
+      },
+      "backend_loaded_fd": {
+        "required_access_mode": "read-only",
+        "required_file_type": "single-link-regular",
+        "independent_observers": [
+          "libproc-PROC_PIDLISTFDS+PROC_PIDFDVNODEPATHINFO",
+          "lsof"
+        ],
+        "observers_must_agree": true,
+        "required_vnode_identity_fields": [
+          "device",
+          "inode",
+          "mode",
+          "link_count",
+          "size_bytes",
+          "ctime_ns",
+          "absolute_path"
+        ],
+        "must_equal_controller_preload_fd_vnode_identity": true,
+        "required_checkpoints": [
+          "prepare-before-any-generation",
+          "runtime-preflight-start",
+          "runtime-preflight-end",
+          "before-first-generation",
+          "after-warmups",
+          "after-timed-macroblock-0",
+          "after-timed-macroblock-1",
+          "after-timed-macroblock-2",
+          "after-timed-macroblock-3",
+          "after-timed-macroblock-4",
+          "after-timed-macroblock-5",
+          "after-timed-macroblock-6",
+          "after-timed-macroblock-7",
+          "after-timed-macroblock-8",
+          "after-timed-macroblock-9",
+          "after-timed-macroblock-10",
+          "after-timed-macroblock-11",
+          "after-timed-macroblock-12",
+          "after-timed-macroblock-13",
+          "after-timed-macroblock-14",
+          "after-timed-macroblock-15",
+          "runtime-postflight-before-cleanup"
+        ]
+      },
+      "claim_semantics": {
+        "same_backend_loaded_model_fd_shared_by_B_and_G_required": true,
+        "controller_and_backend_same_vnode_identity_required": true,
+        "controller_and_backend_same_open_file_description_required": false,
+        "controller_and_backend_same_open_file_description_claim_allowed": false
+      }
+    },
+    "required_for_every_executable_or_library": [
+      "absolute_path",
+      "lstat_device_inode_mode_size_ctime",
+      "sha256",
+      "code_signature_identity_or_explicit_unsigned_state",
+      "loaded_image_paths_and_sha256",
+      "start_end_identity_equality"
+    ],
+    "required_for_every_model_open": [
+      "O_RDONLY",
+      "O_NOFOLLOW",
+      "file_descriptor_identity_before_load",
+      "file_descriptor_identity_after_load",
+      "file_descriptor_identity_before_receipt",
+      "size_bytes",
+      "sha256"
+    ]
+  },
+  "execution_protocol": {
+    "campaigns_are_independent": true,
+    "NATIVE_A_VS_L": {
+      "process_state": "fresh-process-per-sample",
+      "internal_timing_excludes_process_start_model_load_and_receipt_serialization": true,
+      "untimed_warmup_order": ["A", "B", "B", "A", "A", "B"],
+      "untimed_warmups_per_arm": 3,
+      "timed_block_orders": [
+        "ABBA",
+        "BAAB",
+        "ABBA",
+        "BAAB",
+        "ABBA",
+        "BAAB",
+        "ABBA",
+        "BAAB"
+      ],
+      "role_binding": {
+        "A": "ApxInf_native_hybrid_G32_G64_W8_CPU_F32_remainder_F32_KV",
+        "B": "pinned_llama_cpp_core"
+      },
+      "timed_blocks": 8,
+      "timed_samples_per_block": 4,
+      "timed_samples_per_arm": 16,
+      "timed_samples_total": 32
+    },
+    "CORE_A_VS_L": {
+      "process_state": "fresh-process-per-sample",
+      "internal_timing_excludes_process_start_model_load_and_receipt_serialization": true,
+      "untimed_warmup_order": ["A", "B", "B", "A", "A", "B"],
+      "untimed_warmups_per_arm": 3,
+      "timed_block_orders": [
+        "ABBA",
+        "BAAB",
+        "ABBA",
+        "BAAB",
+        "ABBA",
+        "BAAB",
+        "ABBA",
+        "BAAB"
+      ],
+      "role_binding": {
+        "A": "ApxInf_future_exact_GGUF_Q8_0_F16_KV_core",
+        "B": "pinned_llama_cpp_core"
+      },
+      "timed_blocks": 8,
+      "timed_samples_per_block": 4,
+      "timed_samples_per_arm": 16,
+      "timed_samples_total": 32
+    },
+    "GATEWAY_B_VS_G": {
+      "process_state": "one-resident-backend-and-gateway-for-entire-campaign",
+      "client_connections": "one warmed persistent HTTP/1.1 connection per arm",
+      "upstream_connection_reuse_claim_allowed": false,
+      "untimed_warmup_abstract_orders": ["ABBA", "BAAB"],
+      "untimed_warmups_per_arm": 4,
+      "timed_macroblock_count": 16,
+      "odd_macroblock_abstract_orders": ["ABBA", "BAAB"],
+      "even_macroblock_abstract_orders": ["BAAB", "ABBA"],
+      "role_binding": {
+        "A": "direct_resident_llama_server",
+        "B": "omniinfer_gateway_to_same_resident_llama_server"
+      },
+      "timed_subblocks_total": 32,
+      "timed_samples_per_subblock": 4,
+      "timed_samples_per_arm": 64,
+      "timed_samples_total": 128,
+      "cache_clear_and_admission_occur_outside_each_timed_interval": true
+    },
+    "fixed_schedule_mutation_allowed": false,
+    "retry_allowed_after_campaign_start": false,
+    "resampling_allowed": false,
+    "replacement_allowed": false,
+    "reordering_allowed": false,
+    "outlier_removal_allowed": false,
+    "sample_extension_after_looking_at_results_allowed": false
+  },
+  "timing_contract": {
+    "clock": "monotonic",
+    "timestamp_resolution_and_clock_identity_must_be_recorded": true,
+    "NATIVE_A_VS_L": {
+      "start": "immediately-before-first-raw-token-prefill-dispatch",
+      "common_token_ready_boundary": "next-greedy-token-ready",
+      "ttft_end": "first-next-greedy-token-ready",
+      "end": "128th-next-greedy-token-ready",
+      "ApxInf_boundary_includes": [
+        "CPU/F32 raw-token prefill and initial KV and GDN state production for TTFT",
+        "all hybrid Metal W8 and CPU/F32 decode work",
+        "CPU/F32 full-attention work",
+        "top-4 candidate transfer",
+        "F32 tied-embedding exact top-4 rerank",
+        "greedy token selection"
+      ],
+      "llama_cpp_boundary_includes": [
+        "Q8_0 Metal raw-token prefill and initial F16 KV production for TTFT",
+        "all Q8_0 Metal decode work and disclosed CPU fallback",
+        "device-complete logits production",
+        "sampler or full-vocabulary greedy argmax",
+        "greedy token selection"
+      ],
+      "internal_operations_are_identical": false,
+      "endpoint_semantics_are_identical": true,
+      "logits_ready_is_a_valid_endpoint": false,
+      "sampling_argmax_top4_transfer_or_F32_rerank_may_be_excluded": false,
+      "accelerator_completion_before_each_token_ready_timestamp": true,
+      "final_sampled_token_decoded_inside_timed_region": false,
+      "ttft_ms": "token_1_ready_time - prefill_start_time",
+      "total_latency_ms": "token_128_ready_time - prefill_start_time",
+      "tpot_ms": "(token_128_ready_time - token_1_ready_time) / 127",
+      "generation_tps": "127000 / (token_128_ready_ms - token_1_ready_ms)",
+      "primary_metric": "tpot_ms",
+      "secondary_metrics": ["ttft_ms", "total_latency_ms", "generation_tps"],
+      "process_wall_time_is_primary": false,
+      "model_load_time_is_primary": false
+    },
+    "CORE_A_VS_L": {
+      "start": "immediately-before-first-raw-token-prefill-dispatch",
+      "common_token_ready_boundary": "next-greedy-token-ready",
+      "ttft_end": "first-next-greedy-token-ready",
+      "end": "128th-next-greedy-token-ready",
+      "formal_ApxInf_selected_lane_boundary_includes": [
+        "device-complete exact-GGUF-Q8_0 full-vocabulary logits production",
+        "full-vocabulary unbiased greedy argmax",
+        "greedy token selection"
+      ],
+      "current_nonadmitted_ApxInf_boundary_includes": [
+        "device-complete logits production",
+        "top-4 candidate transfer",
+        "F32 exact top-4 rerank",
+        "greedy token selection"
+      ],
+      "current_nonadmitted_ApxInf_boundary_must_still_include_top4_and_F32_rerank_in_any_diagnostic": true,
+      "current_nonadmitted_ApxInf_boundary_is_formal_lane_eligible": false,
+      "llama_cpp_boundary_includes": [
+        "device-complete logits production",
+        "sampler or argmax execution",
+        "greedy token selection"
+      ],
+      "logits_ready_is_a_valid_endpoint": false,
+      "sampling_or_argmax_may_be_excluded": false,
+      "device_completion_before_each_token_ready_timestamp": true,
+      "final_sampled_token_decoded_inside_timed_region": false,
+      "ttft_ms": "token_1_ready_time - prefill_start_time",
+      "total_latency_ms": "token_128_ready_time - prefill_start_time",
+      "tpot_ms": "(token_128_ready_time - token_1_ready_time) / 127",
+      "generation_tps": "127000 / (token_128_ready_ms - token_1_ready_ms)",
+      "primary_metric": "tpot_ms",
+      "secondary_metrics": ["ttft_ms", "total_latency_ms", "generation_tps"],
+      "process_wall_time_is_primary": false,
+      "model_load_time_is_primary": false
+    },
+    "GATEWAY_B_VS_G": {
+      "start": "immediately-before-the-single-sendall-call-for-the-complete-pre-serialized-arm-specific-HTTP/1.1-request-wire-containing-the-identical-canonical-383-byte-JSON-body-on-a-warmed-persistent-client-connection",
+      "end": "after-reading-the-full-response-body-and-validating-and-parsing-the-complete-JSON-response",
+      "primary_metric": "client_full_response_wall_ms",
+      "paired_delta_ms": "G_client_full_response_wall_ms - B_client_full_response_wall_ms",
+      "paired_ratio": "G_client_full_response_wall_ms / B_client_full_response_wall_ms",
+      "complete_HTTP_request_wire_serialization_before_start": true,
+      "single_sendall_call_for_complete_request_wire_required": true,
+      "canonical_383_byte_JSON_body_identical_between_B_and_G": true,
+      "arm_specific_HTTP_authority_header_difference_is_inside_timed_region": true,
+      "body_only_timing_allowed": false,
+      "backend_native_prompt_and_predicted_ms_are_sensitivity_metrics_only": true,
+      "gateway_overhead_subtraction_from_ApxInf_or_llama_core_allowed": false,
+      "pure_gateway_CPU_time_claim_allowed": false
+    }
+  },
+  "host_quiet_gate": {
+    "must_pass_before_create_new_campaign_start_marker": true,
+    "failed_pre_marker_preflight_consumes_campaign": false,
+    "may_retry_preflight_without_sampling_after_host_becomes_quiet": true,
+    "power_source_required": "AC Power",
+    "thermal_warning_allowed": false,
+    "performance_warning_allowed": false,
+    "preflight": {
+      "snapshot_count": 5,
+      "snapshot_interval_ms": 250,
+      "every_snapshot_must_pass": true
+    },
+    "continuous_monitor": {
+      "sample_interval_ms": 250,
+      "starts_before_first_warmup": true,
+      "ends_after_postflight": true,
+      "every_snapshot_must_pass": true
+    },
+    "postflight": {
+      "cooldown_before_snapshots_ms": 1000,
+      "snapshot_count": 5,
+      "snapshot_interval_ms": 250,
+      "every_snapshot_must_pass": true
+    },
+    "process_policy": {
+      "allowlist_scope": "exact campaign orchestrator process group, active measured runtime process group, and the custody monitor only",
+      "allowlist": {
+        "matching_mode": "exact-pid-plus-process-start-identity-and-declared-ancestry",
+        "entries": [
+          {
+            "role": "campaign_orchestrator",
+            "required_receipt_fields": ["pid", "process_start_time", "executable_path", "executable_sha256", "argv_sha256", "process_group_id"]
+          },
+          {
+            "role": "active_measured_runtime_tree",
+            "required_receipt_fields": ["root_pid", "root_process_start_time", "edge_id", "descendant_pid_start_time_pairs", "executable_and_library_hashes"]
+          },
+          {
+            "role": "custody_monitor",
+            "required_receipt_fields": ["pid", "process_start_time", "executable_path", "executable_sha256", "argv_sha256"]
+          }
+        ],
+        "executable_name_path_or_bundle_prefix_wildcards_allowed": false,
+        "inactive_edge_runtime_processes_allowlisted": false,
+        "PID_without_process_start_identity_is_sufficient": false,
+        "every_snapshot_must_record_resolved_allowlist_and_all_nonallowlisted_processes": true
+      },
+      "maximum_single_non_allowlisted_process_cpu_percent": 10.0,
+      "maximum_aggregate_non_allowlisted_process_cpu_percent": 25.0,
+      "cpu_percent_window_ms": 250,
+      "user_or_system_process_termination_by_driver_allowed": false
+    },
+    "system_policy": {
+      "maximum_load_average_per_logical_cpu": 0.5,
+      "system_swap_delta_bytes_required": 0,
+      "campaign_process_swap_bytes_required": 0,
+      "memory_pressure_pages_throttled_delta_required": 0,
+      "power_or_thermal_state_change_allowed": false
+    },
+    "failure_effect": "FORMAL_RESULT_REJECTED_NO_RANKING_NO_EQUIVALENCE"
+  },
+  "statistics_and_decisions": {
+    "NATIVE_A_VS_L": {
+      "primary_observation": "tpot_ms",
+      "ratio_subject_A": "ApxInf-native-hybrid-G32-G64-W8-CPU-F32-remainder-F32-KV-v3",
+      "ratio_subject_L": "llama.cpp-f280b269-Q8_0-Metal-F16-KV-threads4-v3",
+      "block_log_ratio": "mean(log(A_tpot_ms)) - mean(log(L_tpot_ms)) within each four-sample ABBA or BAAB block",
+      "point_ratio_A_over_L": "exp(mean(eight_block_log_ratios))",
+      "ci95": "two-sided Student-t interval over eight block log ratios, df=7, t_critical_0_975=2.364624251, exponentiated",
+      "practical_equivalence_interval_A_over_L": [0.95, 1.05],
+      "stability_gates": {
+        "A_tpot_population_cv_max": 0.03,
+        "L_tpot_population_cv_max": 0.03,
+        "absolute_ABBA_BAAB_log_ratio_mean_difference_max": 0.02,
+        "absolute_first4_last4_block_log_ratio_mean_difference_max": 0.02,
+        "both_half_campaign_ratios_must_support_same_decision": true
+      },
+      "decision_rules": {
+        "NAMED_APXINF_DEPLOYMENT_AT_LEAST_5_PERCENT_FASTER": "all native-edge admission and stability gates pass AND upper_ci95_A_over_L < 0.95 AND both half-campaign ratios < 0.95",
+        "NAMED_LLAMA_CPP_DEPLOYMENT_AT_LEAST_5_PERCENT_FASTER": "all native-edge admission and stability gates pass AND lower_ci95_A_over_L > 1.05 AND both half-campaign ratios > 1.05",
+        "NAMED_DEPLOYMENTS_PRACTICALLY_EQUIVALENT_WITHIN_5_PERCENT": "all native-edge admission and stability gates pass AND lower_ci95_A_over_L >= 0.95 AND upper_ci95_A_over_L <= 1.05",
+        "INCONCLUSIVE": "every other admitted outcome",
+        "UNRANKABLE": "any native-edge admission, teacher, free-trajectory, custody, quiet-host, schedule, timing, disclosure, or stability gate fails"
+      },
+      "engine_only_winner_claim_allowed": false,
+      "identical_weight_quantization_kv_or_placement_claim_allowed": false,
+      "secondary_metrics_may_change_primary_decision": false
+    },
+    "CORE_A_VS_L": {
+      "primary_observation": "tpot_ms",
+      "block_log_ratio": "mean(log(A_tpot_ms)) - mean(log(L_tpot_ms)) within each four-sample ABBA or BAAB block",
+      "point_ratio_A_over_L": "exp(mean(eight_block_log_ratios))",
+      "ci95": "two-sided Student-t interval over eight block log ratios, df=7, t_critical_0_975=2.364624251, exponentiated",
+      "practical_equivalence_interval_A_over_L": [0.95, 1.05],
+      "stability_gates": {
+        "A_tpot_population_cv_max": 0.03,
+        "L_tpot_population_cv_max": 0.03,
+        "absolute_ABBA_BAAB_log_ratio_mean_difference_max": 0.02,
+        "absolute_first4_last4_block_log_ratio_mean_difference_max": 0.02,
+        "both_half_campaign_ratios_must_support_same_decision": true
+      },
+      "decision_rules": {
+        "APXINF_AT_LEAST_5_PERCENT_FASTER": "all admission and stability gates pass AND upper_ci95_A_over_L < 0.95 AND both half-campaign ratios < 0.95",
+        "LLAMA_CPP_AT_LEAST_5_PERCENT_FASTER": "all admission and stability gates pass AND lower_ci95_A_over_L > 1.05 AND both half-campaign ratios > 1.05",
+        "PRACTICALLY_EQUIVALENT_WITHIN_5_PERCENT": "all admission and stability gates pass AND lower_ci95_A_over_L >= 0.95 AND upper_ci95_A_over_L <= 1.05",
+        "INCONCLUSIVE": "every other admitted outcome",
+        "UNRANKABLE": "any admission, trajectory, custody, quiet-host, schedule, timing, or stability gate fails"
+      },
+      "secondary_metrics_may_change_primary_decision": false
+    },
+    "GATEWAY_B_VS_G": {
+      "primary_observation": "paired G_minus_B client_full_response_wall_ms",
+      "block_value": "mean of the four adjacent-order pair deltas within each macroblock",
+      "point_delta_ms": "mean(sixteen_block_values)",
+      "ci95_delta_ms": "two-sided Student-t interval across sixteen block values, df=15, t_critical_0_975=2.131449545559323",
+      "secondary_log_ratio": "within-pair log(G_wall_ms / B_wall_ms), block means, two-sided Student-t interval across sixteen blocks, then exponentiate",
+      "stability_gates": {
+        "B_wall_population_cv_max": 0.01,
+        "G_wall_population_cv_max": 0.01,
+        "B_native_predicted_ms_population_cv_max": 0.01,
+        "G_native_predicted_ms_population_cv_max": 0.01,
+        "population_sd_pair_delta_over_pooled_wall_max": 0.01,
+        "absolute_order_stratum_mean_difference_max": "max(2 ms, 0.2% of pooled wall ms)",
+        "absolute_first8_last8_block_mean_difference_max": "max(2 ms, 0.2% of pooled wall ms)",
+        "ci95_delta_half_width_max_ms": 2.0
+      },
+      "decision_rules": {
+        "PRACTICALLY_EQUIVALENT_GATEWAY_PATH": "all gates pass AND delta CI95 is inside [-5,+5] ms AND ratio CI95 is inside [0.995,1.005]",
+        "POSITIVE_GATEWAY_PATH_OVERHEAD": "all gates pass AND practical-equivalence rule is false AND lower_ci95_delta_ms > 0 AND lower_ci95_ratio > 1 AND both order-stratum means > 0",
+        "INCONCLUSIVE": "every other admitted outcome",
+        "UNINTERPRETABLE": "any admission, trajectory, custody, quiet-host, schedule, timing, or stability gate fails"
+      },
+      "decision_precedence": [
+        "UNINTERPRETABLE",
+        "PRACTICALLY_EQUIVALENT_GATEWAY_PATH",
+        "POSITIVE_GATEWAY_PATH_OVERHEAD",
+        "INCONCLUSIVE"
+      ],
+      "engine_winner_or_ranking_claim_allowed": false
+    }
+  },
+  "failure_contract": {
+    "fail_closed": true,
+    "subcampaign_markers": {
+      "NATIVE_A_VS_L": {
+        "subcampaign_id": "qwen35-0.8b-native-apxinf-vs-llamacpp-formal-v3-20260826",
+        "create_new_only": true,
+        "must_not_exist_before_creation": true,
+        "created_only_after_all_native_configuration_teacher_free-trajectory_immutable_and_quiet_preconditions_pass": true,
+        "must_be_committed_and_pushed_before_first_native_performance_generation_request": true,
+        "creation_consumes_only_native_subcampaign_if_any_later_native_step_fails": true
+      },
+      "CORE_A_VS_L": {
+        "subcampaign_id": "qwen35-0.8b-core-apxinf-vs-llamacpp-formal-v3-20260826",
+        "create_new_only": true,
+        "must_not_exist_before_creation": true,
+        "created_only_after_all_core_immutable_parity_and_quiet_preconditions_pass": true,
+        "must_be_committed_and_pushed_before_first_core_generation_request": true,
+        "creation_consumes_only_core_subcampaign_if_any_later_core_step_fails": true
+      },
+      "GATEWAY_B_VS_G": {
+        "subcampaign_id": "qwen35-0.8b-omniinfer-gateway-increment-formal-v3-20260826",
+        "create_new_only": true,
+        "must_not_exist_before_creation": true,
+        "created_only_after_all_gateway_immutable_same-backend_and_quiet_preconditions_pass": true,
+        "must_be_committed_and_pushed_before_first_gateway_generation_request": true,
+        "creation_consumes_only_gateway_subcampaign_if_any_later_gateway_step_fails": true
+      }
+    },
+    "one_subcampaign_failure_consumes_the_other_subcampaign": false,
+    "one_subcampaign_result_may_fill_missing_other_edge": false,
+    "hard_stop_dispatch": "apply common_hard_stop_conditions plus only the active edge entry in per_edge_hard_stop_conditions",
+    "inactive_edge_hard_stop_conditions_apply": false,
+    "common_hard_stop_conditions": [
+      "predeclaration activation or Git custody mismatch",
+      "active-edge runtime source binary library model or required artifact custody mismatch",
+      "active-edge raw prompt IDs or frozen output trajectory mismatch",
+      "quiet-host power thermal swap memory-pressure or process gate failure",
+      "schedule deviation retry replacement reordering outlier removal or sample extension",
+      "missing non-finite non-positive or arithmetically inconsistent timing",
+      "runtime error timeout crash or unexpected process restart"
+    ],
+    "per_edge_hard_stop_conditions": {
+      "NATIVE_A_VS_L": [
+        "named AN or L deployment identity or required hash mismatch",
+        "any declared quantization prefill KV head placement or thread-policy difference is absent or misrepresented",
+        "the prebound 128 teacher inputs or their canonical hash mismatch",
+        "AN or L teacher-forced 128 argmax receipt is missing non-exact or not publicly bound",
+        "AN and L do not produce the exact frozen free-run 128-token trajectory",
+        "next-greedy-token-ready timing excludes any AN top4 transfer F32 rerank or L sampler argmax work"
+      ],
+      "CORE_A_VS_L": [
+        "logical tensor manifest inventory payload scale or runtime traceability mismatch",
+        "exact Q8_0 prefill GDN state F16 KV head argmax context thread device or placement parity mismatch",
+        "A or L does not produce the exact frozen free-run 128-token trajectory",
+        "next-greedy-token-ready timing boundary mismatch"
+      ],
+      "GATEWAY_B_VS_G": [
+        "B and G do not resolve to the same resident backend process loaded model file descriptor argv environment or runtime closure",
+        "canonical 383-byte request object size hash or B/G identity mismatch",
+        "cache clear does not acknowledge exact cleared slot zero before an arm",
+        "backend rendered raw prompt IDs usage content or frozen 128-token B/G trajectory mismatch",
+        "client full-response wall timing boundary mismatch"
+      ]
+    },
+    "first_post_marker_failure_action": {
+      "scope": "active subcampaign only",
+      "stop_immediately": true,
+      "remaining_slots_marked_unattempted": true,
+      "raw_partial_receipt_published": true,
+      "failed_observations_retained": true,
+      "campaign_consumed": true,
+      "formal_summary_allowed": false,
+      "replacement_campaign_under_same_id_allowed": false
+    }
+  },
+  "machine_receipt_contract": {
+    "pointer_syntax": "RFC6901",
+    "required_top_level_objects": [
+      "contract_binding",
+      "git_custody",
+      "host_custody",
+      "artifact_custody",
+      "parity_admission",
+      "schedule_receipt",
+      "samples",
+      "statistics",
+      "gates",
+      "decision"
+    ],
+    "required_exact_bindings": {
+      "/contract_binding/campaign_id": "qwen35-0.8b-cross-runtime-formal-v3-20260826",
+      "/contract_binding/schema_version": 3,
+      "/host_custody/model_identifier": "Mac16,10",
+      "/host_custody/chip": "Apple M4",
+      "/host_custody/os_build": "25C56",
+      "/artifact_custody/model/sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c",
+      "/artifact_custody/llama_cpp/source_commit": "f280b26983ad0fdb705a0d9ebf0503e76f2899b0",
+      "/artifact_custody/omniinfer/source_commit": "79af77228f329a79ac665014089e23983e69e79f",
+      "/artifact_custody/gateway_backend/source_commit": "61881b1f7f0b13d9e46d561fc25afcd6bbaec479"
+    },
+    "required_dynamic_contract_binding": {
+      "receipt_base_pointer": "/contract_binding",
+      "required_fields": [
+        "edge_id",
+        "subcampaign_id",
+        "repository_url",
+        "remote_origin_url",
+        "local_tracking_ref",
+        "local_tracking_oid",
+        "live_remote_url",
+        "live_remote_ref",
+        "ls_remote_argv",
+        "ls_remote_exit_code",
+        "ls_remote_live_oid",
+        "head_commit",
+        "contract_repository_path",
+        "contract_commit",
+        "contract_tree",
+        "contract_blob_oid",
+        "contract_blob_size_bytes",
+        "contract_blob_sha256",
+        "observed_file_size_bytes",
+        "observed_file_sha256",
+        "activation_commit",
+        "activation_tree",
+        "activation_contract_blob_oid",
+        "activation_contract_blob_size_bytes",
+        "activation_contract_blob_sha256",
+        "activation_marker_repository_path",
+        "activation_marker_blob_oid",
+        "activation_marker_blob_size_bytes",
+        "activation_marker_blob_sha256",
+        "contract_commit_is_ancestor_of_activation_commit",
+        "activation_commit_equals_head_and_live_remote_oid",
+        "local_tracking_ref_used_as_publication_proof",
+        "worktree_clean"
+      ],
+      "format_requirements": {
+        "contract_commit": "lowercase full Git object ID accepted by the repository object format",
+        "contract_tree": "lowercase full Git object ID accepted by the repository object format",
+        "contract_blob_oid": "lowercase full Git object ID accepted by the repository object format",
+        "activation_commit": "lowercase full Git object ID accepted by the repository object format",
+        "activation_tree": "lowercase full Git object ID accepted by the repository object format",
+        "activation_contract_blob_oid": "lowercase full Git object ID accepted by the repository object format",
+        "activation_marker_blob_oid": "lowercase full Git object ID accepted by the repository object format",
+        "local_tracking_oid": "lowercase full Git object ID accepted by the repository object format",
+        "ls_remote_live_oid": "lowercase full Git object ID accepted by the repository object format",
+        "head_commit": "lowercase full Git object ID accepted by the repository object format",
+        "all_sha256_fields": "exactly 64 lowercase hexadecimal characters",
+        "all_size_fields": "positive base-10 integer"
+      },
+      "constraints": [
+        {
+          "op": "equals-literal",
+          "left": "/contract_binding/repository_url",
+          "right": "https://github.com/qhy991/ApxInf.git"
+        },
+        {
+          "op": "equals-literal",
+          "left": "/contract_binding/contract_repository_path",
+          "right": "configs/qwen35-0.8b-cross-runtime-formal-v3.json"
+        },
+        {
+          "op": "equals-literal",
+          "left": "/contract_binding/remote_origin_url",
+          "right": "https://github.com/qhy991/ApxInf.git"
+        },
+        {
+          "op": "git-config-get-equals-literal",
+          "key": "remote.origin.url",
+          "right": "https://github.com/qhy991/ApxInf.git",
+          "normalization_rule_id": "EXACT_UTF8_BYTE_EQUALITY_NO_NORMALIZATION"
+        },
+        {
+          "op": "equals-literal",
+          "left": "/contract_binding/local_tracking_ref",
+          "right": "refs/remotes/origin/main"
+        },
+        {
+          "op": "equals-literal",
+          "left": "/contract_binding/live_remote_url",
+          "right": "https://github.com/qhy991/ApxInf.git"
+        },
+        {
+          "op": "equals-literal",
+          "left": "/contract_binding/live_remote_ref",
+          "right": "refs/heads/main"
+        },
+        {
+          "op": "equals-literal",
+          "left": "/contract_binding/ls_remote_argv",
+          "right": [
+            "git",
+            "ls-remote",
+            "--exit-code",
+            "https://github.com/qhy991/ApxInf.git",
+            "refs/heads/main"
+          ]
+        },
+        {
+          "op": "integer-equals",
+          "left": "/contract_binding/ls_remote_exit_code",
+          "right": 0
+        },
+        {
+          "op": "git-ls-remote-exact-single-ref",
+          "argv_pointer": "/contract_binding/ls_remote_argv",
+          "required_exit_code": 0,
+          "required_stdout_shape": "one full object ID, one TAB, refs/heads/main, one LF, and no other stdout",
+          "observed_oid_pointer": "/contract_binding/ls_remote_live_oid",
+          "network_execution_required": true,
+          "local_ref_or_cached_value_allowed": false
+        },
+        {
+          "op": "git-rev-parse-equals",
+          "revision": "HEAD",
+          "expected_oid": "/contract_binding/head_commit"
+        },
+        {
+          "op": "git-rev-parse-equals",
+          "revision": "refs/remotes/origin/main",
+          "expected_oid": "/contract_binding/local_tracking_oid",
+          "classification": "secondary-local-observation-not-publication-proof"
+        },
+        {
+          "op": "all-equal",
+          "pointers": [
+            "/contract_binding/activation_commit",
+            "/contract_binding/head_commit",
+            "/contract_binding/ls_remote_live_oid",
+            "/contract_binding/local_tracking_oid"
+          ],
+          "publication_authority_pointer": "/contract_binding/ls_remote_live_oid"
+        },
+        {
+          "op": "git-rev-parse-tree-equals",
+          "commit": "/contract_binding/contract_commit",
+          "expected_tree": "/contract_binding/contract_tree"
+        },
+        {
+          "op": "git-ls-tree-blob-equals",
+          "commit": "/contract_binding/contract_commit",
+          "path": "/contract_binding/contract_repository_path",
+          "expected_blob_oid": "/contract_binding/contract_blob_oid"
+        },
+        {
+          "op": "git-cat-file-blob-size-and-sha256-equal",
+          "blob_oid": "/contract_binding/contract_blob_oid",
+          "expected_size": "/contract_binding/contract_blob_size_bytes",
+          "expected_sha256": "/contract_binding/contract_blob_sha256"
+        },
+        {
+          "op": "file-size-and-sha256-equal",
+          "path": "/contract_binding/contract_repository_path",
+          "expected_size": "/contract_binding/observed_file_size_bytes",
+          "expected_sha256": "/contract_binding/observed_file_sha256"
+        },
+        {
+          "op": "all-equal",
+          "pointers": [
+            "/contract_binding/contract_blob_size_bytes",
+            "/contract_binding/observed_file_size_bytes",
+            "/contract_binding/activation_contract_blob_size_bytes"
+          ]
+        },
+        {
+          "op": "all-equal",
+          "pointers": [
+            "/contract_binding/contract_blob_sha256",
+            "/contract_binding/observed_file_sha256",
+            "/contract_binding/activation_contract_blob_sha256"
+          ]
+        },
+        {
+          "op": "git-rev-parse-tree-equals",
+          "commit": "/contract_binding/activation_commit",
+          "expected_tree": "/contract_binding/activation_tree"
+        },
+        {
+          "op": "git-ls-tree-blob-equals",
+          "commit": "/contract_binding/activation_commit",
+          "path": "/contract_binding/contract_repository_path",
+          "expected_blob_oid": "/contract_binding/activation_contract_blob_oid"
+        },
+        {
+          "op": "all-equal",
+          "pointers": [
+            "/contract_binding/contract_blob_oid",
+            "/contract_binding/activation_contract_blob_oid"
+          ]
+        },
+        {
+          "op": "selected-edge-marker-path-equals",
+          "edge_pointer": "/contract_binding/edge_id",
+          "marker_map_pointer": "/machine_receipt_contract/subcampaign_marker_bindings",
+          "observed_path": "/contract_binding/activation_marker_repository_path"
+        },
+        {
+          "op": "git-ls-tree-blob-equals",
+          "commit": "/contract_binding/activation_commit",
+          "path": "/contract_binding/activation_marker_repository_path",
+          "expected_blob_oid": "/contract_binding/activation_marker_blob_oid"
+        },
+        {
+          "op": "git-cat-file-blob-size-and-sha256-equal",
+          "blob_oid": "/contract_binding/activation_marker_blob_oid",
+          "expected_size": "/contract_binding/activation_marker_blob_size_bytes",
+          "expected_sha256": "/contract_binding/activation_marker_blob_sha256"
+        },
+        {
+          "op": "activation-marker-json-binding-equals",
+          "blob_oid": "/contract_binding/activation_marker_blob_oid",
+          "edge_pointer": "/contract_binding/edge_id",
+          "subcampaign_id_pointer": "/contract_binding/subcampaign_id",
+          "contract_blob_sha256_pointer": "/contract_binding/contract_blob_sha256",
+          "contract_blob_size_pointer": "/contract_binding/contract_blob_size_bytes"
+        },
+        {
+          "op": "git-merge-base-is-ancestor",
+          "ancestor": "/contract_binding/contract_commit",
+          "descendant": "/contract_binding/activation_commit",
+          "expected": true
+        },
+        {
+          "op": "git-worktree-clean",
+          "expected": true
+        },
+        {
+          "op": "boolean-is-true",
+          "pointer": "/contract_binding/contract_commit_is_ancestor_of_activation_commit"
+        },
+        {
+          "op": "boolean-is-true",
+          "pointer": "/contract_binding/activation_commit_equals_head_and_live_remote_oid"
+        },
+        {
+          "op": "boolean-is-false",
+          "pointer": "/contract_binding/local_tracking_ref_used_as_publication_proof"
+        },
+        {
+          "op": "boolean-is-true",
+          "pointer": "/contract_binding/worktree_clean"
+        }
+      ],
+      "any_missing_or_unresolved_dynamic_binding_is_failure": true,
+      "required_boolean_values": {
+        "/contract_binding/contract_commit_is_ancestor_of_activation_commit": true,
+        "/contract_binding/activation_commit_equals_head_and_live_remote_oid": true,
+        "/contract_binding/local_tracking_ref_used_as_publication_proof": false,
+        "/contract_binding/worktree_clean": true
+      }
+    },
+    "subcampaign_marker_bindings": {
+      "NATIVE_A_VS_L": {
+        "expected_subcampaign_id": "qwen35-0.8b-native-apxinf-vs-llamacpp-formal-v3-20260826",
+        "expected_marker_repository_path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-native-apxinf-vs-llamacpp-formal-v3-campaign-start-20260826.json",
+        "comparison_graph_pointer": "/comparison_graph/edges/NATIVE_A_VS_L/subcampaign_id",
+        "failure_marker_pointer": "/failure_contract/subcampaign_markers/NATIVE_A_VS_L/subcampaign_id",
+        "receipt_pointer": "/contract_binding/subcampaign_id",
+        "all_values_must_equal": true
+      },
+      "CORE_A_VS_L": {
+        "expected_subcampaign_id": "qwen35-0.8b-core-apxinf-vs-llamacpp-formal-v3-20260826",
+        "expected_marker_repository_path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-core-apxinf-vs-llamacpp-formal-v3-campaign-start-20260826.json",
+        "comparison_graph_pointer": "/comparison_graph/edges/CORE_A_VS_L/subcampaign_id",
+        "failure_marker_pointer": "/failure_contract/subcampaign_markers/CORE_A_VS_L/subcampaign_id",
+        "receipt_pointer": "/contract_binding/subcampaign_id",
+        "all_values_must_equal": true
+      },
+      "GATEWAY_B_VS_G": {
+        "expected_subcampaign_id": "qwen35-0.8b-omniinfer-gateway-increment-formal-v3-20260826",
+        "expected_marker_repository_path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-increment-formal-v3-campaign-start-20260826.json",
+        "comparison_graph_pointer": "/comparison_graph/edges/GATEWAY_B_VS_G/subcampaign_id",
+        "failure_marker_pointer": "/failure_contract/subcampaign_markers/GATEWAY_B_VS_G/subcampaign_id",
+        "receipt_pointer": "/contract_binding/subcampaign_id",
+        "all_values_must_equal": true
+      }
+    },
+    "required_true_gate_ids_for_NATIVE_A_VS_L": [
+      "PREDECLARATION_PUBLIC_BEFORE_SAMPLING",
+      "GIT_CUSTODY",
+      "HOST_IDENTITY",
+      "QUIET_HOST_CONTINUOUS",
+      "POWER_THERMAL_MEMORY",
+      "SAME_MODEL_REVISION_LINEAGE",
+      "NATIVE_DEPLOYMENT_IDENTITIES_AND_HASHES",
+      "NATIVE_DIFFERENCE_DISCLOSURES_COMPLETE",
+      "RAW_PROMPT_IDS_EQUAL",
+      "TEACHER_FORCED_128_EXACT",
+      "FREE128_TRAJECTORY_EQUAL",
+      "NEXT_GREEDY_TOKEN_READY_BOUNDARY_EQUAL",
+      "FIXED_ABBA_BAAB_SCHEDULE_COMPLETE",
+      "NO_RETRY_REPLACEMENT_OUTLIER_REMOVAL",
+      "NATIVE_STABILITY"
+    ],
+    "required_true_gate_ids_for_CORE_A_VS_L": [
+      "PREDECLARATION_PUBLIC_BEFORE_SAMPLING",
+      "GIT_CUSTODY",
+      "HOST_IDENTITY",
+      "QUIET_HOST_CONTINUOUS",
+      "POWER_THERMAL_MEMORY",
+      "MODEL_ARTIFACT_CUSTODY",
+      "LOGICAL_WEIGHT_MANIFEST_EQUAL",
+      "Q8_0_PAYLOAD_AND_SCALE_BITS_EQUAL",
+      "Q8_0_PREFILL_STATE_POLICY_EQUAL",
+      "F16_KV_POLICY_EQUAL",
+      "Q8_0_HEAD_ARGMAX_POLICY_EQUAL",
+      "CONTEXT_BATCH_THREAD_POLICY_EQUAL",
+      "SAME_PHYSICAL_GPU",
+      "PLACEMENT_RECEIPTS_COMPLETE",
+      "RAW_PROMPT_IDS_EQUAL",
+      "FREE128_TRAJECTORY_EQUAL",
+      "TIMING_BOUNDARY_EQUAL",
+      "FIXED_ABBA_BAAB_SCHEDULE_COMPLETE",
+      "NO_RETRY_REPLACEMENT_OUTLIER_REMOVAL",
+      "CORE_STABILITY"
+    ],
+    "required_true_gate_ids_for_GATEWAY_B_VS_G": [
+      "PREDECLARATION_PUBLIC_BEFORE_SAMPLING",
+      "GIT_CUSTODY",
+      "HOST_IDENTITY",
+      "QUIET_HOST_CONTINUOUS",
+      "POWER_THERMAL_MEMORY",
+      "MODEL_ARTIFACT_CUSTODY",
+      "SAME_RESIDENT_BACKEND_PROCESS",
+      "SAME_CANONICAL_REQUEST",
+      "SAME_RENDERED_RAW_PROMPT_IDS",
+      "EMPTY_CACHE_BEFORE_EVERY_ARM",
+      "FREE128_TRAJECTORY_EQUAL",
+      "CLIENT_WALL_BOUNDARY_EQUAL",
+      "FIXED_ABBA_BAAB_SCHEDULE_COMPLETE",
+      "NO_RETRY_REPLACEMENT_OUTLIER_REMOVAL",
+      "GATEWAY_STABILITY"
+    ],
+    "all_listed_gates_must_be_boolean_true": true,
+    "missing_gate_is_failure": true,
+    "null_required_hash_is_failure": true,
+    "unknown_or_not_applicable_gate_is_failure": true
+  },
+  "claim_policy": {
+    "allowed_only_after_corresponding_machine_gates_pass": [
+      "one NATIVE_A_VS_L decision about its two exact configuration_id values from its predeclared five-way decision table",
+      "one CORE_A_VS_L decision from its predeclared five-way decision table",
+      "one GATEWAY_B_VS_G decision from its predeclared four-way decision table",
+      "raw samples, point estimates, intervals, stability statistics, and exact workload disclosures"
+    ],
+    "always_forbidden": [
+      "relabeling the NATIVE_A_VS_L result as ApxInf-engine versus llama.cpp-engine performance",
+      "omitting the native edge's quantization prefill KV head placement or thread-policy differences",
+      "claiming native edge weight quantization KV placement or numerical-regime identity",
+      "ApxInf versus OmniInfer end-to-end speed ratio delta winner or ranking",
+      "OmniInfer inference engine versus llama.cpp inference engine winner or ranking",
+      "joining CORE_A_VS_L and GATEWAY_B_VS_G into one derived ranking",
+      "using the existing ApxInf custom G32/G64 W8 hybrid as if it were llama.cpp Q8_0",
+      "claiming same weights from source revision alone without equal tensor-manifest roots",
+      "claiming same quantization from an eight-bit label alone",
+      "claiming same KV from capacity alone without equal F16 K and V policy",
+      "claiming same trajectory from equal token counts alone",
+      "ranking when a confidence interval overlaps the inconclusive region",
+      "ranking when any formal or stability gate fails",
+      "relabeling v1 or v2 diagnostic observations as v3 formal samples",
+      "quality parity memory parity energy parity or all-prompt generalization",
+      "default activation or production superiority from this campaign"
+    ],
+    "mandatory_result_labels": {
+      "NATIVE_A_VS_L": "unmatched-numerical-regime named-native-deployment single-workload comparison",
+      "CORE_A_VS_L": "matched-Q8_0-F16-KV single-workload core comparison",
+      "GATEWAY_B_VS_G": "same-resident-backend client-observed OmniInfer gateway-path increment"
+    }
+  }
+}
