@@ -171,6 +171,18 @@ def test_dm05_processor_template_is_exact_and_state_is_not_consumed():
     assert "state" not in repr(messages).lower()
 
 
+def test_dm05_prompt_validation_does_not_rewrite_valid_whitespace():
+    instance = policy()
+    value = observation()
+    value["prompt"] = "  pick up the bowl  "
+    instance.infer(value, noise=np.zeros((10, 32), dtype=np.float32))
+    messages, _ = instance.processor.calls[0]
+    assert messages[0]["content"][0]["text"] == (
+        "Robot: Franka\nOverall speed: 0.5\n"
+        "Task:   pick up the bowl  .\nHead image: "
+    )
+
+
 def test_dm05_seed_path_is_explicit_and_negative_seed_is_mapped():
     backend = FakeBackend()
     instance = policy(backend)
@@ -230,6 +242,7 @@ def test_dm05_policy_rejects_bad_native_output_and_noise():
         "image_prompts",
         "robot_type",
         "diffusion_steps",
+        "sampling_rng",
         "concurrency",
     ],
 )
@@ -286,6 +299,41 @@ def test_dm05_from_pretrained_binds_only_native_backend(monkeypatch, tmp_path):
         Dm05Policy.from_pretrained(tmp_path, execution_backend="default")
     with pytest.raises(TypeError, match="opendm_root"):
         Dm05Policy.from_pretrained(tmp_path, opendm_root=tmp_path)
+
+
+def test_dm05_native_backend_loads_the_verified_weight_file_not_directory(
+    monkeypatch, tmp_path
+):
+    import apxinf
+    from apxinf.policies.impls import dm05
+
+    calls = []
+
+    class BoundModel:
+        action_horizon = 10
+        action_dim = 32
+        num_views = 2
+        image_size = 448
+        patch_size = 14
+        device = "cuda:0"
+
+        @staticmethod
+        def load(model, path, **kwargs):
+            calls.append((model, Path(path), kwargs))
+            return BoundModel()
+
+    monkeypatch.setitem(apxinf.__dict__, "Model", BoundModel)
+    dm05.ApxInfNativeBackend(tmp_path, device="cuda:0", default_seed=7)
+    assert calls[0][0] == "dm05"
+    assert calls[0][1] == tmp_path / "model.safetensors"
+
+
+def test_dm05_extra_declares_runtime_dependencies_and_python_floor():
+    project = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    document = project.read_text(encoding="utf-8")
+    assert 'requires-python = ">=3.10"' in document
+    assert '"jinja2>=3.1"' in document
+    assert '"transformers==5.3.0"' in document
 
 
 def test_dm05_cli_has_no_external_runtime_surface():

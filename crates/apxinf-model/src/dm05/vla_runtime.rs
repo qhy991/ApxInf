@@ -12,8 +12,8 @@ use half::bf16;
 
 use crate::auto::{LoadOptions, LoadedModel, ModelPrecision};
 use crate::vla::{
-    Action, ImageLayout, InferenceSpec, InitialLatent, Observation, PreparedInference,
-    VisionObservation, VlaDimensions, VlaRequest, VlaRuntime,
+    Action, ImageLayout, InferenceSpec, InitialLatent, PreparedInference, VisionObservation,
+    VlaDimensions, VlaRequest, VlaRuntime,
 };
 
 use super::backend::{

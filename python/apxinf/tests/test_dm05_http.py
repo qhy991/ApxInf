@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
 
 from test_dm05_policy import FakeBackend, observation, policy
@@ -26,6 +27,7 @@ def test_dm05_native_http_health_and_infer():
     assert health["schema"] == "apxinf.dm05.libero.http.v2"
     assert health["policy"]["backend"] == "apxinf-native"
     assert health["policy"]["state_conditioned"] is False
+    assert health["policy"]["sampling_rng"] == "apxinf-philox-box-muller-v1"
     assert "path_proof" not in health["policy"]
     assert "execution_backend" not in health["policy"]
 
@@ -38,6 +40,19 @@ def test_dm05_native_http_health_and_infer():
     assert metadata["backend"] == "apxinf-native"
     assert metadata["precision"] == "bf16"
     assert "path_proof" not in metadata
+
+
+def test_dm05_http_accepts_exact_noise_for_reference_replay():
+    backend = FakeBackend()
+    body = json.loads(request_body())
+    noise = np.arange(320, dtype=np.float32).reshape(10, 32)
+    body["noise"] = noise.tolist()
+    status, response = service(backend).handle(
+        "POST", "/v1/infer", json.dumps(body).encode()
+    )
+    assert status == 200
+    assert np.array_equal(backend.calls[0]["noise"], noise)
+    assert len(response["actions"]) == 10
 
 
 def test_dm05_http_rejects_wrong_wire_contract():

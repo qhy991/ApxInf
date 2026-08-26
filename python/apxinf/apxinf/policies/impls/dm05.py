@@ -89,6 +89,7 @@ _CANONICAL_METADATA = {
     "image_prompts",
     "robot_type",
     "diffusion_steps",
+    "sampling_rng",
     "concurrency",
 }
 
@@ -231,7 +232,7 @@ class ApxInfNativeBackend:
 
         model = Model.load(
             "dm05",
-            str(model_dir),
+            str(model_dir / "model.safetensors"),
             device=device,
             precision="bf16",
             action_horizon=ACTION_HORIZON,
@@ -318,6 +319,7 @@ class Dm05Policy:
             "image_prompts": list(IMAGE_PROMPTS),
             "robot_type": "Franka",
             "diffusion_steps": DIFFUSION_STEPS,
+            "sampling_rng": "apxinf-philox-box-muller-v1",
             "concurrency": 1,
         }
         conflicts = sorted(
@@ -454,6 +456,7 @@ class Dm05Policy:
     ) -> dict[str, Any]:
         if not isinstance(observation, Mapping):
             raise ValueError("DM05 observation must be an object")
+        started = time.perf_counter()
         allowed = {"prompt", "state", "images", "robot_type", "sampling"}
         extra = set(observation) - allowed
         if extra:
@@ -496,8 +499,7 @@ class Dm05Policy:
                 raise ValueError("DM05 noise must contain finite values")
             exact_noise = np.ascontiguousarray(exact_noise)
 
-        started = time.perf_counter()
-        token_ids = self._tokens(prompt.strip(), images)
+        token_ids = self._tokens(prompt, images)
         rgb_u8 = np.ascontiguousarray(
             np.stack([np.asarray(image, dtype=np.uint8) for image in images])
         )
@@ -523,7 +525,13 @@ class Dm05Policy:
                 "model_ms": float(model_ms),
                 "total_ms": (time.perf_counter() - started) * 1000.0,
             },
-            "sampling": {"num_steps": DIFFUSION_STEPS, "seed": seed},
+            "sampling": {
+                "num_steps": DIFFUSION_STEPS,
+                "seed": seed,
+                "noise_source": (
+                    "provided" if exact_noise is not None else "apxinf-philox-box-muller-v1"
+                ),
+            },
         }
 
     def close(self) -> None:

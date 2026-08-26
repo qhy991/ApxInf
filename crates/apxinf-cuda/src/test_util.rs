@@ -124,6 +124,10 @@ pub fn assert_bf16_close(actual: &[f32], expected: &[f32], abs_tol: f32, rel_tol
     let mut n_bad = 0usize;
 
     for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            a.is_finite() && e.is_finite(),
+            "assert_bf16_close: non-finite value at index {i}: actual={a}, expected={e}"
+        );
         let abs_err = (a - e).abs();
         let tol = abs_tol + rel_tol * e.abs();
         if abs_err > tol {

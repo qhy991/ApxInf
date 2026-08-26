@@ -27,14 +27,16 @@ class Dm05HttpService:
         }
 
     def infer(self, body: Mapping[str, Any]) -> dict[str, Any]:
-        if not isinstance(body, Mapping) or set(body) - {"observation", "sampling"}:
-            raise ValueError("request must contain only observation and optional sampling")
+        if not isinstance(body, Mapping) or set(body) - {"observation", "sampling", "noise"}:
+            raise ValueError(
+                "request must contain only observation, optional sampling, and optional noise"
+            )
         observation = body.get("observation")
         if not isinstance(observation, Mapping):
             raise ValueError("observation must be an object")
         request = dict(observation)
         request["sampling"] = body.get("sampling", {})
-        result = self.policy.infer(request)
+        result = self.policy.infer(request, noise=body.get("noise"))
         actions = np.asarray(result["actions"], dtype=np.float32)
         latency_ms = float(result["timing"]["total_ms"])
         if not math.isfinite(latency_ms) or latency_ms <= 0.0:
