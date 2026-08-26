@@ -519,8 +519,11 @@ impl Dm05Bf16Runtime {
         }
         let mut state = noise.clone();
         for step in 0..self.config.diffusion_steps {
-            let masked = kernels::elementwise::mul(self.ctx(), &state, &self.action_mask)?;
-            let mut hidden = action_projection(self.ctx(), &masked, &self.weights.action_in)?;
+            // OpenDM assigns the masked tensor back to x_t before both the
+            // action expert and Euler update. Keeping the unmasked state as the
+            // Euler base would leak the random padded dimensions into output.
+            state = kernels::elementwise::mul(self.ctx(), &state, &self.action_mask)?;
+            let mut hidden = action_projection(self.ctx(), &state, &self.weights.action_in)?;
             for (index, layer) in self.weights.action_layers.iter().enumerate() {
                 let attention_style = style_row(&self.styles.attention[index], step)?;
                 let mlp_style = style_row(&self.styles.mlp[index], step)?;
