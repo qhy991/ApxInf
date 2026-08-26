@@ -1,0 +1,160 @@
+{
+  "format": "apxinf-qwen35-omniinfer-suppressed-step46-diagnostic-v1",
+  "schema_version": 1,
+  "qualification": "NON_FORMAL_DIAGNOSTIC_NO_PERFORMANCE_RESULT",
+  "claim_boundary": "Deterministic correctness diagnosis only. No latency, throughput, runtime ranking, or formal performance result was measured.",
+  "baseline": {
+    "commit": "31f37457051921565b8f6bd58757a3a198186c31",
+    "model": "Qwen/Qwen3.5-0.8B",
+    "revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "sampling": "greedy with the five OmniInfer ignore_eos EOG rows excluded before selection",
+    "teacher_prefill_token_count": 12,
+    "teacher_step_count": 128
+  },
+  "symptom": {
+    "reproduced_before_hypothesis_probes": 3,
+    "mismatch_count": 1,
+    "step": 46,
+    "absolute_token_position": 58,
+    "input_token_id": 234,
+    "cpu_f32_expected_token_id": 123,
+    "candidate_same_hidden_full_f32_token_id": 109,
+    "candidate_top4_token_ids": [
+      109,
+      123,
+      122,
+      253
+    ],
+    "candidate_reranked_token_id": 109,
+    "candidate_free_token_id": 109,
+    "cpu_f32_reference_token_ids_sha256": "5bba10f53b153bb6a7d62efea7e0b6b6cb1b650c435e993c0fd171cd4e1b2f0a"
+  },
+  "hypothesis_probes": [
+    {
+      "hypothesis": "The fused GDN core changes the hidden state enough to cause step46.",
+      "prediction": "Selecting the legacy four-dispatch constructor removes the mismatch or changes its first position.",
+      "single_variable": "candidate GDN core profile: fused versus legacy",
+      "result": "Fused and legacy produced the same sole mismatch, same top-4 rows, and identical candidate teacher, rerank, and free-run hashes.",
+      "fused_candidate_teacher_sha256": "d36c8570e71953db5f5bc919b45108dee47a704b975c3b5785f0063519ce46d0",
+      "legacy_candidate_teacher_sha256": "d36c8570e71953db5f5bc919b45108dee47a704b975c3b5785f0063519ce46d0",
+      "fused_top4_sha256": "4b35e30839d8094be5f594682714d7c9ba3c00c2f778bd6d8313b1d8a02a0fa8",
+      "legacy_top4_sha256": "4b35e30839d8094be5f594682714d7c9ba3c00c2f778bd6d8313b1d8a02a0fa8",
+      "conclusion": "FALSIFIED"
+    },
+    {
+      "hypothesis": "A common W8 body precision effect is sufficient; Stack3, boundary, tail-head fusion, and the Metal head are not required.",
+      "prediction": "The existing all-linear-layers GDN-out-G32-v2 lane, which uses independent layer transactions and a CPU/F32 head, reproduces step46.",
+      "single_variable": "body transaction topology and head implementation",
+      "result": "The all-linear lane reproduced only step46 token 123 to 109 and its complete teacher output hash equalled fused and legacy.",
+      "all_linear_candidate_teacher_sha256": "d36c8570e71953db5f5bc919b45108dee47a704b975c3b5785f0063519ce46d0",
+      "conclusion": "SUPPORTED"
+    },
+    {
+      "hypothesis": "One production-matching GDN-out-G32 packed W8 linear layer is individually sufficient to flip the near tie.",
+      "prediction": "At least one of the 18 single-layer CPU packed-reference probes selects token 109 at step46.",
+      "single_variable": "one linear-attention layer changed from CPU/F32 to CPU packed-W8 GDN-out-G32",
+      "result": "All 18 probes selected token 123 and had zero mismatches through step46. Several layers shifted the 109-minus-123 margin toward zero, so the full-body flip is cumulative rather than attributable to one layer.",
+      "layers_tested": [
+        0,
+        1,
+        2,
+        4,
+        5,
+        6,
+        8,
+        9,
+        10,
+        12,
+        13,
+        14,
+        16,
+        17,
+        18,
+        20,
+        21,
+        22
+      ],
+      "individually_flipped_layers": [],
+      "conclusion": "FALSIFIED_AS_A_SINGLE_LAYER_CAUSE"
+    }
+  ],
+  "step46_logit_margin_probe": {
+    "definition": "logit(token 109) minus logit(token 123); a negative value selects token 123 if neither is beaten by another row",
+    "cpu_f32": -0.074493408203125,
+    "single_layer_cpu_packed_w8_gdn_out_g32": {
+      "0": -0.040042877197265625,
+      "1": -0.06248664855957031,
+      "2": -0.06207084655761719,
+      "4": -0.07148551940917969,
+      "5": -0.07995986938476562,
+      "6": -0.07731056213378906,
+      "8": -0.06981658935546875,
+      "9": -0.06725311279296875,
+      "10": -0.08971023559570312,
+      "12": -0.08110618591308594,
+      "13": -0.066192626953125,
+      "14": -0.07455635070800781,
+      "16": -0.08858489990234375,
+      "17": -0.09984016418457031,
+      "18": -0.08160972595214844,
+      "20": -0.08413505554199219,
+      "21": -0.05288505554199219,
+      "22": -0.046291351318359375
+    },
+    "largest_isolated_shifts_toward_token_109": [
+      0,
+      22,
+      21
+    ],
+    "layer0_precision_factor_probe": {
+      "g64": -0.04644584655761719,
+      "gdn_out_g32": -0.040042877197265625,
+      "mlp_down_g32": -0.027982711791992188,
+      "gdn_out_and_mlp_down_g32": -0.021739959716796875,
+      "interpretation": "Local precision changes are not monotonic with restoration of this CPU/F32 token ordering; no single projection profile is justified as a fix from this probe."
+    }
+  },
+  "root_cause_assessment": {
+    "high_confidence": "The step46 difference is a deterministic, cumulative W8 body precision effect on a near-tied pair of logits.",
+    "high_confidence_exclusions": [
+      "fused GDN core versus legacy four-dispatch GDN core",
+      "Stack3 transaction fusion",
+      "MLP-to-Stack3 boundary fusion",
+      "tail MLP plus head fusion",
+      "Metal top-4 candidate omission",
+      "four-row F32 rerank",
+      "checked reset or free-run state selection"
+    ],
+    "medium_confidence_boundary": "The evidence does not assign the cumulative drift to one projection family; the tested layer0 GDN-output and MLP-down precision changes were non-monotonic for this token margin.",
+    "not_observed": "No hard implementation failure, nondeterminism, EOG-mask leak, out-of-vocabulary candidate, duplicate candidate, or retry was observed."
+  },
+  "fix_candidates": [
+    {
+      "priority": 1,
+      "candidate": "Align the semantic gate with its stated cross-runtime contract: require the exact five-row suppression policy, no excluded EOG output, valid candidate coverage/rerank, deterministic replay, and teacher/free self-consistency; retain CPU/F32 token identity as an informational quality diagnostic rather than cross-runtime semantic identity.",
+      "condition": "Use only if the gate is intended to admit equivalent sampling policy across differently quantized runtimes, as its current claim boundary states."
+    },
+    {
+      "priority": 2,
+      "candidate": "If exact CPU/F32 trajectory identity is a hard product requirement, introduce and qualify a separately named higher-precision whole-body portfolio against the complete 128-step gate.",
+      "condition": "Do not infer a winning projection profile from the layer0 factor probe; measure the complete path because local precision was non-monotonic."
+    },
+    {
+      "priority": 3,
+      "candidate": "Freeze the admitted ApxInf W8 suppressed trajectory and use it as a deterministic resident-server replay invariant while keeping the OmniInfer trajectory explicitly informational.",
+      "condition": "This guards reset and serving regressions without claiming identical weights or token trajectories across runtimes."
+    }
+  ],
+  "forbidden_shortcuts": [
+    "position-46 token fallback",
+    "hard-coded token 123 override",
+    "post-selection trajectory patching",
+    "calling this diagnostic a performance result"
+  ],
+  "performance": {
+    "samples": 0,
+    "latency_recorded": false,
+    "throughput_recorded": false,
+    "formal_result": false
+  }
+}

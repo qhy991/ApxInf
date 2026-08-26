@@ -57,6 +57,33 @@ const OMNIINFER_RAW_DRIVER_RECEIPT_SHA256: &str =
 #[derive(Debug)]
 struct Args {
     model_dir: PathBuf,
+    candidate_profile: CandidateProfile,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum CandidateProfile {
+    #[default]
+    Fused,
+    Legacy,
+}
+
+impl CandidateProfile {
+    fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value {
+            "fused" => Ok(Self::Fused),
+            "legacy" => Ok(Self::Legacy),
+            _ => {
+                Err(format!("invalid --candidate-profile {value}; expected fused or legacy").into())
+            }
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Fused => "fused",
+            Self::Legacy => "legacy",
+        }
+    }
 }
 
 struct CandidateRuns {
@@ -69,7 +96,7 @@ struct CandidateRuns {
 }
 
 fn usage() -> &'static str {
-    "Usage: qwen35_omniinfer_suppressed_free128_gate_v1 --model-dir PATH"
+    "Usage: qwen35_omniinfer_suppressed_free128_gate_v1 --model-dir PATH [--candidate-profile fused|legacy]"
 }
 
 fn main() {
@@ -99,7 +126,11 @@ fn real_main() -> Result<Value, Box<dyn Error>> {
     let model_dir = std::fs::canonicalize(&args.model_dir)?;
 
     let cpu_reference_token_ids = run_cpu_f32_reference(&model_dir)?;
-    let candidate = run_candidate_teacher_reset_and_free(&model_dir, &cpu_reference_token_ids)?;
+    let candidate = run_candidate_teacher_reset_and_free(
+        &model_dir,
+        &cpu_reference_token_ids,
+        args.candidate_profile,
+    )?;
 
     let cpu_reference_vs_omniinfer = mismatch_details(
         &OMNIINFER_SUPPRESSED_FREE128_TOKEN_IDS,
@@ -248,6 +279,13 @@ fn real_main() -> Result<Value, Box<dyn Error>> {
             "expected_vocabulary_size": EXPECTED_VOCAB_SIZE,
             "cpu_reference_precision": "F32",
             "candidate_path": "Metal W8 pre-top4 exclusion plus tied F32 four-row rerank",
+        },
+        "diagnostic_candidate_profile": {
+            "selected": args.candidate_profile.label(),
+            "default": CandidateProfile::Fused.label(),
+            "classification": "single-variable NON_FORMAL semantic diagnostic only; never performance evidence",
+            "fused_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_fused_v1",
+            "legacy_constructor": "GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1",
         },
         "omniinfer_evidence": {
             "runtime": "pinned llama.cpp b10280 behind OmniInfer",
@@ -409,6 +447,7 @@ fn run_cpu_f32_reference(model_dir: &Path) -> Result<Vec<u32>, Box<dyn Error>> {
 fn run_candidate_teacher_reset_and_free(
     model_dir: &Path,
     cpu_reference_token_ids: &[u32],
+    candidate_profile: CandidateProfile,
 ) -> Result<CandidateRuns, Box<dyn Error>> {
     if cpu_reference_token_ids.len() != OUTPUT_TOKENS {
         return Err(format!(
@@ -419,13 +458,24 @@ fn run_candidate_teacher_reset_and_free(
     }
     let (config, tensors) = load_model_inputs(model_dir)?;
     validate_model_contract(&config)?;
-    let mut model =
-        GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_fused_v1(
-            config,
-            tensors,
-            Device::Cpu,
-            MAX_CONTEXT,
-        )?;
+    let mut model = match candidate_profile {
+        CandidateProfile::Fused => {
+            GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_gdn_core_fused_v1(
+                config,
+                tensors,
+                Device::Cpu,
+                MAX_CONTEXT,
+            )?
+        }
+        CandidateProfile::Legacy => {
+            GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
+                config,
+                tensors,
+                Device::Cpu,
+                MAX_CONTEXT,
+            )?
+        }
+    };
 
     let teacher_input_token_ids = teacher_inputs(cpu_reference_token_ids)?;
     let _ = model.prefill_for_generation(LlmInput::text(
@@ -711,6 +761,7 @@ where
     let mut values = values.into_iter();
     let _program = values.next().ok_or("argv omitted program name")?;
     let mut model_dir = None;
+    let mut candidate_profile = None;
     while let Some(argument) = values.next() {
         let argument = argument.to_string_lossy();
         match argument.as_ref() {
@@ -722,6 +773,15 @@ where
                     values.next().ok_or("--model-dir requires a value")?,
                 ));
             }
+            "--candidate-profile" => {
+                if candidate_profile.is_some() {
+                    return Err("--candidate-profile may be specified at most once".into());
+                }
+                let value = values
+                    .next()
+                    .ok_or("--candidate-profile requires a value")?;
+                candidate_profile = Some(CandidateProfile::parse(&value.to_string_lossy())?);
+            }
             "-h" | "--help" => {
                 println!("{}", usage());
                 std::process::exit(0);
@@ -731,6 +791,7 @@ where
     }
     Ok(Args {
         model_dir: model_dir.ok_or_else(|| format!("--model-dir is required\n{}", usage()))?,
+        candidate_profile: candidate_profile.unwrap_or_default(),
     })
 }
 
@@ -820,6 +881,41 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(args.model_dir, PathBuf::from("/model"));
+        assert_eq!(args.candidate_profile, CandidateProfile::Fused);
+
+        let legacy = parse_args_from([
+            OsString::from("gate"),
+            OsString::from("--model-dir"),
+            OsString::from("/model"),
+            OsString::from("--candidate-profile"),
+            OsString::from("legacy"),
+        ])
+        .unwrap();
+        assert_eq!(legacy.candidate_profile, CandidateProfile::Legacy);
+
+        assert!(parse_args_from([
+            OsString::from("gate"),
+            OsString::from("--model-dir"),
+            OsString::from("/model"),
+            OsString::from("--candidate-profile"),
+            OsString::from("unknown"),
+        ])
+        .unwrap_err()
+        .to_string()
+        .contains("expected fused or legacy"));
+
+        assert!(parse_args_from([
+            OsString::from("gate"),
+            OsString::from("--model-dir"),
+            OsString::from("/model"),
+            OsString::from("--candidate-profile"),
+            OsString::from("fused"),
+            OsString::from("--candidate-profile"),
+            OsString::from("legacy"),
+        ])
+        .unwrap_err()
+        .to_string()
+        .contains("at most once"));
 
         assert!(parse_args_from([
             OsString::from("gate"),
