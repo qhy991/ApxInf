@@ -98,6 +98,7 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_QWEN25_GPU_LAST_ROW=1`, plus
 `APXINF_QWEN25_M1_PACKED_MLP=1` and
 `APXINF_QWEN25_PREFILL_PACKED_MLP=1`, plus
+`APXINF_QWEN25_M512_PACKED_QKV_TACTIC=1`, plus
 `APXINF_QWEN25_PREFILL_PACKED_QKV_PRELUDE=1`, plus
 `APXINF_QWEN25_M1_GEMV_TACTICS=1`, plus
 `APXINF_QWEN25_SHORT_DECODE_EXACT_RESIDUAL_NORM=1` and
@@ -136,6 +137,10 @@ regions directly in an exact BF16 SiLU/multiply kernel. It requires both the
 M1 packed-MLP and fused-SiLU selectors. Row count 256 and every other unmatched
 shape retain separate Gate/Up projections; invalid selector composition fails
 model load instead of falling back.
+The M512 packed-QKV tactic selector installs cuBLASLt heuristic rank 3 only
+for `[512,2048] @ [2048,2560]` on the pinned RTX 4090. Exact GEMM keys keep
+M1024, M1760, decode, multimodal, and unmatched projections on their accepted
+paths; unset or `0` retains vendor selection.
 The prefill packed-QKV prelude selector is restricted to 1,024-row BF16 text
 chunks on the pinned SM89 model. It consumes the existing packed QKV projection
 and bias, preserves the projection-plus-bias BF16 seam, writes rotated Q

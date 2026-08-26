@@ -37,7 +37,13 @@ fn load_qwen25_omni(
         let m1_packed_mlp = qwen25_omni_m1_packed_mlp_enabled()?;
         let m1_gemv_tactics = qwen25_omni_m1_gemv_tactics_enabled()?;
         let prefill_packed_mlp = qwen25_omni_prefill_packed_mlp_enabled()?;
-        if chunk_tactics || m1_packed_mlp || m1_gemv_tactics || prefill_packed_mlp {
+        let m512_packed_qkv_tactic = qwen25_omni_m512_packed_qkv_tactic_enabled()?;
+        if chunk_tactics
+            || m1_packed_mlp
+            || m1_gemv_tactics
+            || prefill_packed_mlp
+            || m512_packed_qkv_tactic
+        {
             use crate::accelerator::cuda::{downcast, kernels};
             let cuda = downcast(&*backend)
                 .ok_or_else(|| Error::Other("Qwen2.5-Omni tactics require CudaBackend".into()))?;
@@ -147,6 +153,18 @@ fn load_qwen25_omni(
                     "ApxInf Qwen2.5-Omni prefill packed MLP tactics: M512 rank1, M1024 rank2, M1760 rank1"
                 );
             }
+            if m512_packed_qkv_tactic {
+                tactics.push(Tactic {
+                    m: 512,
+                    n: 2560,
+                    k: 2048,
+                    heuristic_rank: 3,
+                    milliseconds: 0.045473597943782806,
+                });
+                eprintln!(
+                    "ApxInf Qwen2.5-Omni M512 packed QKV tactic: cuBLASLt rank3"
+                );
+            }
             kernels::gemm::install_cublaslt_bf16_tactics(cuda.context(), &tactics)?;
         }
     }
@@ -179,6 +197,12 @@ fn qwen25_omni_m1_gemv_tactics_enabled() -> Result<bool> {
 #[cfg(feature = "cuda")]
 fn qwen25_omni_prefill_packed_mlp_enabled() -> Result<bool> {
     crate::qwen25_omni::parse_binary_env("APXINF_QWEN25_PREFILL_PACKED_MLP")
+        .map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
+fn qwen25_omni_m512_packed_qkv_tactic_enabled() -> Result<bool> {
+    crate::qwen25_omni::parse_binary_env("APXINF_QWEN25_M512_PACKED_QKV_TACTIC")
         .map_err(Error::Other)
 }
 
