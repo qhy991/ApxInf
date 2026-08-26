@@ -152,7 +152,7 @@ int fa2(
   if (q == nullptr || k == nullptr || v == nullptr || output == nullptr ||
       softmax_lse == nullptr || batch <= 0 || query_tokens <= 0 ||
       key_tokens <= 0 || query_heads <= 0 || kv_heads <= 0 || head_dim <= 0 ||
-      head_dim > 256 || query_heads % kv_heads != 0) {
+      head_dim > 256 || head_dim % 8 != 0 || query_heads % kv_heads != 0) {
     return static_cast<int>(cudaErrorInvalidValue);
   }
 
@@ -179,7 +179,8 @@ int fa2_splitkv(
       softmax_lse == nullptr || softmax_lse_accum == nullptr ||
       o_accum == nullptr || batch <= 0 || query_tokens <= 0 ||
       key_tokens <= 0 || query_heads <= 0 || kv_heads <= 0 || head_dim <= 0 ||
-      head_dim > 256 || query_heads % kv_heads != 0 || num_sms <= 0) {
+      head_dim > 256 || head_dim % 8 != 0 || query_heads % kv_heads != 0 ||
+      num_sms <= 0) {
     return static_cast<int>(cudaErrorInvalidValue);
   }
 
@@ -226,7 +227,8 @@ int fa2_bf16_causal(
   if (q == nullptr || k == nullptr || v == nullptr || output == nullptr ||
       softmax_lse == nullptr || batch <= 0 || query_tokens <= 0 ||
       key_tokens < query_tokens || query_heads <= 0 || kv_heads <= 0 ||
-      head_dim <= 0 || head_dim > 256 || query_heads % kv_heads != 0) {
+      head_dim <= 0 || head_dim > 256 || head_dim % 8 != 0 ||
+      query_heads % kv_heads != 0) {
     return static_cast<int>(cudaErrorInvalidValue);
   }
 

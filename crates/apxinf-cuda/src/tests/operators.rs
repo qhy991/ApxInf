@@ -19,6 +19,14 @@ use crate::kernels::rope::{
     sinusoidal_time_embedding_bf16,
 };
 use half::bf16;
+use sha2::{Digest, Sha256};
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
 
 fn gpu_ptr(tensor: &Tensor) -> Result<*mut std::ffi::c_void> {
     Ok(CudaBuffer::from_tensor(tensor).map_err(Error::Cuda)?.ptr())
@@ -39,7 +47,7 @@ fn upload_u32(ctx: &CudaContext, values: &[u32]) -> CudaBuffer {
 }
 use crate::test_util::{
     assert_bf16_close_elementwise, assert_bf16_close_reduction, download_bf16_as_fp32,
-    upload_fp32_as_bf16,
+    download_bf16_bytes, upload_fp32_as_bf16,
 };
 
 fn silu_ref(x: f32) -> f32 {
@@ -311,8 +319,11 @@ fn gpu_sinusoidal_time_embedding_matches_declared_fp32_formula() {
     }
     let actual = download_bf16_as_fp32(&output).unwrap();
     assert_bf16_close_elementwise(&actual, &expected);
-    // Official OpenDM CUDA oracle SHA-256 over contiguous BF16 bytes:
+    // OpenDM e41 / torch 2.11+cu130 reference receipt over raw BF16 bytes:
     // c7ca95ac394388a96d4485f223a3c1671f1f98a0dcd32dadf8cae87666e538ba.
+    // NVCC 12.3/SM89 differs at 12/10,240 transcendental rounding points, so
+    // the all-element tolerance plus exact endpoints below are the portable
+    // correctness gate; unlike RoPE, this receipt is deliberately not asserted.
     for (index, expected) in [
         (0usize, -6.198883056640625e-05f32),
         (1, -0.78125),
@@ -394,6 +405,8 @@ fn gpu_rope_tables_cover_default_and_linear_scaled_positions() {
 
     let all_positions = (0u32..564).collect::<Vec<_>>();
     let all_positions_buffer = upload_u32(&ctx, &all_positions);
+    // Raw-BF16 hashes captured from OpenDM e41 / torch 2.11+cu130 and
+    // independently reproduced by this kernel with NVCC 12.3 on SM89.
     for (theta, factor, cosine_hash, sine_hash, selected) in [
         (
             10_000.0f32,
@@ -435,7 +448,16 @@ fn gpu_rope_tables_cover_default_and_linear_scaled_positions() {
             assert_eq!(cosine[index], expected_cosine, "cosine index {index}");
             assert_eq!(sine[index], expected_sine, "sine index {index}");
         }
-        eprintln!("official S564 RoPE oracle hashes: cosine={cosine_hash}, sine={sine_hash}");
+        assert_eq!(
+            sha256_hex(&download_bf16_bytes(&tables.cosine).unwrap()),
+            cosine_hash,
+            "official S564 cosine BF16 oracle hash"
+        );
+        assert_eq!(
+            sha256_hex(&download_bf16_bytes(&tables.sine).unwrap()),
+            sine_hash,
+            "official S564 sine BF16 oracle hash"
+        );
     }
 
     assert!(rope_tables_bf16(
@@ -1331,6 +1353,40 @@ fn gqa_bf16_matches_reference_for_dm05_head_geometry() {
         .collect::<Vec<_>>();
     let v = (0..key_tokens * kv_heads * head_dim)
         .map(|index| bf16::from_f32(((index * 11 % 83) as f32 - 41.0) / 128.0).to_f32())
+        .collect::<Vec<_>>();
+    let expected = gqa_reference(
+        &q,
+        &k,
+        &v,
+        query_tokens,
+        key_tokens,
+        query_heads,
+        kv_heads,
+        head_dim,
+        false,
+    );
+    let q = upload_fp32_as_bf16(&ctx, &q, vec![query_tokens, query_heads, head_dim]).unwrap();
+    let k = upload_fp32_as_bf16(&ctx, &k, vec![key_tokens, kv_heads, head_dim]).unwrap();
+    let v = upload_fp32_as_bf16(&ctx, &v, vec![key_tokens, kv_heads, head_dim]).unwrap();
+    let output = gqa_bf16(&ctx, &q, &k, &v, AttentionMask::None).unwrap();
+    assert_bf16_close_reduction(&download_bf16_as_fp32(&output).unwrap(), &expected);
+}
+
+#[cfg(apxinf_fa2_sm80)]
+#[test]
+fn regular_noncausal_gqa_matches_reference_above_splitkv_query_limit() {
+    let _guard = crate::tests::gpu_smem_guard();
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (query_tokens, key_tokens, query_heads, kv_heads, head_dim) =
+        (65usize, 67usize, 8usize, 4usize, 256usize);
+    let q = (0..query_tokens * query_heads * head_dim)
+        .map(|index| bf16::from_f32(((index * 7 % 61) as f32 - 30.0) / 256.0).to_f32())
+        .collect::<Vec<_>>();
+    let k = (0..key_tokens * kv_heads * head_dim)
+        .map(|index| bf16::from_f32(((index * 11 % 67) as f32 - 33.0) / 256.0).to_f32())
+        .collect::<Vec<_>>();
+    let v = (0..key_tokens * kv_heads * head_dim)
+        .map(|index| bf16::from_f32(((index * 13 % 71) as f32 - 35.0) / 128.0).to_f32())
         .collect::<Vec<_>>();
     let expected = gqa_reference(
         &q,

@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use apxinf_core::{Backend, DType, Error, Result, Tensor};
+use apxinf_core::{Backend, DType, Error, Graph, Result, Tensor};
 
-use super::backend::{kernels, Context, DeviceBuffer, RuntimeBackend};
+use super::backend::{kernels, transfers, Context, DeviceBuffer, ImageLayout, RuntimeBackend};
 use super::executor::row_view;
 use super::{
     action_layer, action_mask, action_projection, encode_vision, language_layer, merge_prefix,
@@ -50,6 +50,147 @@ pub struct Dm05PreparedShape {
     prefix_tokens: usize,
     prefix_rope: DualRopeTables,
     suffix_rope: DualRopeTables,
+}
+
+/// Owning fixed-shape CUDA graph for one DM05 prefix layout.
+///
+/// DM05's image-token runs change both multimodal merge views and segmented
+/// prefix-attention launches. Consequently token count alone is not a complete
+/// graph key: callers may update token values freely, but the two image-run
+/// ranges must match the ranges used during capture.
+pub struct Dm05CapturedGraph {
+    graph: Box<dyn Graph>,
+    output: Tensor,
+    patches: Tensor,
+    raw_images: Option<DeviceBuffer>,
+    raw_image_layout: Option<ImageLayout>,
+    noise: Tensor,
+    token_ids: DeviceBuffer,
+    token_count: usize,
+    prefix_layout: [(usize, usize); 2],
+    runtime: Dm05Bf16Runtime,
+    _shape: Dm05PreparedShape,
+    workspace: kernels::GraphWorkspace,
+}
+
+impl Dm05CapturedGraph {
+    pub fn replay(&self) -> Result<()> {
+        self.graph.replay()
+    }
+
+    pub fn replay_and_synchronize(&self) -> Result<()> {
+        self.graph.replay()?;
+        self.runtime.backend.synchronize()
+    }
+
+    pub fn output(&self) -> &Tensor {
+        &self.output
+    }
+
+    pub fn workspace_bytes(&self) -> usize {
+        self.workspace.capacity()
+    }
+
+    pub fn workspace_used_bytes(&self) -> usize {
+        self.workspace.used()
+    }
+
+    pub fn matches_prefix_layout(&self, token_ids: &[u32]) -> Result<bool> {
+        Ok(self.runtime.config.validate_prefix_tokens(token_ids)? == self.prefix_layout)
+    }
+
+    fn validate_tokens(&self, token_ids: &[u32]) -> Result<()> {
+        if token_ids.len() != self.token_count {
+            return Err(Error::Other(format!(
+                "DM05 graph expects {} token IDs, got {}",
+                self.token_count,
+                token_ids.len()
+            )));
+        }
+        let layout = self.runtime.config.validate_prefix_tokens(token_ids)?;
+        if layout != self.prefix_layout {
+            return Err(Error::Other(format!(
+                "DM05 graph was captured for image runs {:?}, got {layout:?}",
+                self.prefix_layout
+            )));
+        }
+        Ok(())
+    }
+
+    fn update_tokens(&self, token_ids: &[u32]) -> Result<()> {
+        self.validate_tokens(token_ids)?;
+        let bytes = token_ids
+            .iter()
+            .flat_map(|value| value.to_ne_bytes())
+            .collect::<Vec<_>>();
+        self.token_ids.copy_from_host(&bytes).map_err(Error::Cuda)
+    }
+
+    pub fn update_inputs(&self, patches: &Tensor, token_ids: &[u32], noise: &Tensor) -> Result<()> {
+        if self.raw_images.is_some() {
+            return Err(Error::Other(
+                "DM05 graph uses raw RGB input; call update_raw_image_inputs".into(),
+            ));
+        }
+        self.runtime.backend.synchronize()?;
+        transfers::copy_cpu_to_cuda(patches, &self.patches)?;
+        transfers::copy_cpu_to_cuda(noise, &self.noise)?;
+        self.update_tokens(token_ids)
+    }
+
+    pub fn update_inputs_without_noise(&self, patches: &Tensor, token_ids: &[u32]) -> Result<()> {
+        if self.raw_images.is_some() {
+            return Err(Error::Other(
+                "DM05 graph uses raw RGB input; call update_raw_image_inputs_without_noise".into(),
+            ));
+        }
+        self.runtime.backend.synchronize()?;
+        transfers::copy_cpu_to_cuda(patches, &self.patches)?;
+        self.update_tokens(token_ids)
+    }
+
+    pub fn update_raw_image_inputs(
+        &self,
+        images: &[u8],
+        token_ids: &[u32],
+        noise: &Tensor,
+    ) -> Result<()> {
+        self.update_raw_image_inputs_without_noise(images, token_ids)?;
+        transfers::copy_cpu_to_cuda(noise, &self.noise)
+    }
+
+    pub fn update_raw_image_inputs_without_noise(
+        &self,
+        images: &[u8],
+        token_ids: &[u32],
+    ) -> Result<()> {
+        let raw_images = self.raw_images.as_ref().ok_or_else(|| {
+            Error::Other("DM05 graph uses patch input; call update_inputs".into())
+        })?;
+        if images.len() != raw_images.len() {
+            return Err(Error::Other(format!(
+                "DM05 graph expects {} raw image bytes, got {}",
+                raw_images.len(),
+                images.len()
+            )));
+        }
+        self.runtime.backend.synchronize()?;
+        raw_images.copy_from_host(images).map_err(Error::Cuda)?;
+        self.update_tokens(token_ids)
+    }
+
+    pub(crate) fn cloned_inputs(&self) -> (Tensor, Option<DeviceBuffer>, Tensor, DeviceBuffer) {
+        (
+            self.patches.clone(),
+            self.raw_images.clone(),
+            self.noise.clone(),
+            self.token_ids.clone(),
+        )
+    }
+
+    pub fn raw_image_layout(&self) -> Option<ImageLayout> {
+        self.raw_image_layout
+    }
 }
 
 #[derive(Clone)]
@@ -179,6 +320,152 @@ impl Dm05Bf16Runtime {
         )?;
         let cache = self.prefix_forward(&prefix, host_token_ids, &shape.prefix_rope)?;
         self.denoise(noise, &cache, &shape.suffix_rope)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn infer_captured_inputs(
+        &self,
+        patches: &Tensor,
+        raw_images: Option<&DeviceBuffer>,
+        raw_image_layout: Option<ImageLayout>,
+        token_ids: &DeviceBuffer,
+        host_token_ids: &[u32],
+        noise: &Tensor,
+        shape: &Dm05PreparedShape,
+    ) -> Result<Tensor> {
+        match (raw_images, raw_image_layout) {
+            (None, None) => {}
+            (Some(images), Some(layout)) => kernels::preprocess::rgb_u8_to_patches_bf16(
+                self.ctx(),
+                images,
+                patches,
+                self.config.num_views,
+                self.config.vision.image_size,
+                self.config.vision.patch_size,
+                layout,
+            )?,
+            _ => {
+                return Err(Error::Other(
+                    "DM05 raw image capture state is inconsistent".into(),
+                ));
+            }
+        }
+        self.infer(patches, token_ids, host_token_ids, noise, shape)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_infer_impl(
+        &self,
+        patches: &Tensor,
+        raw_images: Option<&DeviceBuffer>,
+        raw_image_layout: Option<ImageLayout>,
+        token_ids: &DeviceBuffer,
+        host_token_ids: &[u32],
+        noise: &Tensor,
+        shape: &Dm05PreparedShape,
+    ) -> Result<Dm05CapturedGraph> {
+        if raw_images.is_some() != raw_image_layout.is_some() {
+            return Err(Error::Other(
+                "DM05 raw image capture state is inconsistent".into(),
+            ));
+        }
+        if host_token_ids.len() != shape.prefix_tokens {
+            return Err(Error::Other(format!(
+                "DM05 prepared prefix length {} does not match {} token IDs",
+                shape.prefix_tokens,
+                host_token_ids.len()
+            )));
+        }
+        let prefix_layout = self.config.validate_prefix_tokens(host_token_ids)?;
+        self.backend.synchronize()?;
+        let workspace = kernels::GraphWorkspace::new(
+            self.config
+                .cuda_graph_workspace_bytes_bf16(shape.prefix_tokens)?,
+            self.ctx().device_id(),
+        )?;
+
+        // The preparation pass both validates the accounting bound and lets
+        // vendor kernels install native resources before stream capture.
+        let eager_output = kernels::prepare_with_workspace(&workspace, || {
+            self.infer_captured_inputs(
+                patches,
+                raw_images,
+                raw_image_layout,
+                token_ids,
+                host_token_ids,
+                noise,
+                shape,
+            )
+        })?;
+        self.backend.synchronize()?;
+        drop(eager_output);
+
+        self.backend.begin_capture()?;
+        let output = match kernels::with_workspace(&workspace, || {
+            self.infer_captured_inputs(
+                patches,
+                raw_images,
+                raw_image_layout,
+                token_ids,
+                host_token_ids,
+                noise,
+                shape,
+            )
+        }) {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = self.backend.end_capture();
+                return Err(error);
+            }
+        };
+        let graph = self.backend.end_capture()?;
+        Ok(Dm05CapturedGraph {
+            graph,
+            output,
+            patches: patches.clone(),
+            raw_images: raw_images.cloned(),
+            raw_image_layout,
+            noise: noise.clone(),
+            token_ids: token_ids.clone(),
+            token_count: host_token_ids.len(),
+            prefix_layout,
+            runtime: self.clone(),
+            _shape: shape.clone(),
+            workspace,
+        })
+    }
+
+    pub fn capture_infer(
+        &self,
+        patches: &Tensor,
+        token_ids: &DeviceBuffer,
+        host_token_ids: &[u32],
+        noise: &Tensor,
+        shape: &Dm05PreparedShape,
+    ) -> Result<Dm05CapturedGraph> {
+        self.capture_infer_impl(patches, None, None, token_ids, host_token_ids, noise, shape)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_infer_rgb_u8(
+        &self,
+        layout: ImageLayout,
+        raw_images: &DeviceBuffer,
+        patches: &Tensor,
+        token_ids: &DeviceBuffer,
+        host_token_ids: &[u32],
+        noise: &Tensor,
+        shape: &Dm05PreparedShape,
+    ) -> Result<Dm05CapturedGraph> {
+        self.capture_infer_impl(
+            patches,
+            Some(raw_images),
+            Some(layout),
+            token_ids,
+            host_token_ids,
+            noise,
+            shape,
+        )
     }
 
     fn prefix_forward(
@@ -343,7 +630,6 @@ fn prepare_rope_tables(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::dm05::config::tests_support::exact_config;
 
     #[test]

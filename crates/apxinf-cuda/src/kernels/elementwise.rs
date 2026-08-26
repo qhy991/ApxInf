@@ -25,22 +25,16 @@ pub fn add_into(
         "decode add",
         &[("A", a, bytes), ("B", b, bytes), ("output", output, bytes)],
     )?;
+    let count = u32::try_from(count)
+        .map_err(|_| Error::Other("decode add element count exceeds u32".into()))?;
     let status = unsafe {
         match dtype {
-            DType::F32 => ffi::apxinf_add_f32(
-                a.ptr(),
-                b.ptr(),
-                output.ptr(),
-                count as u32,
-                ctx.stream().handle(),
-            ),
-            DType::BF16 => ffi::apxinf_add_bf16(
-                a.ptr(),
-                b.ptr(),
-                output.ptr(),
-                count as u32,
-                ctx.stream().handle(),
-            ),
+            DType::F32 => {
+                ffi::apxinf_add_f32(a.ptr(), b.ptr(), output.ptr(), count, ctx.stream().handle())
+            }
+            DType::BF16 => {
+                ffi::apxinf_add_bf16(a.ptr(), b.ptr(), output.ptr(), count, ctx.stream().handle())
+            }
             dtype => {
                 return Err(apxinf_core::Error::Other(format!(
                     "decode add does not support {dtype}"
@@ -65,22 +59,16 @@ pub fn mul_into(
         "decode multiply",
         &[("A", a, bytes), ("B", b, bytes), ("output", output, bytes)],
     )?;
+    let count = u32::try_from(count)
+        .map_err(|_| Error::Other("decode multiply element count exceeds u32".into()))?;
     let status = unsafe {
         match dtype {
-            DType::F32 => ffi::apxinf_mul_f32(
-                a.ptr(),
-                b.ptr(),
-                output.ptr(),
-                count as u32,
-                ctx.stream().handle(),
-            ),
-            DType::BF16 => ffi::apxinf_mul_bf16(
-                a.ptr(),
-                b.ptr(),
-                output.ptr(),
-                count as u32,
-                ctx.stream().handle(),
-            ),
+            DType::F32 => {
+                ffi::apxinf_mul_f32(a.ptr(), b.ptr(), output.ptr(), count, ctx.stream().handle())
+            }
+            DType::BF16 => {
+                ffi::apxinf_mul_bf16(a.ptr(), b.ptr(), output.ptr(), count, ctx.stream().handle())
+            }
             dtype => {
                 return Err(apxinf_core::Error::Other(format!(
                     "decode multiply does not support {dtype}"
@@ -290,74 +278,52 @@ pub fn add_bias(ctx: &CudaContext, input: &Tensor, bias: &Tensor) -> Result<Tens
 }
 
 pub fn add(ctx: &CudaContext, a: &Tensor, b: &Tensor) -> Result<Tensor> {
-    let device_id = ctx.device_id();
-    let count = a.numel() as u32;
-
-    let out_bytes = a.size_in_bytes();
-    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
-
-    unsafe {
-        let res = match a.dtype() {
-            DType::F32 => ffi::apxinf_add_f32(
-                gpu_ptr(a)?,
-                gpu_ptr(b)?,
-                out_buf.ptr(),
-                count,
-                ctx.stream().handle(),
-            ),
-            DType::BF16 => ffi::apxinf_add_bf16(
-                gpu_ptr(a)?,
-                gpu_ptr(b)?,
-                out_buf.ptr(),
-                count,
-                ctx.stream().handle(),
-            ),
-            dtype => return unsupported_dtype("add", dtype),
-        };
-        ffi::check_cuda(res).map_err(Error::Cuda)?;
+    if a.shape() != b.shape()
+        || a.dtype() != b.dtype()
+        || a.device() != b.device()
+        || a.device() != apxinf_core::Device::Cuda(ctx.device_id())
+    {
+        return Err(Error::Other(
+            "add expects matching tensors on the active CUDA device".into(),
+        ));
     }
-
+    if !matches!(a.dtype(), DType::F32 | DType::BF16) {
+        return unsupported_dtype("add", a.dtype());
+    }
+    let a_buffer = CudaBuffer::from_tensor(a).map_err(Error::Cuda)?;
+    let b_buffer = CudaBuffer::from_tensor(b).map_err(Error::Cuda)?;
+    let out_buf = output_buffer(ctx, a.size_in_bytes())?;
+    add_into(ctx, a.dtype(), &a_buffer, &b_buffer, &out_buf, a.numel())?;
     Ok(make_gpu_tensor(
         a.shape().clone(),
         a.dtype(),
-        device_id,
+        ctx.device_id(),
         out_buf,
     ))
 }
 
 /// Element-wise multiply on CUDA. Dispatches on dtype.
 pub fn mul(ctx: &CudaContext, a: &Tensor, b: &Tensor) -> Result<Tensor> {
-    let device_id = ctx.device_id();
-    let count = a.numel() as u32;
-
-    let out_bytes = a.size_in_bytes();
-    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
-
-    unsafe {
-        let res = match a.dtype() {
-            DType::F32 => ffi::apxinf_mul_f32(
-                gpu_ptr(a)?,
-                gpu_ptr(b)?,
-                out_buf.ptr(),
-                count,
-                ctx.stream().handle(),
-            ),
-            DType::BF16 => ffi::apxinf_mul_bf16(
-                gpu_ptr(a)?,
-                gpu_ptr(b)?,
-                out_buf.ptr(),
-                count,
-                ctx.stream().handle(),
-            ),
-            dtype => return unsupported_dtype("mul", dtype),
-        };
-        ffi::check_cuda(res).map_err(Error::Cuda)?;
+    if a.shape() != b.shape()
+        || a.dtype() != b.dtype()
+        || a.device() != b.device()
+        || a.device() != apxinf_core::Device::Cuda(ctx.device_id())
+    {
+        return Err(Error::Other(
+            "multiply expects matching tensors on the active CUDA device".into(),
+        ));
     }
-
+    if !matches!(a.dtype(), DType::F32 | DType::BF16) {
+        return unsupported_dtype("mul", a.dtype());
+    }
+    let a_buffer = CudaBuffer::from_tensor(a).map_err(Error::Cuda)?;
+    let b_buffer = CudaBuffer::from_tensor(b).map_err(Error::Cuda)?;
+    let out_buf = output_buffer(ctx, a.size_in_bytes())?;
+    mul_into(ctx, a.dtype(), &a_buffer, &b_buffer, &out_buf, a.numel())?;
     Ok(make_gpu_tensor(
         a.shape().clone(),
         a.dtype(),
-        device_id,
+        ctx.device_id(),
         out_buf,
     ))
 }

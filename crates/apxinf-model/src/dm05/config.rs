@@ -81,7 +81,8 @@ impl Dm05Config {
     pub const SUPPORTED_NUM_VIEWS: usize = 2;
     pub const SUPPORTED_DEPLOY_ACTION_DIM: usize = 7;
     pub const SUPPORTED_DIFFUSION_STEPS: usize = 10;
-    pub const SUPPORTED_MAX_PREFIX_LEN: usize = 712;
+    /// OpenDM e41 LIBERO `ChatTokenization(max_length=768)` contract.
+    pub const SUPPORTED_MAX_PREFIX_LEN: usize = 768;
 
     pub fn from_json_file(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
@@ -186,6 +187,120 @@ impl Dm05Config {
 
     pub fn image_tokens(&self) -> usize {
         self.num_views * self.vision.pooled_tokens_per_image
+    }
+
+    /// Conservative device arena size for one allocation-free native-BF16
+    /// inference capture at a fixed prefix length.
+    ///
+    /// The graph workspace intentionally gives every intermediate a stable
+    /// address. The accounting below mirrors the shipping DM05 schedule:
+    /// vision, multimodal merge, all language layers, and all ten action-flow
+    /// steps. Prefix attention reserves for all five legal attention segments;
+    /// suffix attention additionally reserves the SM89 FA2 split-KV
+    /// accumulators. This is a conservative ownership bound, not a liveness
+    /// estimate: later buffer reuse may reduce it without changing graph
+    /// semantics.
+    pub fn cuda_graph_workspace_bytes_bf16(&self, prefix_tokens: usize) -> Result<usize> {
+        self.validate()?;
+        if prefix_tokens == 0 || prefix_tokens > self.max_prefix_len {
+            return Err(Error::Other(format!(
+                "DM05 prefix length must be in 1..={}, got {prefix_tokens}",
+                self.max_prefix_len
+            )));
+        }
+
+        let mut budget = CudaGraphWorkspaceBudget::default();
+        let patches = self
+            .num_views
+            .checked_mul(self.patches_per_view())
+            .ok_or_else(|| Error::Other("DM05 graph patch count overflow".into()))?;
+        let image_tokens = self.image_tokens();
+        let vision = self.vision.width;
+
+        // Patch projection (GEMM + bias) and positional embedding.
+        budget.bf16(&[patches, vision], 3)?;
+        for _ in 0..self.vision.depth {
+            // Norms, Q/K/V projections, attention output, output projection,
+            // residuals, and the MLP down projection all use vision width.
+            budget.bf16(&[patches, vision], 15)?;
+            // FC1 projection + bias, GELU, FC2 input projection pair.
+            budget.bf16(&[patches, self.vision.mlp_dim], 3)?;
+            // FA2 retains one FP32 log-sum-exp value per query/head.
+            budget.f32(&[patches, self.vision.num_heads], 1)?;
+        }
+        budget.bf16(&[patches, vision], 1)?; // post-vision norm
+        budget.bf16(&[image_tokens, vision], 2)?; // pool output + projector RMS
+        budget.bf16(&[image_tokens, self.language.width], 1)?; // projector
+
+        // Token embedding plus at most four cumulative concatenation outputs
+        // for the five [text, image, text, image, text] pieces.
+        budget.bf16(&[prefix_tokens, self.language.width], 5)?;
+
+        let language_query = self
+            .language
+            .num_heads
+            .checked_mul(self.language.head_dim)
+            .ok_or_else(|| Error::Other("DM05 graph language query width overflow".into()))?;
+        let language_kv = self
+            .language
+            .num_kv_heads
+            .checked_mul(self.language.head_dim)
+            .ok_or_else(|| Error::Other("DM05 graph language KV width overflow".into()))?;
+        for layer in 0..self.language.depth {
+            budget.bf16(&[prefix_tokens, self.language.width], 1)?; // input RMS
+            budget.bf16(&[prefix_tokens, language_query], 4)?; // Q proj/bias + norm/RoPE
+            budget.bf16(&[prefix_tokens, language_kv], 6)?; // K/V proj/bias + K norm/RoPE
+            if layer + 1 < self.language.depth {
+                // Segment outputs plus four conservative cumulative concats.
+                budget.bf16(&[prefix_tokens, language_query], 5)?;
+                budget.f32(&[prefix_tokens, self.language.num_heads], 1)?;
+                // Attention output projection, four RMS/residual tensors, and
+                // MLP down projection/bias.
+                budget.bf16(&[prefix_tokens, self.language.width], 9)?;
+                // Gate projection/bias + GELU, up projection/bias, and product.
+                budget.bf16(&[prefix_tokens, self.language.mlp_dim], 6)?;
+            }
+        }
+
+        let horizon = self.action_horizon;
+        let action_query = self
+            .action_expert
+            .num_heads
+            .checked_mul(self.action_expert.head_dim)
+            .ok_or_else(|| Error::Other("DM05 graph action query width overflow".into()))?;
+        let action_kv = self
+            .action_expert
+            .num_kv_heads
+            .checked_mul(self.action_expert.head_dim)
+            .ok_or_else(|| Error::Other("DM05 graph action KV width overflow".into()))?;
+        let suffix_key_tokens = prefix_tokens
+            .checked_add(horizon)
+            .ok_or_else(|| Error::Other("DM05 graph suffix key length overflow".into()))?;
+        // SM89 FA2 uses 64-token blocks for head_dim=256. Reserving split-KV
+        // scratch remains safe when the runtime override disables split-KV.
+        let suffix_splits = suffix_key_tokens.div_ceil(64).min(128);
+        for _ in 0..self.diffusion_steps {
+            // Action mask, velocity projection/bias, and two-stage Euler.
+            budget.bf16(&[horizon, self.action_dim], 5)?;
+            // Action input projection/bias and final adaptive RMS.
+            budget.bf16(&[horizon, self.action_expert.width], 3)?;
+            for _ in 0..self.action_expert.depth {
+                budget.bf16(&[horizon, self.action_expert.width], 12)?;
+                budget.bf16(&[horizon, action_query], 5)?;
+                budget.bf16(&[horizon, action_kv], 6)?;
+                // Stable combined prefix+suffix K/V buffers.
+                budget.bf16(&[suffix_key_tokens, action_kv], 2)?;
+                budget.bf16(&[horizon, self.action_expert.mlp_dim], 6)?;
+                budget.f32(&[horizon, self.action_expert.num_heads], 1)?;
+                budget.f32(&[suffix_splits, horizon, self.action_expert.num_heads], 1)?;
+                budget.f32(&[suffix_splits, horizon, action_query], 1)?;
+            }
+        }
+
+        // Covers alignment/accounting drift in model-neutral wrappers while
+        // keeping allocation failure explicit on the fixed 24-GiB target.
+        budget.bytes(64 * 1024 * 1024, 1)?;
+        budget.finish()
     }
 
     pub fn validate_prefix_tokens(&self, token_ids: &[u32]) -> Result<[(usize, usize); 2]> {
@@ -299,6 +414,60 @@ impl Dm05Config {
             ));
         }
         Ok(())
+    }
+}
+
+const CUDA_GRAPH_WORKSPACE_ALIGNMENT: u128 = 256;
+
+#[derive(Default)]
+struct CudaGraphWorkspaceBudget {
+    bytes: u128,
+}
+
+impl CudaGraphWorkspaceBudget {
+    fn bf16(&mut self, dimensions: &[usize], allocations: usize) -> Result<()> {
+        self.tensor(dimensions, 2, allocations)
+    }
+
+    fn f32(&mut self, dimensions: &[usize], allocations: usize) -> Result<()> {
+        self.tensor(dimensions, 4, allocations)
+    }
+
+    fn tensor(
+        &mut self,
+        dimensions: &[usize],
+        element_bytes: usize,
+        allocations: usize,
+    ) -> Result<()> {
+        let elements = dimensions.iter().try_fold(1u128, |product, dimension| {
+            product
+                .checked_mul(*dimension as u128)
+                .ok_or_else(|| Error::Other("DM05 graph tensor size overflow".into()))
+        })?;
+        let bytes = elements
+            .checked_mul(element_bytes as u128)
+            .ok_or_else(|| Error::Other("DM05 graph tensor byte size overflow".into()))?;
+        self.bytes(bytes, allocations)
+    }
+
+    fn bytes(&mut self, bytes: u128, allocations: usize) -> Result<()> {
+        for _ in 0..allocations {
+            self.bytes = self
+                .bytes
+                .checked_add(CUDA_GRAPH_WORKSPACE_ALIGNMENT - 1)
+                .ok_or_else(|| Error::Other("DM05 graph workspace alignment overflow".into()))?
+                & !(CUDA_GRAPH_WORKSPACE_ALIGNMENT - 1);
+            self.bytes = self
+                .bytes
+                .checked_add(bytes)
+                .ok_or_else(|| Error::Other("DM05 graph workspace size overflow".into()))?;
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<usize> {
+        usize::try_from(self.bytes)
+            .map_err(|_| Error::Other("DM05 graph workspace exceeds address space".into()))
     }
 }
 
@@ -542,6 +711,7 @@ pub(crate) mod tests_support {
             assert_eq!(parsed.patches_per_view(), 1024);
             assert_eq!(parsed.image_tokens(), 512);
             assert_eq!(parsed.pool_kernel(), 2);
+            assert_eq!(parsed.max_prefix_len, 768);
             assert_eq!(parsed.with_action_horizon(10).unwrap().action_horizon, 10);
         }
 
@@ -563,6 +733,22 @@ pub(crate) mod tests_support {
         }
 
         #[test]
+        fn same_length_prefixes_can_have_distinct_graph_layouts() {
+            let parsed = exact_config();
+            let mut first = vec![2; 564];
+            first[37..293].fill(DM05_IMAGE_TOKEN_ID);
+            first[301..557].fill(DM05_IMAGE_TOKEN_ID);
+            let mut shifted = vec![2; 564];
+            shifted[36..292].fill(DM05_IMAGE_TOKEN_ID);
+            shifted[300..556].fill(DM05_IMAGE_TOKEN_ID);
+
+            assert_ne!(
+                parsed.validate_prefix_tokens(&first).unwrap(),
+                parsed.validate_prefix_tokens(&shifted).unwrap()
+            );
+        }
+
+        #[test]
         fn rejects_wrong_gqa_or_rope_contract() {
             let mut value = config();
             value["action_config"]["num_key_value_heads"] = json!(1);
@@ -572,6 +758,27 @@ pub(crate) mod tests_support {
             value["vlm_config"]["text_config"]["rope_parameters"]["full_attention"]["factor"] =
                 json!(4);
             assert!(Dm05Config::from_value(&value).is_err());
+        }
+
+        #[test]
+        fn graph_workspace_is_checked_and_monotonic_for_qualification_shapes() {
+            let config = exact_config().with_action_horizon(10).unwrap();
+            assert!(config.cuda_graph_workspace_bytes_bf16(0).is_err());
+            assert!(config
+                .cuda_graph_workspace_bytes_bf16(config.max_prefix_len + 1)
+                .is_err());
+
+            let frame_zero = config.cuda_graph_workspace_bytes_bf16(557).unwrap();
+            let frozen = config.cuda_graph_workspace_bytes_bf16(564).unwrap();
+            let maximum = config
+                .cuda_graph_workspace_bytes_bf16(config.max_prefix_len)
+                .unwrap();
+            assert!(frame_zero > 64 * 1024 * 1024);
+            assert!(frozen >= frame_zero);
+            assert!(maximum >= frozen);
+            // The fixed 4090 profile must leave room for the pinned BF16
+            // checkpoint and CUDA runtime inside 24 GiB.
+            assert!(maximum < 12 * 1024 * 1024 * 1024usize);
         }
     }
 }

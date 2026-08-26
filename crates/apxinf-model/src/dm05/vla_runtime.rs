@@ -19,6 +19,7 @@ use crate::vla::{
 use super::backend::{
     kernels, transfers, DeviceBuffer, ImageLayout as KernelImageLayout, RuntimeBackend,
 };
+use super::runtime::Dm05CapturedGraph;
 use super::{DeviceDm05Weights, Dm05Bf16Runtime, Dm05Config, Dm05PreparedShape, Dm05Weights};
 
 struct EagerInputs {
@@ -28,13 +29,24 @@ struct EagerInputs {
     token_ids: DeviceBuffer,
 }
 
+enum ExecStrategy {
+    /// DM05 capture is deferred until the first request because image-token
+    /// run positions, not merely token count, determine graph topology.
+    PendingCapture(Rc<EagerInputs>),
+    Graph(Dm05CapturedGraph),
+    EagerFallback {
+        inputs: Rc<EagerInputs>,
+        reason: String,
+    },
+}
+
 pub struct Dm05PreparedInference {
     spec: InferenceSpec,
     backend: Arc<RuntimeBackend>,
     config: Arc<Dm05Config>,
     runtime: Dm05Bf16Runtime,
     shape: Dm05PreparedShape,
-    inputs: EagerInputs,
+    strategy: RefCell<ExecStrategy>,
     normal_generator: RefCell<Box<dyn NormalGenerator>>,
 }
 
@@ -56,48 +68,139 @@ impl Dm05PreparedInference {
         )
     }
 
-    fn run_eager(&self, request: &VlaRequest<'_>) -> Result<Action> {
+    fn update_eager_inputs(&self, inputs: &EagerInputs, request: &VlaRequest<'_>) -> Result<()> {
         self.backend.synchronize()?;
         let observation = request.observation;
-        let patches = match &observation.vision {
+        match &observation.vision {
             VisionObservation::Patches(patches) => {
                 let patches = normalize_bf16_tensor(
                     patches,
                     patch_shape(&self.config),
                     "preprocessed patches",
                 )?;
-                transfers::copy_cpu_to_cuda(&patches, &self.inputs.patches)?;
-                &self.inputs.patches
+                transfers::copy_cpu_to_cuda(&patches, &inputs.patches)?;
             }
             VisionObservation::RgbU8 { bytes, layout } => {
                 validate_image_bytes(&self.config, bytes)?;
-                let raw =
-                    self.inputs.raw_images.as_ref().ok_or_else(|| {
-                        Error::Other("DM05 prepared plan expects patch input".into())
-                    })?;
+                let raw = inputs
+                    .raw_images
+                    .as_ref()
+                    .ok_or_else(|| Error::Other("DM05 prepared plan expects patch input".into()))?;
                 raw.copy_from_host(bytes).map_err(Error::Cuda)?;
-                self.preprocess_rgb(raw, &self.inputs.patches, *layout)?;
-                &self.inputs.patches
+                // This makes the same loaded inputs immediately usable if
+                // graph capture fails after the preparation attempt.
+                self.preprocess_rgb(raw, &inputs.patches, *layout)?;
             }
-        };
+        }
         match request.initial_latent {
             InitialLatent::Provided(latent) => {
                 let noise =
                     normalize_bf16_tensor(latent, noise_shape(&self.config), "initial latent")?;
-                transfers::copy_cpu_to_cuda(&noise, &self.inputs.noise)?;
+                transfers::copy_cpu_to_cuda(&noise, &inputs.noise)?;
             }
             InitialLatent::Generate { rng } => {
                 self.normal_generator.borrow_mut().generate(rng)?;
             }
         }
-        copy_token_ids(&self.inputs.token_ids, &observation.token_ids)?;
+        copy_token_ids(&inputs.token_ids, &observation.token_ids)
+    }
+
+    fn run_loaded_eager(&self, inputs: &EagerInputs, request: &VlaRequest<'_>) -> Result<Action> {
+        let observation = request.observation;
         Ok(Action::new(self.runtime.infer(
-            patches,
-            &self.inputs.token_ids,
+            &inputs.patches,
+            &inputs.token_ids,
             &observation.token_ids,
-            &self.inputs.noise,
+            &inputs.noise,
             &self.shape,
         )?))
+    }
+
+    fn run_eager(&self, inputs: &EagerInputs, request: &VlaRequest<'_>) -> Result<Action> {
+        self.update_eager_inputs(inputs, request)?;
+        self.run_loaded_eager(inputs, request)
+    }
+
+    fn capture_loaded(
+        &self,
+        inputs: &EagerInputs,
+        request: &VlaRequest<'_>,
+    ) -> Result<Dm05CapturedGraph> {
+        let token_ids = &request.observation.token_ids;
+        match self.spec.image_layout {
+            None => self.runtime.capture_infer(
+                &inputs.patches,
+                &inputs.token_ids,
+                token_ids,
+                &inputs.noise,
+                &self.shape,
+            ),
+            Some(layout) => self.runtime.capture_infer_rgb_u8(
+                kernel_image_layout(layout),
+                inputs.raw_images.as_ref().ok_or_else(|| {
+                    Error::Other("DM05 raw RGB capture is missing its input buffer".into())
+                })?,
+                &inputs.patches,
+                &inputs.token_ids,
+                token_ids,
+                &inputs.noise,
+                &self.shape,
+            ),
+        }
+    }
+
+    fn run_graph(&self, graph: &Dm05CapturedGraph, request: &VlaRequest<'_>) -> Result<Action> {
+        let observation = request.observation;
+        match (&observation.vision, request.initial_latent) {
+            (VisionObservation::Patches(patches), InitialLatent::Provided(latent)) => {
+                let patches = normalize_bf16_tensor(
+                    patches,
+                    patch_shape(&self.config),
+                    "preprocessed patches",
+                )?;
+                let noise =
+                    normalize_bf16_tensor(latent, noise_shape(&self.config), "initial latent")?;
+                graph.update_inputs(&patches, &observation.token_ids, &noise)?;
+            }
+            (VisionObservation::Patches(patches), InitialLatent::Generate { rng }) => {
+                let patches = normalize_bf16_tensor(
+                    patches,
+                    patch_shape(&self.config),
+                    "preprocessed patches",
+                )?;
+                graph.update_inputs_without_noise(&patches, &observation.token_ids)?;
+                self.normal_generator.borrow_mut().generate(rng)?;
+            }
+            (VisionObservation::RgbU8 { bytes, .. }, InitialLatent::Provided(latent)) => {
+                validate_image_bytes(&self.config, bytes)?;
+                let noise =
+                    normalize_bf16_tensor(latent, noise_shape(&self.config), "initial latent")?;
+                graph.update_raw_image_inputs(bytes, &observation.token_ids, &noise)?;
+            }
+            (VisionObservation::RgbU8 { bytes, .. }, InitialLatent::Generate { rng }) => {
+                validate_image_bytes(&self.config, bytes)?;
+                graph.update_raw_image_inputs_without_noise(bytes, &observation.token_ids)?;
+                self.normal_generator.borrow_mut().generate(rng)?;
+            }
+        }
+        graph.replay()?;
+        Ok(Action::new(graph.output().clone()))
+    }
+
+    /// Observable execution metadata for qualification and service logs.
+    pub fn execution_strategy(&self) -> &'static str {
+        match &*self.strategy.borrow() {
+            ExecStrategy::PendingCapture(_) => "pending-cuda-graph-capture",
+            ExecStrategy::Graph(_) => "cuda-graph",
+            ExecStrategy::EagerFallback { .. } => "eager-fallback",
+        }
+    }
+
+    pub fn eager_fallback_reason(&self) -> Option<String> {
+        match &*self.strategy.borrow() {
+            ExecStrategy::EagerFallback { reason, .. } => Some(reason.clone()),
+            _ => None,
+        }
     }
 }
 
@@ -117,7 +220,57 @@ impl PreparedInference for Dm05PreparedInference {
                 observation.inference_spec()
             )));
         }
-        self.run_eager(request)
+        let mut strategy = self.strategy.borrow_mut();
+
+        // A same-length prompt may move an image run. Such a request is valid,
+        // but replaying the old graph would silently use stale row views and
+        // segment launch shapes. Preserve correctness by dropping the large
+        // graph workspace before switching this prepared plan to eager.
+        if let ExecStrategy::Graph(graph) = &*strategy {
+            if !graph.matches_prefix_layout(&observation.token_ids)? {
+                let (patches, raw_images, noise, token_ids) = graph.cloned_inputs();
+                let reason = format!(
+                    "image-token layout changed for fixed token count {}",
+                    self.spec.token_count
+                );
+                eprintln!("[apxinf] DM05 CUDA graph invalidated, using eager: {reason}");
+                *strategy = ExecStrategy::EagerFallback {
+                    inputs: Rc::new(EagerInputs {
+                        patches,
+                        raw_images,
+                        noise,
+                        token_ids,
+                    }),
+                    reason,
+                };
+            }
+        }
+
+        match &*strategy {
+            ExecStrategy::Graph(graph) => self.run_graph(graph, request),
+            ExecStrategy::EagerFallback { inputs, .. } => self.run_eager(inputs, request),
+            ExecStrategy::PendingCapture(inputs) => {
+                let inputs = Rc::clone(inputs);
+                self.update_eager_inputs(&inputs, request)?;
+                match self.capture_loaded(&inputs, request) {
+                    Ok(graph) => {
+                        graph.replay()?;
+                        let action = Action::new(graph.output().clone());
+                        *strategy = ExecStrategy::Graph(graph);
+                        Ok(action)
+                    }
+                    Err(error) => {
+                        let reason = error.to_string();
+                        eprintln!(
+                            "[apxinf] DM05 CUDA graph capture unavailable, using eager: {reason}"
+                        );
+                        let action = self.run_loaded_eager(&inputs, request)?;
+                        *strategy = ExecStrategy::EagerFallback { inputs, reason };
+                        Ok(action)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -152,18 +305,19 @@ impl Dm05VlaRuntime {
             .map(|_| DeviceBuffer::alloc_zeros(image_bytes(&self.config), device))
             .transpose()
             .map_err(Error::Cuda)?;
+        let inputs = Rc::new(EagerInputs {
+            patches,
+            raw_images,
+            noise,
+            token_ids,
+        });
         Ok(Dm05PreparedInference {
             spec: *spec,
             backend: Arc::clone(&self.backend),
             config: Arc::clone(&self.config),
             runtime: self.runtime.clone(),
             shape: self.runtime.prepare_shape(spec.token_count)?,
-            inputs: EagerInputs {
-                patches,
-                raw_images,
-                noise,
-                token_ids,
-            },
+            strategy: RefCell::new(ExecStrategy::PendingCapture(inputs)),
             normal_generator: RefCell::new(normal_generator),
         })
     }

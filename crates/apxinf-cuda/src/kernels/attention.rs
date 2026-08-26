@@ -39,6 +39,60 @@ struct GqaShape {
     head_dim: usize,
 }
 
+#[cfg(apxinf_fa2_sm80)]
+#[derive(Clone, Copy)]
+struct Fa2ShapeI32 {
+    batches: i32,
+    query_tokens: i32,
+    key_tokens: i32,
+    query_heads: i32,
+    kv_heads: i32,
+    head_dim: i32,
+}
+
+#[cfg(apxinf_fa2_sm80)]
+#[allow(clippy::too_many_arguments)]
+fn validate_fa2_shape(
+    ctx: &CudaContext,
+    batches: usize,
+    query_tokens: usize,
+    key_tokens: usize,
+    query_heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+) -> Result<Fa2ShapeI32> {
+    if ctx.caps().compute_major < 8
+        || [
+            batches,
+            query_tokens,
+            key_tokens,
+            query_heads,
+            kv_heads,
+            head_dim,
+        ]
+        .contains(&0)
+        || query_heads % kv_heads != 0
+        || head_dim > 256
+        || head_dim % 8 != 0
+    {
+        return Err(Error::Other(format!(
+            "BF16 FA2 requires compute capability >= 8, non-zero dimensions, divisible heads, and head_dim divisible by 8 in 1..=256; got SM{}, B={batches}, Q={query_tokens}, K={key_tokens}, Hq={query_heads}, Hkv={kv_heads}, D={head_dim}",
+            ctx.caps().sm
+        )));
+    }
+    let checked = |name: &str, value: usize| {
+        i32::try_from(value).map_err(|_| Error::Other(format!("BF16 FA2 {name} exceeds i32")))
+    };
+    Ok(Fa2ShapeI32 {
+        batches: checked("batch count", batches)?,
+        query_tokens: checked("query token count", query_tokens)?,
+        key_tokens: checked("key token count", key_tokens)?,
+        query_heads: checked("query head count", query_heads)?,
+        kv_heads: checked("KV head count", kv_heads)?,
+        head_dim: checked("head dimension", head_dim)?,
+    })
+}
+
 fn validate_gqa_bf16(q: &Tensor, k: &Tensor, v: &Tensor, mask: AttentionMask) -> Result<GqaShape> {
     if [q, k, v]
         .into_iter()
@@ -58,9 +112,10 @@ fn validate_gqa_bf16(q: &Tensor, k: &Tensor, v: &Tensor, mask: AttentionMask) ->
         || q_shape[2] != k_shape[2]
         || q_shape[1] % k_shape[1] != 0
         || q_shape[2] > 256
+        || q_shape[2] % 8 != 0
     {
         return Err(Error::Other(format!(
-            "GQA expects Q [query_tokens,query_heads,head_dim] and matching K/V [key_tokens,kv_heads,head_dim] with divisible heads and head_dim <= 256; got q={q_shape:?}, k={k_shape:?}, v={:?}",
+            "GQA expects Q [query_tokens,query_heads,head_dim] and matching K/V [key_tokens,kv_heads,head_dim] with divisible heads and head_dim divisible by 8 in 1..=256; got q={q_shape:?}, k={k_shape:?}, v={:?}",
             v.shape().dims()
         )));
     }
@@ -612,6 +667,15 @@ fn fa2_attention(
     kv_heads: usize,
     head_dim: usize,
 ) -> Result<Tensor> {
+    let ffi_shape = validate_fa2_shape(
+        ctx,
+        batches,
+        query_tokens,
+        key_tokens,
+        query_heads,
+        kv_heads,
+        head_dim,
+    )?;
     let output = output_buffer(ctx, q.size_in_bytes())?;
     let lse_elements = batches
         .checked_mul(query_heads)
@@ -632,12 +696,12 @@ fn fa2_attention(
             gpu_ptr(v)?,
             output.ptr(),
             softmax_lse.ptr(),
-            batches as i32,
-            query_tokens as i32,
-            key_tokens as i32,
-            query_heads as i32,
-            kv_heads as i32,
-            head_dim as i32,
+            ffi_shape.batches,
+            ffi_shape.query_tokens,
+            ffi_shape.key_tokens,
+            ffi_shape.query_heads,
+            ffi_shape.kv_heads,
+            ffi_shape.head_dim,
             (head_dim as f32).sqrt().recip(),
             ctx.stream().handle(),
         ))
@@ -665,6 +729,20 @@ fn fa2_attention_causal(
     kv_heads: usize,
     head_dim: usize,
 ) -> Result<Tensor> {
+    let ffi_shape = validate_fa2_shape(
+        ctx,
+        batches,
+        query_tokens,
+        key_tokens,
+        query_heads,
+        kv_heads,
+        head_dim,
+    )?;
+    if query_tokens > key_tokens {
+        return Err(Error::Other(format!(
+            "causal BF16 FA2 requires key_tokens >= query_tokens, got {key_tokens} < {query_tokens}"
+        )));
+    }
     let output = output_buffer(ctx, q.size_in_bytes())?;
     let lse_elements = batches
         .checked_mul(query_heads)
@@ -683,12 +761,12 @@ fn fa2_attention_causal(
             gpu_ptr(v)?,
             output.ptr(),
             softmax_lse.ptr(),
-            batches as i32,
-            query_tokens as i32,
-            key_tokens as i32,
-            query_heads as i32,
-            kv_heads as i32,
-            head_dim as i32,
+            ffi_shape.batches,
+            ffi_shape.query_tokens,
+            ffi_shape.key_tokens,
+            ffi_shape.query_heads,
+            ffi_shape.kv_heads,
+            ffi_shape.head_dim,
             (head_dim as f32).sqrt().recip(),
             ctx.stream().handle(),
         ))
@@ -730,6 +808,15 @@ fn fa2_attention_splitkv(
     kv_heads: usize,
     head_dim: usize,
 ) -> Result<Tensor> {
+    let ffi_shape = validate_fa2_shape(
+        ctx,
+        batches,
+        query_tokens,
+        key_tokens,
+        query_heads,
+        kv_heads,
+        head_dim,
+    )?;
     let output = output_buffer(ctx, q.size_in_bytes())?;
     let lse_elements = batches
         .checked_mul(query_heads)
@@ -781,14 +868,15 @@ fn fa2_attention_splitkv(
             softmax_lse.ptr(),
             softmax_lse_accum.ptr(),
             o_accum.ptr(),
-            batches as i32,
-            query_tokens as i32,
-            key_tokens as i32,
-            query_heads as i32,
-            kv_heads as i32,
-            head_dim as i32,
+            ffi_shape.batches,
+            ffi_shape.query_tokens,
+            ffi_shape.key_tokens,
+            ffi_shape.query_heads,
+            ffi_shape.kv_heads,
+            ffi_shape.head_dim,
             (head_dim as f32).sqrt().recip(),
-            ctx.caps().multiprocessor_count as i32,
+            i32::try_from(ctx.caps().multiprocessor_count)
+                .map_err(|_| Error::Other("BF16 FA2 multiprocessor count exceeds i32".into()))?,
             ctx.stream().handle(),
         ))
         .map_err(Error::Cuda)?;
@@ -1603,6 +1691,12 @@ mod gqa_contract_tests {
         let too_wide_k = tensor(vec![574, 4, 258], DType::BF16);
         assert!(
             validate_gqa_bf16(&too_wide, &too_wide_k, &too_wide_k, AttentionMask::None,).is_err()
+        );
+
+        let unaligned = tensor(vec![10, 8, 255], DType::BF16);
+        let unaligned_k = tensor(vec![574, 4, 255], DType::BF16);
+        assert!(
+            validate_gqa_bf16(&unaligned, &unaligned_k, &unaligned_k, AttentionMask::None).is_err()
         );
 
         let long_q = tensor(vec![575, 8, 256], DType::BF16);
