@@ -359,6 +359,11 @@ class PersistentHttpConnection:
         raw = b""
         sendall_calls = 0
         stage = "before-sendall"
+        status: int | None = None
+        version: int | None = None
+        will_close: bool | None = None
+        headers: list[tuple[str, str]] = []
+        header_map: dict[str, list[str]] = {}
         try:
             started_ns = self.clock_ns()
             self.sock.sendall(wire)
@@ -397,7 +402,6 @@ class PersistentHttpConnection:
             require(status == 200, f"{self.label} returned HTTP {status}")
             require(version == 11, f"{self.label} response is not HTTP/1.1")
             require(will_close is False, f"{self.label} response closes the connection")
-            header_map: dict[str, list[str]] = {}
             for name, value in headers:
                 header_map.setdefault(name.lower(), []).append(value)
             content_types = header_map.get("content-type", [])
@@ -434,11 +438,22 @@ class PersistentHttpConnection:
             observation = {
                 "connection": self.label,
                 "stage": stage,
+                "method": method,
+                "path": path,
+                "primary_timed_interval": primary_timed,
+                "attempted_request_index_on_connection": self.request_count + 1,
                 "started_monotonic_ns": started_ns,
                 "ended_monotonic_ns": ended_ns,
                 "sendall_call_count": sendall_calls,
                 "request_wire_size_bytes": len(wire),
                 "request_wire_sha256": sha256_bytes(wire),
+                "request_body_size_bytes": len(body_bytes),
+                "request_body_sha256": sha256_bytes(body_bytes),
+                "request_body_equals_canonical_383_bytes": canonical_body,
+                "status": status,
+                "http_version": version,
+                "response_will_close": will_close,
+                "response_headers": header_map,
                 "raw_response_size_bytes": len(raw),
                 "raw_response_sha256": sha256_bytes(raw),
                 "raw_response_base64": base64.b64encode(raw).decode("ascii"),
@@ -598,17 +613,77 @@ def validate_omni_state(payload: dict[str, Any]) -> dict[str, Any]:
         is_int(generation) and generation > 0,
         "OmniInfer generation identity is invalid",
     )
+    backend_port = payload.get("backend_port")
+    require(
+        is_int(backend_port) and 0 < backend_port <= 65535,
+        "OmniInfer backend port is invalid",
+    )
     client_endpoint = payload.get("client_endpoint")
     require(isinstance(client_endpoint, str), "OmniInfer client endpoint is absent")
-    parse_loopback_endpoint(client_endpoint, "OmniInfer resident backend endpoint")
+    client_address = parse_loopback_endpoint(
+        client_endpoint, "OmniInfer resident backend endpoint"
+    )
+    require(
+        client_address == ("127.0.0.1", backend_port),
+        "OmniInfer endpoint and backend port differ",
+    )
+    runtime = payload.get("runtime")
+    require(isinstance(runtime, dict), "OmniInfer runtime state is absent")
+    require(runtime.get("pid") == backend_pid, "OmniInfer runtime PID differs")
+    require(runtime.get("port") == backend_port, "OmniInfer runtime port differs")
+    require(
+        runtime.get("client_endpoint") == client_endpoint,
+        "OmniInfer runtime endpoint differs",
+    )
     model_path = payload.get("model_path")
     require(model_path == MODEL_ALIAS, "OmniInfer loaded model path differs")
     return {
         "backend": payload.get("backend"),
         "backend_pid": backend_pid,
+        "backend_port": backend_port,
         "generation": generation,
         "client_endpoint": client_endpoint,
+        "runtime_identity_cross_checked": True,
         "model_path": model_path,
+    }
+
+
+def validate_omni_clear_binding(
+    *,
+    generation_endpoint: str,
+    clear_endpoint: str,
+    resident_backend_endpoint: str,
+    clear_contract: str,
+) -> dict[str, Any]:
+    generation_address = parse_loopback_endpoint(
+        generation_endpoint, "OmniInfer generation endpoint"
+    )
+    clear_address = parse_loopback_endpoint(clear_endpoint, "OmniInfer clear endpoint")
+    backend_address = parse_loopback_endpoint(
+        resident_backend_endpoint, "OmniInfer resident backend endpoint"
+    )
+    if clear_contract == "omni-gateway":
+        require(
+            clear_address == generation_address,
+            "OmniInfer gateway clear endpoint differs from generation gateway",
+        )
+        bound_to = "generation-gateway"
+    else:
+        require(
+            clear_contract == "llama-slot-erase", "unknown OmniInfer clear contract"
+        )
+        require(
+            clear_address == backend_address,
+            "llama slot clear endpoint differs from resident OmniInfer backend",
+        )
+        bound_to = "resident-backend-from-omni-state"
+    return {
+        "contract": clear_contract,
+        "bound_to": bound_to,
+        "generation_endpoint": generation_endpoint,
+        "clear_endpoint": clear_endpoint,
+        "resident_backend_endpoint": resident_backend_endpoint,
+        "address_binding_verified": True,
     }
 
 
@@ -660,7 +735,10 @@ def validate_omni_clear(
     require(
         path == "/slots/0?action=erase", "llama slot erase path is not exact slot 0"
     )
-    require(payload.get("id_slot") == 0, "llama slot erase response slot differs")
+    require(
+        is_int(payload.get("id_slot")) and payload.get("id_slot") == 0,
+        "llama slot erase response slot differs",
+    )
     n_erased = payload.get("n_erased")
     require(is_int(n_erased) and n_erased >= 0, "llama slot erase count is invalid")
     return {
@@ -753,6 +831,31 @@ def validate_chat_response(response: dict[str, Any], arm: str) -> dict[str, Any]
         usage.get("completion_tokens") == 128, f"{runtime} completion usage differs"
     )
     require(usage.get("total_tokens") == 141, f"{runtime} total usage differs")
+    if arm == "G":
+        prompt_details = usage.get("prompt_tokens_details")
+        cached_tokens = (
+            prompt_details.get("cached_tokens")
+            if isinstance(prompt_details, dict)
+            else None
+        )
+        require(
+            is_int(cached_tokens) and cached_tokens == 0,
+            "OmniInfer usage cached token count differs",
+        )
+        timings = response.get("timings")
+        require(isinstance(timings, dict), "OmniInfer native timings are absent")
+        require(
+            is_int(timings.get("prompt_n")) and timings.get("prompt_n") == 13,
+            "OmniInfer native prompt count differs",
+        )
+        require(
+            is_int(timings.get("predicted_n")) and timings.get("predicted_n") == 128,
+            "OmniInfer native predicted count differs",
+        )
+        require(
+            is_int(timings.get("cache_n")) and timings.get("cache_n") == 0,
+            "OmniInfer native cache count differs",
+        )
     verbose = response.get("__verbose")
     require(isinstance(verbose, dict), f"{runtime} verbose receipt is absent")
     require(verbose.get("tokens_evaluated") == 13, f"{runtime} evaluated count differs")
@@ -785,6 +888,20 @@ def validate_chat_response(response: dict[str, Any], arm: str) -> dict[str, Any]
             verbose.get("prompt_token_ids") == PROMPT_TOKEN_IDS,
             "ApxInf prompt token IDs differ",
         )
+    else:
+        require(
+            is_int(verbose.get("id_slot")) and verbose.get("id_slot") == 0,
+            "OmniInfer verbose slot differs",
+        )
+        require(
+            is_int(verbose.get("tokens_cached"))
+            and verbose.get("tokens_cached") == 13 + 128 - 1,
+            "OmniInfer verbose cached-token ledger differs",
+        )
+        require(
+            verbose.get("truncated") is False,
+            "OmniInfer verbose response was truncated",
+        )
     policy = validate_generation_policy(verbose.get("generation_settings"), arm)
     token_hash = sha256_bytes(canonical_json_bytes(tokens))
     content_bytes = content.encode("utf-8")
@@ -792,13 +909,25 @@ def validate_chat_response(response: dict[str, Any], arm: str) -> dict[str, Any]
         "runtime": runtime,
         "finish_reason": "length",
         "usage": {"prompt_tokens": 13, "completion_tokens": 128, "total_tokens": 141},
-        "prompt_token_ids": list(PROMPT_TOKEN_IDS),
+        "prompt_token_ids": list(PROMPT_TOKEN_IDS) if arm == "B" else None,
+        "prompt_token_ids_observed_in_response": arm == "B",
         "generated_token_ids": list(tokens),
         "generated_token_ids_sha256": token_hash,
         "generated_eog_hits": [],
         "content": content,
         "content_sha256": sha256_bytes(content_bytes),
         "generation_policy": policy,
+        "cold_kv_receipt": (
+            {
+                "id_slot": 0,
+                "usage_cached_tokens": 0,
+                "native_cache_n": 0,
+                "tokens_cached_after_generation": 140,
+                "truncated": False,
+            }
+            if arm == "G"
+            else {"checked_reset_required_by_server_epoch": True}
+        ),
     }
 
 
@@ -1129,13 +1258,29 @@ def run_one_sample(
             ),
         )
         target = omni
-    response, validated, transport = target.request_json(
-        "POST",
-        "/v1/chat/completions",
-        REQUEST_BYTES,
-        primary_timed=schedule_entry["phase"] == "measured",
-        semantic_validator=lambda value: validate_chat_response(value, arm),
-    )
+    try:
+        response, validated, transport = target.request_json(
+            "POST",
+            "/v1/chat/completions",
+            REQUEST_BYTES,
+            primary_timed=schedule_entry["phase"] == "measured",
+            semantic_validator=lambda value: validate_chat_response(value, arm),
+        )
+    except TransportFailure as error:
+        error.observation["sample_context"] = {
+            "arm": arm,
+            "sequence_index_for_arm": sequence_index,
+            "phase": schedule_entry["phase"],
+            "block": schedule_entry["block"],
+            "pair_index": schedule_entry["pair_index"],
+            "order": schedule_entry["order"],
+        }
+        error.observation["successful_cache_clear"] = {
+            "response": clear_response,
+            "validated": clear_validated,
+            "transport": clear_transport,
+        }
+        raise
     require(
         clear_transport["ended_monotonic_ns"] <= transport["started_monotonic_ns"],
         "cache clear did not complete before generation timing started",
@@ -1226,11 +1371,18 @@ def run_diagnostic(
         omni_state_start = _control_request(
             omni, "GET", args.omni_state_path, None, validate_omni_state
         )
+        omni_clear_binding = validate_omni_clear_binding(
+            generation_endpoint=args.omni_endpoint,
+            clear_endpoint=args.omni_clear_endpoint,
+            resident_backend_endpoint=omni_state_start["validated"]["client_endpoint"],
+            clear_contract=args.omni_clear_contract,
+        )
         progress["preflight"] = {
             "apxinf_health": apx_health,
             "apxinf_state": apx_state_start,
             "omniinfer_health": omni_health,
             "omniinfer_state": omni_state_start,
+            "omniinfer_clear_binding": omni_clear_binding,
         }
         sequence = {"B": 0, "G": 0}
         for entry in declared_schedule():

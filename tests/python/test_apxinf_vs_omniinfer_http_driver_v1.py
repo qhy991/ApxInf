@@ -54,6 +54,7 @@ def response_fixture(arm: str, token: int = 7) -> dict:
             {"bias": None, "token": token_id}
             for token_id in driver.SUPPRESSED_EOG_TOKEN_IDS
         ]
+        verbose.update({"id_slot": 0, "tokens_cached": 140, "truncated": False})
     verbose["generation_settings"] = settings
     return {
         "object": "chat.completion",
@@ -68,7 +69,13 @@ def response_fixture(arm: str, token: int = 7) -> dict:
             "prompt_tokens": 13,
             "completion_tokens": 128,
             "total_tokens": 141,
+            **({"prompt_tokens_details": {"cached_tokens": 0}} if arm == "G" else {}),
         },
+        **(
+            {"timings": {"prompt_n": 13, "predicted_n": 128, "cache_n": 0}}
+            if arm == "G"
+            else {}
+        ),
         "__verbose": verbose,
     }
 
@@ -237,8 +244,150 @@ class PersistentTransportTests(unittest.TestCase):
             ):
                 driver.PersistentHttpConnection(endpoint, "bad")
 
+    def test_semantic_failure_receipts_identify_the_exact_request(self) -> None:
+        fake_socket = FakeSocket()
+        raw = b'{"ok":true}'
+        connection = driver.PersistentHttpConnection(
+            "http://127.0.0.1:9001",
+            "fixture",
+            socket_factory=lambda *_args, **_kwargs: fake_socket,
+            response_factory=lambda _socket: FakeResponse(raw),
+        )
+        connection.connect()
+        with self.assertRaises(driver.TransportFailure) as caught:
+            connection.request_json(
+                "POST",
+                "/v1/chat/completions",
+                driver.REQUEST_BYTES,
+                primary_timed=True,
+                semantic_validator=lambda _value: driver.require(False, "fixture"),
+            )
+        observation = caught.exception.observation
+        self.assertEqual(observation["method"], "POST")
+        self.assertEqual(observation["path"], "/v1/chat/completions")
+        self.assertTrue(observation["primary_timed_interval"])
+        self.assertEqual(observation["attempted_request_index_on_connection"], 1)
+        self.assertEqual(observation["status"], 200)
+        self.assertEqual(observation["http_version"], 11)
+        self.assertEqual(
+            observation["response_headers"]["content-length"], [str(len(raw))]
+        )
+        connection.close()
+
+    def test_generation_failure_preserves_the_successful_clear_receipt(self) -> None:
+        class ClearThenFail:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def request_json(self, *_args: object, **_kwargs: object) -> tuple:
+                self.calls += 1
+                if self.calls == 1:
+                    return (
+                        {"ok": True},
+                        {"acknowledged": True},
+                        {"ended_monotonic_ns": 10},
+                    )
+                raise driver.TransportFailure(
+                    "generation failed",
+                    {"path": "/v1/chat/completions"},
+                )
+
+        apx = ClearThenFail()
+        with self.assertRaises(driver.TransportFailure) as caught:
+            driver.run_one_sample(
+                arm="B",
+                sequence_index=1,
+                schedule_entry={
+                    "phase": "measured",
+                    "block": 1,
+                    "pair_index": 1,
+                    "order": "BG",
+                },
+                apx=apx,
+                omni=object(),
+                omni_clear=object(),
+                args=argparse.Namespace(),
+            )
+        observation = caught.exception.observation
+        self.assertEqual(observation["path"], "/v1/chat/completions")
+        self.assertEqual(observation["sample_context"]["arm"], "B")
+        self.assertEqual(
+            observation["successful_cache_clear"]["validated"],
+            {"acknowledged": True},
+        )
+
 
 class SemanticAndStatisticsTests(unittest.TestCase):
+    def test_omni_state_cross_checks_backend_endpoint_and_runtime_identity(
+        self,
+    ) -> None:
+        state = {
+            "backend": "llama.cpp-mac",
+            "backend_ready": True,
+            "backend_pid": 1234,
+            "backend_port": 51090,
+            "generation": 1,
+            "client_endpoint": "http://127.0.0.1:51090",
+            "model_path": driver.MODEL_ALIAS,
+            "runtime": {
+                "pid": 1234,
+                "port": 51090,
+                "client_endpoint": "http://127.0.0.1:51090",
+            },
+        }
+        receipt = driver.validate_omni_state(state)
+        self.assertTrue(receipt["runtime_identity_cross_checked"])
+        for path, replacement in (
+            (("backend_port",), 51091),
+            (("runtime", "pid"), 4321),
+            (("runtime", "port"), 51091),
+            (("runtime", "client_endpoint"), "http://127.0.0.1:51091"),
+        ):
+            mutated = {
+                **state,
+                "runtime": dict(state["runtime"]),
+            }
+            target = mutated
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = replacement
+            with self.subTest(path=path), self.assertRaises(driver.AdmissionError):
+                driver.validate_omni_state(mutated)
+
+    def test_clear_endpoint_is_bound_to_the_gateway_or_reported_backend(self) -> None:
+        gateway = "http://127.0.0.1:9000"
+        backend = "http://127.0.0.1:51090"
+        gateway_receipt = driver.validate_omni_clear_binding(
+            generation_endpoint=gateway,
+            clear_endpoint=gateway,
+            resident_backend_endpoint=backend,
+            clear_contract="omni-gateway",
+        )
+        self.assertEqual(gateway_receipt["bound_to"], "generation-gateway")
+        backend_receipt = driver.validate_omni_clear_binding(
+            generation_endpoint=gateway,
+            clear_endpoint=backend,
+            resident_backend_endpoint=backend,
+            clear_contract="llama-slot-erase",
+        )
+        self.assertEqual(
+            backend_receipt["bound_to"], "resident-backend-from-omni-state"
+        )
+        for contract, wrong_endpoint in (
+            ("omni-gateway", backend),
+            ("llama-slot-erase", "http://127.0.0.1:51091"),
+        ):
+            with (
+                self.subTest(contract=contract),
+                self.assertRaises(driver.AdmissionError),
+            ):
+                driver.validate_omni_clear_binding(
+                    generation_endpoint=gateway,
+                    clear_endpoint=wrong_endpoint,
+                    resident_backend_endpoint=backend,
+                    clear_contract=contract,
+                )
+
     def test_both_policy_encodings_normalize_to_the_same_five_eog_tokens(self) -> None:
         apx = driver.validate_chat_response(response_fixture("B"), "B")
         omni = driver.validate_chat_response(response_fixture("G", token=8), "G")
@@ -250,6 +399,10 @@ class SemanticAndStatisticsTests(unittest.TestCase):
             omni["generation_policy"]["suppressed_eog_token_ids"],
             driver.SUPPRESSED_EOG_TOKEN_IDS,
         )
+        self.assertTrue(apx["prompt_token_ids_observed_in_response"])
+        self.assertEqual(apx["prompt_token_ids"], driver.PROMPT_TOKEN_IDS)
+        self.assertFalse(omni["prompt_token_ids_observed_in_response"])
+        self.assertIsNone(omni["prompt_token_ids"])
         self.assertNotEqual(
             apx["generated_token_ids_sha256"], omni["generated_token_ids_sha256"]
         )
@@ -259,6 +412,29 @@ class SemanticAndStatisticsTests(unittest.TestCase):
             driver.validate_chat_response(
                 response_fixture("B", token=driver.SUPPRESSED_EOG_TOKEN_IDS[0]), "B"
             )
+
+    def test_omni_response_rejects_warm_wrong_slot_or_truncated_generation(
+        self,
+    ) -> None:
+        mutations = (
+            ("usage", "prompt_tokens_details", "cached_tokens", 13),
+            ("timings", "cache_n", None, 13),
+            ("__verbose", "id_slot", None, 9),
+            ("__verbose", "id_slot", None, False),
+            ("__verbose", "tokens_cached", None, 139),
+            ("__verbose", "truncated", None, True),
+        )
+        for outer, inner, leaf, replacement in mutations:
+            response = response_fixture("G")
+            if leaf is None:
+                response[outer][inner] = replacement
+            else:
+                response[outer][inner][leaf] = replacement
+            with (
+                self.subTest(field=(outer, inner, leaf)),
+                self.assertRaises(driver.AdmissionError),
+            ):
+                driver.validate_chat_response(response, "G")
 
     def test_block_statistics_use_omni_minus_apx_without_ranking_claim(self) -> None:
         pairs: list[dict] = []

@@ -64,3 +64,10 @@ The driver verifies 128 returned raw tokens, length termination, 13/128/141
 usage, absence of the five EOG tokens, and equivalent five-token `-inf` policy
 receipts. Each runtime must be deterministic independently. Cross-runtime
 trajectory equality is neither required nor reported.
+
+The selected OmniInfer clear endpoint is bound during preflight: gateway clear
+must use the generation gateway itself, while direct slot erase must use the
+resident backend endpoint reported by `/omni/state`. Every OmniInfer generation
+must additionally receipt slot 0, zero cached prompt tokens, native `cache_n=0`,
+the exact 140-token post-generation KV ledger, and `truncated=false`; otherwise
+the run fails terminally.
