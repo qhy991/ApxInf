@@ -64,6 +64,67 @@ struct Q4CoverageRuns {
     misses_by_k: Vec<(usize, Vec<Value>)>,
 }
 
+/// Shared real-checkpoint fixture used by the separately versioned Metal
+/// exact-candidate gate. The CPU coverage-v1 receipt remains CPU-only; this
+/// surface only prevents the two gates from silently rebuilding different
+/// teacher hiddens or Q4_0 weights.
+pub(crate) struct Q4RealCheckpointFixtureV1 {
+    pub(crate) model_dir: PathBuf,
+    pub(crate) q4_head: PackedQ4_0RowsV1,
+    pub(crate) cpu_f32_reference_token_ids: Vec<u32>,
+    pub(crate) teacher_input_token_ids: Vec<u32>,
+    pub(crate) same_hidden_f32_winner_token_ids: Vec<u32>,
+    pub(crate) source_w8_top4_token_ids: Vec<[u32; apxinf_metal::W8_TOP_K]>,
+    pub(crate) normalized_hidden_f32: Vec<f32>,
+}
+
+/// Rebuild the exact suppressed-free128 teacher-hidden fixture and its tied
+/// Q4_0 rows. This records no timing and performs no candidate fallback.
+pub(crate) fn build_q4_real_checkpoint_fixture_v1(
+    model_dir: &Path,
+) -> Result<Q4RealCheckpointFixtureV1, Box<dyn Error>> {
+    validate_frozen_policy_hashes()?;
+    let model_dir = std::fs::canonicalize(model_dir)?;
+    let cpu_f32_reference_token_ids = run_cpu_f32_reference(&model_dir)?;
+    let candidate =
+        run_fused_candidate_hiddens_and_pack_q4(&model_dir, &cpu_f32_reference_token_ids)?;
+    Ok(Q4RealCheckpointFixtureV1 {
+        model_dir,
+        q4_head: candidate.q4_head,
+        cpu_f32_reference_token_ids,
+        teacher_input_token_ids: candidate.teacher_input_token_ids,
+        same_hidden_f32_winner_token_ids: candidate.same_hidden_f32_winner_token_ids,
+        source_w8_top4_token_ids: candidate.source_w8_top4_token_ids,
+        normalized_hidden_f32: candidate.normalized_hidden_f32,
+    })
+}
+
+/// Compute the live CPU-Q4 K=4 trajectory from the same packed weights and
+/// hidden rows used by the Metal exact-candidate gate.
+pub(crate) fn cpu_q4_k4_trajectory_v1(
+    q4_head: &PackedQ4_0RowsV1,
+    normalized_hidden_f32: &[f32],
+) -> Result<Vec<[u32; 4]>, Box<dyn Error>> {
+    let logits = q4_0_batch_scores(q4_head, normalized_hidden_f32, OUTPUT_TOKENS)?;
+    let logits = logits.as_f32()?;
+    logits
+        .chunks_exact(EXPECTED_VOCAB_SIZE)
+        .enumerate()
+        .map(|(step, scores)| {
+            q4_head
+                .topk_scores_excluding(scores, 4, &EXCLUDED_EOG_TOKEN_IDS)?
+                .try_into()
+                .map_err(|candidates: Vec<u32>| {
+                    format!(
+                        "CPU Q4_0 step {step} returned {} K=4 candidates",
+                        candidates.len()
+                    )
+                    .into()
+                })
+        })
+        .collect()
+}
+
 fn usage() -> &'static str {
     "Usage: qwen35_q4_0_tied_head_coverage_v1 --model-dir PATH"
 }

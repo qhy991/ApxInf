@@ -126,3 +126,7 @@ required-features = ["accelerate", "metal-w8"]
 [[example]]
 name = "qwen35_q4_0_tied_head_coverage_v1"
 required-features = ["accelerate", "metal-w8"]
+
+[[example]]
+name = "qwen35_q4_0_metal_tied_head_exact_v1"
+required-features = ["accelerate", "metal-w8"]
