@@ -68,6 +68,11 @@ HOST_FORMAT = _SHARED.HOST_FORMAT
 CUSTODIAN_READY_FORMAT = "apxinf-omniinfer-gateway-custodian-ready-v3"
 CUSTODIAN_ATTESTATION_FORMAT = "apxinf-omniinfer-gateway-custodian-attestation-v3"
 CUSTODIAN_CLEANUP_FORMAT = "apxinf-omniinfer-gateway-custodian-cleanup-v3"
+CUSTODIAN_MODEL_LOAD_COMPLETION_MARGIN_SECONDS = 30.0
+CUSTODIAN_PARENT_READY_RECEIPT_MARGIN_SECONDS = 30.0
+CUSTODIAN_CLEANUP_RESPONSE_MARGIN_SECONDS = 5.0
+CUSTODIAN_CONTROL_REQUEST_MAX_BYTES = 1024 * 1024
+CUSTODIAN_CONTROL_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
 
 SAMPLE_REQUIRED_FIELDS_V3 = frozenset(
     {
@@ -516,6 +521,7 @@ GATEWAY_RUNTIME_PREFLIGHT_FIELDS_V3 = frozenset(
         "backend_start_end_identity_equal",
         "gateway_start_end_identity_equal",
         "custodian_binding",
+        "zero_generation_model_load",
         "custodian_process_start",
         "custodian_process_end",
         "controller_backend_model_fd_custody",
@@ -544,6 +550,218 @@ GATEWAY_MODEL_FD_CUSTODY_RECEIPT_FIELDS_V3 = frozenset(
         "controller_and_backend_same_vnode_identity",
         "same_open_file_description_not_claimed",
         "controller_fd_open_completed_before_gateway_backend_launch",
+    }
+)
+ZERO_GENERATION_MODEL_LOAD_FIELDS_V3 = frozenset(
+    {
+        "format",
+        "schema_version",
+        "edge_id",
+        "management_api",
+        "management_request_sequence",
+        "model_select_request_count",
+        "request",
+        "response",
+        "pre_load_state",
+        "loaded_state",
+        "transport",
+        "gateway_pid",
+        "gateway_start_identity",
+        "gateway_end_identity",
+        "gateway_process_start_end_equal",
+        "gateway_parent_pid_start",
+        "gateway_parent_pid_end",
+        "gateway_parent_start_end_equal",
+        "backend_pid",
+        "backend_start_identity",
+        "gateway_is_direct_parent_of_backend",
+        "history_start",
+        "history_end",
+        "history_start_end_equal",
+        "generation_requests",
+        "generation_endpoint_paths_called",
+        "request_history_records_created",
+        "all_passed",
+    }
+)
+ZERO_GENERATION_MANAGEMENT_TRANSPORT_FIELDS_V3 = frozenset(
+    {
+        "connection",
+        "method",
+        "path",
+        "request_body_size_bytes",
+        "request_body_sha256",
+        "request_wire_size_bytes",
+        "request_wire_sha256",
+        "request_wire_base64",
+        "request_wire_body_offset_bytes",
+        "request_wire_body_size_bytes",
+        "request_wire_body_sha256",
+        "request_wire_body_equals_request_body",
+        "single_sendall_call_count",
+        "single_sendall_argument_size_bytes",
+        "single_sendall_argument_sha256",
+        "status",
+        "http_version",
+        "response_size_bytes",
+        "response_sha256",
+        "response_base64",
+        "request_serialization_before_start",
+        "first_wire_byte_send_call_immediately_after_start",
+        "complete_HTTP_request_wire_serialization_before_start",
+        "single_sendall_call_for_complete_request_wire_required",
+        "full_response_body_read_before_end",
+        "strict_json_parse_before_end",
+        "semantic_validation_before_end",
+        "setup_only_zero_generation_management_request",
+    }
+)
+CUSTODIAN_READY_FIELDS_V3 = frozenset(
+    {
+        "format",
+        "schema_version",
+        "edge_id",
+        "nonce",
+        "custodian_pid",
+        "custodian_start_identity",
+        "gateway_pid",
+        "gateway_start_identity",
+        "backend_pid",
+        "backend_start_identity",
+        "controller_preload_fd",
+        "backend_loaded_fd",
+        "lifecycle_sequence",
+        "control_socket",
+        "zero_generation_model_load",
+        "generation_requests",
+        "passed",
+    }
+)
+CAMPAIGN_DIRECTORY_INITIALIZATION_FIELDS_V3 = frozenset(
+    {
+        "format",
+        "schema_version",
+        "edge_id",
+        "campaign_root",
+        "expected_directory_paths",
+        "preexisting_directory_paths",
+        "created_directory_paths",
+        "directory_observations",
+        "retry_policy",
+        "initial_tree_sha256",
+        "generation_requests",
+        "runtime_processes_started",
+        "marker_created",
+        "raw_created",
+        "all_passed",
+    }
+)
+CAMPAIGN_DIRECTORY_OBSERVATION_FIELDS_V3 = frozenset(
+    {
+        "absolute_path",
+        "relative_path",
+        "device",
+        "inode",
+        "mode",
+        "permission_bits",
+        "uid",
+        "gid",
+        "expected_child_names",
+        "observed_child_names",
+        "direct_directory_no_symlink",
+        "owner_matches_controller",
+        "permissions_are_0700",
+    }
+)
+CAMPAIGN_DIRECTORY_CLEANUP_FIELDS_V3 = frozenset(
+    {
+        "format",
+        "schema_version",
+        "edge_id",
+        "reason",
+        "campaign_root",
+        "initialization_receipt_sha256",
+        "preexisting_directory_paths",
+        "cleanup_eligible",
+        "contamination_detected",
+        "removed_paths",
+        "root_removed",
+        "marker_present",
+        "raw_present",
+        "signals_sent",
+        "all_passed",
+    }
+)
+GATEWAY_PRELOAD_STATE_FIELDS_V3 = frozenset(
+    {
+        "backend",
+        "backend_ready",
+        "model",
+        "public_model_id",
+        "mmproj",
+        "ctx_size",
+        "request_defaults",
+        "runtime_mode",
+        "backend_pid",
+        "backend_port",
+        "launch_args",
+        "cuda_visible_devices",
+        "warning",
+        "launch_command",
+        "proxy_model",
+        "external_server_protocol",
+        "client_endpoint",
+        "openai_compatible",
+        "backend_log",
+        "effective_parameters",
+        "runtime",
+        "loaded_models",
+        "default_model",
+        "restore_selection",
+        "restore_status",
+        "restore_completed",
+        "resource_ledger",
+        "available_backends",
+    }
+)
+GATEWAY_LOADED_STATE_FIELDS_V3 = frozenset(
+    {
+        "backend",
+        "backend_ready",
+        "model",
+        "model_path",
+        "public_model_id",
+        "owner_admin_id",
+        "mmproj",
+        "ctx_size",
+        "request_defaults",
+        "runtime_mode",
+        "backend_pid",
+        "backend_port",
+        "generation",
+        "route_state",
+        "allocation_id",
+        "resource_budget",
+        "speculative_admission",
+        "launch_args",
+        "cuda_visible_devices",
+        "warning",
+        "launch_command",
+        "proxy_model",
+        "external_server_protocol",
+        "client_endpoint",
+        "openai_compatible",
+        "backend_log",
+        "effective_parameters",
+        "runtime",
+        "log_path",
+        "loaded_models",
+        "default_model",
+        "restore_selection",
+        "restore_status",
+        "restore_completed",
+        "resource_ledger",
+        "available_backends",
     }
 )
 
@@ -590,6 +808,32 @@ def require(condition: bool, message: str) -> None:
 def receipt_require(condition: bool, message: str) -> None:
     if not condition:
         raise ReceiptError(message)
+
+
+def _remaining_deadline_seconds(
+    deadline: float,
+    label: str,
+    *,
+    monotonic: Any = time.monotonic,
+) -> float:
+    remaining = deadline - monotonic()
+    require(remaining > 0.0, f"{label} exceeded its total deadline")
+    return remaining
+
+
+def _custodian_child_ready_budget_seconds(runtime: dict[str, Any]) -> float:
+    """Bound listener wait plus one synchronous select/load and exact state GET."""
+
+    listener_budget = float(runtime["custodian_ready_timeout_seconds"])
+    require(listener_budget > 0.0, "custodian listener budget is invalid")
+    return listener_budget * 2.0 + CUSTODIAN_MODEL_LOAD_COMPLETION_MARGIN_SECONDS
+
+
+def _custodian_parent_ready_budget_seconds(runtime: dict[str, Any]) -> float:
+    return (
+        _custodian_child_ready_budget_seconds(runtime)
+        + CUSTODIAN_PARENT_READY_RECEIPT_MARGIN_SECONDS
+    )
 
 
 def contains_forbidden_engine_ranking_claim(value: Any) -> bool:
@@ -2358,6 +2602,7 @@ def run_fixture_self_test() -> dict[str, Any]:
         "marker_created": False,
         "custodian_daemon_started": False,
         "controller_model_fd_opened": False,
+        "campaign_directory_tree_initialized": False,
         "custodian_lifecycle_fixture_validated": True,
     }
 
@@ -2840,6 +3085,38 @@ def validate_execution_plan(
         and runtime["custodian_shutdown_timeout_seconds"] == 30,
         "custodian timeout contract drifted",
     )
+    layout = campaign_directory_layout(plan)
+    campaign_root = Path(layout["campaign_root"])
+    state_root = campaign_root / "state"
+    runtime_root = campaign_root / "runtime"
+    require(
+        gateway_argv
+        == [
+            omni["absolute_path"],
+            "--state-root",
+            str(state_root),
+            "--runtime-root",
+            str(runtime_root),
+            "gateway",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(parsed.port),
+            "--startup-timeout",
+            str(runtime["custodian_ready_timeout_seconds"]),
+        ],
+        "gateway argv differs from the exact pinned campaign launch",
+    )
+    require(
+        gateway_environment
+        == {
+            "LANG": "C",
+            "OMNIINFER_LLAMA_CPP_MAC_LAUNCHER_PATH": backend["absolute_path"],
+            "OMNIINFER_REQUEST_HISTORY": "0",
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        },
+        "gateway environment differs from the exact pinned launch environment",
+    )
     validate_frozen_gateway_contract(contract)
     return copy.deepcopy(plan)
 
@@ -3007,6 +3284,553 @@ def tree_manifest(path_value: Path | str) -> dict[str, Any]:
         "entries": entries,
         "canonical_sha256": sha256_canonical(entries),
     }
+
+
+def campaign_directory_layout(plan: dict[str, Any]) -> dict[str, Any]:
+    """Derive the one admitted private campaign tree from the frozen plan paths."""
+
+    runtime = plan["runtime"]
+    raw_path = Path(plan["raw_output_path"])
+    slots = Path(runtime["slot_save_path"])
+    gateway_logs = Path(runtime["gateway_logs_path"])
+    history = Path(runtime["history_root"])
+    runtime_logs = Path(runtime["runtime_logs_path"])
+    control_socket = Path(runtime["custodian_control_socket_path"])
+    candidates = (raw_path, slots, gateway_logs, history, runtime_logs, control_socket)
+    require(
+        all(
+            path.is_absolute() and os.path.normpath(str(path)) == str(path)
+            for path in candidates
+        ),
+        "campaign directory plan paths are not exact absolute paths",
+    )
+    state_root = gateway_logs.parent.parent
+    runtime_root = runtime_logs.parent.parent
+    campaign_root = state_root.parent
+    expected = (
+        campaign_root,
+        campaign_root / "state",
+        campaign_root / "state" / ".local",
+        campaign_root / "state" / ".local" / "logs",
+        campaign_root / "state" / ".local" / "request_history",
+        campaign_root / "runtime",
+        campaign_root / "runtime" / "llama.cpp-mac",
+        campaign_root / "runtime" / "llama.cpp-mac" / "logs",
+        campaign_root / "raw",
+        campaign_root / "slots",
+    )
+    require(
+        state_root == campaign_root / "state"
+        and runtime_root == campaign_root / "runtime"
+        and raw_path.parent == campaign_root / "raw"
+        and raw_path.parent != raw_path
+        and slots == campaign_root / "slots"
+        and gateway_logs == campaign_root / "state" / ".local" / "logs"
+        and history == campaign_root / "state" / ".local" / "request_history"
+        and runtime_logs == campaign_root / "runtime" / "llama.cpp-mac" / "logs"
+        and control_socket.parent == gateway_logs
+        and campaign_root != Path("/")
+        and campaign_root.parent != campaign_root,
+        "campaign paths do not form the exact isolated state/runtime/raw/slots tree",
+    )
+
+    argv = runtime["expected_gateway_argv"]
+
+    def unique_option(option: str) -> str:
+        indexes = [index for index, value in enumerate(argv) if value == option]
+        require(
+            len(indexes) == 1 and indexes[0] + 1 < len(argv),
+            f"gateway argv does not contain one exact {option} binding",
+        )
+        return argv[indexes[0] + 1]
+
+    require(
+        unique_option("--state-root") == str(state_root)
+        and unique_option("--runtime-root") == str(runtime_root),
+        "gateway argv state/runtime roots differ from campaign directory custody",
+    )
+    children: dict[str, list[str]] = {str(path): [] for path in expected}
+    expected_set = set(expected)
+    for path in expected[1:]:
+        require(path.parent in expected_set, "campaign tree has an unbound parent")
+        children[str(path.parent)].append(path.name)
+    for names in children.values():
+        names.sort()
+    return {
+        "campaign_root": str(campaign_root),
+        "expected_directory_paths": [str(path) for path in expected],
+        "expected_child_names": children,
+    }
+
+
+def _campaign_directory_identity(path: Path) -> os.stat_result:
+    require(
+        hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_CLOEXEC")
+        and hasattr(os, "O_DIRECTORY"),
+        "platform lacks fail-closed directory open flags",
+    )
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_DIRECTORY
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise CampaignError(
+            f"campaign directory O_NOFOLLOW open failed: {path}"
+        ) from error
+    try:
+        observed = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    require(stat.S_ISDIR(observed.st_mode), f"campaign path is not a directory: {path}")
+    require(
+        observed.st_uid == os.geteuid(),
+        f"campaign directory ownership drifted: {path}",
+    )
+    require(
+        stat.S_IMODE(observed.st_mode) == 0o700,
+        f"campaign directory permissions are not 0700: {path}",
+    )
+    require(
+        path.resolve(strict=True) == path,
+        f"campaign directory path contains a symlink or alias: {path}",
+    )
+    return observed
+
+
+def _observe_initialized_campaign_directory(
+    path: Path, campaign_root: Path, expected_children: list[str]
+) -> dict[str, Any]:
+    observed = _campaign_directory_identity(path)
+    child_names = sorted(os.listdir(path))
+    require(
+        child_names == expected_children,
+        f"campaign directory contains an unexpected or absent entry: {path}",
+    )
+    return {
+        "absolute_path": str(path),
+        "relative_path": str(path.relative_to(campaign_root)),
+        "device": observed.st_dev,
+        "inode": observed.st_ino,
+        "mode": observed.st_mode,
+        "permission_bits": stat.S_IMODE(observed.st_mode),
+        "uid": observed.st_uid,
+        "gid": observed.st_gid,
+        "expected_child_names": copy.deepcopy(expected_children),
+        "observed_child_names": child_names,
+        "direct_directory_no_symlink": True,
+        "owner_matches_controller": True,
+        "permissions_are_0700": True,
+    }
+
+
+def initialize_campaign_directory_tree(
+    plan: dict[str, Any], *, mkdir: Any = os.mkdir
+) -> dict[str, Any]:
+    """Create only the exact empty private campaign tree, before runtime launch."""
+
+    layout = campaign_directory_layout(plan)
+    campaign_root = Path(layout["campaign_root"])
+    expected_paths = [Path(value) for value in layout["expected_directory_paths"]]
+    expected_set = set(expected_paths)
+    root_parent = campaign_root.parent
+    try:
+        parent_lstat = root_parent.lstat()
+    except OSError as error:
+        raise CampaignError("campaign root parent is absent") from error
+    require(
+        stat.S_ISDIR(parent_lstat.st_mode)
+        and not stat.S_ISLNK(parent_lstat.st_mode)
+        and root_parent.resolve(strict=True) == root_parent,
+        "campaign root parent is not a direct canonical directory",
+    )
+    require(
+        not os.path.lexists(plan["raw_output_path"]),
+        "gateway raw output already exists before directory initialization",
+    )
+    require(
+        not os.path.lexists(plan["runtime"]["custodian_control_socket_path"]),
+        "custodian socket already exists before directory initialization",
+    )
+
+    preexisting: list[str] = []
+    for path in expected_paths:
+        if not os.path.lexists(path):
+            continue
+        preexisting.append(str(path))
+        observed = _campaign_directory_identity(path)
+        require(
+            stat.S_ISDIR(observed.st_mode), f"campaign path is not a directory: {path}"
+        )
+        with os.scandir(path) as iterator:
+            children = list(iterator)
+        for child in children:
+            child_path = Path(child.path)
+            child_stat = child.stat(follow_symlinks=False)
+            require(
+                child_path in expected_set
+                and stat.S_ISDIR(child_stat.st_mode)
+                and not stat.S_ISLNK(child_stat.st_mode),
+                f"campaign tree contains an unexpected preexisting entry: {child_path}",
+            )
+
+    require(callable(mkdir), "campaign directory mkdir boundary is not callable")
+    created: list[str] = []
+    created_identities: dict[str, tuple[int, int, int, int]] = {}
+    for path in expected_paths:
+        if os.path.lexists(path):
+            continue
+        try:
+            mkdir(path, 0o700)
+        except OSError as error:
+            for created_path_text in reversed(created):
+                created_path = Path(created_path_text)
+                identity = created_identities[created_path_text]
+                try:
+                    current = created_path.lstat()
+                    if (
+                        (
+                            current.st_dev,
+                            current.st_ino,
+                            current.st_mode,
+                            current.st_uid,
+                        )
+                        == identity
+                        and stat.S_ISDIR(current.st_mode)
+                        and not stat.S_ISLNK(current.st_mode)
+                    ):
+                        os.rmdir(created_path)
+                except OSError:
+                    pass
+            raise CampaignError(
+                f"campaign directory creation failed: {path}"
+            ) from error
+        created.append(str(path))
+        observed = path.lstat()
+        created_identities[str(path)] = (
+            observed.st_dev,
+            observed.st_ino,
+            observed.st_mode,
+            observed.st_uid,
+        )
+
+    observations = [
+        _observe_initialized_campaign_directory(
+            path,
+            campaign_root,
+            layout["expected_child_names"][str(path)],
+        )
+        for path in expected_paths
+    ]
+    receipt = {
+        "format": "apxinf-omniinfer-gateway-campaign-directory-initialization-v3",
+        "schema_version": 3,
+        "edge_id": EDGE_ID,
+        "campaign_root": str(campaign_root),
+        "expected_directory_paths": [str(path) for path in expected_paths],
+        "preexisting_directory_paths": preexisting,
+        "created_directory_paths": created,
+        "directory_observations": observations,
+        "retry_policy": {
+            "exact_empty_partial_tree_reusable": True,
+            "exact_empty_complete_tree_reusable": True,
+            "preexisting_content_or_unexpected_entry_rejected": True,
+            "symlink_or_non_directory_rejected": True,
+            "cleanup_limited_to_directories_created_by_this_attempt": True,
+        },
+        "initial_tree_sha256": sha256_canonical(observations),
+        "generation_requests": 0,
+        "runtime_processes_started": 0,
+        "marker_created": False,
+        "raw_created": False,
+        "all_passed": True,
+    }
+    validate_campaign_directory_initialization_receipt(receipt, plan, verify_live=True)
+    return receipt
+
+
+def validate_campaign_directory_initialization_receipt(
+    receipt: dict[str, Any], plan: dict[str, Any], *, verify_live: bool = False
+) -> dict[str, Any]:
+    layout = campaign_directory_layout(plan)
+    expected_paths = layout["expected_directory_paths"]
+    require(
+        isinstance(receipt, dict)
+        and set(receipt) == CAMPAIGN_DIRECTORY_INITIALIZATION_FIELDS_V3
+        and receipt.get("format")
+        == "apxinf-omniinfer-gateway-campaign-directory-initialization-v3"
+        and receipt.get("schema_version") == 3
+        and receipt.get("edge_id") == EDGE_ID
+        and receipt.get("campaign_root") == layout["campaign_root"]
+        and receipt.get("expected_directory_paths") == expected_paths
+        and receipt.get("generation_requests") == 0
+        and receipt.get("runtime_processes_started") == 0
+        and receipt.get("marker_created") is False
+        and receipt.get("raw_created") is False
+        and receipt.get("all_passed") is True,
+        "campaign directory initialization receipt drifted",
+    )
+    preexisting = receipt.get("preexisting_directory_paths")
+    created = receipt.get("created_directory_paths")
+    require(
+        isinstance(preexisting, list)
+        and isinstance(created, list)
+        and len(preexisting) == len(set(preexisting))
+        and len(created) == len(set(created))
+        and not set(preexisting).intersection(created)
+        and set(preexisting).union(created) == set(expected_paths)
+        and preexisting == [path for path in expected_paths if path in preexisting]
+        and created == [path for path in expected_paths if path in created],
+        "campaign directory creation/preexistence partition drifted",
+    )
+    require(
+        receipt.get("retry_policy")
+        == {
+            "exact_empty_partial_tree_reusable": True,
+            "exact_empty_complete_tree_reusable": True,
+            "preexisting_content_or_unexpected_entry_rejected": True,
+            "symlink_or_non_directory_rejected": True,
+            "cleanup_limited_to_directories_created_by_this_attempt": True,
+        },
+        "campaign directory retry policy drifted",
+    )
+    observations = receipt.get("directory_observations")
+    require(
+        isinstance(observations, list)
+        and len(observations) == len(expected_paths)
+        and receipt.get("initial_tree_sha256") == sha256_canonical(observations),
+        "campaign directory observation set drifted",
+    )
+    campaign_root = Path(layout["campaign_root"])
+    require(
+        len(expected_paths) == len(observations),
+        "campaign directory observation length drifted",
+    )
+    for path_text, observation in zip(expected_paths, observations):
+        expected_children = layout["expected_child_names"][path_text]
+        require(
+            isinstance(observation, dict)
+            and set(observation) == CAMPAIGN_DIRECTORY_OBSERVATION_FIELDS_V3
+            and observation.get("absolute_path") == path_text
+            and observation.get("relative_path")
+            == str(Path(path_text).relative_to(campaign_root))
+            and is_int(observation.get("device"))
+            and is_int(observation.get("inode"))
+            and stat.S_ISDIR(observation.get("mode", 0))
+            and observation.get("permission_bits") == 0o700
+            and observation.get("uid") == os.geteuid()
+            and is_int(observation.get("gid"))
+            and observation.get("expected_child_names") == expected_children
+            and observation.get("observed_child_names") == expected_children
+            and observation.get("direct_directory_no_symlink") is True
+            and observation.get("owner_matches_controller") is True
+            and observation.get("permissions_are_0700") is True,
+            "campaign directory observation drifted",
+        )
+        if verify_live:
+            live = _campaign_directory_identity(Path(path_text))
+            require(
+                live.st_dev == observation["device"]
+                and live.st_ino == observation["inode"]
+                and live.st_mode == observation["mode"],
+                f"campaign directory identity changed: {path_text}",
+            )
+            require(
+                all((Path(path_text) / child).is_dir() for child in expected_children),
+                f"campaign directory lost an expected child: {path_text}",
+            )
+    return copy.deepcopy(receipt)
+
+
+def cleanup_failed_prepare_campaign_tree(
+    plan: dict[str, Any],
+    receipt: dict[str, Any],
+    reason: str,
+    *,
+    before_first_removal: Any | None = None,
+) -> dict[str, Any]:
+    """Remove one exclusively new tree through fixed parent/root directory FDs."""
+
+    admitted = validate_campaign_directory_initialization_receipt(receipt, plan)
+    require(isinstance(reason, str) and reason, "campaign cleanup reason is absent")
+    root = Path(admitted["campaign_root"])
+    marker = Path(plan["repository_root"]) / plan["marker_repository_path"]
+    raw = Path(plan["raw_output_path"])
+    base = {
+        "format": "apxinf-omniinfer-gateway-failed-prepare-directory-cleanup-v3",
+        "schema_version": 3,
+        "edge_id": EDGE_ID,
+        "reason": reason,
+        "campaign_root": str(root),
+        "initialization_receipt_sha256": sha256_canonical(admitted),
+        "preexisting_directory_paths": copy.deepcopy(
+            admitted["preexisting_directory_paths"]
+        ),
+        "cleanup_eligible": False,
+        "contamination_detected": False,
+        "removed_paths": [],
+        "root_removed": False,
+        "marker_present": os.path.lexists(marker),
+        "raw_present": os.path.lexists(raw),
+        "signals_sent": 0,
+        "all_passed": False,
+    }
+    require(set(base) == CAMPAIGN_DIRECTORY_CLEANUP_FIELDS_V3, "cleanup schema drifted")
+    if base["marker_present"] or base["raw_present"]:
+        base["contamination_detected"] = True
+        return base
+    if admitted["preexisting_directory_paths"]:
+        return base
+    require(
+        before_first_removal is None or callable(before_first_removal),
+        "campaign cleanup mutation hook is not callable",
+    )
+    directory_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_DIRECTORY
+    parent_fd = -1
+    directory_fds: dict[tuple[str, ...], int] = {}
+    try:
+        parent_fd = os.open(root.parent, directory_flags)
+        try:
+            root_fd = os.open(root.name, directory_flags, dir_fd=parent_fd)
+        except FileNotFoundError:
+            base.update(cleanup_eligible=True, root_removed=True, all_passed=True)
+            return base
+        directory_fds[()] = root_fd
+        root_live = os.fstat(root_fd)
+        root_observation = admitted["directory_observations"][0]
+        if not (
+            root_live.st_dev == root_observation["device"]
+            and root_live.st_ino == root_observation["inode"]
+            and root_live.st_mode == root_observation["mode"]
+            and root_live.st_uid == os.geteuid()
+        ):
+            base["contamination_detected"] = True
+            return base
+
+        def root_name_still_bound() -> bool:
+            try:
+                current = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+            except OSError:
+                return False
+            return (
+                current.st_dev == root_live.st_dev
+                and current.st_ino == root_live.st_ino
+                and current.st_mode == root_live.st_mode
+                and not stat.S_ISLNK(current.st_mode)
+            )
+
+        if not root_name_still_bound():
+            base["contamination_detected"] = True
+            return base
+
+        entries: list[tuple[tuple[str, ...], str, os.stat_result]] = []
+
+        def scan_directory(parts: tuple[str, ...], descriptor: int) -> None:
+            require(len(entries) <= 100_000, "campaign cleanup tree is oversized")
+            for name in sorted(os.listdir(descriptor)):
+                require(
+                    name not in (".", "..") and "/" not in name and "\x00" not in name,
+                    "campaign cleanup entry name is invalid",
+                )
+                observed = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                require(
+                    not stat.S_ISLNK(observed.st_mode)
+                    and observed.st_uid == os.geteuid()
+                    and (
+                        stat.S_ISDIR(observed.st_mode)
+                        or stat.S_ISREG(observed.st_mode)
+                        or stat.S_ISSOCK(observed.st_mode)
+                    )
+                    and (not stat.S_ISREG(observed.st_mode) or observed.st_nlink == 1),
+                    "campaign cleanup tree contains an unsafe entry",
+                )
+                entries.append((parts, name, observed))
+                if stat.S_ISDIR(observed.st_mode):
+                    child_parts = (*parts, name)
+                    child_fd = os.open(name, directory_flags, dir_fd=descriptor)
+                    child_live = os.fstat(child_fd)
+                    require(
+                        child_live.st_dev == observed.st_dev
+                        and child_live.st_ino == observed.st_ino
+                        and child_live.st_mode == observed.st_mode,
+                        "campaign child directory changed while opening",
+                    )
+                    directory_fds[child_parts] = child_fd
+                    scan_directory(child_parts, child_fd)
+
+        try:
+            scan_directory((), root_fd)
+        except (OSError, CampaignError):
+            base["contamination_detected"] = True
+            return base
+        base["cleanup_eligible"] = True
+        if before_first_removal is not None:
+            before_first_removal()
+        removed: list[str] = []
+        for parent_parts, name, initial in sorted(
+            entries, key=lambda item: len(item[0]) + 1, reverse=True
+        ):
+            if not root_name_still_bound():
+                base["contamination_detected"] = True
+                base["removed_paths"] = removed
+                return base
+            parent_descriptor = directory_fds[parent_parts]
+            try:
+                current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+            except OSError:
+                base["contamination_detected"] = True
+                base["removed_paths"] = removed
+                return base
+            if not (
+                current.st_dev == initial.st_dev
+                and current.st_ino == initial.st_ino
+                and current.st_mode == initial.st_mode
+                and current.st_uid == initial.st_uid
+                and not stat.S_ISLNK(current.st_mode)
+            ):
+                base["contamination_detected"] = True
+                base["removed_paths"] = removed
+                return base
+            try:
+                if stat.S_ISDIR(current.st_mode):
+                    os.rmdir(name, dir_fd=parent_descriptor)
+                else:
+                    os.unlink(name, dir_fd=parent_descriptor)
+            except OSError:
+                base["removed_paths"] = removed
+                return base
+            removed.append(str(root.joinpath(*parent_parts, name)))
+        if not root_name_still_bound():
+            base["contamination_detected"] = True
+            base["removed_paths"] = removed
+            return base
+        try:
+            os.rmdir(root.name, dir_fd=parent_fd)
+        except OSError:
+            base["removed_paths"] = removed
+            return base
+        removed.append(str(root))
+        base.update(
+            removed_paths=removed,
+            root_removed=True,
+            marker_present=os.path.lexists(marker),
+            raw_present=os.path.lexists(raw),
+            all_passed=(not os.path.lexists(root)),
+        )
+        return base
+    except OSError:
+        base["contamination_detected"] = True
+        return base
+    finally:
+        for descriptor in reversed(list(directory_fds.values())):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
 
 
 class _ProcBSDInfo(ctypes.Structure):
@@ -3429,31 +4253,80 @@ def code_signature_receipt(path: str) -> dict[str, Any]:
 
 
 def _unpinned_executable_custody(path: str) -> dict[str, Any]:
-    raw, receipt = _read_regular_no_follow(path, 512 * 1024 * 1024)
-    require(raw or receipt["size_bytes"] == 0, f"cannot read executable: {path}")
+    raw_before, receipt_before = _read_regular_no_follow(path, 512 * 1024 * 1024)
+    require(
+        raw_before or receipt_before["size_bytes"] == 0,
+        f"cannot read executable: {path}",
+    )
+    signature = code_signature_receipt(path)
+    raw_after, receipt_after = _read_regular_no_follow(path, 512 * 1024 * 1024)
+    require(
+        raw_before == raw_after and receipt_before == receipt_after,
+        f"executable changed across code-signature observation: {path}",
+    )
     return {
-        **receipt,
-        "code_signature_identity_or_explicit_unsigned_state": code_signature_receipt(
-            path
-        ),
+        **receipt_after,
+        "code_signature_identity_or_explicit_unsigned_state": signature,
+        "O_NOFOLLOW_identity_and_bytes_stable_across_code_signature": True,
+    }
+
+
+def _lsof_text_vnode(entry: dict[str, Any], path: str) -> dict[str, int]:
+    device_text = entry.get("device_text")
+    inode_text = entry.get("inode_text")
+    size_text = entry.get("size_text")
+    require(
+        isinstance(device_text, str)
+        and re.fullmatch(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)", device_text) is not None,
+        f"lsof text mapping device is absent or invalid: {path}",
+    )
+    require(
+        isinstance(inode_text, str) and re.fullmatch(r"[0-9]+", inode_text),
+        f"lsof text mapping inode is absent or invalid: {path}",
+    )
+    require(
+        isinstance(size_text, str) and re.fullmatch(r"[0-9]+", size_text),
+        f"lsof text mapping size is absent or invalid: {path}",
+    )
+    device = (
+        int(device_text, 16)
+        if device_text.lower().startswith("0x")
+        else int(device_text, 10)
+    )
+    return {
+        "device": device,
+        "inode": int(inode_text, 10),
+        "size_bytes": int(size_text, 10),
     }
 
 
 def runtime_closure(pid: int, expected_executable: str) -> dict[str, Any]:
+    start_before = process_start_identity(pid)
     entries = lsof_entries(pid)
-    observed_paths = sorted(
-        {
-            entry.get("path")
-            for entry in entries
-            if entry.get("fd") == "txt"
+    observed_paths: list[str] = []
+    observed_vnodes: dict[str, dict[str, int]] = {}
+    for entry in entries:
+        path = entry.get("path")
+        if not (
+            entry.get("fd") == "txt"
             and entry.get("type") == "REG"
-            and isinstance(entry.get("path"), str)
-            and entry["path"].startswith("/")
-            and not entry["path"].startswith(("/System/Library/", "/usr/lib/"))
-        }
-    )
+            and isinstance(path, str)
+            and path.startswith("/")
+            and not path.startswith(("/System/Library/", "/usr/lib/"))
+        ):
+            continue
+        canonical = str(Path(path).resolve(strict=True))
+        vnode = _lsof_text_vnode(entry, canonical)
+        if canonical in observed_vnodes:
+            require(
+                observed_vnodes[canonical] == vnode,
+                f"lsof reported conflicting text vnodes for {canonical}",
+            )
+        else:
+            observed_paths.append(path)
+            observed_vnodes[canonical] = vnode
     canonical_expected = str(Path(expected_executable).resolve(strict=True))
-    paths = sorted({str(Path(path).resolve(strict=True)) for path in observed_paths})
+    paths = sorted(observed_vnodes)
     if canonical_expected not in paths:
         raise_preflight_blocker(
             "MACOS_RUNTIME_IMAGE_CLOSURE_AMBIGUOUS",
@@ -3464,15 +4337,35 @@ def runtime_closure(pid: int, expected_executable: str) -> dict[str, Any]:
                 "observed_text_paths": observed_paths,
             },
         )
-    closure = [
-        {
-            "loaded_image_path": path,
-            "file": _unpinned_executable_custody(path),
-        }
-        for path in paths
-    ]
+    closure: list[dict[str, Any]] = []
+    for path in paths:
+        file_receipt = _unpinned_executable_custody(path)
+        vnode = observed_vnodes[path]
+        require(
+            {
+                "device": file_receipt["device"],
+                "inode": file_receipt["inode"],
+                "size_bytes": file_receipt["size_bytes"],
+            }
+            == vnode,
+            f"live path bytes differ from the lsof-loaded text vnode: {path}",
+        )
+        closure.append(
+            {
+                "loaded_image_path": path,
+                "lsof_text_vnode": vnode,
+                "file": file_receipt,
+            }
+        )
+    start_after = process_start_identity(pid)
+    require(
+        start_after == start_before,
+        f"PID {pid} changed while binding its loaded image closure",
+    )
     return {
         "scope": "lsof-txt-regular-files-excluding-/System/Library-and-/usr/lib",
+        "process_start_identity_before": copy.deepcopy(start_before),
+        "process_start_identity_after": copy.deepcopy(start_after),
         "loaded_image_paths_and_sha256": closure,
         "runtime_closure_sha256": sha256_canonical(closure),
     }
@@ -3737,11 +4630,21 @@ def expected_backend_launch_args(plan: dict[str, Any], backend_port: int) -> lis
 def validate_gateway_state(
     state: dict[str, Any], plan: dict[str, Any]
 ) -> dict[str, Any]:
+    receipt_require(
+        isinstance(state, dict) and set(state) == GATEWAY_LOADED_STATE_FIELDS_V3,
+        "loaded gateway state schema drifted",
+    )
     receipt_require(state.get("backend") == "llama.cpp-mac", "gateway backend drifted")
     receipt_require(state.get("backend_ready") is True, "gateway backend is not ready")
     receipt_require(state.get("model_path") == MODEL_PATH, "gateway model path drifted")
     receipt_require(
         state.get("default_model") == MODEL_PATH, "gateway default model drifted"
+    )
+    receipt_require(
+        state.get("model") == MODEL_PATH
+        and state.get("public_model_id") is None
+        and state.get("owner_admin_id") == "local",
+        "gateway loaded model identity drifted",
     )
     receipt_require(state.get("mmproj") is None, "gateway mmproj is not null")
     receipt_require(state.get("ctx_size") == 256, "gateway context drifted")
@@ -3764,20 +4667,61 @@ def validate_gateway_state(
         state.get("client_endpoint") == endpoint, "backend endpoint drifted"
     )
     command = expected_backend_launch_args(plan, backend_port)
+    launch_args = command[10:-2]
+    expected_log_path = expected_gateway_backend_log_path(plan)
     receipt_require(
         state.get("launch_command") == command, "backend launch command drifted"
     )
     receipt_require(
-        state.get("launch_args") == command[10:-2],
+        state.get("launch_args") == launch_args,
         "backend launch args drifted",
     )
-    runtime = state.get("runtime")
-    receipt_require(isinstance(runtime, dict), "gateway runtime object is absent")
     receipt_require(
-        runtime.get("pid") == backend_pid
+        state.get("runtime_mode") == "external_server"
+        and state.get("generation") == 1
+        and state.get("route_state") == "ready"
+        and state.get("allocation_id") == 1
+        and state.get("resource_budget") == _expected_gateway_resource_budget()
+        and state.get("speculative_admission") is None
+        and state.get("cuda_visible_devices") is None
+        and state.get("warning") is None
+        and state.get("external_server_protocol") == "llama.cpp-server"
+        and state.get("openai_compatible") is True
+        and state.get("backend_log") == expected_log_path
+        and state.get("log_path") == expected_log_path,
+        "gateway loaded runtime metadata drifted",
+    )
+    runtime = state.get("runtime")
+    receipt_require(
+        isinstance(runtime, dict)
+        and set(runtime)
+        == {
+            "mode",
+            "host",
+            "port",
+            "pid",
+            "cuda_visible_devices",
+            "launch_command",
+            "log_path",
+            "proxy_model_ref",
+            "external_server_protocol",
+            "client_endpoint",
+            "openai_compatible",
+        },
+        "gateway runtime object schema drifted",
+    )
+    receipt_require(
+        runtime.get("mode") == "external_server"
+        and runtime.get("host") == "127.0.0.1"
+        and runtime.get("pid") == backend_pid
         and runtime.get("port") == backend_port
+        and runtime.get("cuda_visible_devices") is None
+        and runtime.get("launch_command") == command
+        and runtime.get("log_path") == expected_log_path
+        and runtime.get("proxy_model_ref") is None
+        and runtime.get("external_server_protocol") == "llama.cpp-server"
         and runtime.get("client_endpoint") == endpoint
-        and runtime.get("launch_command") == command,
+        and runtime.get("openai_compatible") is True,
         "gateway runtime backend identity drifted",
     )
     loaded = state.get("loaded_models")
@@ -3785,17 +4729,126 @@ def validate_gateway_state(
         isinstance(loaded, list) and len(loaded) == 1, "loaded-model set drifted"
     )
     receipt_require(
-        loaded[0].get("model_path") == MODEL_PATH
-        and loaded[0].get("request_defaults") == {},
+        isinstance(loaded[0], dict)
+        and set(loaded[0])
+        == {
+            "id",
+            "owner_admin_id",
+            "backend",
+            "model",
+            "model_path",
+            "public_model_id",
+            "mmproj",
+            "ctx_size",
+            "request_defaults",
+            "runtime_mode",
+            "backend_pid",
+            "backend_port",
+            "generation",
+            "route_state",
+            "allocation_id",
+            "resource_budget",
+            "speculative_admission",
+            "launch_args",
+            "cuda_visible_devices",
+            "warning",
+            "launch_command",
+            "proxy_model",
+            "external_server_protocol",
+            "client_endpoint",
+            "openai_compatible",
+            "backend_log",
+        }
+        and loaded[0]
+        == {
+            "id": MODEL_PATH,
+            "owner_admin_id": "local",
+            "backend": "llama.cpp-mac",
+            "model": MODEL_PATH,
+            "model_path": MODEL_PATH,
+            "public_model_id": None,
+            "mmproj": None,
+            "ctx_size": 256,
+            "request_defaults": {},
+            "runtime_mode": "external_server",
+            "backend_pid": backend_pid,
+            "backend_port": backend_port,
+            "generation": 1,
+            "route_state": "ready",
+            "allocation_id": 1,
+            "resource_budget": _expected_gateway_resource_budget(),
+            "speculative_admission": None,
+            "launch_args": launch_args,
+            "cuda_visible_devices": None,
+            "warning": None,
+            "launch_command": command,
+            "proxy_model": None,
+            "external_server_protocol": "llama.cpp-server",
+            "client_endpoint": endpoint,
+            "openai_compatible": True,
+            "backend_log": expected_log_path,
+        },
         "loaded-model receipt drifted",
     )
     restore = state.get("restore_selection")
     receipt_require(
         isinstance(restore, dict)
+        and set(restore)
+        == {"backend", "model", "mmproj", "no_mmproj", "ctx_size", "request_defaults"}
+        and restore.get("backend") == "llama.cpp-mac"
         and restore.get("model") == MODEL_PATH
+        and restore.get("mmproj") is None
+        and restore.get("no_mmproj") is True
         and restore.get("ctx_size") == 256
         and restore.get("request_defaults") == {},
         "gateway restore selection drifted",
+    )
+    receipt_require(
+        state.get("restore_status") == "loaded"
+        and state.get("restore_completed") is True,
+        "gateway restore completion drifted",
+    )
+    resource_ledger = state.get("resource_ledger")
+    receipt_require(
+        isinstance(resource_ledger, dict)
+        and set(resource_ledger)
+        == {
+            "capacity_snapshot_id",
+            "capacity_bytes",
+            "reserved_bytes",
+            "committed_bytes",
+            "available_bytes",
+        }
+        and resource_ledger.get("capacity_snapshot_id") == 1
+        and resource_ledger.get("reserved_bytes") == {}
+        and resource_ledger.get("committed_bytes")
+        == _expected_gateway_resource_budget()["domains_bytes"],
+        "gateway loaded resource ledger drifted",
+    )
+    capacity = resource_ledger["capacity_bytes"]
+    available = resource_ledger["available_bytes"]
+    committed = resource_ledger["committed_bytes"]
+    receipt_require(
+        isinstance(capacity, dict)
+        and isinstance(available, dict)
+        and set(capacity) == set(available) == set(committed)
+        and all(
+            isinstance(domain, str)
+            and is_int(value)
+            and value >= committed[domain]
+            and available[domain] == value - committed[domain]
+            for domain, value in capacity.items()
+        ),
+        "gateway loaded resource-ledger arithmetic drifted",
+    )
+    available_backends = state.get("available_backends")
+    receipt_require(
+        isinstance(available_backends, list)
+        and any(
+            isinstance(entry, dict) and entry.get("id") == "llama.cpp-mac"
+            for entry in available_backends
+        ),
+        "gateway available-backend registry lacks llama.cpp-mac",
     )
     return {
         "backend": "llama.cpp-mac",
@@ -3805,6 +4858,23 @@ def validate_gateway_state(
         "backend_pid": backend_pid,
         "backend_port": backend_port,
         "client_endpoint": endpoint,
+        "model": MODEL_PATH,
+        "owner_admin_id": "local",
+        "generation": 1,
+        "route_state": "ready",
+        "allocation_id": 1,
+        "resource_budget": _expected_gateway_resource_budget(),
+        "resource_ledger": copy.deepcopy(resource_ledger),
+        "loaded_models": copy.deepcopy(loaded),
+        "restore_selection": copy.deepcopy(restore),
+        "restore_status": "loaded",
+        "restore_completed": True,
+        "runtime": copy.deepcopy(runtime),
+        "runtime_mode": "external_server",
+        "external_server_protocol": "llama.cpp-server",
+        "openai_compatible": True,
+        "backend_log": expected_log_path,
+        "available_backends": copy.deepcopy(available_backends),
         "launch_command": command,
         "request_defaults": {},
         "effective_parameters": {},
@@ -3849,6 +4919,604 @@ def validate_health(health: dict[str, Any]) -> dict[str, Any]:
     return {"status": "ok", "backend_status": "ok"}
 
 
+def gateway_model_select_launch_args(plan: dict[str, Any]) -> list[str]:
+    return [
+        "-ngl",
+        "999",
+        "-b",
+        "13",
+        "-ub",
+        "13",
+        "-t",
+        "4",
+        "-tb",
+        "4",
+        "-np",
+        "1",
+        "--cache-ram",
+        "0",
+        "--slots",
+        "--no-cache-idle-slots",
+        "--no-cache-prompt",
+        "--slot-prompt-similarity",
+        "0",
+        "--slot-save-path",
+        plan["runtime"]["slot_save_path"],
+    ]
+
+
+def gateway_model_select_request(plan: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "backend": "llama.cpp-mac",
+        "model": MODEL_PATH,
+        "no_mmproj": True,
+        "ctx_size": 256,
+        "request_defaults": {},
+        "launch_args": gateway_model_select_launch_args(plan),
+    }
+
+
+def gateway_model_select_request_bytes(plan: dict[str, Any]) -> bytes:
+    return canonical_json_bytes(gateway_model_select_request(plan))
+
+
+def expected_gateway_backend_log_path(plan: dict[str, Any]) -> str:
+    sanitized = "".join(
+        character
+        if character.isascii() and (character.isalnum() or character in (".", "_", "-"))
+        else "_"
+        for character in MODEL_PATH
+    )
+    return str(Path(plan["runtime"]["runtime_logs_path"]) / f"runtime-{sanitized}.log")
+
+
+def validate_gateway_preload_state(state: dict[str, Any]) -> dict[str, Any]:
+    receipt_require(
+        isinstance(state, dict) and set(state) == GATEWAY_PRELOAD_STATE_FIELDS_V3,
+        "gateway pre-load state schema drifted",
+    )
+    receipt_require(
+        state.get("backend") is None
+        and state.get("backend_ready") is False
+        and state.get("model") is None
+        and state.get("public_model_id") is None
+        and state.get("mmproj") is None
+        and state.get("ctx_size") is None
+        and state.get("request_defaults") == {}
+        and state.get("runtime_mode") is None
+        and state.get("backend_pid") is None
+        and state.get("backend_port") is None
+        and state.get("launch_args") == []
+        and state.get("cuda_visible_devices") is None
+        and state.get("warning") is None
+        and state.get("launch_command") == []
+        and state.get("proxy_model") is None
+        and state.get("external_server_protocol") is None
+        and state.get("client_endpoint") is None
+        and state.get("openai_compatible") is False
+        and state.get("backend_log") is None
+        and state.get("effective_parameters") == {}
+        and state.get("runtime") is None
+        and state.get("default_model") is None
+        and state.get("loaded_models") == []
+        and state.get("restore_selection") is None
+        and state.get("restore_status") == "not_configured"
+        and state.get("restore_completed") is False,
+        "hidden gateway was not in the exact fresh unloaded state",
+    )
+    receipt_require(
+        state.get("resource_ledger") is None,
+        "fresh gateway unexpectedly has a resource ledger",
+    )
+    available_backends = state.get("available_backends")
+    receipt_require(
+        isinstance(available_backends, list)
+        and any(
+            isinstance(entry, dict) and entry.get("id") == "llama.cpp-mac"
+            for entry in available_backends
+        ),
+        "fresh gateway available-backend registry lacks llama.cpp-mac",
+    )
+    return {
+        "backend": None,
+        "backend_ready": False,
+        "backend_pid": None,
+        "backend_port": None,
+        "model": None,
+        "public_model_id": None,
+        "mmproj": None,
+        "ctx_size": None,
+        "request_defaults": {},
+        "runtime_mode": None,
+        "launch_args": [],
+        "launch_command": [],
+        "client_endpoint": None,
+        "effective_parameters": {},
+        "runtime": None,
+        "loaded_models": [],
+        "restore_status": "not_configured",
+        "restore_completed": False,
+        "resource_ledger": None,
+        "available_backends": copy.deepcopy(available_backends),
+    }
+
+
+def _expected_gateway_resource_budget() -> dict[str, Any]:
+    return {
+        "domains_bytes": {"unified:system": 1_784_921_600},
+        "components": [
+            {
+                "name": "weights",
+                "domain": "unified:system",
+                "bytes": 811_843_072,
+            },
+            {
+                "name": "kv_cache",
+                "domain": "unified:system",
+                "bytes": 268_435_456,
+            },
+            {
+                "name": "activation",
+                "domain": "unified:system",
+                "bytes": 134_217_728,
+            },
+            {
+                "name": "framework_overhead",
+                "domain": "unified:system",
+                "bytes": 402_653_184,
+            },
+            {
+                "name": "allocator_slack",
+                "domain": "unified:system",
+                "bytes": 167_772_160,
+            },
+        ],
+    }
+
+
+def validate_gateway_model_select_response(
+    response: dict[str, Any], plan: dict[str, Any]
+) -> dict[str, Any]:
+    required = {
+        "ok",
+        "already_loaded",
+        "requires_reload",
+        "model",
+        "owner_admin_id",
+        "selected_backend",
+        "selected_model",
+        "selected_public_model_id",
+        "selected_mmproj",
+        "selected_ctx_size",
+        "request_defaults",
+        "backend_pid",
+        "backend_port",
+        "generation",
+        "route_state",
+        "allocation_id",
+        "resource_budget",
+        "speculative_admission",
+        "launch_command",
+        "log_path",
+        "external_server_protocol",
+        "client_endpoint",
+        "openai_compatible",
+    }
+    receipt_require(
+        isinstance(response, dict) and set(response) == required,
+        "OmniInfer model-select response schema drifted",
+    )
+    backend_pid = response["backend_pid"]
+    backend_port = response["backend_port"]
+    receipt_require(
+        response["ok"] is True
+        and response["already_loaded"] is False
+        and response["requires_reload"] is False
+        and response["model"] == MODEL_PATH
+        and response["owner_admin_id"] == "local"
+        and response["selected_backend"] == "llama.cpp-mac"
+        and response["selected_model"] == MODEL_PATH
+        and response["selected_public_model_id"] is None
+        and response["selected_mmproj"] is None
+        and response["selected_ctx_size"] == 256
+        and response["request_defaults"] == {}
+        and is_int(backend_pid)
+        and backend_pid > 0
+        and is_int(backend_port)
+        and 0 < backend_port <= 65_535
+        and response["generation"] == 1
+        and response["route_state"] == "ready"
+        and response["allocation_id"] == 1
+        and response["resource_budget"] == _expected_gateway_resource_budget()
+        and response["speculative_admission"] is None
+        and response["launch_command"]
+        == expected_backend_launch_args(plan, backend_port)
+        and response["log_path"] == expected_gateway_backend_log_path(plan)
+        and response["external_server_protocol"] == "llama.cpp-server"
+        and response["client_endpoint"] == f"http://127.0.0.1:{backend_port}"
+        and response["openai_compatible"] is True,
+        "OmniInfer model-select response semantics drifted",
+    )
+    return {
+        "backend_pid": backend_pid,
+        "backend_port": backend_port,
+        "runtime_generation": 1,
+        "allocation_id": 1,
+        "route_state": "ready",
+        "launch_command": copy.deepcopy(response["launch_command"]),
+        "client_endpoint": response["client_endpoint"],
+    }
+
+
+def validate_zero_generation_management_transport(
+    transport: dict[str, Any],
+    base_url: str,
+    label: str,
+    method: str,
+    path: str,
+    body: bytes | None,
+    response: dict[str, Any],
+) -> dict[str, Any]:
+    receipt_require(
+        method in ("GET", "POST")
+        and path in ("/omni/state", "/omni/model/select")
+        and isinstance(transport, dict),
+        "zero-generation management transport endpoint drifted",
+    )
+    parsed = urllib.parse.urlsplit(base_url)
+    receipt_require(
+        parsed.scheme == "http"
+        and parsed.hostname == "127.0.0.1"
+        and parsed.port is not None,
+        "zero-generation management transport base URL drifted",
+    )
+    headers = [
+        f"{method} {path} HTTP/1.1",
+        f"Host: 127.0.0.1:{parsed.port}",
+        "Accept: application/json",
+        "Connection: keep-alive",
+    ]
+    if body is not None:
+        headers.extend(
+            ["Content-Type: application/json", f"Content-Length: {len(body)}"]
+        )
+    body_bytes = body or b""
+    expected_wire = ("\r\n".join(headers) + "\r\n\r\n").encode("ascii") + body_bytes
+    try:
+        observed_wire = base64.b64decode(
+            transport.get("request_wire_base64", "").encode("ascii"), validate=True
+        )
+        response_bytes = base64.b64decode(
+            transport.get("response_base64", "").encode("ascii"), validate=True
+        )
+    except (AttributeError, UnicodeEncodeError, binascii.Error, ValueError) as error:
+        raise ReceiptError(
+            "zero-generation management transport bytes are not strict base64"
+        ) from error
+    body_offset = len(expected_wire) - len(body_bytes)
+    receipt_require(
+        transport.get("connection") == label
+        and transport.get("method") == method
+        and transport.get("path") == path
+        and transport.get("request_body_size_bytes") == len(body_bytes)
+        and transport.get("request_body_sha256")
+        == (sha256_bytes(body) if body is not None else None)
+        and observed_wire == expected_wire
+        and transport.get("request_wire_size_bytes") == len(expected_wire)
+        and transport.get("request_wire_sha256") == sha256_bytes(expected_wire)
+        and transport.get("request_wire_body_offset_bytes") == body_offset
+        and transport.get("request_wire_body_size_bytes") == len(body_bytes)
+        and transport.get("request_wire_body_sha256") == sha256_bytes(body_bytes)
+        and transport.get("request_wire_body_equals_request_body") is True
+        and transport.get("single_sendall_call_count") == 1
+        and transport.get("single_sendall_argument_size_bytes") == len(expected_wire)
+        and transport.get("single_sendall_argument_sha256")
+        == sha256_bytes(expected_wire)
+        and transport.get("status") == 200
+        and transport.get("http_version") == 11
+        and transport.get("response_size_bytes") == len(response_bytes)
+        and transport.get("response_sha256") == sha256_bytes(response_bytes)
+        and parse_strict_json_document(response_bytes) == response
+        and transport.get("request_serialization_before_start") is True
+        and transport.get("first_wire_byte_send_call_immediately_after_start") is True
+        and transport.get("complete_HTTP_request_wire_serialization_before_start")
+        is True
+        and transport.get("single_sendall_call_for_complete_request_wire_required")
+        is True
+        and transport.get("full_response_body_read_before_end") is True
+        and transport.get("strict_json_parse_before_end") is True
+        and transport.get("semantic_validation_before_end") is True,
+        "zero-generation management transport receipt drifted",
+    )
+    return {
+        "connection": label,
+        "method": method,
+        "path": path,
+        "request_body_size_bytes": len(body_bytes),
+        "request_body_sha256": sha256_bytes(body) if body is not None else None,
+        "request_wire_size_bytes": len(expected_wire),
+        "request_wire_sha256": sha256_bytes(expected_wire),
+        "request_wire_base64": transport["request_wire_base64"],
+        "request_wire_body_offset_bytes": body_offset,
+        "request_wire_body_size_bytes": len(body_bytes),
+        "request_wire_body_sha256": sha256_bytes(body_bytes),
+        "request_wire_body_equals_request_body": True,
+        "single_sendall_call_count": 1,
+        "single_sendall_argument_size_bytes": len(expected_wire),
+        "single_sendall_argument_sha256": sha256_bytes(expected_wire),
+        "status": 200,
+        "http_version": 11,
+        "response_size_bytes": len(response_bytes),
+        "response_sha256": sha256_bytes(response_bytes),
+        "response_base64": transport["response_base64"],
+        "request_serialization_before_start": True,
+        "first_wire_byte_send_call_immediately_after_start": True,
+        "complete_HTTP_request_wire_serialization_before_start": True,
+        "single_sendall_call_for_complete_request_wire_required": True,
+        "full_response_body_read_before_end": True,
+        "strict_json_parse_before_end": True,
+        "semantic_validation_before_end": True,
+        "setup_only_zero_generation_management_request": True,
+    }
+
+
+def admit_zero_generation_model_load(
+    plan: dict[str, Any],
+    gateway_process: Any,
+    gateway_start: dict[str, int],
+    *,
+    expected_gateway_parent_pid: int | None = None,
+    request_json: Any | None = None,
+    process_start_reader: Any = process_start_identity,
+    parent_pid_reader: Any = _process_parent_pid,
+    tree_reader: Any = tree_manifest,
+    monotonic: Any = time.monotonic,
+    sleeper: Any = time.sleep,
+) -> dict[str, Any]:
+    """Load the formal backend through the pinned zero-generation management API."""
+
+    runtime = plan["runtime"]
+    started = monotonic()
+    child_deadline = started + _custodian_child_ready_budget_seconds(runtime)
+    listener_deadline = started + float(runtime["custodian_ready_timeout_seconds"])
+
+    def requester(*args: Any) -> tuple[dict[str, Any], Any, dict[str, Any]]:
+        if request_json is not None:
+            return request_json(*args)
+        return _one_shot_json(
+            *args,
+            timeout_seconds=_remaining_deadline_seconds(
+                child_deadline,
+                "zero-generation model-load request",
+                monotonic=monotonic,
+            ),
+        )
+
+    gateway_parent_pid_start = parent_pid_reader(gateway_process.pid)
+    require(
+        is_int(gateway_parent_pid_start)
+        and gateway_parent_pid_start > 0
+        and (
+            expected_gateway_parent_pid is None
+            or gateway_parent_pid_start == expected_gateway_parent_pid
+        ),
+        "gateway was not the expected custodian child before model load",
+    )
+    history_start = tree_reader(runtime["history_root"])
+    management_request_sequence: list[list[str]] = []
+    pre_load_raw: dict[str, Any] | None = None
+    pre_load_core: dict[str, Any] | None = None
+    pre_load_transport: dict[str, Any] | None = None
+    while monotonic() < listener_deadline:
+        require(
+            gateway_process.poll() is None, "gateway exited before listener readiness"
+        )
+        require(
+            process_start_reader(gateway_process.pid) == gateway_start,
+            "gateway PID changed before listener readiness",
+        )
+        try:
+            pre_load_raw, _, pre_load_transport = requester(
+                runtime["omni_base_url"],
+                "custodian-pre-load-state",
+                "GET",
+                "/omni/state",
+                None,
+                lambda value: copy.deepcopy(value),
+            )
+        except OSError:
+            sleeper(0.1)
+            continue
+        management_request_sequence.append(["GET", "/omni/state"])
+        pre_load_core = validate_gateway_preload_state(pre_load_raw)
+        pre_load_transport = validate_zero_generation_management_transport(
+            pre_load_transport,
+            runtime["omni_base_url"],
+            "custodian-pre-load-state",
+            "GET",
+            "/omni/state",
+            None,
+            pre_load_raw,
+        )
+        break
+    if pre_load_raw is None or pre_load_core is None or pre_load_transport is None:
+        raise_preflight_blocker(
+            "OMNIINFER_GATEWAY_LISTENER_NOT_READY_FOR_ZERO_GENERATION_MODEL_LOAD",
+            "hidden OmniInfer gateway did not expose its management listener before timeout",
+            {"generation_requests": 0, "management_endpoint": "/omni/state"},
+        )
+
+    require(
+        gateway_process.poll() is None
+        and process_start_reader(gateway_process.pid) == gateway_start
+        and parent_pid_reader(gateway_process.pid) == gateway_parent_pid_start,
+        "gateway identity changed before zero-generation model select",
+    )
+    _remaining_deadline_seconds(
+        child_deadline,
+        "zero-generation model-select start",
+        monotonic=monotonic,
+    )
+    request_object = gateway_model_select_request(plan)
+    request_body = gateway_model_select_request_bytes(plan)
+    request_receipt = {
+        "object": request_object,
+        "canonical_utf8": request_body.decode("utf-8"),
+        "size_bytes": len(request_body),
+        "sha256": sha256_bytes(request_body),
+    }
+    management_request_sequence.append(["POST", "/omni/model/select"])
+    response_raw, response_core, response_transport = requester(
+        runtime["omni_base_url"],
+        "custodian-zero-generation-model-select",
+        "POST",
+        "/omni/model/select",
+        request_body,
+        lambda value: validate_gateway_model_select_response(value, plan),
+    )
+    _remaining_deadline_seconds(
+        child_deadline,
+        "zero-generation model-select completion",
+        monotonic=monotonic,
+    )
+    response_revalidated = validate_gateway_model_select_response(response_raw, plan)
+    receipt_require(
+        response_revalidated == response_core,
+        "model-select response changed after transport validation",
+    )
+    response_core = response_revalidated
+    response_transport = validate_zero_generation_management_transport(
+        response_transport,
+        runtime["omni_base_url"],
+        "custodian-zero-generation-model-select",
+        "POST",
+        "/omni/model/select",
+        request_body,
+        response_raw,
+    )
+    response_receipt = {
+        "object": copy.deepcopy(response_raw),
+        "canonical_sha256": sha256_canonical(response_raw),
+        "validated": copy.deepcopy(response_core),
+        "runtime_generation_is_not_an_inference_generation": True,
+    }
+
+    require(gateway_process.poll() is None, "gateway exited after model-select success")
+    require(
+        process_start_reader(gateway_process.pid) == gateway_start,
+        "gateway PID changed after model-select success",
+    )
+    _remaining_deadline_seconds(
+        child_deadline,
+        "post-select exact state request",
+        monotonic=monotonic,
+    )
+    loaded_raw, loaded_core, loaded_transport = requester(
+        runtime["omni_base_url"],
+        "custodian-post-load-state",
+        "GET",
+        "/omni/state",
+        None,
+        lambda value: validate_gateway_state(value, plan),
+    )
+    _remaining_deadline_seconds(
+        child_deadline,
+        "post-select exact state completion",
+        monotonic=monotonic,
+    )
+    management_request_sequence.append(["GET", "/omni/state"])
+    loaded_revalidated = validate_gateway_state(loaded_raw, plan)
+    receipt_require(
+        loaded_revalidated == loaded_core,
+        "post-select loaded state changed after transport validation",
+    )
+    loaded_core = loaded_revalidated
+    loaded_transport = validate_zero_generation_management_transport(
+        loaded_transport,
+        runtime["omni_base_url"],
+        "custodian-post-load-state",
+        "GET",
+        "/omni/state",
+        None,
+        loaded_raw,
+    )
+    post_load_state_transports = [copy.deepcopy(loaded_transport)]
+
+    backend_pid = loaded_core["backend_pid"]
+    require(
+        backend_pid == response_core["backend_pid"]
+        and loaded_core["backend_port"] == response_core["backend_port"],
+        "model-select response and loaded gateway state disagree",
+    )
+    backend_start = process_start_reader(backend_pid)
+    gateway_parent_pid_end = parent_pid_reader(gateway_process.pid)
+    require(
+        gateway_process.poll() is None
+        and process_start_reader(gateway_process.pid) == gateway_start
+        and gateway_parent_pid_end == gateway_parent_pid_start
+        and (
+            expected_gateway_parent_pid is None
+            or gateway_parent_pid_end == expected_gateway_parent_pid
+        ),
+        "gateway identity or parent changed across zero-generation model load",
+    )
+    require(
+        parent_pid_reader(backend_pid) == gateway_process.pid,
+        "loaded backend is not the original hidden gateway child",
+    )
+    history_end = tree_reader(runtime["history_root"])
+    require(
+        history_end == history_start,
+        "request history changed during zero-generation model load",
+    )
+    return {
+        "format": "apxinf-omniinfer-gateway-zero-generation-model-load-v3",
+        "schema_version": 3,
+        "edge_id": EDGE_ID,
+        "management_api": {
+            "method": "POST",
+            "path": "/omni/model/select",
+            "pinned_omniinfer_source_commit": OMNI_SOURCE_COMMIT,
+            "alias_used": False,
+        },
+        "management_request_sequence": management_request_sequence,
+        "model_select_request_count": 1,
+        "request": request_receipt,
+        "response": response_receipt,
+        "pre_load_state": {
+            "object": copy.deepcopy(pre_load_raw),
+            "validated": copy.deepcopy(pre_load_core),
+        },
+        "loaded_state": {
+            "object": copy.deepcopy(loaded_raw),
+            "validated": copy.deepcopy(loaded_core),
+        },
+        "transport": {
+            "pre_load_state": copy.deepcopy(pre_load_transport),
+            "model_select": copy.deepcopy(response_transport),
+            "post_load_state_attempts": post_load_state_transports,
+            "loaded_state": copy.deepcopy(loaded_transport),
+        },
+        "gateway_pid": gateway_process.pid,
+        "gateway_start_identity": copy.deepcopy(gateway_start),
+        "gateway_end_identity": copy.deepcopy(gateway_start),
+        "gateway_process_start_end_equal": True,
+        "gateway_parent_pid_start": gateway_parent_pid_start,
+        "gateway_parent_pid_end": gateway_parent_pid_end,
+        "gateway_parent_start_end_equal": True,
+        "backend_pid": backend_pid,
+        "backend_start_identity": copy.deepcopy(backend_start),
+        "gateway_is_direct_parent_of_backend": True,
+        "history_start": history_start,
+        "history_end": history_end,
+        "history_start_end_equal": True,
+        "generation_requests": 0,
+        "generation_endpoint_paths_called": [],
+        "request_history_records_created": 0,
+        "all_passed": True,
+    }
+
+
 def _one_shot_json(
     base_url: str,
     label: str,
@@ -3856,11 +5524,21 @@ def _one_shot_json(
     path: str,
     body: bytes | None,
     validator: Any,
+    *,
+    timeout_seconds: float = 60.0,
 ) -> tuple[dict[str, Any], Any, dict[str, Any]]:
-    connection = PersistentHttpJsonConnection(base_url, label, timeout_seconds=60.0)
+    connection = PersistentHttpJsonConnection(
+        base_url, label, timeout_seconds=timeout_seconds
+    )
     connection.connect()
     try:
-        return connection.request_json(method, path, body, validator)
+        payload, validated, transport = connection.request_json(
+            method, path, body, validator
+        )
+        transport["response_base64"] = base64.b64encode(
+            connection.last_raw_response
+        ).decode("ascii")
+        return payload, validated, transport
     finally:
         connection.close()
 
@@ -4052,14 +5730,54 @@ def _socket_custody(path_value: Path | str) -> dict[str, Any]:
     }
 
 
-def _receive_control_request(connection: socket.socket) -> dict[str, Any]:
+def _read_pipe_json_line_with_total_deadline(
+    descriptor: int,
+    timeout_seconds: float,
+    maximum_bytes: int,
+) -> dict[str, Any]:
+    require(timeout_seconds > 0.0, "pipe receipt timeout is invalid")
+    deadline = time.monotonic() + timeout_seconds
     raw = bytearray()
-    while len(raw) <= 1024 * 1024:
-        chunk = connection.recv(64 * 1024)
+    while b"\n" not in raw and len(raw) <= maximum_bytes:
+        remaining = _remaining_deadline_seconds(
+            deadline, "custodian readiness receipt", monotonic=time.monotonic
+        )
+        readable, _, _ = select.select([descriptor], [], [], remaining)
+        require(readable, "custodian produced no complete readiness receipt")
+        chunk = os.read(descriptor, min(64 * 1024, maximum_bytes + 1 - len(raw)))
+        require(chunk, "custodian readiness pipe closed before one complete line")
+        raw.extend(chunk)
+    require(len(raw) <= maximum_bytes, "custodian readiness is oversized")
+    return parse_strict_json_line(bytes(raw))
+
+
+def _receive_control_request(
+    connection: socket.socket,
+    timeout_seconds: float,
+    *,
+    monotonic: Any = time.monotonic,
+) -> dict[str, Any]:
+    require(timeout_seconds > 0.0, "custodian control read timeout is invalid")
+    deadline = monotonic() + timeout_seconds
+    raw = bytearray()
+    while len(raw) <= CUSTODIAN_CONTROL_REQUEST_MAX_BYTES:
+        connection.settimeout(
+            _remaining_deadline_seconds(
+                deadline,
+                "custodian control request read",
+                monotonic=monotonic,
+            )
+        )
+        chunk = connection.recv(
+            min(64 * 1024, CUSTODIAN_CONTROL_REQUEST_MAX_BYTES + 1 - len(raw))
+        )
         if not chunk:
             break
         raw.extend(chunk)
-    require(len(raw) <= 1024 * 1024, "custodian control request is oversized")
+    require(
+        len(raw) <= CUSTODIAN_CONTROL_REQUEST_MAX_BYTES,
+        "custodian control request is oversized",
+    )
     return parse_strict_json_line(bytes(raw))
 
 
@@ -4128,6 +5846,15 @@ def _terminate_gateway_child(
     backend_start: dict[str, int],
     timeout: float,
 ) -> dict[str, Any]:
+    require(timeout > 0.0, "gateway cleanup timeout is invalid")
+    deadline = time.monotonic() + timeout
+
+    def bounded_slice(fraction: float, label: str) -> float:
+        return min(
+            timeout * fraction,
+            _remaining_deadline_seconds(deadline, label, monotonic=time.monotonic),
+        )
+
     require(
         process_start_identity(process.pid) == expected_start,
         "refusing to terminate a reused gateway PID",
@@ -4135,7 +5862,7 @@ def _terminate_gateway_child(
     process.terminate()
     forced = False
     try:
-        returncode = process.wait(timeout=timeout)
+        returncode = process.wait(timeout=bounded_slice(0.15, "gateway SIGTERM wait"))
     except subprocess.TimeoutExpired:
         require(
             process_start_identity(process.pid) == expected_start,
@@ -4143,10 +5870,10 @@ def _terminate_gateway_child(
         )
         process.kill()
         forced = True
-        returncode = process.wait(timeout=timeout)
-    backend_deadline = time.monotonic() + timeout
+        returncode = process.wait(timeout=bounded_slice(0.15, "gateway SIGKILL wait"))
+    backend_grace_deadline = min(deadline, time.monotonic() + timeout * 0.10)
     backend_termination = "exited-with-gateway"
-    while time.monotonic() < backend_deadline:
+    while time.monotonic() < backend_grace_deadline:
         try:
             current = process_start_identity(backend_pid)
         except PreflightBlockedError:
@@ -4154,7 +5881,7 @@ def _terminate_gateway_child(
         if current != backend_start:
             backend_termination = "original-exited-and-pid-was-reused"
             break
-        time.sleep(0.05)
+        time.sleep(min(0.05, backend_grace_deadline - time.monotonic()))
     else:
         require(
             process_start_identity(backend_pid) == backend_start,
@@ -4162,8 +5889,8 @@ def _terminate_gateway_child(
         )
         os.kill(backend_pid, signal.SIGTERM)
         backend_termination = "explicit-sigterm"
-        backend_deadline = time.monotonic() + timeout
-        while time.monotonic() < backend_deadline:
+        backend_term_deadline = min(deadline, time.monotonic() + timeout * 0.30)
+        while time.monotonic() < backend_term_deadline:
             try:
                 current = process_start_identity(backend_pid)
             except PreflightBlockedError:
@@ -4171,7 +5898,7 @@ def _terminate_gateway_child(
             if current != backend_start:
                 backend_termination = "explicit-sigterm-original-exited-pid-reused"
                 break
-            time.sleep(0.05)
+            time.sleep(min(0.05, backend_term_deadline - time.monotonic()))
         else:
             require(
                 process_start_identity(backend_pid) == backend_start,
@@ -4179,8 +5906,7 @@ def _terminate_gateway_child(
             )
             os.kill(backend_pid, signal.SIGKILL)
             backend_termination = "explicit-sigkill"
-            kill_deadline = time.monotonic() + timeout
-            while time.monotonic() < kill_deadline:
+            while time.monotonic() < deadline:
                 try:
                     current = process_start_identity(backend_pid)
                 except PreflightBlockedError:
@@ -4188,7 +5914,7 @@ def _terminate_gateway_child(
                 if current != backend_start:
                     backend_termination = "explicit-sigkill-original-exited-pid-reused"
                     break
-                time.sleep(0.05)
+                time.sleep(min(0.05, deadline - time.monotonic()))
             else:
                 raise CampaignError("backend survived exact-PID SIGKILL cleanup")
     return {
@@ -4219,6 +5945,8 @@ def _terminate_exact_managed_pid(
     timeout: float,
     label: str,
 ) -> dict[str, Any]:
+    require(timeout > 0.0, f"{label} cleanup timeout is invalid")
+    total_deadline = time.monotonic() + timeout
     try:
         current = process_start_identity(pid)
     except PreflightBlockedError:
@@ -4228,8 +5956,8 @@ def _terminate_exact_managed_pid(
         return {"state": "original-exited-pid-reused", "pid": pid}
     os.kill(pid, signal.SIGTERM)
     forced = False
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    term_deadline = min(total_deadline, time.monotonic() + timeout * 0.5)
+    while time.monotonic() < term_deadline:
         try:
             current = process_start_identity(pid)
         except PreflightBlockedError:
@@ -4237,15 +5965,14 @@ def _terminate_exact_managed_pid(
             return {"state": "terminated", "pid": pid, "forced": forced}
         if current != expected_start:
             return {"state": "terminated-pid-reused", "pid": pid, "forced": forced}
-        time.sleep(0.05)
+        time.sleep(min(0.05, term_deadline - time.monotonic()))
     require(
         process_start_identity(pid) == expected_start,
         f"refusing to kill a reused {label} PID",
     )
     os.kill(pid, signal.SIGKILL)
     forced = True
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    while time.monotonic() < total_deadline:
         try:
             current = process_start_identity(pid)
         except PreflightBlockedError:
@@ -4253,7 +5980,7 @@ def _terminate_exact_managed_pid(
             return {"state": "killed", "pid": pid, "forced": forced}
         if current != expected_start:
             return {"state": "killed-pid-reused", "pid": pid, "forced": forced}
-        time.sleep(0.05)
+        time.sleep(min(0.05, total_deadline - time.monotonic()))
     raise CampaignError(f"{label} survived exact-PID SIGKILL cleanup")
 
 
@@ -4269,51 +5996,94 @@ def _custodian_group_exists(process_group_id: int) -> bool:
     return True
 
 
+def _cleanup_unattested_custodian_start(
+    process: subprocess.Popen[bytes], timeout: float
+) -> dict[str, Any]:
+    """Never signal a group when the spawned leader's start identity was unavailable."""
+
+    require(timeout > 0.0, "unattested custodian cleanup timeout is invalid")
+    require(
+        process.poll() is not None,
+        "custodian start identity is unavailable; refusing unbound process-group signal",
+    )
+    process.wait(timeout=timeout)
+    require(
+        not _custodian_group_exists(process.pid),
+        "custodian leader exited but an unbound/reused process group still exists",
+    )
+    return {
+        "process_group_id": process.pid,
+        "state": "leader-exited-and-group-absent-without-signal",
+        "signal_sent": False,
+    }
+
+
 def _terminate_custodian_process_group(
     process: subprocess.Popen[bytes],
     expected_start: dict[str, int],
     timeout: float,
 ) -> dict[str, Any]:
     group_id = process.pid
-    if process.poll() is None:
+    require(timeout > 0.0, "custodian process-group cleanup timeout is invalid")
+    deadline = time.monotonic() + timeout
+
+    def require_bound_live_leader() -> None:
         require(
-            process_start_identity(process.pid) == expected_start
+            process.poll() is None
+            and process_start_identity(process.pid) == expected_start
             and os.getpgid(process.pid) == group_id
             and os.getsid(process.pid) == group_id,
             "refusing to signal an unbound custodian process group",
         )
+
     if not _custodian_group_exists(group_id):
-        process.wait(timeout=timeout)
+        process.wait(
+            timeout=_remaining_deadline_seconds(
+                deadline,
+                "custodian process-group reap",
+                monotonic=time.monotonic,
+            )
+        )
         return {"process_group_id": group_id, "state": "already-exited"}
+    require_bound_live_leader()
     os.killpg(group_id, signal.SIGTERM)
     forced = False
-    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         process.poll()
         if not _custodian_group_exists(group_id):
-            process.wait(timeout=timeout)
+            process.wait(
+                timeout=_remaining_deadline_seconds(
+                    deadline,
+                    "custodian process-group reap",
+                    monotonic=time.monotonic,
+                )
+            )
             return {
                 "process_group_id": group_id,
                 "state": "terminated",
                 "forced": forced,
             }
+        require_bound_live_leader()
         time.sleep(0.05)
-    require(
-        _custodian_group_exists(group_id),
-        "custodian process group vanished before SIGKILL",
-    )
+    require_bound_live_leader()
     os.killpg(group_id, signal.SIGKILL)
     forced = True
-    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         process.poll()
         if not _custodian_group_exists(group_id):
-            process.wait(timeout=timeout)
+            process.wait(
+                timeout=_remaining_deadline_seconds(
+                    deadline,
+                    "custodian process-group reap",
+                    monotonic=time.monotonic,
+                )
+            )
             return {
                 "process_group_id": group_id,
                 "state": "killed",
                 "forced": forced,
             }
+        require_bound_live_leader()
         time.sleep(0.05)
     raise CampaignError("custodian process group survived SIGKILL")
 
@@ -4377,33 +6147,22 @@ def run_custodian(plan_path: Path | str, nonce: str) -> int:
         gateway_start = process_start_identity(gateway_process.pid)
         lifecycle["gateway_kernel_identity_observed_monotonic_ns"] = time.monotonic_ns()
         lifecycle["custodian_start_identity"] = process_start_identity(os.getpid())
-        deadline = time.monotonic() + runtime["custodian_ready_timeout_seconds"]
-        state_raw: dict[str, Any] | None = None
-        state_core: dict[str, Any] | None = None
-        while time.monotonic() < deadline:
-            require(gateway_process.poll() is None, "gateway exited before readiness")
-            try:
-                state_raw, state_core, _ = _one_shot_json(
-                    runtime["omni_base_url"],
-                    "custodian-readiness-state",
-                    "GET",
-                    "/omni/state",
-                    None,
-                    lambda value: validate_gateway_state(value, plan),
-                )
-                break
-            except (OSError, CampaignError, ReceiptError):
-                time.sleep(0.1)
-        require(
-            state_raw is not None and state_core is not None,
-            "gateway readiness timed out",
+        zero_generation_model_load = admit_zero_generation_model_load(
+            plan,
+            gateway_process,
+            gateway_start,
+            expected_gateway_parent_pid=os.getpid(),
         )
-        backend_pid = state_core["backend_pid"]
+        backend_pid = zero_generation_model_load["backend_pid"]
         require(
             _process_parent_pid(backend_pid) == gateway_process.pid,
             "backend is not the custodian-launched gateway child",
         )
         backend_start = process_start_identity(backend_pid)
+        require(
+            backend_start == zero_generation_model_load["backend_start_identity"],
+            "backend identity changed after zero-generation model load admission",
+        )
         lifecycle["backend_kernel_identity_observed_monotonic_ns"] = time.monotonic_ns()
         validate_controller_launch_sequence(lifecycle)
         initial = _custodian_light_attestation(
@@ -4444,6 +6203,7 @@ def run_custodian(plan_path: Path | str, nonce: str) -> int:
             "backend_loaded_fd": initial["backend_loaded_fd"],
             "lifecycle_sequence": lifecycle,
             "control_socket": socket_receipt,
+            "zero_generation_model_load": zero_generation_model_load,
             "generation_requests": 0,
             "passed": True,
         }
@@ -4454,7 +6214,10 @@ def run_custodian(plan_path: Path | str, nonce: str) -> int:
         while not cleanup_requested:
             connection, _ = server.accept()
             with connection:
-                request = _receive_control_request(connection)
+                request = _receive_control_request(
+                    connection,
+                    runtime["custodian_shutdown_timeout_seconds"],
+                )
                 require(
                     set(request) == {"command", "nonce", "challenge", "stage"}
                     and request["command"] in ("attest", "shutdown")
@@ -4486,7 +6249,8 @@ def run_custodian(plan_path: Path | str, nonce: str) -> int:
                     gateway_start,
                     backend_pid,
                     backend_start,
-                    runtime["custodian_shutdown_timeout_seconds"],
+                    runtime["custodian_shutdown_timeout_seconds"]
+                    - CUSTODIAN_CLEANUP_RESPONSE_MARGIN_SECONDS,
                 )
                 cleanup_receipt = {
                     "format": CUSTODIAN_CLEANUP_FORMAT,
@@ -4579,9 +6343,20 @@ def custodian_control_request(
     socket_before = _socket_custody(socket_path)
     challenge = secrets.token_hex(32)
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    connection.settimeout(timeout_seconds)
+    require(timeout_seconds > 0.0, "custodian control timeout is invalid")
+    deadline = time.monotonic() + timeout_seconds
     try:
+        connection.settimeout(
+            _remaining_deadline_seconds(
+                deadline, "custodian control connect", monotonic=time.monotonic
+            )
+        )
         connection.connect(str(socket_path))
+        connection.settimeout(
+            _remaining_deadline_seconds(
+                deadline, "custodian control send", monotonic=time.monotonic
+            )
+        )
         connection.sendall(
             canonical_json_bytes(
                 {
@@ -4595,12 +6370,27 @@ def custodian_control_request(
         )
         connection.shutdown(socket.SHUT_WR)
         raw = bytearray()
-        while len(raw) <= 16 * 1024 * 1024:
-            chunk = connection.recv(64 * 1024)
+        while len(raw) <= CUSTODIAN_CONTROL_RESPONSE_MAX_BYTES:
+            connection.settimeout(
+                _remaining_deadline_seconds(
+                    deadline,
+                    "custodian control response read",
+                    monotonic=time.monotonic,
+                )
+            )
+            chunk = connection.recv(
+                min(
+                    64 * 1024,
+                    CUSTODIAN_CONTROL_RESPONSE_MAX_BYTES + 1 - len(raw),
+                )
+            )
             if not chunk:
                 break
             raw.extend(chunk)
-        require(len(raw) <= 16 * 1024 * 1024, "custodian response is oversized")
+        require(
+            len(raw) <= CUSTODIAN_CONTROL_RESPONSE_MAX_BYTES,
+            "custodian response is oversized",
+        )
     finally:
         connection.close()
     response = parse_strict_json_line(bytes(raw))
@@ -4685,11 +6475,265 @@ def attest_custodian(
     }
 
 
-def _custodian_binding_from_ready(
-    ready: dict[str, Any], plan_path: Path | str
+def validate_zero_generation_model_load_receipt(
+    receipt: dict[str, Any],
+    plan: dict[str, Any],
+    *,
+    gateway_pid: int | None = None,
+    gateway_start: dict[str, int] | None = None,
+    backend_pid: int | None = None,
+    backend_start: dict[str, int] | None = None,
+    custodian_pid: int | None = None,
 ) -> dict[str, Any]:
     require(
-        ready.get("format") == CUSTODIAN_READY_FORMAT
+        isinstance(receipt, dict)
+        and set(receipt) == ZERO_GENERATION_MODEL_LOAD_FIELDS_V3,
+        "zero-generation model-load receipt schema drifted",
+    )
+    require(
+        receipt.get("format")
+        == "apxinf-omniinfer-gateway-zero-generation-model-load-v3"
+        and receipt.get("schema_version") == 3
+        and receipt.get("edge_id") == EDGE_ID
+        and receipt.get("model_select_request_count") == 1
+        and receipt.get("generation_requests") == 0
+        and receipt.get("generation_endpoint_paths_called") == []
+        and receipt.get("request_history_records_created") == 0
+        and receipt.get("all_passed") is True,
+        "zero-generation model-load admission drifted",
+    )
+    management_api = receipt.get("management_api")
+    require(
+        isinstance(management_api, dict)
+        and set(management_api)
+        == {"method", "path", "pinned_omniinfer_source_commit", "alias_used"}
+        and management_api
+        == {
+            "method": "POST",
+            "path": "/omni/model/select",
+            "pinned_omniinfer_source_commit": OMNI_SOURCE_COMMIT,
+            "alias_used": False,
+        },
+        "zero-generation model-load API binding drifted",
+    )
+    sequence = receipt.get("management_request_sequence")
+    require(
+        isinstance(sequence, list)
+        and all(item == ["GET", "/omni/state"] for item in sequence[:1])
+        and sequence.count(["POST", "/omni/model/select"]) == 1,
+        "zero-generation management request sequence drifted",
+    )
+    select_index = sequence.index(["POST", "/omni/model/select"])
+    require(
+        select_index > 0
+        and select_index < len(sequence) - 1
+        and all(item == ["GET", "/omni/state"] for item in sequence[:select_index])
+        and all(
+            item == ["GET", "/omni/state"] for item in sequence[select_index + 1 :]
+        ),
+        "model-select was not bracketed by state-only management requests",
+    )
+
+    request = receipt.get("request")
+    request_bytes = gateway_model_select_request_bytes(plan)
+    require(
+        isinstance(request, dict)
+        and set(request) == {"object", "canonical_utf8", "size_bytes", "sha256"}
+        and request["object"] == gateway_model_select_request(plan)
+        and request["canonical_utf8"] == request_bytes.decode("utf-8")
+        and request["size_bytes"] == len(request_bytes)
+        and request["sha256"] == sha256_bytes(request_bytes),
+        "zero-generation model-select request drifted",
+    )
+    response = receipt.get("response")
+    require(
+        isinstance(response, dict)
+        and set(response)
+        == {
+            "object",
+            "canonical_sha256",
+            "validated",
+            "runtime_generation_is_not_an_inference_generation",
+        }
+        and response["canonical_sha256"] == sha256_canonical(response["object"])
+        and response["runtime_generation_is_not_an_inference_generation"] is True,
+        "zero-generation model-select response binding drifted",
+    )
+    response_validated = validate_gateway_model_select_response(
+        response["object"], plan
+    )
+    require(
+        response["validated"] == response_validated,
+        "zero-generation model-select response validation drifted",
+    )
+
+    pre_load = receipt.get("pre_load_state")
+    loaded = receipt.get("loaded_state")
+    require(
+        isinstance(pre_load, dict)
+        and set(pre_load) == {"object", "validated"}
+        and pre_load["validated"] == validate_gateway_preload_state(pre_load["object"])
+        and isinstance(loaded, dict)
+        and set(loaded) == {"object", "validated"}
+        and loaded["validated"] == validate_gateway_state(loaded["object"], plan),
+        "zero-generation gateway state admission drifted",
+    )
+    require(
+        loaded["validated"]["backend_pid"] == response_validated["backend_pid"]
+        and loaded["validated"]["backend_port"] == response_validated["backend_port"],
+        "zero-generation response/state backend identity drifted",
+    )
+
+    transport = receipt.get("transport")
+    require(
+        isinstance(transport, dict)
+        and set(transport)
+        == {
+            "pre_load_state",
+            "model_select",
+            "post_load_state_attempts",
+            "loaded_state",
+        },
+        "zero-generation transport collection schema drifted",
+    )
+
+    def validate_projected(
+        value: Any,
+        label: str,
+        method: str,
+        path: str,
+        body: bytes | None,
+        response_object: dict[str, Any],
+    ) -> dict[str, Any]:
+        require(
+            isinstance(value, dict)
+            and set(value) == ZERO_GENERATION_MANAGEMENT_TRANSPORT_FIELDS_V3,
+            "zero-generation projected transport schema drifted",
+        )
+        projected = validate_zero_generation_management_transport(
+            value,
+            plan["runtime"]["omni_base_url"],
+            label,
+            method,
+            path,
+            body,
+            response_object,
+        )
+        require(projected == value, "zero-generation projected transport drifted")
+        return projected
+
+    validate_projected(
+        transport["pre_load_state"],
+        "custodian-pre-load-state",
+        "GET",
+        "/omni/state",
+        None,
+        pre_load["object"],
+    )
+    validate_projected(
+        transport["model_select"],
+        "custodian-zero-generation-model-select",
+        "POST",
+        "/omni/model/select",
+        request_bytes,
+        response["object"],
+    )
+    attempts = transport["post_load_state_attempts"]
+    require(
+        isinstance(attempts, list) and attempts, "post-load state transports are absent"
+    )
+    for attempt in attempts:
+        try:
+            raw = base64.b64decode(
+                attempt["response_base64"].encode("ascii"), validate=True
+            )
+        except (
+            KeyError,
+            AttributeError,
+            UnicodeEncodeError,
+            binascii.Error,
+            ValueError,
+        ) as error:
+            raise CampaignError(
+                "post-load state transport response is invalid"
+            ) from error
+        validate_projected(
+            attempt,
+            "custodian-post-load-state",
+            "GET",
+            "/omni/state",
+            None,
+            parse_strict_json_document(raw),
+        )
+    require(
+        attempts[-1] == transport["loaded_state"],
+        "final loaded-state transport differs from its attempt ledger",
+    )
+    validate_projected(
+        transport["loaded_state"],
+        "custodian-post-load-state",
+        "GET",
+        "/omni/state",
+        None,
+        loaded["object"],
+    )
+
+    observed_gateway_pid = receipt.get("gateway_pid")
+    observed_backend_pid = receipt.get("backend_pid")
+    require(
+        is_int(observed_gateway_pid)
+        and observed_gateway_pid > 0
+        and is_int(observed_backend_pid)
+        and observed_backend_pid > 0
+        and observed_backend_pid == loaded["validated"]["backend_pid"]
+        and receipt.get("gateway_start_identity") == receipt.get("gateway_end_identity")
+        and receipt.get("gateway_process_start_end_equal") is True
+        and receipt.get("gateway_parent_pid_start")
+        == receipt.get("gateway_parent_pid_end")
+        and receipt.get("gateway_parent_start_end_equal") is True
+        and receipt.get("gateway_is_direct_parent_of_backend") is True,
+        "zero-generation process ancestry receipt drifted",
+    )
+    if gateway_pid is not None:
+        require(
+            observed_gateway_pid == gateway_pid,
+            "ready gateway PID differs from load receipt",
+        )
+    if gateway_start is not None:
+        require(
+            receipt["gateway_start_identity"] == gateway_start,
+            "ready gateway start differs from load receipt",
+        )
+    if backend_pid is not None:
+        require(
+            observed_backend_pid == backend_pid,
+            "ready backend PID differs from load receipt",
+        )
+    if backend_start is not None:
+        require(
+            receipt["backend_start_identity"] == backend_start,
+            "ready backend start differs from load receipt",
+        )
+    if custodian_pid is not None:
+        require(
+            receipt["gateway_parent_pid_start"] == custodian_pid,
+            "load receipt gateway is not the ready custodian child",
+        )
+    require(
+        receipt.get("history_start") == receipt.get("history_end")
+        and receipt.get("history_start_end_equal") is True,
+        "request history changed during zero-generation model load",
+    )
+    return copy.deepcopy(receipt)
+
+
+def _custodian_binding_from_ready(
+    ready: dict[str, Any], plan_path: Path | str, plan: dict[str, Any]
+) -> dict[str, Any]:
+    require(
+        isinstance(ready, dict)
+        and set(ready) == CUSTODIAN_READY_FIELDS_V3
+        and ready.get("format") == CUSTODIAN_READY_FORMAT
         and ready.get("schema_version") == 3
         and ready.get("edge_id") == EDGE_ID
         and ready.get("passed") is True
@@ -4709,6 +6753,15 @@ def _custodian_binding_from_ready(
         == ready.get("custodian_start_identity"),
         "custodian lifecycle start binding drifted",
     )
+    zero_generation_model_load = validate_zero_generation_model_load_receipt(
+        ready["zero_generation_model_load"],
+        plan,
+        gateway_pid=ready["gateway_pid"],
+        gateway_start=ready["gateway_start_identity"],
+        backend_pid=ready["backend_pid"],
+        backend_start=ready["backend_start_identity"],
+        custodian_pid=ready["custodian_pid"],
+    )
     return {
         "format": "apxinf-omniinfer-gateway-custodian-binding-v3",
         "schema_version": 3,
@@ -4722,6 +6775,7 @@ def _custodian_binding_from_ready(
         "backend_pid": ready["backend_pid"],
         "backend_start_identity": copy.deepcopy(ready["backend_start_identity"]),
         "lifecycle_sequence": copy.deepcopy(lifecycle),
+        "zero_generation_model_load": zero_generation_model_load,
         "expected_custodian_argv": _custodian_command(plan_path, nonce),
         "expected_custodian_environment": copy.deepcopy(_CUSTODIAN_ENV),
         "ready_receipt": copy.deepcopy(ready),
@@ -4742,10 +6796,17 @@ def _require_loopback_listener_absent(port: int, label: str) -> None:
     )
 
 
-def start_custodian(plan_path: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
+def start_custodian(
+    plan_path: Path | str,
+    plan: dict[str, Any],
+    campaign_directory_initialization: dict[str, Any],
+) -> dict[str, Any]:
     """Start the only allowed daemon before it opens the model and launches runtime."""
 
     runtime = plan["runtime"]
+    directory_receipt = validate_campaign_directory_initialization_receipt(
+        campaign_directory_initialization, plan, verify_live=True
+    )
     parsed = urllib.parse.urlsplit(runtime["omni_base_url"])
     require(parsed.port is not None, "gateway plan port is absent")
     _require_loopback_listener_absent(parsed.port, "gateway")
@@ -4772,14 +6833,13 @@ def start_custodian(plan_path: Path | str, plan: dict[str, Any]) -> dict[str, An
             "custodian did not become an exclusive process-group/session leader",
         )
         require(process.stdout is not None, "custodian readiness pipe is absent")
-        readable, _, _ = select.select(
-            [process.stdout], [], [], runtime["custodian_ready_timeout_seconds"]
+        ready = _read_pipe_json_line_with_total_deadline(
+            process.stdout.fileno(),
+            _custodian_parent_ready_budget_seconds(runtime),
+            16 * 1024 * 1024,
         )
-        require(readable, "custodian produced no readiness receipt before timeout")
-        raw = process.stdout.readline(16 * 1024 * 1024 + 1)
-        require(len(raw) <= 16 * 1024 * 1024, "custodian readiness is oversized")
-        ready = parse_strict_json_line(raw)
-        binding = _custodian_binding_from_ready(ready, plan_path)
+        binding = _custodian_binding_from_ready(ready, plan_path, plan)
+        binding["campaign_directory_initialization"] = directory_receipt
         binding["custodian_process_group_id"] = process.pid
         binding["custodian_session_id"] = process.pid
         require(
@@ -4797,7 +6857,7 @@ def start_custodian(plan_path: Path | str, plan: dict[str, Any]) -> dict[str, An
         binding["initial_external_attestation"] = initial
         process.stdout.close()
         return binding
-    except BaseException:
+    except BaseException as launch_error:
         try:
             if process.poll() is None and os.path.lexists(socket_path):
                 try:
@@ -4811,13 +6871,9 @@ def start_custodian(plan_path: Path | str, plan: dict[str, Any]) -> dict[str, An
                 except BaseException:
                     pass
             if spawned_start is None:
-                require(
-                    os.getpgid(process.pid) == process.pid
-                    and os.getsid(process.pid) == process.pid,
-                    "unattested custodian is not an exclusive process group",
+                _cleanup_unattested_custodian_start(
+                    process, runtime["custodian_shutdown_timeout_seconds"]
                 )
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=runtime["custodian_shutdown_timeout_seconds"])
             else:
                 _terminate_custodian_process_group(
                     process,
@@ -4825,9 +6881,12 @@ def start_custodian(plan_path: Path | str, plan: dict[str, Any]) -> dict[str, An
                     runtime["custodian_shutdown_timeout_seconds"],
                 )
         except BaseException as cleanup_error:
-            raise CampaignError(
+            combined = CampaignError(
                 f"custodian launch failed and exact process-group cleanup failed: {cleanup_error}"
-            ) from cleanup_error
+            )
+            setattr(combined, "custodian_launch_cleanup_complete", False)
+            raise combined from cleanup_error
+        setattr(launch_error, "custodian_launch_cleanup_complete", True)
         raise
     finally:
         if process.stdout is not None and not process.stdout.closed:
@@ -4953,13 +7012,271 @@ def shutdown_custodian(
         original_exit and not os.path.lexists(socket_path),
         "custodian did not exit and remove its exact control socket after cleanup",
     )
+    managed_exit: dict[str, Any] = {}
+    for label, pid, expected in (
+        (
+            "gateway",
+            binding["gateway_pid"],
+            binding["gateway_start_identity"],
+        ),
+        (
+            "backend",
+            binding["backend_pid"],
+            binding["backend_start_identity"],
+        ),
+    ):
+        try:
+            current = process_start_identity(pid)
+        except PreflightBlockedError:
+            require(
+                not _pid_exists(pid),
+                f"{label} exit identity is ambiguous after custodian cleanup",
+            )
+            managed_exit[label] = {
+                "original_process_exited": True,
+                "pid_reused_after_exit": False,
+            }
+        else:
+            require(
+                current != expected,
+                f"original {label} remained alive after custodian cleanup",
+            )
+            managed_exit[label] = {
+                "original_process_exited": True,
+                "pid_reused_after_exit": True,
+                "reused_start_identity": current,
+            }
+    parsed = urllib.parse.urlsplit(plan["runtime"]["omni_base_url"])
+    require(parsed.port is not None, "gateway cleanup port is absent")
+    _require_loopback_listener_absent(parsed.port, "post-custodian-cleanup gateway")
     cleanup["cleanup_completion"] = {
         "custodian_original_process_exited": True,
         "custodian_pid_reused_after_exit": pid_reused,
+        "gateway": managed_exit["gateway"],
+        "backend": managed_exit["backend"],
+        "gateway_listener_absent": True,
         "control_socket_removed": True,
         "controller_fd_closed_by_process_exit": True,
     }
     return cleanup
+
+
+def _fallback_cleanup_marker_bound_processes(
+    plan: dict[str, Any], binding: dict[str, Any], stage: str
+) -> dict[str, Any]:
+    """Best-effort cleanup that never signals without exact live identity/ancestry."""
+
+    timeout = float(plan["runtime"]["custodian_shutdown_timeout_seconds"])
+    require(timeout > 0.0, "fallback cleanup timeout is invalid")
+    deadline = time.monotonic() + timeout
+    steps: list[dict[str, Any]] = []
+    blocked = False
+    specifications = (
+        (
+            "backend",
+            binding["backend_pid"],
+            binding["backend_start_identity"],
+            binding["gateway_pid"],
+            binding["gateway_start_identity"],
+        ),
+        (
+            "gateway",
+            binding["gateway_pid"],
+            binding["gateway_start_identity"],
+            binding["custodian_pid"],
+            binding["custodian_start_identity"],
+        ),
+        (
+            "custodian",
+            binding["custodian_pid"],
+            binding["custodian_start_identity"],
+            None,
+            None,
+        ),
+    )
+    for index, (label, pid, expected, parent_pid, parent_expected) in enumerate(
+        specifications
+    ):
+        step: dict[str, Any] = {
+            "label": label,
+            "pid": pid,
+            "expected_start_identity": copy.deepcopy(expected),
+            "signal_sent": False,
+        }
+        if blocked:
+            step.update(
+                {
+                    "state": "unattempted-after-prior-identity-or-ancestry-blocker",
+                    "passed": False,
+                }
+            )
+            steps.append(step)
+            continue
+        try:
+            current = process_start_identity(pid)
+        except PreflightBlockedError as error:
+            if _pid_exists(pid):
+                step.update(
+                    {
+                        "state": "identity-ambiguous-no-signal",
+                        "error": str(error),
+                        "passed": False,
+                    }
+                )
+                blocked = True
+            else:
+                step.update({"state": "already-exited", "passed": True})
+            steps.append(step)
+            continue
+        if current != expected:
+            step.update(
+                {
+                    "state": "original-exited-pid-reused-no-signal",
+                    "observed_start_identity": copy.deepcopy(current),
+                    "passed": True,
+                }
+            )
+            steps.append(step)
+            continue
+        try:
+            if parent_pid is None:
+                require(
+                    os.getpgid(pid) == pid and os.getsid(pid) == pid,
+                    "custodian session/group ancestry changed",
+                )
+            else:
+                require(
+                    process_start_identity(parent_pid) == parent_expected
+                    and _process_parent_pid(pid) == parent_pid,
+                    f"{label} parent ancestry changed",
+                )
+            remaining_steps = len(specifications) - index
+            per_process_budget = (
+                _remaining_deadline_seconds(
+                    deadline,
+                    "fallback exact-PID cleanup",
+                    monotonic=time.monotonic,
+                )
+                / remaining_steps
+            )
+            termination = _terminate_exact_managed_pid(
+                pid, expected, per_process_budget, f"fallback {label}"
+            )
+            step.update(
+                {
+                    "state": termination["state"],
+                    "signal_sent": True,
+                    "termination": termination,
+                    "passed": True,
+                }
+            )
+        except BaseException as error:
+            step.update(
+                {
+                    "state": "identity-or-ancestry-blocked-no-further-signals",
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                    "passed": False,
+                }
+            )
+            blocked = True
+        steps.append(step)
+
+    socket_path = Path(plan["runtime"]["custodian_control_socket_path"])
+    socket_cleanup: dict[str, Any]
+    listener_absent = False
+    if all(step["passed"] for step in steps):
+        try:
+            if os.path.lexists(socket_path):
+                require(
+                    _socket_custody(socket_path) == binding["control_socket"],
+                    "fallback control socket identity drifted",
+                )
+                socket_path.unlink()
+            require(
+                not os.path.lexists(socket_path),
+                "fallback control socket remained present",
+            )
+            socket_cleanup = {"state": "exact-socket-absent", "passed": True}
+            parsed = urllib.parse.urlsplit(plan["runtime"]["omni_base_url"])
+            require(parsed.port is not None, "fallback gateway port is absent")
+            _require_loopback_listener_absent(parsed.port, "fallback gateway")
+            listener_absent = True
+        except BaseException as error:
+            socket_cleanup = {
+                "state": "socket-or-listener-cleanup-blocked",
+                "error_type": type(error).__name__,
+                "error": str(error),
+                "passed": False,
+            }
+    else:
+        socket_cleanup = {
+            "state": "unattempted-after-process-identity-blocker",
+            "passed": False,
+        }
+    passed = (
+        all(step["passed"] for step in steps)
+        and socket_cleanup["passed"]
+        and listener_absent
+    )
+    return {
+        "format": "apxinf-omniinfer-gateway-exact-pid-fallback-cleanup-v3",
+        "schema_version": 3,
+        "edge_id": EDGE_ID,
+        "stage": stage,
+        "process_steps": steps,
+        "control_socket_cleanup": socket_cleanup,
+        "gateway_listener_absent": listener_absent,
+        "passed": passed,
+    }
+
+
+def _cleanup_failed_prepare_resources(
+    plan: dict[str, Any],
+    binding: dict[str, Any] | None,
+    directory_initialization: dict[str, Any] | None,
+    marker_path: Path,
+    raw_path: Path,
+    stage: str,
+    *,
+    runtime_cleanup_already_complete: bool = False,
+) -> dict[str, Any]:
+    """Stop a bound runtime regardless of marker-race state; delete only fresh tree."""
+
+    shutdown_receipt: dict[str, Any] | None = None
+    shutdown_error: dict[str, str] | None = None
+    fallback: dict[str, Any] | None = None
+    runtime_cleanup_complete = runtime_cleanup_already_complete
+    if binding is not None:
+        try:
+            shutdown_receipt = shutdown_custodian(plan, binding, stage)
+            runtime_cleanup_complete = True
+        except BaseException as error:
+            shutdown_error = {
+                "exception_type": type(error).__name__,
+                "message": str(error),
+            }
+            fallback = _fallback_cleanup_marker_bound_processes(plan, binding, stage)
+            runtime_cleanup_complete = fallback["passed"] is True
+    directory_cleanup: dict[str, Any] | None = None
+    if (
+        directory_initialization is not None
+        and runtime_cleanup_complete
+        and not os.path.lexists(marker_path)
+        and not os.path.lexists(raw_path)
+    ):
+        directory_cleanup = cleanup_failed_prepare_campaign_tree(
+            plan, directory_initialization, stage
+        )
+    return {
+        "runtime_cleanup_complete": runtime_cleanup_complete,
+        "shutdown_receipt": shutdown_receipt,
+        "shutdown_error": shutdown_error,
+        "exact_pid_fallback": fallback,
+        "directory_cleanup": directory_cleanup,
+        "marker_present_prevented_directory_cleanup": os.path.lexists(marker_path),
+        "raw_present_prevented_directory_cleanup": os.path.lexists(raw_path),
+    }
 
 
 def _cache_clear_validator(payload: dict[str, Any]) -> dict[str, Any]:
@@ -5045,7 +7362,9 @@ def reject_unreviewed_same_ofd_claims(value: Any, path: tuple[str, ...] = ()) ->
 
 
 def validate_published_runtime_preflight(
-    marker_runtime: dict[str, Any], runtime_now: dict[str, Any]
+    marker_runtime: dict[str, Any],
+    runtime_now: dict[str, Any],
+    plan: dict[str, Any],
 ) -> None:
     """Admit only the exact reviewed runtime/custody receipt vocabulary."""
 
@@ -5084,11 +7403,33 @@ def validate_published_runtime_preflight(
         )
         reject_unreviewed_same_ofd_claims(custody)
         require_same_custodian_attestation(custody["start"], custody["end"])
+        binding = runtime.get("custodian_binding")
+        require(isinstance(binding, dict), f"{label} custodian binding is absent")
+        validate_campaign_directory_initialization_receipt(
+            binding.get("campaign_directory_initialization"), plan
+        )
+        zero_generation_model_load = validate_zero_generation_model_load_receipt(
+            runtime.get("zero_generation_model_load"),
+            plan,
+            gateway_pid=binding.get("gateway_pid"),
+            gateway_start=binding.get("gateway_start_identity"),
+            backend_pid=binding.get("backend_pid"),
+            backend_start=binding.get("backend_start_identity"),
+            custodian_pid=binding.get("custodian_pid"),
+        )
+        require(
+            binding.get("zero_generation_model_load") == zero_generation_model_load
+            and isinstance(binding.get("ready_receipt"), dict)
+            and binding["ready_receipt"].get("zero_generation_model_load")
+            == zero_generation_model_load,
+            f"{label} custodian/model-load binding drifted",
+        )
 
     for field in (
         "gateway_process_start",
         "backend_process_start",
         "custodian_binding",
+        "zero_generation_model_load",
         "custodian_process_start",
         "state",
         "canonical_request",
@@ -5309,6 +7650,11 @@ def collect_runtime_preflight(
     """Collect zero-generation same-backend and request/trajectory prerequisites."""
 
     runtime = plan["runtime"]
+    validate_campaign_directory_initialization_receipt(
+        custodian_binding.get("campaign_directory_initialization"),
+        plan,
+        verify_live=True,
+    )
     base_url = runtime["omni_base_url"]
     parsed = urllib.parse.urlsplit(base_url)
     require(parsed.port is not None, "gateway port is absent")
@@ -5501,6 +7847,9 @@ def collect_runtime_preflight(
         "backend_start_end_identity_equal": True,
         "gateway_start_end_identity_equal": True,
         "custodian_binding": copy.deepcopy(custodian_binding),
+        "zero_generation_model_load": copy.deepcopy(
+            custodian_binding["zero_generation_model_load"]
+        ),
         "custodian_process_start": custodian_process_start,
         "custodian_process_end": custodian_process_end,
         "controller_backend_model_fd_custody": {
@@ -6641,6 +8990,8 @@ def prepare_campaign(
     marker_path = repository_root / plan["marker_repository_path"]
     raw_path = Path(plan["raw_output_path"])
     custodian_binding: dict[str, Any] | None = None
+    campaign_directory_initialization: dict[str, Any] | None = None
+    custodian_start_attempted = False
 
     def preflight() -> dict[str, Any]:
         require(not os.path.lexists(marker_path), "gateway marker already exists")
@@ -6648,6 +8999,8 @@ def prepare_campaign(
         require(
             marker_path.parent.resolve(strict=True).is_dir(), "marker parent is absent"
         )
+        nonlocal campaign_directory_initialization
+        campaign_directory_initialization = initialize_campaign_directory_tree(plan)
         require(
             raw_path.parent.resolve(strict=True).is_dir(), "raw-output parent is absent"
         )
@@ -6675,8 +9028,11 @@ def prepare_campaign(
             "Git plan bytes differ from loaded plan",
         )
         artifacts = verify_plan_artifacts(plan)
-        nonlocal custodian_binding
-        custodian_binding = start_custodian(plan_path, plan)
+        nonlocal custodian_binding, custodian_start_attempted
+        custodian_start_attempted = True
+        custodian_binding = start_custodian(
+            plan_path, plan, campaign_directory_initialization
+        )
         runtime_before_host = collect_runtime_preflight(
             plan_path, plan, artifacts, custodian_binding
         )
@@ -6747,14 +9103,23 @@ def prepare_campaign(
 
     try:
         return prepare_marker_after_preflight(marker_path, preflight)
-    except BaseException:
-        if custodian_binding is not None and not os.path.lexists(marker_path):
-            try:
-                shutdown_custodian(
-                    plan, custodian_binding, "prepare-failed-before-marker-cleanup"
-                )
-            except BaseException:
-                pass
+    except BaseException as error:
+        cleanup_evidence = _cleanup_failed_prepare_resources(
+            plan,
+            custodian_binding,
+            campaign_directory_initialization,
+            marker_path,
+            raw_path,
+            "prepare-failed-before-marker-cleanup",
+            runtime_cleanup_already_complete=(
+                not custodian_start_attempted
+                or getattr(error, "custodian_launch_cleanup_complete", False) is True
+            ),
+        )
+        if isinstance(error, PreflightBlockedError):
+            error.receipt["failed_prepare_cleanup"] = cleanup_evidence
+        else:
+            setattr(error, "failed_prepare_cleanup", cleanup_evidence)
         raise
 
 
@@ -6912,7 +9277,7 @@ def validate_published_marker(
         isinstance(marker_runtime, dict), "published marker runtime preflight is absent"
     )
     validate_shared_formal_driver_binding(marker, tracked, marker_runtime)
-    validate_published_runtime_preflight(marker_runtime, runtime_now)
+    validate_published_runtime_preflight(marker_runtime, runtime_now, plan)
     require(
         marker_runtime["custodian_process_start"]["driver_source"]["sha256"]
         == tracked["driver"]["blob_sha256"],
@@ -7609,6 +9974,18 @@ def _attach_custodian_cleanup_after_raw(
     try:
         record["custodian_cleanup"] = shutdown_custodian(plan, binding, stage)
     except BaseException as error:
+        try:
+            exact_pid_fallback = _fallback_cleanup_marker_bound_processes(
+                plan, binding, stage
+            )
+        except BaseException as fallback_error:
+            exact_pid_fallback = {
+                "format": "apxinf-omniinfer-gateway-exact-pid-fallback-cleanup-v3",
+                "passed": False,
+                "exception_type": type(fallback_error).__name__,
+                "message": str(fallback_error),
+                "no_unbound_signal_claimed": True,
+            }
         record["failures"].append(
             {
                 "stage": "custodian-cleanup",
@@ -7632,6 +10009,7 @@ def _attach_custodian_cleanup_after_raw(
             "passed": False,
             "exception_type": type(error).__name__,
             "message": str(error),
+            "exact_pid_fallback": exact_pid_fallback,
         }
     _SHARED.atomic_replace_json(raw_path, record)
     return record

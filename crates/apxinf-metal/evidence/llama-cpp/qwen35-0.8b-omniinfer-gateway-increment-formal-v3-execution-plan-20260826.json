@@ -1,0 +1,63 @@
+{
+  "format": "apxinf-qwen35-omniinfer-gateway-formal-execution-plan-v3",
+  "schema_version": 3,
+  "edge_id": "GATEWAY_B_VS_G",
+  "repository_root": "/Users/haiyan-mini/Agent4Kernel/ApxInf",
+  "contract_repository_path": "configs/qwen35-0.8b-cross-runtime-formal-v3.json",
+  "validator_repository_path": "scripts/validate_qwen35_cross_runtime_formal_contract.py",
+  "driver_repository_path": "benchmarks/cross_runtime/omniinfer_gateway_formal_v3_driver.py",
+  "plan_repository_path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-increment-formal-v3-execution-plan-20260826.json",
+  "marker_repository_path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-increment-formal-v3-campaign-start-20260826.json",
+  "raw_output_path": "/private/tmp/apxinf-omni-gw-formal-v3-20260826/raw/gateway-formal-v3-raw.json",
+  "artifacts": {
+    "model": {
+      "absolute_path": "/Users/haiyan-mini/Agent4Kernel/models/Qwen3.5-0.8B-2fc063647-GGUF/Qwen3.5-0.8B-2fc063647-Q8_0-llama.gguf",
+      "size_bytes": 811843072,
+      "sha256": "427555e797eefeb62e1c8ef71510ce062027b0c7f1674cc4cfcb352710e0908c"
+    },
+    "omniinfer_cli": {
+      "absolute_path": "/private/tmp/apxinf-omniinfer-prep.F7GNFt/OmniInfer/omniinfer",
+      "size_bytes": 9719136,
+      "sha256": "65487424ca9179850b80079beafa5ad69a66e0841d328ee8dd8a1fd4b613d661"
+    },
+    "gateway_backend": {
+      "absolute_path": "/private/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/bin/llama-server",
+      "size_bytes": 33472,
+      "sha256": "02723fc39fbeebd9849ce4c9ca3799649df3cf91f101c2cd56b8756e1db54d28"
+    }
+  },
+  "runtime": {
+    "omni_base_url": "http://127.0.0.1:49191",
+    "expected_gateway_argv": [
+      "/private/tmp/apxinf-omniinfer-prep.F7GNFt/OmniInfer/omniinfer",
+      "--state-root",
+      "/private/tmp/apxinf-omni-gw-formal-v3-20260826/state",
+      "--runtime-root",
+      "/private/tmp/apxinf-omni-gw-formal-v3-20260826/runtime",
+      "gateway",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "49191",
+      "--startup-timeout",
+      "180"
+    ],
+    "expected_gateway_environment": {
+      "LANG": "C",
+      "OMNIINFER_LLAMA_CPP_MAC_LAUNCHER_PATH": "/private/tmp/apxinf-omniinfer-prep.F7GNFt/runtime/llama.cpp-mac/bin/llama-server",
+      "OMNIINFER_REQUEST_HISTORY": "0",
+      "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"
+    },
+    "slot_save_path": "/private/tmp/apxinf-omni-gw-formal-v3-20260826/slots",
+    "runtime_logs_path": "/private/tmp/apxinf-omni-gw-formal-v3-20260826/runtime/llama.cpp-mac/logs",
+    "gateway_logs_path": "/private/tmp/apxinf-omni-gw-formal-v3-20260826/state/.local/logs",
+    "history_root": "/private/tmp/apxinf-omni-gw-formal-v3-20260826/state/.local/request_history",
+    "mutable_log_roots": [
+      "/private/tmp/apxinf-omni-gw-formal-v3-20260826/runtime/llama.cpp-mac/logs",
+      "/private/tmp/apxinf-omni-gw-formal-v3-20260826/state/.local/logs"
+    ],
+    "custodian_control_socket_path": "/private/tmp/apxinf-omni-gw-formal-v3-20260826/state/.local/logs/custodian.sock",
+    "custodian_ready_timeout_seconds": 180,
+    "custodian_shutdown_timeout_seconds": 30
+  }
+}

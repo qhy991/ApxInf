@@ -12,9 +12,11 @@ import json
 import os
 from pathlib import Path
 import platform
+import stat
 import tempfile
 import unittest
 from unittest import mock
+import urllib.parse
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -308,7 +310,11 @@ def fixture_sample(slot: dict[str, object], wall_ms: float) -> dict[str, object]
 
 
 def fixture_execution_plan() -> dict[str, object]:
-    log_root = "/private/tmp/gateway-formal-v3-logs"
+    campaign_root = Path("/private/tmp/gateway-formal-v3-campaign-fixture")
+    state_root = campaign_root / "state"
+    runtime_root = campaign_root / "runtime"
+    log_root = state_root / ".local" / "logs"
+    runtime_logs = runtime_root / "llama.cpp-mac" / "logs"
     return {
         "format": DRIVER.PLAN_FORMAT,
         "schema_version": 3,
@@ -319,7 +325,7 @@ def fixture_execution_plan() -> dict[str, object]:
         "driver_repository_path": DRIVER.DRIVER_REPOSITORY_PATH,
         "plan_repository_path": "benchmarks/cross_runtime/fixture-plan.json",
         "marker_repository_path": DRIVER.MARKER_REPOSITORY_PATH,
-        "raw_output_path": "/private/tmp/gateway-formal-v3-raw.json",
+        "raw_output_path": str(campaign_root / "raw" / "receipt.json"),
         "artifacts": {
             "model": {
                 "absolute_path": DRIVER.MODEL_PATH,
@@ -339,28 +345,442 @@ def fixture_execution_plan() -> dict[str, object]:
         },
         "runtime": {
             "omni_base_url": "http://127.0.0.1:19000",
-            "expected_gateway_argv": ["/opt/pinned/omniinfer", "serve"],
+            "expected_gateway_argv": [
+                "/opt/pinned/omniinfer",
+                "--state-root",
+                str(state_root),
+                "--runtime-root",
+                str(runtime_root),
+                "gateway",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "19000",
+                "--startup-timeout",
+                "180",
+            ],
             "expected_gateway_environment": {
                 "LANG": "C",
+                "OMNIINFER_LLAMA_CPP_MAC_LAUNCHER_PATH": "/opt/pinned/llama-server",
                 "OMNIINFER_REQUEST_HISTORY": "0",
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             },
-            "slot_save_path": "/private/tmp/gateway-slots",
-            "runtime_logs_path": "/private/tmp/backend-formal-v3-logs",
-            "gateway_logs_path": log_root,
-            "history_root": "/private/tmp/gateway-history",
+            "slot_save_path": str(campaign_root / "slots"),
+            "runtime_logs_path": str(runtime_logs),
+            "gateway_logs_path": str(log_root),
+            "history_root": str(state_root / ".local" / "request_history"),
             "mutable_log_roots": [
-                "/private/tmp/backend-formal-v3-logs",
-                log_root,
+                str(runtime_logs),
+                str(log_root),
             ],
-            "custodian_control_socket_path": f"{log_root}/custodian.sock",
+            "custodian_control_socket_path": str(log_root / "custodian.sock"),
             "custodian_ready_timeout_seconds": 180,
             "custodian_shutdown_timeout_seconds": 30,
         },
     }
 
 
-def fixture_runtime_preflight() -> dict[str, object]:
+def fixture_campaign_directory_plan(parent: Path) -> dict[str, object]:
+    plan = fixture_execution_plan()
+    campaign_root = parent / "campaign"
+    state_root = campaign_root / "state"
+    runtime_root = campaign_root / "runtime"
+    gateway_logs = state_root / ".local" / "logs"
+    history_root = state_root / ".local" / "request_history"
+    runtime_logs = runtime_root / "llama.cpp-mac" / "logs"
+    plan["raw_output_path"] = str(campaign_root / "raw" / "receipt.json")
+    plan["runtime"] = {
+        **plan["runtime"],
+        "expected_gateway_argv": [
+            "/opt/pinned/omniinfer",
+            "--state-root",
+            str(state_root),
+            "--runtime-root",
+            str(runtime_root),
+            "gateway",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "19000",
+            "--startup-timeout",
+            "180",
+        ],
+        "slot_save_path": str(campaign_root / "slots"),
+        "runtime_logs_path": str(runtime_logs),
+        "gateway_logs_path": str(gateway_logs),
+        "history_root": str(history_root),
+        "mutable_log_roots": [str(runtime_logs), str(gateway_logs)],
+        "custodian_control_socket_path": str(gateway_logs / "custodian.sock"),
+    }
+    return plan
+
+
+def fixture_campaign_directory_initialization_receipt(
+    plan: dict[str, object] | None = None,
+) -> dict[str, object]:
+    selected_plan = plan or fixture_execution_plan()
+    layout = DRIVER.campaign_directory_layout(selected_plan)
+    root = Path(layout["campaign_root"])
+    observations = []
+    for index, path_text in enumerate(layout["expected_directory_paths"], start=1):
+        expected_children = layout["expected_child_names"][path_text]
+        observations.append(
+            {
+                "absolute_path": path_text,
+                "relative_path": str(Path(path_text).relative_to(root)),
+                "device": 1,
+                "inode": index,
+                "mode": stat.S_IFDIR | 0o700,
+                "permission_bits": 0o700,
+                "uid": os.geteuid(),
+                "gid": os.getegid(),
+                "expected_child_names": copy.deepcopy(expected_children),
+                "observed_child_names": copy.deepcopy(expected_children),
+                "direct_directory_no_symlink": True,
+                "owner_matches_controller": True,
+                "permissions_are_0700": True,
+            }
+        )
+    return {
+        "format": "apxinf-omniinfer-gateway-campaign-directory-initialization-v3",
+        "schema_version": 3,
+        "edge_id": DRIVER.EDGE_ID,
+        "campaign_root": layout["campaign_root"],
+        "expected_directory_paths": copy.deepcopy(layout["expected_directory_paths"]),
+        "preexisting_directory_paths": [],
+        "created_directory_paths": copy.deepcopy(layout["expected_directory_paths"]),
+        "directory_observations": observations,
+        "retry_policy": {
+            "exact_empty_partial_tree_reusable": True,
+            "exact_empty_complete_tree_reusable": True,
+            "preexisting_content_or_unexpected_entry_rejected": True,
+            "symlink_or_non_directory_rejected": True,
+            "cleanup_limited_to_directories_created_by_this_attempt": True,
+        },
+        "initial_tree_sha256": DRIVER.sha256_canonical(observations),
+        "generation_requests": 0,
+        "runtime_processes_started": 0,
+        "marker_created": False,
+        "raw_created": False,
+        "all_passed": True,
+    }
+
+
+def fixture_model_select_response(
+    plan: dict[str, object], backend_pid: int = 12, backend_port: int = 19001
+) -> dict[str, object]:
+    command = DRIVER.expected_backend_launch_args(plan, backend_port)
+    return {
+        "ok": True,
+        "already_loaded": False,
+        "requires_reload": False,
+        "model": DRIVER.MODEL_PATH,
+        "owner_admin_id": "local",
+        "selected_backend": "llama.cpp-mac",
+        "selected_model": DRIVER.MODEL_PATH,
+        "selected_public_model_id": None,
+        "selected_mmproj": None,
+        "selected_ctx_size": 256,
+        "request_defaults": {},
+        "backend_pid": backend_pid,
+        "backend_port": backend_port,
+        "generation": 1,
+        "route_state": "ready",
+        "allocation_id": 1,
+        "resource_budget": {
+            "domains_bytes": {"unified:system": 1_784_921_600},
+            "components": [
+                {
+                    "name": "weights",
+                    "domain": "unified:system",
+                    "bytes": 811_843_072,
+                },
+                {
+                    "name": "kv_cache",
+                    "domain": "unified:system",
+                    "bytes": 268_435_456,
+                },
+                {
+                    "name": "activation",
+                    "domain": "unified:system",
+                    "bytes": 134_217_728,
+                },
+                {
+                    "name": "framework_overhead",
+                    "domain": "unified:system",
+                    "bytes": 402_653_184,
+                },
+                {
+                    "name": "allocator_slack",
+                    "domain": "unified:system",
+                    "bytes": 167_772_160,
+                },
+            ],
+        },
+        "speculative_admission": None,
+        "launch_command": command,
+        "log_path": DRIVER.expected_gateway_backend_log_path(plan),
+        "external_server_protocol": "llama.cpp-server",
+        "client_endpoint": f"http://127.0.0.1:{backend_port}",
+        "openai_compatible": True,
+    }
+
+
+def fixture_unloaded_gateway_state() -> dict[str, object]:
+    return {
+        "backend": None,
+        "backend_ready": False,
+        "model": None,
+        "public_model_id": None,
+        "mmproj": None,
+        "ctx_size": None,
+        "request_defaults": {},
+        "runtime_mode": None,
+        "backend_pid": None,
+        "backend_port": None,
+        "launch_args": [],
+        "cuda_visible_devices": None,
+        "warning": None,
+        "launch_command": [],
+        "proxy_model": None,
+        "external_server_protocol": None,
+        "client_endpoint": None,
+        "openai_compatible": False,
+        "backend_log": None,
+        "effective_parameters": {},
+        "runtime": None,
+        "default_model": None,
+        "loaded_models": [],
+        "restore_selection": None,
+        "restore_status": "not_configured",
+        "restore_completed": False,
+        "resource_ledger": None,
+        "available_backends": [{"id": "llama.cpp-mac"}],
+    }
+
+
+def fixture_loaded_gateway_state(
+    plan: dict[str, object], backend_pid: int = 12, backend_port: int = 19001
+) -> dict[str, object]:
+    command = DRIVER.expected_backend_launch_args(plan, backend_port)
+    launch_args = command[10:-2]
+    endpoint = f"http://127.0.0.1:{backend_port}"
+    log_path = DRIVER.expected_gateway_backend_log_path(plan)
+    resource_budget = DRIVER._expected_gateway_resource_budget()
+    committed = resource_budget["domains_bytes"]
+    capacity = {"unified:system": 8_000_000_000}
+    resource_ledger = {
+        "capacity_snapshot_id": 1,
+        "capacity_bytes": capacity,
+        "reserved_bytes": {},
+        "committed_bytes": committed,
+        "available_bytes": {
+            domain: capacity[domain] - value for domain, value in committed.items()
+        },
+    }
+    loaded_model = {
+        "id": DRIVER.MODEL_PATH,
+        "owner_admin_id": "local",
+        "backend": "llama.cpp-mac",
+        "model": DRIVER.MODEL_PATH,
+        "model_path": DRIVER.MODEL_PATH,
+        "public_model_id": None,
+        "mmproj": None,
+        "ctx_size": 256,
+        "request_defaults": {},
+        "runtime_mode": "external_server",
+        "backend_pid": backend_pid,
+        "backend_port": backend_port,
+        "generation": 1,
+        "route_state": "ready",
+        "allocation_id": 1,
+        "resource_budget": resource_budget,
+        "speculative_admission": None,
+        "launch_args": launch_args,
+        "cuda_visible_devices": None,
+        "warning": None,
+        "launch_command": command,
+        "proxy_model": None,
+        "external_server_protocol": "llama.cpp-server",
+        "client_endpoint": endpoint,
+        "openai_compatible": True,
+        "backend_log": log_path,
+    }
+    return {
+        "backend": "llama.cpp-mac",
+        "backend_ready": True,
+        "model": DRIVER.MODEL_PATH,
+        "model_path": DRIVER.MODEL_PATH,
+        "default_model": DRIVER.MODEL_PATH,
+        "public_model_id": None,
+        "owner_admin_id": "local",
+        "mmproj": None,
+        "ctx_size": 256,
+        "request_defaults": {},
+        "runtime_mode": "external_server",
+        "effective_parameters": {},
+        "proxy_model": None,
+        "backend_pid": backend_pid,
+        "backend_port": backend_port,
+        "generation": 1,
+        "route_state": "ready",
+        "allocation_id": 1,
+        "resource_budget": resource_budget,
+        "speculative_admission": None,
+        "client_endpoint": endpoint,
+        "launch_command": command,
+        "launch_args": launch_args,
+        "cuda_visible_devices": None,
+        "warning": None,
+        "external_server_protocol": "llama.cpp-server",
+        "openai_compatible": True,
+        "backend_log": log_path,
+        "log_path": log_path,
+        "runtime": {
+            "mode": "external_server",
+            "host": "127.0.0.1",
+            "pid": backend_pid,
+            "port": backend_port,
+            "cuda_visible_devices": None,
+            "client_endpoint": endpoint,
+            "launch_command": command,
+            "log_path": log_path,
+            "proxy_model_ref": None,
+            "external_server_protocol": "llama.cpp-server",
+            "openai_compatible": True,
+        },
+        "loaded_models": [loaded_model],
+        "restore_selection": {
+            "backend": "llama.cpp-mac",
+            "model": DRIVER.MODEL_PATH,
+            "mmproj": None,
+            "no_mmproj": True,
+            "ctx_size": 256,
+            "request_defaults": {},
+        },
+        "restore_status": "loaded",
+        "restore_completed": True,
+        "resource_ledger": resource_ledger,
+        "available_backends": [{"id": "llama.cpp-mac"}],
+    }
+
+
+def fixture_management_transport(
+    base_url: str,
+    label: str,
+    method: str,
+    path: str,
+    body: bytes | None,
+    response: dict[str, object],
+) -> dict[str, object]:
+    port = urllib.parse.urlsplit(base_url).port
+    assert port is not None
+    headers = [
+        f"{method} {path} HTTP/1.1",
+        f"Host: 127.0.0.1:{port}",
+        "Accept: application/json",
+        "Connection: keep-alive",
+    ]
+    if body is not None:
+        headers.extend(
+            ["Content-Type: application/json", f"Content-Length: {len(body)}"]
+        )
+    body_bytes = body or b""
+    wire = ("\r\n".join(headers) + "\r\n\r\n").encode("ascii") + body_bytes
+    response_bytes = compact(response)
+    return {
+        "connection": label,
+        "method": method,
+        "path": path,
+        "request_body_size_bytes": len(body_bytes),
+        "request_body_sha256": hashlib.sha256(body).hexdigest()
+        if body is not None
+        else None,
+        "request_wire_size_bytes": len(wire),
+        "request_wire_sha256": hashlib.sha256(wire).hexdigest(),
+        "request_wire_base64": base64.b64encode(wire).decode("ascii"),
+        "request_wire_body_offset_bytes": len(wire) - len(body_bytes),
+        "request_wire_body_size_bytes": len(body_bytes),
+        "request_wire_body_sha256": hashlib.sha256(body_bytes).hexdigest(),
+        "request_wire_body_equals_request_body": True,
+        "single_sendall_call_count": 1,
+        "single_sendall_argument_size_bytes": len(wire),
+        "single_sendall_argument_sha256": hashlib.sha256(wire).hexdigest(),
+        "status": 200,
+        "http_version": 11,
+        "response_size_bytes": len(response_bytes),
+        "response_sha256": hashlib.sha256(response_bytes).hexdigest(),
+        "response_base64": base64.b64encode(response_bytes).decode("ascii"),
+        "request_serialization_before_start": True,
+        "first_wire_byte_send_call_immediately_after_start": True,
+        "complete_HTTP_request_wire_serialization_before_start": True,
+        "single_sendall_call_for_complete_request_wire_required": True,
+        "full_response_body_read_before_end": True,
+        "strict_json_parse_before_end": True,
+        "semantic_validation_before_end": True,
+    }
+
+
+def fixture_zero_generation_model_load_receipt(
+    plan: dict[str, object] | None = None,
+) -> dict[str, object]:
+    selected_plan = plan or fixture_execution_plan()
+    gateway_start = {"seconds": 3, "microseconds": 4}
+    backend_start = {"seconds": 5, "microseconds": 6}
+    payloads = iter(
+        (
+            fixture_unloaded_gateway_state(),
+            fixture_model_select_response(selected_plan),
+            fixture_loaded_gateway_state(selected_plan),
+        )
+    )
+
+    class GatewayProcess:
+        pid = 11
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def request(
+        base_url: str,
+        label: str,
+        method: str,
+        path: str,
+        body: bytes | None,
+        validator: object,
+    ) -> tuple[dict[str, object], object, dict[str, object]]:
+        payload = next(payloads)
+        return (
+            payload,
+            validator(payload),
+            fixture_management_transport(base_url, label, method, path, body, payload),
+        )
+
+    history = {"exists": False, "entries": [], "canonical_sha256": "0" * 64}
+    return DRIVER.admit_zero_generation_model_load(
+        selected_plan,
+        GatewayProcess(),
+        gateway_start,
+        expected_gateway_parent_pid=10,
+        request_json=request,
+        process_start_reader=lambda pid: copy.deepcopy(
+            gateway_start if pid == 11 else backend_start
+        ),
+        parent_pid_reader=lambda pid: 11 if pid == 12 else 10,
+        tree_reader=lambda _path: copy.deepcopy(history),
+        monotonic=lambda: 0.0,
+        sleeper=lambda _seconds: None,
+    )
+
+
+def fixture_runtime_preflight(
+    plan: dict[str, object] | None = None,
+) -> dict[str, object]:
+    selected_plan = plan or fixture_execution_plan()
+    zero_generation_model_load = fixture_zero_generation_model_load_receipt(
+        selected_plan
+    )
     attestation = {
         "daemon_challenge_response": {
             "custodian_pid": 10,
@@ -388,7 +808,22 @@ def fixture_runtime_preflight() -> dict[str, object]:
         "backend_process_end": {"pid": 12},
         "backend_start_end_identity_equal": True,
         "gateway_start_end_identity_equal": True,
-        "custodian_binding": {"nonce": "a" * 64},
+        "custodian_binding": {
+            "nonce": "a" * 64,
+            "custodian_pid": 10,
+            "gateway_pid": 11,
+            "gateway_start_identity": {"seconds": 3, "microseconds": 4},
+            "backend_pid": 12,
+            "backend_start_identity": {"seconds": 5, "microseconds": 6},
+            "zero_generation_model_load": copy.deepcopy(zero_generation_model_load),
+            "ready_receipt": {
+                "zero_generation_model_load": copy.deepcopy(zero_generation_model_load)
+            },
+            "campaign_directory_initialization": (
+                fixture_campaign_directory_initialization_receipt(selected_plan)
+            ),
+        },
+        "zero_generation_model_load": copy.deepcopy(zero_generation_model_load),
         "custodian_process_start": {"pid": 10},
         "custodian_process_end": {"pid": 10},
         "controller_backend_model_fd_custody": {
@@ -1169,9 +1604,10 @@ class CrashSafetyTests(unittest.TestCase):
 
 class CustodyHardeningTests(unittest.TestCase):
     def test_published_runtime_preflight_rejects_same_ofd_claim_mutations(self) -> None:
-        marker_runtime = fixture_runtime_preflight()
+        plan = fixture_execution_plan()
+        marker_runtime = fixture_runtime_preflight(plan)
         runtime_now = copy.deepcopy(marker_runtime)
-        DRIVER.validate_published_runtime_preflight(marker_runtime, runtime_now)
+        DRIVER.validate_published_runtime_preflight(marker_runtime, runtime_now, plan)
 
         for field, value in (
             ("controller_and_backend_same_vnode_identity", False),
@@ -1182,14 +1618,66 @@ class CustodyHardeningTests(unittest.TestCase):
             changed["controller_backend_model_fd_custody"][field] = value
             with self.subTest(field=field):
                 with self.assertRaises(DRIVER.CampaignError):
-                    DRIVER.validate_published_runtime_preflight(changed, runtime_now)
+                    DRIVER.validate_published_runtime_preflight(
+                        changed, runtime_now, plan
+                    )
 
         nested_claim = copy.deepcopy(marker_runtime)
         nested_claim["controller_backend_model_fd_custody"]["start"][
             "controller_and_backend_same_open_file_description_claimed"
         ] = True
         with self.assertRaises(DRIVER.CampaignError):
-            DRIVER.validate_published_runtime_preflight(nested_claim, runtime_now)
+            DRIVER.validate_published_runtime_preflight(nested_claim, runtime_now, plan)
+
+    def test_published_runtime_preflight_rejects_model_load_receipt_mutations(
+        self,
+    ) -> None:
+        plan = fixture_execution_plan()
+        runtime_now = fixture_runtime_preflight(plan)
+        DRIVER.validate_published_runtime_preflight(runtime_now, runtime_now, plan)
+
+        mutations = {
+            "select-before-listener-ready": lambda receipt: receipt.update(
+                {
+                    "management_request_sequence": [
+                        ["POST", "/omni/model/select"],
+                        ["GET", "/omni/state"],
+                    ]
+                }
+            ),
+            "generation-request": lambda receipt: receipt.update(
+                {"generation_requests": 1}
+            ),
+            "response-drift": lambda receipt: receipt["response"]["object"].update(
+                {"engine_winner": "OmniInfer"}
+            ),
+        }
+        for label, mutate in mutations.items():
+            changed = copy.deepcopy(runtime_now)
+            for receipt in (
+                changed["zero_generation_model_load"],
+                changed["custodian_binding"]["zero_generation_model_load"],
+                changed["custodian_binding"]["ready_receipt"][
+                    "zero_generation_model_load"
+                ],
+            ):
+                mutate(receipt)
+            with self.subTest(label=label):
+                with self.assertRaises(DRIVER.CampaignError):
+                    DRIVER.validate_published_runtime_preflight(
+                        changed, runtime_now, plan
+                    )
+
+        changed = copy.deepcopy(runtime_now)
+        for receipt in (
+            changed["zero_generation_model_load"],
+            changed["custodian_binding"]["zero_generation_model_load"],
+            changed["custodian_binding"]["ready_receipt"]["zero_generation_model_load"],
+        ):
+            receipt["history_start"] = {"exists": False, "entries": [], "v": 2}
+            receipt["history_end"] = copy.deepcopy(receipt["history_start"])
+        with self.assertRaises(DRIVER.CampaignError):
+            DRIVER.validate_published_runtime_preflight(changed, runtime_now, plan)
 
     def test_gateway_model_custody_requires_explicit_same_vnode_contract(self) -> None:
         contract = fixture_contract()
@@ -1216,6 +1704,407 @@ class CustodyHardeningTests(unittest.TestCase):
             copy.deepcopy(DRIVER.GATEWAY_MODEL_CUSTODY_CONTRACT_V3)
         )
         DRIVER.validate_frozen_gateway_contract(contract)
+
+
+class ZeroGenerationModelLoadTests(unittest.TestCase):
+    def test_unloaded_gateway_listener_timeout_is_zero_generation_blocker(self) -> None:
+        plan = fixture_execution_plan()
+        plan["runtime"]["custodian_ready_timeout_seconds"] = 1
+        gateway_start = {"seconds": 3, "microseconds": 4}
+        calls: list[tuple[str, str]] = []
+
+        class GatewayProcess:
+            pid = 11
+
+            @staticmethod
+            def poll() -> None:
+                return None
+
+        def unavailable_request(
+            _base_url: str,
+            _label: str,
+            method: str,
+            path: str,
+            _body: bytes | None,
+            _validator: object,
+        ) -> object:
+            calls.append((method, path))
+            raise OSError("listener absent")
+
+        ticks = iter((0.0, 0.0, 1.0))
+        with self.assertRaises(DRIVER.PreflightBlockedError) as blocked:
+            DRIVER.admit_zero_generation_model_load(
+                plan,
+                GatewayProcess(),
+                gateway_start,
+                request_json=unavailable_request,
+                process_start_reader=lambda _pid: copy.deepcopy(gateway_start),
+                parent_pid_reader=lambda _pid: 11,
+                tree_reader=lambda _path: {"exists": False, "entries": []},
+                monotonic=lambda: next(ticks),
+                sleeper=lambda _seconds: None,
+            )
+        self.assertEqual(
+            blocked.exception.receipt["blocker_codes"],
+            ["OMNIINFER_GATEWAY_LISTENER_NOT_READY_FOR_ZERO_GENERATION_MODEL_LOAD"],
+        )
+        self.assertEqual(blocked.exception.receipt["generation_requests"], 0)
+        self.assertFalse(blocked.exception.receipt["marker_created"])
+        self.assertTrue(calls)
+        self.assertEqual(set(calls), {("GET", "/omni/state")})
+
+    def test_model_select_success_binds_zero_generation_receipt(self) -> None:
+        plan = fixture_execution_plan()
+        gateway_start = {"seconds": 3, "microseconds": 4}
+        backend_start = {"seconds": 5, "microseconds": 6}
+        unloaded = fixture_unloaded_gateway_state()
+        response = fixture_model_select_response(plan)
+        loaded = fixture_loaded_gateway_state(plan)
+        calls: list[tuple[str, str, bytes | None]] = []
+
+        class GatewayProcess:
+            pid = 11
+
+            @staticmethod
+            def poll() -> None:
+                return None
+
+        def request(
+            _base_url: str,
+            label: str,
+            method: str,
+            path: str,
+            body: bytes | None,
+            validator: object,
+        ) -> tuple[dict[str, object], object, dict[str, object]]:
+            calls.append((method, path, body))
+            if len(calls) == 1:
+                payload = unloaded
+            elif len(calls) == 2:
+                payload = response
+            else:
+                payload = loaded
+            return (
+                payload,
+                validator(payload),
+                fixture_management_transport(
+                    _base_url, label, method, path, body, payload
+                ),
+            )
+
+        history = {"exists": False, "entries": [], "canonical_sha256": "0" * 64}
+        ticks = iter((0.0, 0.0, 1.2, 1.25, 1.3, 1.35))
+        receipt = DRIVER.admit_zero_generation_model_load(
+            plan,
+            GatewayProcess(),
+            gateway_start,
+            request_json=request,
+            process_start_reader=lambda pid: copy.deepcopy(
+                gateway_start if pid == 11 else backend_start
+            ),
+            parent_pid_reader=lambda pid: 11 if pid == 12 else 10,
+            tree_reader=lambda _path: copy.deepcopy(history),
+            monotonic=lambda: next(ticks),
+            sleeper=lambda _seconds: None,
+        )
+
+        self.assertEqual(
+            [(method, path) for method, path, _body in calls],
+            [
+                ("GET", "/omni/state"),
+                ("POST", "/omni/model/select"),
+                ("GET", "/omni/state"),
+            ],
+        )
+        self.assertEqual(calls[1][2], DRIVER.gateway_model_select_request_bytes(plan))
+        self.assertEqual(receipt["generation_requests"], 0)
+        self.assertEqual(receipt["generation_endpoint_paths_called"], [])
+        self.assertEqual(receipt["model_select_request_count"], 1)
+        self.assertEqual(
+            receipt["request"]["object"], DRIVER.gateway_model_select_request(plan)
+        )
+        self.assertEqual(receipt["response"]["object"], response)
+        self.assertEqual(receipt["loaded_state"]["validated"]["backend_pid"], 12)
+        self.assertTrue(receipt["history_start_end_equal"])
+        self.assertTrue(receipt["gateway_process_start_end_equal"])
+        self.assertTrue(receipt["gateway_is_direct_parent_of_backend"])
+        self.assertTrue(receipt["all_passed"])
+
+    def test_model_select_response_drift_fails_closed_before_state_wait(self) -> None:
+        plan = fixture_execution_plan()
+        gateway_start = {"seconds": 3, "microseconds": 4}
+
+        class GatewayProcess:
+            pid = 11
+
+            @staticmethod
+            def poll() -> None:
+                return None
+
+        for mutation in ("extra-field", "already-loaded", "generation", "mmproj"):
+            calls: list[tuple[str, str]] = []
+            changed = fixture_model_select_response(plan)
+            if mutation == "extra-field":
+                changed["engine_winner"] = "OmniInfer"
+            elif mutation == "already-loaded":
+                changed["already_loaded"] = True
+            elif mutation == "mmproj":
+                changed["selected_mmproj"] = "/private/tmp/forbidden-mmproj.gguf"
+            else:
+                changed["generation"] = 2
+
+            def request(
+                _base_url: str,
+                _label: str,
+                method: str,
+                path: str,
+                _body: bytes | None,
+                validator: object,
+            ) -> tuple[dict[str, object], object, dict[str, object]]:
+                calls.append((method, path))
+                if len(calls) == 1:
+                    payload = fixture_unloaded_gateway_state()
+                    return (
+                        payload,
+                        validator(payload),
+                        fixture_management_transport(
+                            _base_url, _label, method, path, _body, payload
+                        ),
+                    )
+                if len(calls) == 2:
+                    admitted = fixture_model_select_response(plan)
+                    return (
+                        changed,
+                        validator(admitted),
+                        fixture_management_transport(
+                            _base_url, _label, method, path, _body, changed
+                        ),
+                    )
+                payload = fixture_loaded_gateway_state(plan)
+                return (
+                    payload,
+                    validator(payload),
+                    fixture_management_transport(
+                        _base_url, _label, method, path, _body, payload
+                    ),
+                )
+
+            with self.subTest(mutation=mutation):
+                with self.assertRaises(DRIVER.ReceiptError):
+                    DRIVER.admit_zero_generation_model_load(
+                        plan,
+                        GatewayProcess(),
+                        gateway_start,
+                        request_json=request,
+                        process_start_reader=lambda _pid: copy.deepcopy(gateway_start),
+                        parent_pid_reader=lambda _pid: 11,
+                        tree_reader=lambda _path: {
+                            "exists": False,
+                            "entries": [],
+                        },
+                        monotonic=lambda: 0.0,
+                        sleeper=lambda _seconds: None,
+                    )
+            self.assertEqual(
+                calls,
+                [("GET", "/omni/state"), ("POST", "/omni/model/select")],
+            )
+            self.assertNotIn(("POST", "/v1/chat/completions"), calls)
+
+    def test_first_post_select_state_must_be_exact_ready(self) -> None:
+        plan = fixture_execution_plan()
+        plan["runtime"]["custodian_ready_timeout_seconds"] = 1
+        gateway_start = {"seconds": 3, "microseconds": 4}
+        response = fixture_model_select_response(plan)
+        calls: list[tuple[str, str]] = []
+
+        class GatewayProcess:
+            pid = 11
+
+            @staticmethod
+            def poll() -> None:
+                return None
+
+        def request(
+            _base_url: str,
+            label: str,
+            method: str,
+            path: str,
+            _body: bytes | None,
+            validator: object,
+        ) -> tuple[dict[str, object], object, dict[str, object]]:
+            calls.append((method, path))
+            payload = response if len(calls) == 2 else fixture_unloaded_gateway_state()
+            return (
+                payload,
+                validator(payload),
+                fixture_management_transport(
+                    _base_url, label, method, path, _body, payload
+                ),
+            )
+
+        history = {"exists": False, "entries": [], "canonical_sha256": "0" * 64}
+        sleeps: list[float] = []
+        with self.assertRaises(DRIVER.ReceiptError):
+            DRIVER.admit_zero_generation_model_load(
+                plan,
+                GatewayProcess(),
+                gateway_start,
+                request_json=request,
+                process_start_reader=lambda _pid: copy.deepcopy(gateway_start),
+                parent_pid_reader=lambda _pid: 11,
+                tree_reader=lambda _path: copy.deepcopy(history),
+                monotonic=lambda: 0.0,
+                sleeper=sleeps.append,
+            )
+        self.assertEqual(
+            calls,
+            [
+                ("GET", "/omni/state"),
+                ("POST", "/omni/model/select"),
+                ("GET", "/omni/state"),
+            ],
+        )
+        self.assertEqual(sleeps, [])
+
+    def test_preload_state_wrong_model_runtime_or_schema_is_rejected(self) -> None:
+        mutations = {
+            "model": lambda state: state.update({"model": DRIVER.MODEL_PATH}),
+            "runtime": lambda state: state.update({"runtime": {"pid": 12}}),
+            "resource-ledger": lambda state: state.update({"resource_ledger": {}}),
+            "extra": lambda state: state.update({"engine_winner": "OmniInfer"}),
+        }
+        for label, mutate in mutations.items():
+            state = fixture_unloaded_gateway_state()
+            mutate(state)
+            with self.subTest(label=label):
+                with self.assertRaises(DRIVER.ReceiptError):
+                    DRIVER.validate_gateway_preload_state(state)
+
+    def test_loaded_state_core_and_nested_drift_is_rejected(self) -> None:
+        plan = fixture_execution_plan()
+        mutations = {
+            "owner": lambda state: state.update({"owner_admin_id": None}),
+            "generation": lambda state: state.update({"generation": 2}),
+            "restore": lambda state: state.update({"restore_status": "pending"}),
+            "runtime": lambda state: state["runtime"].update({"mode": "wrong"}),
+            "loaded-model": lambda state: state["loaded_models"][0].update(
+                {"route_state": "draining"}
+            ),
+            "resource-ledger": lambda state: state["resource_ledger"].update(
+                {"committed_bytes": {}}
+            ),
+            "extra": lambda state: state.update({"engine_ranking": True}),
+        }
+        for label, mutate in mutations.items():
+            state = fixture_loaded_gateway_state(plan)
+            mutate(state)
+            with self.subTest(label=label):
+                with self.assertRaises(DRIVER.ReceiptError):
+                    DRIVER.validate_gateway_state(state, plan)
+
+    def test_gateway_parent_change_during_model_load_fails_closed(self) -> None:
+        plan = fixture_execution_plan()
+        gateway_start = {"seconds": 3, "microseconds": 4}
+        backend_start = {"seconds": 5, "microseconds": 6}
+        response = fixture_model_select_response(plan)
+        payloads = iter(
+            (
+                fixture_unloaded_gateway_state(),
+                response,
+                fixture_loaded_gateway_state(plan),
+            )
+        )
+
+        class GatewayProcess:
+            pid = 11
+
+            @staticmethod
+            def poll() -> None:
+                return None
+
+        def request(
+            _base_url: str,
+            _label: str,
+            _method: str,
+            _path: str,
+            _body: bytes | None,
+            validator: object,
+        ) -> tuple[dict[str, object], object, dict[str, object]]:
+            payload = next(payloads)
+            return (
+                payload,
+                validator(payload),
+                fixture_management_transport(
+                    _base_url, _label, _method, _path, _body, payload
+                ),
+            )
+
+        gateway_parents = iter((10, 10, 99))
+
+        def parent(pid: int) -> int:
+            return next(gateway_parents) if pid == 11 else 11
+
+        with self.assertRaises(DRIVER.CampaignError):
+            DRIVER.admit_zero_generation_model_load(
+                plan,
+                GatewayProcess(),
+                gateway_start,
+                expected_gateway_parent_pid=10,
+                request_json=request,
+                process_start_reader=lambda pid: copy.deepcopy(
+                    gateway_start if pid == 11 else backend_start
+                ),
+                parent_pid_reader=parent,
+                tree_reader=lambda _path: {"exists": False, "entries": []},
+                monotonic=lambda: 0.0,
+                sleeper=lambda _seconds: None,
+            )
+
+    def test_management_transport_drift_fails_closed(self) -> None:
+        plan = fixture_execution_plan()
+        gateway_start = {"seconds": 3, "microseconds": 4}
+        backend_start = {"seconds": 5, "microseconds": 6}
+        payloads = iter(
+            (
+                fixture_unloaded_gateway_state(),
+                fixture_model_select_response(plan),
+                fixture_loaded_gateway_state(plan),
+            )
+        )
+
+        class GatewayProcess:
+            pid = 11
+
+            @staticmethod
+            def poll() -> None:
+                return None
+
+        def request(
+            _base_url: str,
+            _label: str,
+            _method: str,
+            _path: str,
+            _body: bytes | None,
+            validator: object,
+        ) -> tuple[dict[str, object], object, dict[str, object]]:
+            payload = next(payloads)
+            return payload, validator(payload), {"passed": True}
+
+        with self.assertRaises(DRIVER.ReceiptError):
+            DRIVER.admit_zero_generation_model_load(
+                plan,
+                GatewayProcess(),
+                gateway_start,
+                request_json=request,
+                process_start_reader=lambda pid: copy.deepcopy(
+                    gateway_start if pid == 11 else backend_start
+                ),
+                parent_pid_reader=lambda pid: 11 if pid == 12 else 10,
+                tree_reader=lambda _path: {"exists": False, "entries": []},
+                monotonic=lambda: 0.0,
+                sleeper=lambda _seconds: None,
+            )
 
     def test_shared_formal_helper_is_tracked_and_marker_bound(self) -> None:
         paths = DRIVER.tracked_campaign_paths(
@@ -1290,9 +2179,18 @@ class CustodyHardeningTests(unittest.TestCase):
         admitted = DRIVER.validate_execution_plan(plan, contract)
         self.assertEqual(
             admitted["runtime"]["custodian_control_socket_path"],
-            "/private/tmp/gateway-formal-v3-logs/custodian.sock",
+            "/private/tmp/gateway-formal-v3-campaign-fixture/state/.local/logs/custodian.sock",
         )
-        for mutation in ("old-pointer", "history-enabled", "socket-outside"):
+        for mutation in (
+            "old-pointer",
+            "history-enabled",
+            "socket-outside",
+            "port-mismatch",
+            "extra-argv",
+            "wrong-launcher",
+            "extra-environment",
+            "wrong-lang",
+        ):
             changed = copy.deepcopy(plan)
             if mutation == "old-pointer":
                 changed["runtime"]["instrumented_model_fd_state_pointer"] = (
@@ -1302,10 +2200,22 @@ class CustodyHardeningTests(unittest.TestCase):
                 changed["runtime"]["expected_gateway_environment"][
                     "OMNIINFER_REQUEST_HISTORY"
                 ] = "1"
-            else:
+            elif mutation == "socket-outside":
                 changed["runtime"]["custodian_control_socket_path"] = (
                     "/private/tmp/outside.sock"
                 )
+            elif mutation == "port-mismatch":
+                changed["runtime"]["omni_base_url"] = "http://127.0.0.1:19002"
+            elif mutation == "extra-argv":
+                changed["runtime"]["expected_gateway_argv"].append("--verbose")
+            elif mutation == "wrong-launcher":
+                changed["runtime"]["expected_gateway_environment"][
+                    "OMNIINFER_LLAMA_CPP_MAC_LAUNCHER_PATH"
+                ] = "/bin/false"
+            elif mutation == "extra-environment":
+                changed["runtime"]["expected_gateway_environment"]["EXTRA"] = "1"
+            else:
+                changed["runtime"]["expected_gateway_environment"]["LANG"] = "en_US"
             with self.subTest(mutation=mutation):
                 with self.assertRaises(DRIVER.CampaignError):
                     DRIVER.validate_execution_plan(changed, contract)
@@ -1332,15 +2242,26 @@ class CustodyHardeningTests(unittest.TestCase):
             "gateway_start_identity": {"seconds": 3, "microseconds": 4},
             "backend_pid": 12,
             "backend_start_identity": {"seconds": 5, "microseconds": 6},
+            "controller_preload_fd": {"fd": 7},
+            "backend_loaded_fd": {"fd": 8},
             "lifecycle_sequence": lifecycle,
             "control_socket": {"absolute_path": "/private/tmp/c.sock"},
+            "zero_generation_model_load": fixture_zero_generation_model_load_receipt(),
         }
-        binding = DRIVER._custodian_binding_from_ready(ready, DRIVER_PATH)
+        plan = fixture_execution_plan()
+        binding = DRIVER._custodian_binding_from_ready(ready, DRIVER_PATH, plan)
         self.assertEqual(binding["nonce"], "a" * 64)
+        self.assertEqual(
+            binding["zero_generation_model_load"], ready["zero_generation_model_load"]
+        )
         changed = copy.deepcopy(ready)
         changed["lifecycle_sequence"]["gateway_spawn_invocation_monotonic_ns"] = 15
         with self.assertRaises(DRIVER.CampaignError):
-            DRIVER._custodian_binding_from_ready(changed, DRIVER_PATH)
+            DRIVER._custodian_binding_from_ready(changed, DRIVER_PATH, plan)
+        changed = copy.deepcopy(ready)
+        changed["zero_generation_model_load"]["generation_requests"] = 1
+        with self.assertRaises(DRIVER.CampaignError):
+            DRIVER._custodian_binding_from_ready(changed, DRIVER_PATH, plan)
 
     def test_custodian_attestation_stability_rejects_backend_fd_mutation(self) -> None:
         controller = {
@@ -1468,6 +2389,80 @@ class CustodyHardeningTests(unittest.TestCase):
                 )
             self.assertTrue(updated["custodian_cleanup"]["passed"])
             self.assertEqual(DRIVER.parse_strict_json_line(raw.read_bytes()), updated)
+
+    def test_raw_cleanup_rpc_failure_uses_marker_bound_exact_pid_fallback(
+        self,
+    ) -> None:
+        record = {
+            "status": "FORMAL_COMPLETE",
+            "failures": [],
+            "gates": {},
+            "decision": {},
+        }
+        fallback_receipt = {
+            "format": "apxinf-omniinfer-gateway-exact-pid-fallback-cleanup-v3",
+            "passed": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            raw = Path(directory) / "raw.json"
+            DRIVER._SHARED.atomic_create_json(raw, record)
+            with (
+                mock.patch.object(
+                    DRIVER, "shutdown_custodian", side_effect=OSError("rpc failed")
+                ),
+                mock.patch.object(
+                    DRIVER,
+                    "_fallback_cleanup_marker_bound_processes",
+                    return_value=fallback_receipt,
+                ) as fallback,
+            ):
+                updated = DRIVER._attach_custodian_cleanup_after_raw(
+                    record,
+                    raw,
+                    fixture_execution_plan(),
+                    {"nonce": "a" * 64},
+                    "fixture-cleanup",
+                )
+            fallback.assert_called_once()
+            self.assertEqual(
+                updated["custodian_cleanup"]["exact_pid_fallback"],
+                fallback_receipt,
+            )
+            self.assertEqual(DRIVER.parse_strict_json_line(raw.read_bytes()), updated)
+
+    def test_fallback_never_signals_reused_marker_bound_pids(self) -> None:
+        plan = fixture_execution_plan()
+        binding = {
+            "backend_pid": 12,
+            "backend_start_identity": {"seconds": 1, "microseconds": 1},
+            "gateway_pid": 11,
+            "gateway_start_identity": {"seconds": 2, "microseconds": 2},
+            "custodian_pid": 10,
+            "custodian_start_identity": {"seconds": 3, "microseconds": 3},
+            "control_socket": {"fixture": True},
+        }
+        with (
+            mock.patch.object(
+                DRIVER,
+                "process_start_identity",
+                return_value={"seconds": 999, "microseconds": 999},
+            ),
+            mock.patch.object(DRIVER.os, "kill") as kill,
+            mock.patch.object(DRIVER.os, "killpg") as killpg,
+            mock.patch.object(DRIVER, "_require_loopback_listener_absent"),
+        ):
+            receipt = DRIVER._fallback_cleanup_marker_bound_processes(
+                plan, binding, "fixture-reuse"
+            )
+        kill.assert_not_called()
+        killpg.assert_not_called()
+        self.assertTrue(receipt["passed"])
+        self.assertTrue(
+            all(
+                step["state"] == "original-exited-pid-reused-no-signal"
+                for step in receipt["process_steps"]
+            )
+        )
 
     def test_command_runner_does_not_inherit_ambient_git_configuration(self) -> None:
         completed = type(
@@ -1606,6 +2601,252 @@ class CustodyHardeningTests(unittest.TestCase):
         killpg.assert_called_once_with(55, DRIVER.signal.SIGTERM)
         self.assertEqual(group["state"], "terminated")
 
+    def test_exited_custodian_leader_never_signals_a_reused_process_group(
+        self,
+    ) -> None:
+        process = mock.Mock()
+        process.pid = 55
+        process.poll.return_value = 0
+        with (
+            mock.patch.object(DRIVER, "_custodian_group_exists", return_value=True),
+            mock.patch.object(DRIVER, "process_start_identity") as identity,
+            mock.patch.object(DRIVER.os, "killpg") as killpg,
+        ):
+            with self.assertRaises(DRIVER.CampaignError):
+                DRIVER._terminate_custodian_process_group(
+                    process, {"seconds": 1, "microseconds": 2}, 1.0
+                )
+        identity.assert_not_called()
+        killpg.assert_not_called()
+
+    def test_unattested_custodian_start_never_signals_a_process_group(self) -> None:
+        process = mock.Mock()
+        process.pid = 55
+        process.poll.return_value = 0
+        process.wait.return_value = 0
+        with (
+            mock.patch.object(DRIVER, "_custodian_group_exists", return_value=True),
+            mock.patch.object(DRIVER.os, "killpg") as killpg,
+        ):
+            with self.assertRaises(DRIVER.CampaignError):
+                DRIVER._cleanup_unattested_custodian_start(process, 1.0)
+        killpg.assert_not_called()
+
+    def test_gateway_backend_cleanup_uses_one_total_deadline(self) -> None:
+        class Clock:
+            value = 0.0
+
+            def monotonic(self) -> float:
+                return self.value
+
+            def advance(self, seconds: float) -> None:
+                self.value += seconds
+
+        class Process:
+            pid = 55
+
+            def __init__(self, clock: Clock) -> None:
+                self.clock = clock
+                self.waits: list[float] = []
+                self.wait_count = 0
+
+            def terminate(self) -> None:
+                pass
+
+            def kill(self) -> None:
+                pass
+
+            def wait(self, timeout: float) -> int:
+                self.waits.append(timeout)
+                self.clock.advance(timeout)
+                self.wait_count += 1
+                if self.wait_count == 1:
+                    raise DRIVER.subprocess.TimeoutExpired(["gateway"], timeout)
+                return -9
+
+        clock = Clock()
+        process = Process(clock)
+        gateway_start = {"seconds": 1, "microseconds": 2}
+        absent = DRIVER.PreflightBlockedError(
+            {"blocker_codes": ["fixture-absent"], "format": "fixture"}
+        )
+
+        def identity(pid: int) -> dict[str, int]:
+            if pid == process.pid:
+                return gateway_start
+            raise absent
+
+        with (
+            mock.patch.object(DRIVER.time, "monotonic", side_effect=clock.monotonic),
+            mock.patch.object(DRIVER, "process_start_identity", side_effect=identity),
+        ):
+            receipt = DRIVER._terminate_gateway_child(
+                process,
+                gateway_start,
+                77,
+                {"seconds": 3, "microseconds": 4},
+                20.0,
+            )
+        self.assertTrue(receipt["forced_kill_required"])
+        self.assertLessEqual(sum(process.waits), 20.0)
+
+    def test_control_request_read_has_one_total_deadline(self) -> None:
+        class TricklingSocket:
+            def __init__(self) -> None:
+                self.timeouts: list[float] = []
+                self.chunks = iter((b'{"command":', b'"attest"', b""))
+
+            def settimeout(self, timeout: float) -> None:
+                self.timeouts.append(timeout)
+
+            def recv(self, _size: int) -> bytes:
+                return next(self.chunks)
+
+        connection = TricklingSocket()
+        ticks = iter((0.0, 0.1, 0.6, 1.1))
+        with self.assertRaises(DRIVER.CampaignError):
+            DRIVER._receive_control_request(
+                connection, 1.0, monotonic=lambda: next(ticks)
+            )
+        self.assertGreaterEqual(len(connection.timeouts), 2)
+        self.assertGreater(connection.timeouts[0], connection.timeouts[1])
+
+    def test_custodian_parent_ready_budget_strictly_covers_child_load_budget(
+        self,
+    ) -> None:
+        runtime = fixture_execution_plan()["runtime"]
+        child = DRIVER._custodian_child_ready_budget_seconds(runtime)
+        parent = DRIVER._custodian_parent_ready_budget_seconds(runtime)
+        self.assertEqual(child, 390.0)
+        self.assertGreaterEqual(parent - child, 30.0)
+
+    def test_long_listener_and_synchronous_load_fit_one_proven_child_budget(
+        self,
+    ) -> None:
+        plan = fixture_execution_plan()
+        gateway_start = {"seconds": 3, "microseconds": 4}
+        backend_start = {"seconds": 5, "microseconds": 6}
+        history = {"exists": False, "entries": [], "canonical_sha256": "0" * 64}
+
+        class Clock:
+            value = 0.0
+
+            def monotonic(self) -> float:
+                return self.value
+
+        class GatewayProcess:
+            pid = 11
+
+            @staticmethod
+            def poll() -> None:
+                return None
+
+        clock = Clock()
+        calls = 0
+
+        def request(
+            base_url: str,
+            label: str,
+            method: str,
+            path: str,
+            body: bytes | None,
+            validator: object,
+        ) -> tuple[dict[str, object], object, dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                clock.value = 179.0
+                raise OSError("listener still starting")
+            if calls == 2:
+                payload = fixture_unloaded_gateway_state()
+            elif calls == 3:
+                clock.value += 180.0
+                payload = fixture_model_select_response(plan)
+            else:
+                clock.value += 30.0
+                payload = fixture_loaded_gateway_state(plan)
+            return (
+                payload,
+                validator(payload),
+                fixture_management_transport(
+                    base_url, label, method, path, body, payload
+                ),
+            )
+
+        receipt = DRIVER.admit_zero_generation_model_load(
+            plan,
+            GatewayProcess(),
+            gateway_start,
+            request_json=request,
+            process_start_reader=lambda pid: copy.deepcopy(
+                gateway_start if pid == 11 else backend_start
+            ),
+            parent_pid_reader=lambda pid: 11 if pid == 12 else 10,
+            tree_reader=lambda _path: copy.deepcopy(history),
+            monotonic=clock.monotonic,
+            sleeper=lambda _seconds: None,
+        )
+        self.assertEqual(clock.value, 389.0)
+        self.assertTrue(receipt["all_passed"])
+
+    def test_runtime_closure_binds_lsof_text_vnode_to_read_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "runner"
+            executable.write_bytes(b"exact mapped image")
+            observed = executable.stat()
+            entry = {
+                "fd": "txt",
+                "type": "REG",
+                "path": str(executable),
+                "device_text": hex(observed.st_dev),
+                "inode_text": str(observed.st_ino),
+                "size_text": str(observed.st_size),
+            }
+            start = {"seconds": 1, "microseconds": 2}
+            with (
+                mock.patch.object(DRIVER, "lsof_entries", return_value=[entry]),
+                mock.patch.object(DRIVER, "process_start_identity", return_value=start),
+                mock.patch.object(
+                    DRIVER,
+                    "code_signature_receipt",
+                    return_value={"state": "explicitly-unsigned"},
+                ),
+            ):
+                closure = DRIVER.runtime_closure(42, str(executable))
+            image = closure["loaded_image_paths_and_sha256"][0]
+            self.assertEqual(
+                image["lsof_text_vnode"],
+                {
+                    "device": observed.st_dev,
+                    "inode": observed.st_ino,
+                    "size_bytes": observed.st_size,
+                },
+            )
+            self.assertEqual(closure["process_start_identity_before"], start)
+            self.assertEqual(closure["process_start_identity_after"], start)
+
+            for field, mutation in (
+                ("device_text", hex(observed.st_dev + 1)),
+                ("inode_text", str(observed.st_ino + 1)),
+                ("size_text", str(observed.st_size + 1)),
+            ):
+                changed = copy.deepcopy(entry)
+                changed[field] = mutation
+                with (
+                    self.subTest(field=field),
+                    mock.patch.object(DRIVER, "lsof_entries", return_value=[changed]),
+                    mock.patch.object(
+                        DRIVER, "process_start_identity", return_value=start
+                    ),
+                    mock.patch.object(
+                        DRIVER,
+                        "code_signature_receipt",
+                        return_value={"state": "explicitly-unsigned"},
+                    ),
+                ):
+                    with self.assertRaises(DRIVER.CampaignError):
+                        DRIVER.runtime_closure(42, str(executable))
+
     def test_host_snapshot_rejects_incomplete_managed_runtime_swap_proof(self) -> None:
         probe = object.__new__(DRIVER.GatewayQuietHostProbe)
         identities = {
@@ -1638,6 +2879,307 @@ class CustodyHardeningTests(unittest.TestCase):
         self.assertFalse(receipt["passed"])
 
 
+class CampaignDirectoryInitializationTests(unittest.TestCase):
+    def test_fresh_campaign_tree_is_created_before_runtime_with_exact_custody(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            plan = fixture_campaign_directory_plan(Path(directory))
+            campaign_root = Path(directory) / "campaign"
+            self.assertFalse(campaign_root.exists())
+
+            receipt = DRIVER.initialize_campaign_directory_tree(plan)
+
+            expected = [Path(path) for path in receipt["expected_directory_paths"]]
+            self.assertEqual(
+                set(receipt["created_directory_paths"]), set(map(str, expected))
+            )
+            self.assertEqual(receipt["preexisting_directory_paths"], [])
+            self.assertTrue(receipt["all_passed"])
+            self.assertEqual(receipt["generation_requests"], 0)
+            self.assertEqual(receipt["runtime_processes_started"], 0)
+            self.assertFalse(Path(plan["raw_output_path"]).exists())
+            for path in expected:
+                self.assertTrue(path.is_dir())
+                self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(path.stat().st_uid, os.geteuid())
+            DRIVER.validate_campaign_directory_initialization_receipt(
+                receipt, plan, verify_live=True
+            )
+
+    def test_unsafe_preexisting_campaign_entries_are_rejected(self) -> None:
+        for mutation in (
+            "root-symlink",
+            "expected-nondirectory",
+            "unexpected-file",
+            "unexpected-directory",
+            "unsafe-permissions",
+        ):
+            with self.subTest(mutation=mutation):
+                with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+                    parent = Path(directory)
+                    plan = fixture_campaign_directory_plan(parent)
+                    root = parent / "campaign"
+                    if mutation == "root-symlink":
+                        target = parent / "target"
+                        target.mkdir(mode=0o700)
+                        root.symlink_to(target, target_is_directory=True)
+                    else:
+                        root.mkdir(mode=0o700)
+                        if mutation == "expected-nondirectory":
+                            (root / "state").write_text(
+                                "not a directory", encoding="utf-8"
+                            )
+                        elif mutation == "unsafe-permissions":
+                            root.chmod(0o755)
+                        elif mutation == "unexpected-file":
+                            unexpected = root / "unexpected"
+                            unexpected.write_text("not admitted", encoding="utf-8")
+                        else:
+                            unexpected = root / "unexpected"
+                            unexpected.mkdir(mode=0o700)
+
+                    with self.assertRaises(DRIVER.CampaignError):
+                        DRIVER.initialize_campaign_directory_tree(plan)
+                    self.assertFalse(Path(plan["raw_output_path"]).exists())
+
+    def test_exact_empty_partial_and_complete_tree_are_retryable(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            plan = fixture_campaign_directory_plan(Path(directory))
+            root = Path(directory) / "campaign"
+            state = root / "state"
+            root.mkdir(mode=0o700)
+            state.mkdir(mode=0o700)
+
+            repaired = DRIVER.initialize_campaign_directory_tree(plan)
+            self.assertEqual(
+                repaired["preexisting_directory_paths"], [str(root), str(state)]
+            )
+            self.assertNotEqual(repaired["created_directory_paths"], [])
+
+            repeated = DRIVER.initialize_campaign_directory_tree(plan)
+            self.assertEqual(
+                repeated["preexisting_directory_paths"],
+                repeated["expected_directory_paths"],
+            )
+            self.assertEqual(repeated["created_directory_paths"], [])
+            DRIVER.validate_campaign_directory_initialization_receipt(
+                repeated, plan, verify_live=True
+            )
+
+    def test_partial_mkdir_failure_rolls_back_for_a_fresh_retry(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            plan = fixture_campaign_directory_plan(Path(directory))
+            calls = 0
+
+            def fail_fourth_mkdir(path: Path, mode: int) -> None:
+                nonlocal calls
+                calls += 1
+                if calls == 4:
+                    raise OSError("fixture mkdir failure")
+                os.mkdir(path, mode)
+
+            with self.assertRaises(DRIVER.CampaignError):
+                DRIVER.initialize_campaign_directory_tree(plan, mkdir=fail_fourth_mkdir)
+            self.assertFalse((Path(directory) / "campaign").exists())
+
+            retry = DRIVER.initialize_campaign_directory_tree(plan)
+            self.assertEqual(retry["preexisting_directory_paths"], [])
+
+    def test_fresh_failed_prepare_tree_cleanup_allows_fresh_retry(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            parent = Path(directory)
+            plan = fixture_campaign_directory_plan(parent)
+            plan["repository_root"] = str(parent)
+            plan["marker_repository_path"] = "marker.json"
+            receipt = DRIVER.initialize_campaign_directory_tree(plan)
+            root = parent / "campaign"
+            (root / "state" / "selected.json").write_text("{}", encoding="utf-8")
+            (root / "state" / ".local" / "logs" / "gateway.log").write_text(
+                "fixture", encoding="utf-8"
+            )
+            (root / "runtime" / "llama.cpp-mac" / "logs" / "backend.log").write_text(
+                "fixture", encoding="utf-8"
+            )
+
+            cleanup = DRIVER.cleanup_failed_prepare_campaign_tree(
+                plan, receipt, "host-preflight-failure"
+            )
+
+            self.assertTrue(cleanup["all_passed"])
+            self.assertTrue(cleanup["root_removed"])
+            self.assertFalse(root.exists())
+            self.assertFalse(Path(plan["raw_output_path"]).exists())
+            retry = DRIVER.initialize_campaign_directory_tree(plan)
+            self.assertEqual(retry["preexisting_directory_paths"], [])
+
+    def test_prepare_host_gate_failure_stops_runtime_and_allows_fresh_retry(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            parent = Path(directory)
+            plan = fixture_campaign_directory_plan(parent)
+            plan["repository_root"] = str(parent)
+            plan["marker_repository_path"] = "formal-marker.json"
+            plan_path = parent / "execution-plan.json"
+            marker = parent / plan["marker_repository_path"]
+            raw = Path(plan["raw_output_path"])
+            campaign_root = parent / "campaign"
+            sibling = parent / "not-owned-by-campaign.txt"
+            sibling.write_text("must survive", encoding="utf-8")
+            binding = {"nonce": "a" * 64}
+            plan_hash = "c" * 64
+            context = {
+                "plan": plan,
+                "contract": fixture_contract(),
+                "repository_root": parent,
+                "contract_file": {"sha256": DRIVER._SHARED.FROZEN_CONTRACT_SHA256},
+                "validator_file": {"sha256": DRIVER._SHARED.FROZEN_VALIDATOR_SHA256},
+                "plan_file": {"sha256": plan_hash},
+            }
+            git_custody = {
+                "tracked_files": {
+                    "contract": {"blob_sha256": DRIVER._SHARED.FROZEN_CONTRACT_SHA256},
+                    "validator": {
+                        "blob_sha256": DRIVER._SHARED.FROZEN_VALIDATOR_SHA256
+                    },
+                    "plan": {"blob_sha256": plan_hash},
+                }
+            }
+
+            def fake_start(
+                _plan_path: Path,
+                received_plan: dict[str, object],
+                receipt: dict[str, object],
+            ) -> dict[str, object]:
+                self.assertIs(received_plan, plan)
+                DRIVER.validate_campaign_directory_initialization_receipt(
+                    receipt, plan, verify_live=True
+                )
+                (campaign_root / "state" / "selected.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+                (
+                    campaign_root / "state" / ".local" / "logs" / "gateway.log"
+                ).write_text("fixture", encoding="utf-8")
+                (
+                    campaign_root / "runtime" / "llama.cpp-mac" / "logs" / "backend.log"
+                ).write_text("fixture", encoding="utf-8")
+                return binding
+
+            def fail_host_gate(_stage: str, _contract: dict[str, object]) -> None:
+                self.assertTrue((campaign_root / "state" / "selected.json").is_file())
+                raise DRIVER.CampaignError("fixture quiet-host rejection")
+
+            with (
+                mock.patch.object(
+                    DRIVER, "load_execution_context", return_value=context
+                ),
+                mock.patch.object(
+                    DRIVER, "collect_git_custody", return_value=git_custody
+                ),
+                mock.patch.object(
+                    DRIVER, "verify_plan_artifacts", return_value={"fixture": True}
+                ),
+                mock.patch.object(
+                    DRIVER, "start_custodian", side_effect=fake_start
+                ) as start,
+                mock.patch.object(
+                    DRIVER,
+                    "collect_runtime_preflight",
+                    return_value={"fixture": "runtime"},
+                ),
+                mock.patch.object(
+                    DRIVER, "shutdown_custodian", return_value={"passed": True}
+                ) as shutdown,
+            ):
+                with self.assertRaises(DRIVER.CampaignError) as failed:
+                    DRIVER.prepare_campaign(
+                        plan_path, host_gate_collector=fail_host_gate
+                    )
+
+            start.assert_called_once()
+            shutdown.assert_called_once_with(
+                plan, binding, "prepare-failed-before-marker-cleanup"
+            )
+            cleanup = failed.exception.failed_prepare_cleanup
+            self.assertTrue(cleanup["runtime_cleanup_complete"])
+            self.assertTrue(cleanup["directory_cleanup"]["all_passed"])
+            self.assertTrue(cleanup["directory_cleanup"]["root_removed"])
+            self.assertFalse(campaign_root.exists())
+            self.assertFalse(marker.exists())
+            self.assertFalse(raw.exists())
+            self.assertEqual(sibling.read_text(encoding="utf-8"), "must survive")
+
+            retry = DRIVER.initialize_campaign_directory_tree(plan)
+            self.assertEqual(retry["preexisting_directory_paths"], [])
+
+    def test_marker_create_race_still_stops_runtime_without_deleting_tree(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            parent = Path(directory)
+            plan = fixture_campaign_directory_plan(parent)
+            plan["repository_root"] = str(parent)
+            plan["marker_repository_path"] = "marker.json"
+            receipt = DRIVER.initialize_campaign_directory_tree(plan)
+            marker = parent / "marker.json"
+            marker.write_text("race winner", encoding="utf-8")
+            binding = {"nonce": "a" * 64}
+            with (
+                mock.patch.object(
+                    DRIVER,
+                    "shutdown_custodian",
+                    return_value={"passed": True},
+                ) as shutdown,
+                mock.patch.object(
+                    DRIVER, "cleanup_failed_prepare_campaign_tree"
+                ) as directory_cleanup,
+            ):
+                cleanup = DRIVER._cleanup_failed_prepare_resources(
+                    plan,
+                    binding,
+                    receipt,
+                    marker,
+                    Path(plan["raw_output_path"]),
+                    "marker-create-race",
+                )
+            shutdown.assert_called_once_with(plan, binding, "marker-create-race")
+            directory_cleanup.assert_not_called()
+            self.assertTrue(cleanup["runtime_cleanup_complete"])
+            self.assertIsNone(cleanup["directory_cleanup"])
+            self.assertTrue((parent / "campaign").is_dir())
+
+    def test_cleanup_root_swap_never_deletes_replacement_tree(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            parent = Path(directory)
+            plan = fixture_campaign_directory_plan(parent)
+            plan["repository_root"] = str(parent)
+            plan["marker_repository_path"] = "marker.json"
+            receipt = DRIVER.initialize_campaign_directory_tree(plan)
+            root = parent / "campaign"
+            moved = parent / "original-campaign"
+            replacement = root / "replacement.txt"
+
+            def swap_root() -> None:
+                root.rename(moved)
+                root.mkdir(mode=0o700)
+                replacement.write_text("must survive", encoding="utf-8")
+
+            cleanup = DRIVER.cleanup_failed_prepare_campaign_tree(
+                plan,
+                receipt,
+                "root-swap-mutation",
+                before_first_removal=swap_root,
+            )
+
+            self.assertFalse(cleanup["all_passed"])
+            self.assertTrue(cleanup["contamination_detected"])
+            self.assertEqual(cleanup["removed_paths"], [])
+            self.assertEqual(replacement.read_text(encoding="utf-8"), "must survive")
+            self.assertTrue(moved.is_dir())
+
+
 class SelfTestTests(unittest.TestCase):
     def test_self_test_is_fixture_only(self) -> None:
         receipt = DRIVER.run_fixture_self_test()
@@ -1645,6 +3187,7 @@ class SelfTestTests(unittest.TestCase):
         self.assertFalse(receipt["network_used"])
         self.assertFalse(receipt["model_process_used"])
         self.assertFalse(receipt["marker_created"])
+        self.assertFalse(receipt["campaign_directory_tree_initialized"])
 
 
 if __name__ == "__main__":

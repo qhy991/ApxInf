@@ -475,6 +475,30 @@ continuous quiet-host checks, and start/end artifact custody.  The static
 validator rejects missing disclosures or any attempt to promote the blocked
 exact-Q8 edge:
 
+### OmniInfer gateway formal-v3 lifecycle
+
+The concrete gateway campaign is bound by the tracked
+[`execution plan`](../../crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-increment-formal-v3-execution-plan-20260826.json)
+and the fail-closed
+[`gateway driver`](../../benchmarks/cross_runtime/omniinfer_gateway_formal_v3_driver.py).
+Its lifecycle is strictly ordered:
+
+1. Run the fixture-only `self-test`; it must not open the model, start a
+   runtime, use the network, initialize the fixed campaign root, or create a
+   marker.
+2. Only from the required quiet host and validated live `main`, run `prepare`.
+   It performs the pinned OmniInfer model-select/load and all custody and host
+   proofs with zero generation requests, then creates a new marker.
+3. Commit and push that marker, and prove that the activated live `main`
+   contains the exact marker/plan/driver/contract bytes before any generation.
+4. Only then run `run`, which consumes the one-shot formal schedule and writes
+   its crash-safe raw receipt before shutting down the bound runtime.
+
+As of this update, only static validation, fixture tests, and `self-test` have
+been run for this plan. Neither `prepare` nor `run` has been invoked, no marker
+or raw campaign receipt exists, and there is no OmniInfer gateway formal-v3
+performance result to report.
+
 ```sh
 /usr/bin/python3 -I -B scripts/validate_qwen35_cross_runtime_formal_contract.py \
   --contract configs/qwen35-0.8b-cross-runtime-formal-v3.json
