@@ -571,6 +571,104 @@ The evaluator is resumable: completed task/trial rows in the JSONL ledger are
 skipped on the next run. If the evaluator and server are on different machines,
 replace `127.0.0.1` with the server's reachable IP address.
 
+## DM05-libero HTTP deployment
+
+DM05 is a separate VLA family, not a PI0.5 checkpoint alias. ApxInf owns model
+selection, the fixed LIBERO observation/action contract, runtime selection, and
+the serial HTTP transport. The base model graph is loaded from the pinned
+official OpenDM source; selected execution is isolated behind a neutral
+`RuntimeFactory` boundary.
+
+The first supported deployment cell is:
+
+```text
+model       Dexmal/DM05-libero@25a8e0d38a8eaeaae41a44d7b4a2378fd8ce1088
+base graph  dexmal/opendm@e41e501bb82e9c3cb8138c0fb4687faa5f98c690
+hardware    one CUDA GPU; optimized selector qualified for RTX 4090 / SM89
+precision   BF16; eager/SDPA/SDPA attention
+request     B=1, two ordered 448x448 images, 8D Franka state
+sampling    10 diffusion steps; optimized selector requires seed 7
+output      finite float32 LIBERO actions with shape 10x7
+transport   POST /v1/infer, concurrency 1
+```
+
+Download the immutable model revision. A Hugging Face mirror may be selected
+without changing the checkpoint identity:
+
+```bash
+python3 -m pip install -U "huggingface_hub[cli]"
+export HF_ENDPOINT=https://hf-mirror.com              # optional
+export APXINF_DM05_MODEL=/path/to/DM05-libero
+hf download Dexmal/DM05-libero \
+  --revision 25a8e0d38a8eaeaae41a44d7b4a2378fd8ce1088 \
+  --local-dir "$APXINF_DM05_MODEL"
+sha256sum "$APXINF_DM05_MODEL/model.safetensors" \
+          "$APXINF_DM05_MODEL/tokenizer.json"
+```
+
+The adapter verifies these files before importing the GPU runtime:
+
+```text
+575d0d8e0f75822e95f7adf3a5e62a7c331da0b82e6fc3efeea19ef1b927353f  model.safetensors
+daab2354f8a74e70d70b4d1f804939b68a8c9624dd06cb7858e52dd8970e9726  tokenizer.json
+```
+
+Use the dependency versions required by the pinned OpenDM checkout, keep that
+checkout clean, and install ApxInf's lightweight policy frontend:
+
+```bash
+export OPENDM_ROOT=/path/to/opendm-e41e501b
+git -C "$OPENDM_ROOT" rev-parse HEAD
+# e41e501bb82e9c3cb8138c0fb4687faa5f98c690
+
+python3 -m pip install -e 'python/apxinf[dm05]'
+PYTHONPATH="python/apxinf:$OPENDM_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+python3 scripts/dm05_http_server.py \
+  --model-dir "$APXINF_DM05_MODEL" \
+  --opendm-root "$OPENDM_ROOT" \
+  --precision bf16 --device cuda:0 \
+  --execution-backend default \
+  --host 0.0.0.0 --port 7891
+```
+
+There are exactly two public runtime selectors:
+
+- `default` runs the pinned official model path and accepts any integer seed.
+- `default_exact_combined` is opt-in and fail-closed. It fixes seed 7, processed
+  prefix length 564, ten diffusion steps, and the qualified host intra-op policy
+  of two threads. Runtime construction and proof are provided through the
+  neutral `RuntimeFactory` seam; unsupported shape, source, or runtime drift
+  raises an error instead of falling back to `default`.
+
+The combined selector sets `OMP_NUM_THREADS=2` and `MKL_NUM_THREADS=2` before
+PyTorch import. `/health` and successful inference responses include a
+pointer-free execution proof; raw process addresses are rejected at the ApxInf
+boundary.
+
+```bash
+curl -fsS http://127.0.0.1:7891/health
+curl -fsS http://127.0.0.1:7891/v1/infer \
+  -H 'Content-Type: application/json' --data @request.json
+```
+
+```json
+{
+  "observation": {
+    "prompt": "pick up the black bowl and place it on the plate",
+    "state": [0, 0, 0, 0, 0, 0, 0, 0],
+    "images": {"1": "<base64-head>", "2": "<base64-left-wrist>"},
+    "robot_type": "Franka"
+  },
+  "sampling": {"num_steps": 10, "seed": 7}
+}
+```
+
+Checkpoint and license boundary: the weights are not vendored in ApxInf. The
+Hugging Face metadata for the pinned `Dexmal/DM05-libero` revision declares
+`license: gemma`; users must obtain and use the weights under that license.
+ApxInf source code remains Apache-2.0. An HTTP shape/correctness check does not
+establish LIBERO task-success accuracy; that requires a separate rollout.
+
 ## License
 
 ApxInf is licensed under the [Apache License 2.0](LICENSE). Vendored third-party

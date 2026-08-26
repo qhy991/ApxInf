@@ -1,7 +1,7 @@
 # apxinf (Python frontend)
 
-Pure-Python (numpy/PIL/sentencepiece) processor library + the **L2** policy
-layer for the ApxInf VLA runtime. The bare-model L1 inference binding lives in
+Pure-Python processor library + the **L2** policy layer for ApxInf VLA runtimes.
+The native PI0.5 bare-model L1 inference binding lives in
 the [`apxinf-py`](../../crates/apxinf-py) PyO3 crate; `apxinf` re-exports it as
 `apxinf.Model` so you never import `apxinf_py` directly.
 
@@ -15,10 +15,11 @@ apxinf/
 │   ├── registry.py   model_type -> policy-class registry
 │   ├── auto.py       AutoPolicy: checkpoint -> concrete policy by config type
 │   └── impls/        concrete per-model policies (the part that grows)
-│       └── pi05.py       Pi05Policy (registered as "pi05")
+│       ├── pi05.py       Pi05Policy (native ApxInf runtime)
+│       └── dm05.py       Dm05Policy (pinned base graph + runtime factory seam)
 ├── adapters/     downstream: expose a Policy through a foreign API (lazy imports)
 │   └── lerobot.py   ApxInfPolicy — drop-in policy for a lerobot control loop
-└── __init__.py   facade: Model (lazy), Pi05Policy, AutoPolicy, Policy, steps
+└── __init__.py   facade: Model (lazy), concrete policies, AutoPolicy, steps
 ```
 
 **Adding a model:** drop `apxinf/policies/impls/<name>.py` following `pi05.py`
@@ -32,11 +33,12 @@ apxinf/
   `Normalizer`/`Unnormalizer`, `GaussianNoise`, chained by `Pipeline`. No GPU /
   no Rust dependency; unit-tests run offline. sentencepiece is imported lazily
   by the tokenizer only.
-- **L2 policies** (`apxinf.Pi05Policy` / `apxinf.AutoPolicy`) — compose a pre
-  pipeline + a bare-model handle (L1 `infer_rgb` by default) + a post unnormalize
-  step into one `infer(obs_dict) -> {actions, timing, ...}` call. `import apxinf`
-  stays CUDA-free; only `apxinf.Model` and a policy's `from_pretrained` pull in
-  `apxinf_py`.
+- **L2 policies** (`apxinf.Pi05Policy`, `apxinf.Dm05Policy`, or
+  `apxinf.AutoPolicy`) — expose one stable observation-to-actions contract.
+  PI0.5 composes a pre pipeline + native L1 handle + post pipeline. DM05 binds
+  the pinned official base graph to an explicit runtime selector/factory seam.
+  `import apxinf` stays CUDA-free; only explicit runtime construction imports a
+  backend.
 
 ## Domains
 
@@ -105,10 +107,10 @@ ahead of the second example.
 
 ## Policy
 
-Two entry points, both returning something that satisfies the `Policy` contract:
+Concrete policies and the generic dispatcher all satisfy the `Policy` contract:
 
 ```python
-from apxinf import AutoPolicy, Pi05Policy
+from apxinf import AutoPolicy, Dm05Policy, Pi05Policy
 
 # Generic: read config.json's model type and dispatch to the right class.
 policy = AutoPolicy.from_pretrained("model_dir", precision="bf16", action_dim=7)
@@ -125,6 +127,14 @@ result = policy.infer({
 result["actions"]   # unnormalized float32 [horizon, action_dim]
 result["timing"]    # {"model_ms": ..., "total_ms": ...}
 ```
+
+For `config.json:model_type == "dm05"`, `AutoPolicy` selects `Dm05Policy`.
+DM05-libero support is fixed to BF16, two ordered images, an 8D Franka state,
+ten diffusion steps, and a 10x7 action chunk. `execution_backend="default"`
+uses the official model path; `"default_exact_combined"` is opt-in and
+fail-closed behind the neutral `RuntimeFactory` seam. See the root README's
+**DM05-libero HTTP deployment** section for the immutable source/checkpoint
+identity, license boundary, server command, and request schema.
 
 For bare-model (L1) use, the binding is reachable as `apxinf.Model`:
 
