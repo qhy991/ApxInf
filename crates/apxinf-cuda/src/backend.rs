@@ -440,6 +440,52 @@ impl CudaBackend {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub fn qwen25_omni_vision_packed_qkv_bias_rope(
+        &self,
+        packed_qkv: &Tensor,
+        query_bias: &Tensor,
+        key_bias: &Tensor,
+        value_bias: &Tensor,
+        theta: f32,
+        positions: &[u32],
+        group_ids: Option<&[u32]>,
+    ) -> Result<(Tensor, Tensor, Tensor)> {
+        let sequence = packed_qkv
+            .shape()
+            .dims()
+            .first()
+            .copied()
+            .unwrap_or(0);
+        if group_ids.is_some_and(|groups| groups.len() != sequence) {
+            return Err(Error::Other(
+                "Qwen2.5-Omni packed vision QKV group length mismatch".into(),
+            ));
+        }
+        let groups = group_ids
+            .map(|groups| self.vision_group_cache(groups, true))
+            .transpose()?;
+        let positions = self.vision_position_cache(positions, sequence)?;
+        kernels::qwen25_omni_vision::packed_qkv_bias_rope(
+            &self.ctx,
+            packed_qkv,
+            query_bias,
+            key_bias,
+            value_bias,
+            theta,
+            &positions
+                .as_ref()
+                .expect("vision position cache populated")
+                .buffer,
+            groups.as_ref().map(|groups| {
+                &groups
+                    .as_ref()
+                    .expect("vision group cache populated")
+                    .indices
+            }),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn qwen25_omni_vision_grouped_sdpa_prepacked(
         &self,
         query: &Tensor,

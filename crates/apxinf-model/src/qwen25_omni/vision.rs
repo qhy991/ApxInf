@@ -21,11 +21,9 @@ pub struct Qwen25OmniVisionWeights {
 
 struct VisionBlock {
     norm1: Tensor,
-    wq: Tensor,
+    qkv: VisionQkvWeights,
     bq: Tensor,
-    wk: Tensor,
     bk: Tensor,
-    wv: Tensor,
     bv: Tensor,
     wo: Tensor,
     bo: Tensor,
@@ -36,6 +34,32 @@ struct VisionBlock {
     b_up: Tensor,
     w_down: Tensor,
     b_down: Tensor,
+}
+
+enum VisionQkvWeights {
+    Separate { wq: Tensor, wk: Tensor, wv: Tensor },
+    Packed(Tensor),
+}
+
+impl VisionQkvWeights {
+    fn separate(&self) -> Result<(&Tensor, &Tensor, &Tensor)> {
+        match self {
+            Self::Separate { wq, wk, wv } => Ok((wq, wk, wv)),
+            Self::Packed(_) => Err(Error::Other(
+                "Qwen2.5-Omni vision separate QKV path has packed weights".into(),
+            )),
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    fn packed(&self) -> Result<&Tensor> {
+        match self {
+            Self::Packed(weight) => Ok(weight),
+            Self::Separate { .. } => Err(Error::Other(
+                "Qwen2.5-Omni vision packed QKV path has separate weights".into(),
+            )),
+        }
+    }
 }
 
 impl Qwen25OmniVisionWeights {
@@ -57,11 +81,13 @@ impl Qwen25OmniVisionWeights {
             let prefix = format!("thinker.visual.blocks.{index}");
             blocks.push(VisionBlock {
                 norm1: take(&format!("{prefix}.norm1.weight"), tensors)?,
-                wq: transpose_2d(&take(&format!("{prefix}.attn.q.weight"), tensors)?)?,
+                qkv: VisionQkvWeights::Separate {
+                    wq: transpose_2d(&take(&format!("{prefix}.attn.q.weight"), tensors)?)?,
+                    wk: transpose_2d(&take(&format!("{prefix}.attn.k.weight"), tensors)?)?,
+                    wv: transpose_2d(&take(&format!("{prefix}.attn.v.weight"), tensors)?)?,
+                },
                 bq: take(&format!("{prefix}.attn.q.bias"), tensors)?,
-                wk: transpose_2d(&take(&format!("{prefix}.attn.k.weight"), tensors)?)?,
                 bk: take(&format!("{prefix}.attn.k.bias"), tensors)?,
-                wv: transpose_2d(&take(&format!("{prefix}.attn.v.weight"), tensors)?)?,
                 bv: take(&format!("{prefix}.attn.v.bias"), tensors)?,
                 wo: transpose_2d(&take(&format!("{prefix}.attn.proj.weight"), tensors)?)?,
                 bo: take(&format!("{prefix}.attn.proj.bias"), tensors)?,
@@ -90,13 +116,21 @@ impl Qwen25OmniVisionWeights {
             .blocks
             .into_iter()
             .map(|block| {
+                let qkv = match block.qkv {
+                    VisionQkvWeights::Separate { wq, wk, wv } => VisionQkvWeights::Separate {
+                        wq: backend.to_device(&wq)?,
+                        wk: backend.to_device(&wk)?,
+                        wv: backend.to_device(&wv)?,
+                    },
+                    VisionQkvWeights::Packed(weight) => {
+                        VisionQkvWeights::Packed(backend.to_device(&weight)?)
+                    }
+                };
                 Ok(VisionBlock {
                     norm1: backend.to_device(&block.norm1)?,
-                    wq: backend.to_device(&block.wq)?,
+                    qkv,
                     bq: backend.to_device(&block.bq)?,
-                    wk: backend.to_device(&block.wk)?,
                     bk: backend.to_device(&block.bk)?,
-                    wv: backend.to_device(&block.wv)?,
                     bv: backend.to_device(&block.bv)?,
                     wo: backend.to_device(&block.wo)?,
                     bo: backend.to_device(&block.bo)?,
@@ -120,6 +154,51 @@ impl Qwen25OmniVisionWeights {
             merger_fc2_bias: backend.to_device(&self.merger_fc2_bias)?,
         })
     }
+
+    pub fn into_packed_qkv(self, backend: &dyn Backend) -> Result<Self> {
+        let blocks = self
+            .blocks
+            .into_iter()
+            .map(|block| {
+                let qkv = match block.qkv {
+                    VisionQkvWeights::Separate { wq, wk, wv } => {
+                        VisionQkvWeights::Packed(backend.concat_2d(&[&wq, &wk, &wv])?)
+                    }
+                    VisionQkvWeights::Packed(_) => {
+                        return Err(Error::Other(
+                            "Qwen2.5-Omni vision QKV weights were packed twice".into(),
+                        ))
+                    }
+                };
+                Ok(VisionBlock {
+                    norm1: block.norm1,
+                    qkv,
+                    bq: block.bq,
+                    bk: block.bk,
+                    bv: block.bv,
+                    wo: block.wo,
+                    bo: block.bo,
+                    norm2: block.norm2,
+                    w_gate: block.w_gate,
+                    b_gate: block.b_gate,
+                    w_up: block.w_up,
+                    b_up: block.b_up,
+                    w_down: block.w_down,
+                    b_down: block.b_down,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        backend.synchronize()?;
+        Ok(Self {
+            patch_embed: self.patch_embed,
+            blocks,
+            merger_norm: self.merger_norm,
+            merger_fc1: self.merger_fc1,
+            merger_fc1_bias: self.merger_fc1_bias,
+            merger_fc2: self.merger_fc2,
+            merger_fc2_bias: self.merger_fc2_bias,
+        })
+    }
 }
 
 pub fn forward(
@@ -133,7 +212,10 @@ pub fn forward(
     use_fused_bias_residual: bool,
     use_fused_gate_up_bias_silu_mul: bool,
     use_grouped_qkv_layout: bool,
+    use_packed_qkv: bool,
 ) -> Result<Tensor> {
+    #[cfg(not(feature = "cuda"))]
+    let _ = use_packed_qkv;
     let vision = &config.vision;
     let raw_tokens = validate_input(config, pixel_values, grid_thw)?;
     let uploaded = if pixel_values.device() != backend.device() {
@@ -152,13 +234,26 @@ pub fn forward(
         let (q, k, v) = if use_fused_qkv_bias_rope {
             #[cfg(feature = "cuda")]
             {
-                let query = backend.matmul(&normalized, &block.wq)?;
-                let key = backend.matmul(&normalized, &block.wk)?;
-                let value = backend.matmul(&normalized, &block.wv)?;
                 let cuda = cuda_backend(backend).ok_or_else(|| {
                     Error::Other("vision QKV bias/RoPE fusion requires CudaBackend".into())
                 })?;
-                if grouped_qkv_layout {
+                if use_packed_qkv {
+                    let weight = block.qkv.packed()?;
+                    let packed = backend.matmul(&normalized, weight)?;
+                    cuda.qwen25_omni_vision_packed_qkv_bias_rope(
+                        &packed,
+                        &block.bq,
+                        &block.bk,
+                        &block.bv,
+                        10_000.0,
+                        &positions,
+                        grouped_qkv_layout.then_some(groups.as_slice()),
+                    )?
+                } else if grouped_qkv_layout {
+                    let (wq, wk, wv) = block.qkv.separate()?;
+                    let query = backend.matmul(&normalized, wq)?;
+                    let key = backend.matmul(&normalized, wk)?;
+                    let value = backend.matmul(&normalized, wv)?;
                     cuda.qwen25_omni_vision_grouped_qkv_bias_rope(
                         &query,
                         &key,
@@ -171,6 +266,10 @@ pub fn forward(
                         &groups,
                     )?
                 } else {
+                    let (wq, wk, wv) = block.qkv.separate()?;
+                    let query = backend.matmul(&normalized, wq)?;
+                    let key = backend.matmul(&normalized, wk)?;
+                    let value = backend.matmul(&normalized, wv)?;
                     cuda.qwen25_omni_vision_qkv_bias_rope(
                         &query,
                         &key,
@@ -190,9 +289,10 @@ pub fn forward(
                 ));
             }
         } else {
-            let q = backend.add_bias(&backend.matmul(&normalized, &block.wq)?, &block.bq)?;
-            let k = backend.add_bias(&backend.matmul(&normalized, &block.wk)?, &block.bk)?;
-            let v = backend.add_bias(&backend.matmul(&normalized, &block.wv)?, &block.bv)?;
+            let (wq, wk, wv) = block.qkv.separate()?;
+            let q = backend.add_bias(&backend.matmul(&normalized, wq)?, &block.bq)?;
+            let k = backend.add_bias(&backend.matmul(&normalized, wk)?, &block.bk)?;
+            let v = backend.add_bias(&backend.matmul(&normalized, wv)?, &block.bv)?;
             let q = q.reshape(vec![raw_tokens, vision.n_heads, vision.head_dim])?;
             let k = k.reshape(vec![raw_tokens, vision.n_heads, vision.head_dim])?;
             let v = v.reshape(vec![raw_tokens, vision.n_heads, vision.head_dim])?;

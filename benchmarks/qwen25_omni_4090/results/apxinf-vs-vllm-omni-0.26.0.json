@@ -22,7 +22,7 @@
     "apxinf_decode": "deployed-vision-full-fa2-decode.json",
     "apxinf_context": "promotion-request-scoped-fa2.json",
     "apxinf_context_32k": "promotion-m1-packed-mlp.json",
-    "apxinf_multimodal": "promotion-vision-prepacked-qkv.json",
+    "apxinf_multimodal": "promotion-vision-packed-qkv.json",
     "vllm_quick": "vllm-omni-0.26.0-kv2g-quick.json",
     "vllm_decode": "vllm-omni-0.26.0-kv2g-decode.json",
     "vllm_context": "vllm-omni-0.26.0-kv2g-context.json",
@@ -148,9 +148,9 @@
       "workload": "real_png_1760+16",
       "semantic_result": "both read the visible chart title",
       "apxinf": {
-        "ttft_ms": 225.605286,
-        "tpot_ms": 8.976329666666666,
-        "wall_p50_ms": 552.3248761892319,
+        "ttft_ms": 224.698179,
+        "tpot_ms": 8.962005133333333,
+        "wall_p50_ms": 551.4878630638123,
         "wall_admission": "not a stable ApxInf-to-ApxInf improvement; 3/5 internal wall pairs win"
       },
       "vllm_omni": {
@@ -159,9 +159,9 @@
         "wall_ms": 564.7583678364754
       },
       "speedup": {
-        "apxinf_ttft": 1.0282,
-        "apxinf_tpot": 2.4417,
-        "apxinf_wall_p50": 1.0225
+        "apxinf_ttft": 1.0323,
+        "apxinf_tpot": 2.4456,
+        "apxinf_wall_p50": 1.0241
       }
     },
     {
@@ -190,7 +190,7 @@
     "vllm_auto_kv_first_oom": "24576+8",
     "vllm_auto_kv_reservation_gib": 11.45,
     "vllm_fixed_kv_reservation_gib": 2.0,
-    "apxinf_peak_memory_mib_at_32k": 15069,
+    "apxinf_peak_memory_mib_at_32k": 15805,
     "vllm_peak_memory_mib_at_32k": 16565
   },
   "roofline": {
@@ -227,7 +227,7 @@
     "next_apxinf_priorities": [
       "rank the remaining post-packed-MLP 32K attention and GEMV costs before selecting another rewrite",
       "replace the resident Python processor only if CPU/RSS or multi-request evidence makes it material",
-      "admit another vision rewrite only when stable no-profiler timing and node-level attribution agree"
+      "require a new post-packed-QKV profile before selecting another vision rewrite"
     ]
   }
 }

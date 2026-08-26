@@ -20,9 +20,9 @@ keeps only the aggregate evidence listed below.
 ## Accepted artifact
 
 - Binary SHA-256:
-  `43bfa1993c6b507db44d05d8b7f6a8a02fe061b8bdd52d8b43851f223c2e6ad7`
+  `0a56c36754c9003bbd14dad75ec0041a34b03910c86579222f9bb1f540b59054`
 - Immediate rollback SHA-256:
-  `9e7c314dc1aeb3c413f7c6afa98d60bb0934bfe1c0476ec335631ef8004a342f`
+  `43bfa1993c6b507db44d05d8b7f6a8a02fe061b8bdd52d8b43851f223c2e6ad7`
 - Service owner: runit plus `agent-gpu-broker`
 - Desired state after validation: stopped
 
@@ -62,7 +62,9 @@ The accepted implementation combines:
 - two BF16-exact projection-bias/residual owners in each vision block;
 - one BF16-exact Gate/Up-bias and SiLU/multiply owner in each vision MLP;
 - direct grouped-QKV producer layout for the 28 windowed vision blocks, without
-  an intermediate grouped-pack kernel or three transient packed allocations.
+  an intermediate grouped-pack kernel or three transient packed allocations;
+- one packed Q/K/V projection GEMM per vision block, with a direct epilogue
+  consumer and no split materialization.
 
 The latest packed-MLP refinement removes 72 graph nodes per generated token.
 Eager decode and prefill retain their previous projection ownership and GEMM
@@ -149,6 +151,14 @@ Systems removes exactly 28 grouped-pack nodes, saves 1.96 ms at the changed
 producer/pack boundary, and reduces first-token GPU union by 1.75 ms. The four
 full-attention blocks and final restore-to-token-order step remain unchanged.
 
+The latest packed vision-QKV refinement lowers real-PNG TTFT from 225.90 ms to
+224.70 ms. All five alternating TTFT pairs win and the slowest paired speedup
+is `1.0024x`. Complete wall p50 changes from 0.55113 s to 0.55149 s and only
+three of five wall pairs win, so no stable wall improvement is claimed.
+Systems replaces 96 projection GEMMs with 32 packed GEMMs, removes exactly 64
+kernels, saves 1.54 ms across the projection-plus-epilogue boundary, and
+reduces first-token GPU union by 1.71 ms.
+
 ## Accepted measurements
 
 | Workload | ApxInf TTFT | ApxInf TPOT | vLLM-Omni 0.26.0 TPOT | Result |
@@ -166,16 +176,16 @@ For the latest packed-MLP candidate, five fixed-parent AB/BA pairs at
 minimum pair was `1.0172x`. The 12K eager guard was neutral at about `1.001x`.
 All compared text trajectories were exact.
 
-For real PNG 1,760+16, ApxInf wall p50 is 0.552 s versus 0.565 s for
+For real PNG 1,760+16, ApxInf wall p50 is 0.551 s versus 0.565 s for
 vLLM-Omni. On the frozen matched records ApxInf is lower on wall p50, TTFT
-(`225.61` versus `231.96` ms), and `2.442x` lower TPOT. The internal
+(`224.70` versus `231.96` ms), and `2.446x` lower TPOT. The internal
 ApxInf-to-ApxInf wall admission remains explicitly negative because only three
 of five alternating wall pairs win. For real WAV 52+16, the final acceptance
-wall is 0.167 s versus vLLM-Omni 0.619 s.
+wall is 0.172 s versus vLLM-Omni 0.619 s.
 Both media cases preserve the accepted complete output-token trajectories.
 
 The legal 32,760+8 boundary passes. The final acceptance sample records
-15,993 MiB peak memory and at least 8,571 MiB headroom. Requests beyond the
+15,805 MiB peak memory and at least 8,759 MiB headroom. Requests beyond the
 combined context limit are rejected as typed HTTP 400 responses rather than
 being admitted to OOM.
 
@@ -193,6 +203,7 @@ being admitted to OOM.
 - vision Gate/Up bias SiLU/multiply CUDA regression: 1 passed;
 - vision grouped-QKV producer-layout CUDA regression: 1 passed;
 - grouped FA2 prepacked-input CUDA regression: 1 passed;
+- vision packed-QKV direct-consumer CUDA regression: 1 passed;
 - exact text trajectories: 1K, 128-token decode, 4K, 8K, 12K, and 32K cells;
 - exact media trajectories: real PNG and WAV;
 - typed contract and malformed-media recovery: passed.
@@ -223,6 +234,9 @@ being admitted to OOM.
   vision Gate/Up activation promotion, four-seam BF16 gate, and attribution;
 - `results/promotion-vision-prepacked-qkv.json`: current real-image TTFT and
   GPU-path promotion, direct grouped producer layout, and explicit wall
+  non-claim;
+- `results/promotion-vision-packed-qkv.json`: current real-image TTFT and
+  GPU-path promotion, unique packed projection ownership, and explicit wall
   non-claim;
 - `results/promotion-grouped-varlen-fa2.json`: current real-image promotion and
   complete multimodal controls;

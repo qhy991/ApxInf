@@ -29,6 +29,7 @@ use crate::kernels::qwen25_omni_vision::{
     bias_residual_exact as qwen25_vision_bias_residual_exact,
     gate_up_bias_silu_mul_exact as qwen25_vision_gate_up_bias_silu_mul_exact,
     grouped_qkv_bias_rope as qwen25_vision_grouped_qkv_bias_rope,
+    packed_qkv_bias_rope as qwen25_vision_packed_qkv_bias_rope,
     qkv_bias_rope as qwen25_vision_qkv_bias_rope,
 };
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
@@ -2372,13 +2373,46 @@ fn qwen25_vision_grouped_qkv_bias_rope_writes_consumer_order_exactly() {
         &index_buffer,
     )
     .unwrap();
+    let packed_values = values
+        .chunks_exact(hidden)
+        .flat_map(|row| row.iter().copied().cycle().take(3 * hidden))
+        .collect::<Vec<_>>();
+    let packed = upload_fp32_as_bf16(
+        &ctx,
+        &packed_values,
+        vec![sequence, 3 * hidden],
+    )
+    .unwrap();
+    let packed_regular = qwen25_vision_packed_qkv_bias_rope(
+        &ctx,
+        &packed,
+        &query_bias,
+        &key_bias,
+        &value_bias,
+        10_000.0,
+        &position_buffer,
+        None,
+    )
+    .unwrap();
+    let packed_grouped = qwen25_vision_packed_qkv_bias_rope(
+        &ctx,
+        &packed,
+        &query_bias,
+        &key_bias,
+        &value_bias,
+        10_000.0,
+        &position_buffer,
+        Some(&index_buffer),
+    )
+    .unwrap();
     ctx.synchronize().unwrap();
-    for (regular, grouped) in [
-        (&regular.0, &grouped.0),
-        (&regular.1, &grouped.1),
-        (&regular.2, &grouped.2),
+    for (regular, grouped, packed_regular, packed_grouped) in [
+        (&regular.0, &grouped.0, &packed_regular.0, &packed_grouped.0),
+        (&regular.1, &grouped.1, &packed_regular.1, &packed_grouped.1),
+        (&regular.2, &grouped.2, &packed_regular.2, &packed_grouped.2),
     ] {
         let regular = download_bf16_as_fp32(regular).unwrap();
+        assert_eq!(download_bf16_as_fp32(packed_regular).unwrap(), regular);
         let expected = indices
             .iter()
             .flat_map(|&row| {
@@ -2387,6 +2421,7 @@ fn qwen25_vision_grouped_qkv_bias_rope_writes_consumer_order_exactly() {
             })
             .collect::<Vec<_>>();
         assert_eq!(download_bf16_as_fp32(grouped).unwrap(), expected);
+        assert_eq!(download_bf16_as_fp32(packed_grouped).unwrap(), expected);
     }
 }
 
