@@ -153,6 +153,7 @@ pub fn lookup_scaled_bf16(
     require_finite("scaled embedding", &[scale])?;
     let dims = table.shape().dims();
     if table.dtype() != DType::BF16
+        || table.device() != apxinf_core::Device::Cuda(ctx.device_id())
         || dims.len() != 2
         || dims[0] == 0
         || dims[1] == 0

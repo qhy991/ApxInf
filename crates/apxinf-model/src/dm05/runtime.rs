@@ -94,7 +94,7 @@ impl Dm05Bf16Runtime {
             backend.context(),
             &config,
             &weights,
-            &backend,
+            backend.as_ref(),
         )?);
         backend.synchronize()?;
         Ok(Self {

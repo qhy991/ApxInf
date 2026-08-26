@@ -112,19 +112,21 @@ pub fn scale_into(
         "scale",
         &[("input", input, bytes), ("output", output, bytes)],
     )?;
+    let count = u32::try_from(count)
+        .map_err(|_| Error::Other("caller-owned scale element count exceeds u32".into()))?;
     let status = unsafe {
         match dtype {
             DType::F32 => ffi::apxinf_scale_f32(
                 input.ptr(),
                 output.ptr(),
-                count as u32,
+                count,
                 scale_factor,
                 ctx.stream().handle(),
             ),
             DType::BF16 => ffi::apxinf_scale_bf16(
                 input.ptr(),
                 output.ptr(),
-                count as u32,
+                count,
                 scale_factor,
                 ctx.stream().handle(),
             ),
