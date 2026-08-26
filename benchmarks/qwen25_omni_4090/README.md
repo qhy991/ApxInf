@@ -1,25 +1,11 @@
-# Qwen2.5-Omni RTX 4090 service baseline
+# Qwen2.5-Omni RTX 4090 serving and validation
 
-This directory owns the no-profiler performance and context-limit baseline for
-the native `Qwen/Qwen2.5-Omni-3B` service. Run the benchmark on the GPU host
-while the service itself is owned by `gpu-run`; the client does not create a
-second CUDA context.
-
-The same-GPU external comparison is owned by `VLLM_OMNI_BASELINE.md`. It pins
-vLLM/vLLM-Omni 0.26.0, the thinker-only BF16 pipeline, exact token-count text
-loads and the same real PNG/WAV assets. The external scripts also accept an
-engine name, version endpoint and audio content schema so the SGLang
-Transformers compatibility path can be evaluated without changing the frozen
-workload. Keep those results separate from the native ApxInf acceptance
-baseline. Current stable SGLang 0.5.18 fails the frozen checkpoint at
-`AutoModel.from_config(Qwen2_5OmniConfig)` before weight loading, so it is a
-capability result rather than a performance row; the reproduction probe lives
-under `comparators/`.
-
-The timing authority is client-observed wall time plus the service-emitted
-TTFT/TPOT from `/v1/evaluations/generate`. `nvidia-smi` samples are explanatory
-hardware evidence, not a replacement for endpoint timing. The prefill rate is
-named a proxy because TTFT includes first-token work.
+This directory contains the SM89 build entrypoint, ApxInf service definition,
+contract checks, and reusable benchmark clients for
+`Qwen/Qwen2.5-Omni-3B`. It does not own benchmark profiles or results.
+Generated JSON, profiler exports, hardware samples, and comparison reports
+must stay outside the repository. Run GPU work through `gpu-run`; the client
+process must not create a second CUDA context.
 
 Build the accepted RTX 4090 artifact with an explicit native architecture:
 
@@ -28,15 +14,11 @@ CARGO_TARGET_DIR=target/qwen25-omni-sm89 \
   benchmarks/qwen25_omni_4090/build_sm89.sh
 ```
 
-The script fixes `APXINF_CUDA_ARCH=sm_89` and defaults
-`APXINF_CUDA_OPERATOR_SET=core-fa2`, builds the release CUDA service and prints its
-SHA-256. A generic x86 CUDA build currently emits `sm_52` cubins plus PTX and
-relies on driver JIT; it is not the accepted 4090 build contract. The measured
-clean `core-fa2` build takes 229 seconds and produces a 21.6 MB binary. It adds
-only the BF16 HeadDim96 non-causal FA2 instance needed by the head-dim-80 Omni
-vision encoder. Setting the operator set to `core` retains the roughly
-61-second, 15.5 MB text-only artifact but makes the full-vision selector fail
-closed.
+The script fixes `APXINF_CUDA_ARCH=sm_89`, defaults
+`APXINF_CUDA_OPERATOR_SET=core-fa2`, builds the release CUDA service, and prints
+its SHA-256. The operator set includes the BF16 HeadDim96 non-causal FA2
+instance required by the head-dim-80 vision encoder. A build without that
+instance makes the full-vision selector fail closed.
 The build-system default remains `APXINF_CUDA_OPERATOR_SET=full` for backward
 compatibility. Reusing the same target directory makes subsequent links
 faster.
@@ -51,18 +33,18 @@ python3 benchmarks/qwen25_omni_4090/benchmark_service.py \
   --context-output-tokens 8 --warmups 1 --repeats 3 --timeout 300
 
 python3 benchmarks/qwen25_omni_4090/benchmark_contract.py \
-  --output benchmarks/qwen25_omni_4090/results/contract.json
+  --output /tmp/apxinf-qwen25-omni-contract.json
 
 python3 benchmarks/qwen25_omni_4090/benchmark_multimodal.py \
   --image scripts/roofline_decode_throughput.png \
   --audio "$APXINF_OMNI_AUDIO" \
   --reference "$APXINF_OMNI_REFERENCE" \
-  --output benchmarks/qwen25_omni_4090/results/multimodal.json
+  --output /tmp/apxinf-qwen25-omni-multimodal.json
 
 python3 benchmarks/qwen25_omni_4090/benchmark_processor_recovery.py \
   --binary-path "$APXINF_BINARY" \
   --reference "$APXINF_OMNI_REFERENCE" \
-  --output benchmarks/qwen25_omni_4090/results/processor-recovery.json
+  --output /tmp/apxinf-qwen25-omni-processor-recovery.json
 
 python3 benchmarks/qwen25_omni_4090/decode_roofline.py \
   --tpot-ms 8.255564196850394 --kv-len 128 \
@@ -70,24 +52,18 @@ python3 benchmarks/qwen25_omni_4090/decode_roofline.py \
 ```
 
 `decode_roofline.py` reports algorithmic weight/KV byte lower bounds and an
-effective BWU estimate. MFU is emitted only when the caller also supplies an
+effective BWU estimate. MFU is emitted only when the caller supplies an
 explicit dense-peak convention through `--peak-tflops`; neither estimate is a
-replacement for profiler memory transactions or no-profiler endpoint timing.
+measurement of hardware memory transactions.
 
-Every request is greedy, non-streaming, `ignore_eos=true`, concurrency one,
-and uses deterministic pre-tokenized IDs. Raw trials retain output-trajectory
-hashes, client wall time, TTFT, TPOT, throughput proxies, peak memory, GPU and
-memory-controller utilization, clocks, and power. Context probing stops at the
-first failed case; service recovery is an operator action and must be recorded
-separately rather than hidden by the benchmark.
+Evaluation requests are greedy, non-streaming, `ignore_eos=true`, concurrency
+one, and use deterministic pre-tokenized IDs. Context probing stops at the
+first failed case. Service recovery is an operator action and must be recorded
+outside the repository rather than hidden by a benchmark retry. `.gitignore`
+prevents generated JSON, CSV, SQLite, and profiler artifacts from entering a
+change accidentally.
 
-Raw trials and profiler exports are generated evidence, not repository API.
-Keep them on the experiment host. This directory checks in only the current
-aggregate promotion, acceptance, multimodal and external-engine comparison
-records listed in `BASELINE.md`; `.gitignore` prevents new per-run JSON/CSV
-files from accidentally expanding the PR.
-
-The promoted text-only path uses 512-token causal chunks below 4,096 prompt
+The selected text-only path uses 512-token causal chunks below 4,096 prompt
 tokens, 256-token chunks from 4,096 through 8,191, and 1,024-token chunks from
 8,192 upward. The 8K crossover is admitted only with causal FA2 enabled; it
 reaches the complete
@@ -163,7 +139,7 @@ The short W32 attention selector captures the same online-softmax kernel with
 to the pinned SM89 short graph and requires the exact residual selector, so
 eager, prefill, 12K, and post-32K execution keep W16 or their existing dedicated
 attention owners. The changed merge order is not byte-exact for every synthetic
-activation, so promotion requires complete text, image, and audio token
+activation, so enabling it requires complete text, image, and audio token
 trajectories rather than an operator-only claim.
 The fused QKV prelude selector replaces packed-QKV bias, Q TMRoPE, and K
 TMRoPE/KV publication with one short-graph node. Projection+bias is explicitly
