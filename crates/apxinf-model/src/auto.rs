@@ -116,8 +116,7 @@ impl LoadedModel {
     }
 
     pub fn reset(&mut self) -> Result<()> {
-        self.text_mut()?.reset();
-        Ok(())
+        self.text_mut()?.reset_checked()
     }
 
     pub fn infer(&self, observation: &Observation) -> Result<Action> {
@@ -248,6 +247,44 @@ impl AutoModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FailingCheckedResetModel;
+
+    impl LlmTrait for FailingCheckedResetModel {
+        fn load(
+            _config: apxinf_loader::ModelConfig,
+            _weights: std::collections::HashMap<String, Tensor>,
+            _device: Device,
+        ) -> Result<Self>
+        where
+            Self: Sized,
+        {
+            unreachable!("test model is constructed directly")
+        }
+
+        fn forward(&mut self, _token_ids: &[u32], _start_pos: u32) -> Result<Tensor> {
+            unreachable!("reset propagation test does not run inference")
+        }
+
+        fn reset(&mut self) {}
+
+        fn reset_checked(&mut self) -> Result<()> {
+            Err(Error::Other("injected checked reset failure".into()))
+        }
+
+        fn vocab_size(&self) -> usize {
+            1
+        }
+    }
+
+    #[test]
+    fn loaded_model_propagates_checked_reset_failure() {
+        let mut model = LoadedModel::Text(Box::new(FailingCheckedResetModel));
+
+        let error = model.reset().unwrap_err();
+
+        assert_eq!(error.to_string(), "injected checked reset failure");
+    }
 
     #[cfg(not(feature = "metal-w8"))]
     #[test]

@@ -2979,6 +2979,89 @@ impl GeneralQwen35 {
         let comparison = self.teacher_forced_decode_candidates(token, pos)?;
         Ok((comparison.cpu_token, comparison.reranked_token))
     }
+
+    /// Reset every mutable generation state and report the first failure.
+    ///
+    /// [`LlmTrait::reset`] predates fallible accelerator state clearing and
+    /// therefore cannot surface an error. Long-lived serving and benchmark
+    /// processes must use this checked entrypoint instead: after an error the
+    /// model may be only partially reset and must not accept another request.
+    pub fn reset_checked(&mut self) -> Result<()> {
+        // Clear the authoritative CPU KV/GDN state first. If this fails, do
+        // not mutate any optional accelerator lane or its receipts.
+        self.state.reset()?;
+
+        #[cfg(feature = "metal-w8")]
+        if let Some(gdn) = self.metal_w8_gdn.as_mut() {
+            gdn.reset()?;
+        }
+        #[cfg(feature = "metal-w8")]
+        if let Some(linear_layer) = self.metal_w8_linear_layer.as_mut() {
+            linear_layer.reset()?;
+        }
+        #[cfg(feature = "metal-w8")]
+        if let Some(all_linear_layers) = self.metal_w8_all_linear_layers_precision_v2.as_mut() {
+            all_linear_layers.reset()?;
+        }
+        #[cfg(feature = "metal-w8")]
+        if let Some(stack3) = self.metal_w8_linear_layer_stacks_v1.as_mut() {
+            stack3.reset()?;
+        }
+        #[cfg(feature = "metal-w8")]
+        if let Some(boundary_body) = self.metal_w8_mlp_stack3_boundary_body_v1.as_mut() {
+            boundary_body.reset()?;
+        }
+        #[cfg(feature = "metal-w8")]
+        if let Some(lane) = self.metal_w8_mlp_stack3_boundary_tail_head_v1.as_mut() {
+            lane.reset()?;
+        }
+        #[cfg(feature = "metal-w8")]
+        if let Some(body) = self.metal_w8_body.as_mut() {
+            body.reset_stats();
+        }
+        #[cfg(feature = "metal-w8")]
+        if let Some(mlp_blocks) = self.metal_w8_mlp_blocks.as_mut() {
+            mlp_blocks.reset_stats();
+        }
+        #[cfg(feature = "metal-w8")]
+        if let Some(terminal_error) = self.metal_w8_stack3_lm_head_v2_terminal_error.as_mut() {
+            *terminal_error = false;
+        }
+        #[cfg(feature = "metal-w8")]
+        if let Some(stats) = self.metal_w8_lm_head_stats.as_mut() {
+            *stats = Qwen35MetalW8LmHeadStats::default();
+        }
+        #[cfg(feature = "metal-w8")]
+        if let Some(reference) = self.packed_w8_linear_layer_reference.as_mut() {
+            reference.reset();
+        }
+        #[cfg(all(test, debug_assertions, feature = "metal-w8"))]
+        {
+            self.fail_after_layer_once_for_test = None;
+            self.fail_stack3_lm_head_v2_before_submit_once_for_test = false;
+            self.fail_mlp_stack3_boundary_final_mlp_after_submit_once_for_test = false;
+            self.boundary_tail_head_fault_once_for_test = None;
+            self.fail_boundary_tail_head_rerank_once_for_test = false;
+        }
+
+        let cached_position = self.state.position();
+        let kv_position = self.state.kv.seq_len();
+        let linear_state_is_clear = self.state.linear.iter().flatten().all(|state| {
+            state.recurrent().is_none()
+                && state
+                    .convolution_suffixes()
+                    .into_iter()
+                    .all(|suffix| suffix.is_none())
+        });
+        if cached_position != 0 || kv_position != 0 || !linear_state_is_clear {
+            return Err(Error::Other(
+                format!(
+                    "qwen3.5 checked reset postcondition failed: hybrid position {cached_position}, KV position {kv_position}, linear state clear {linear_state_is_clear}"
+                ),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(feature = "metal-w8")]
@@ -3163,63 +3246,11 @@ impl LlmTrait for GeneralQwen35 {
     }
 
     fn reset(&mut self) {
-        let _ = self.state.reset();
-        #[cfg(feature = "metal-w8")]
-        let reset_all_linear_precision_v2 = self.metal_w8_all_linear_layers_precision_v2.is_some();
-        #[cfg(feature = "metal-w8")]
-        let reset_stack3_full_mlp = self
-            .metal_w8_linear_layer_stacks_v1
-            .as_ref()
-            .is_some_and(|lane| lane.owns_full_attention_mlp_blocks);
-        #[cfg(feature = "metal-w8")]
-        if let Some(gdn) = self.metal_w8_gdn.as_mut() {
-            let _ = gdn.reset();
-        }
-        #[cfg(feature = "metal-w8")]
-        if let Some(linear_layer) = self.metal_w8_linear_layer.as_mut() {
-            let _ = linear_layer.reset();
-        }
-        #[cfg(feature = "metal-w8")]
-        if let Some(all_linear_layers) = self.metal_w8_all_linear_layers_precision_v2.as_mut() {
-            let _ = all_linear_layers.reset();
-        }
-        #[cfg(feature = "metal-w8")]
-        if let Some(stack3) = self.metal_w8_linear_layer_stacks_v1.as_mut() {
-            let _ = stack3.reset();
-        }
-        #[cfg(feature = "metal-w8")]
-        if let Some(boundary_body) = self.metal_w8_mlp_stack3_boundary_body_v1.as_mut() {
-            let _ = boundary_body.reset();
-        }
-        #[cfg(feature = "metal-w8")]
-        if let Some(lane) = self.metal_w8_mlp_stack3_boundary_tail_head_v1.as_mut() {
-            let _ = lane.reset();
-        }
-        #[cfg(feature = "metal-w8")]
-        if reset_all_linear_precision_v2 || reset_stack3_full_mlp {
-            if let Some(mlp_blocks) = self.metal_w8_mlp_blocks.as_mut() {
-                mlp_blocks.reset_stats();
-            }
-        }
-        #[cfg(feature = "metal-w8")]
-        if self.metal_w8_stack3_lm_head_v2_terminal_error.is_some() {
-            self.metal_w8_stack3_lm_head_v2_terminal_error = Some(false);
-            if let Some(stats) = self.metal_w8_lm_head_stats.as_mut() {
-                *stats = Qwen35MetalW8LmHeadStats::default();
-            }
-        }
-        #[cfg(feature = "metal-w8")]
-        if let Some(reference) = self.packed_w8_linear_layer_reference.as_mut() {
-            reference.reset();
-        }
-        #[cfg(all(test, debug_assertions, feature = "metal-w8"))]
-        {
-            self.fail_after_layer_once_for_test = None;
-            self.fail_stack3_lm_head_v2_before_submit_once_for_test = false;
-            self.fail_mlp_stack3_boundary_final_mlp_after_submit_once_for_test = false;
-            self.boundary_tail_head_fault_once_for_test = None;
-            self.fail_boundary_tail_head_rerank_once_for_test = false;
-        }
+        let _ = GeneralQwen35::reset_checked(self);
+    }
+
+    fn reset_checked(&mut self) -> Result<()> {
+        GeneralQwen35::reset_checked(self)
     }
 
     fn decode_token(&mut self, token: u32, pos: u32) -> Option<Result<u32>> {
@@ -6638,6 +6669,13 @@ impl Qwen35MetalW8Body {
             })
             .collect()
     }
+
+    fn reset_stats(&mut self) {
+        for layer in self.layers.iter_mut().flatten() {
+            layer.decode_calls = 0;
+            layer.projection_elapsed_ns = 0;
+        }
+    }
 }
 
 #[cfg(feature = "metal-w8")]
@@ -7335,6 +7373,55 @@ mod tests {
     use super::*;
     use crate::qwen35::config::tests::MINI_CONFIG;
     use crate::qwen35::Qwen35WeightSchema;
+    use apxinf_core::KvCache;
+
+    struct InjectedClearKvCache {
+        seq_len: usize,
+        n_layers: usize,
+        acknowledge_without_clearing: bool,
+    }
+
+    impl KvCache for InjectedClearKvCache {
+        fn append(
+            &mut self,
+            _layer_idx: usize,
+            _k: &Tensor,
+            _v: &Tensor,
+            _append_len: usize,
+        ) -> Result<()> {
+            Err(Error::Other(
+                "test-only failing-clear KV cache cannot append".into(),
+            ))
+        }
+
+        fn advance(&mut self, n: usize) {
+            self.seq_len += n;
+        }
+
+        fn seq_len(&self) -> usize {
+            self.seq_len
+        }
+
+        fn clear(&mut self) -> Result<()> {
+            if self.acknowledge_without_clearing {
+                Ok(())
+            } else {
+                Err(Error::Other("injected KV clear failure".into()))
+            }
+        }
+
+        fn n_layers(&self) -> usize {
+            self.n_layers
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
 
     fn tensor_values(name: &str, count: usize) -> Vec<f32> {
         if name.ends_with("linear_attn.A_log") {
@@ -7824,7 +7911,7 @@ mod tests {
         diagnostic.forward_hidden(&[3], 2).unwrap();
         assert_eq!(diagnostic.state.position(), 3);
 
-        diagnostic.reset();
+        diagnostic.reset_checked().unwrap();
 
         assert_eq!(diagnostic.state.position(), 0);
         assert!(diagnostic
@@ -8645,7 +8732,9 @@ mod tests {
             "terminal retry must submit no body or tail work"
         );
 
-        diagnostic.reset();
+        diagnostic.reset_checked().unwrap();
+        assert_eq!(diagnostic.state.position(), 0);
+        assert_eq!(diagnostic.state.kv.seq_len(), 0);
         let reset = diagnostic
             .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
             .unwrap();
@@ -11326,6 +11415,16 @@ mod tests {
         assert_eq!(stats.layer_index, 0);
         assert_eq!(stats.decode_calls, 1);
         assert!(stats.projection_elapsed_ns > 0);
+
+        metal.reset_checked().unwrap();
+        assert_eq!(
+            metal.metal_w8_body_stats().unwrap(),
+            Qwen35MetalW8BodyStats {
+                layer_index: 0,
+                decode_calls: 0,
+                projection_elapsed_ns: 0,
+            }
+        );
     }
 
     #[cfg(all(feature = "metal-w8", target_os = "macos"))]
@@ -11356,6 +11455,16 @@ mod tests {
         assert_eq!(stats.layer_index, 0);
         assert_eq!(stats.decode_calls, 1);
         assert!(stats.block_elapsed_ns > 0);
+
+        metal.reset_checked().unwrap();
+        assert_eq!(
+            metal.metal_w8_mlp_block_stats().unwrap(),
+            Qwen35MetalW8MlpBlockStats {
+                layer_index: 0,
+                decode_calls: 0,
+                block_elapsed_ns: 0,
+            }
+        );
     }
 
     #[cfg(all(feature = "metal-w8", target_os = "macos"))]
@@ -11446,6 +11555,18 @@ mod tests {
             .all(|layer| layer["decode_calls"] == 1));
         assert_eq!(receipt["lm_head"]["prefill_calls"], 1);
         assert_eq!(receipt["lm_head"]["decode_calls"], 1);
+
+        combined.reset_checked().unwrap();
+        assert!(combined
+            .metal_w8_mlp_block_layer_stats()
+            .iter()
+            .all(|stats| stats.decode_calls == 0 && stats.block_elapsed_ns == 0));
+        assert_eq!(
+            combined.metal_w8_lm_head_stats().unwrap(),
+            Qwen35MetalW8LmHeadStats::default()
+        );
+        assert_eq!(combined.state.position(), 0);
+        assert_eq!(combined.state.kv.seq_len(), 0);
     }
 
     #[cfg(all(feature = "metal-w8", target_os = "macos"))]
@@ -11849,8 +11970,88 @@ mod tests {
         let first = model.forward(&[2, 5], 0).unwrap();
         assert!(model.forward(&[7], 0).is_err());
         assert!(model.forward(&[7, 8, 9], 2).is_err());
-        model.reset();
+        model.reset_checked().unwrap();
+        assert_eq!(model.state.position(), 0);
+        assert_eq!(model.state.kv.seq_len(), 0);
+        for layer in 0..model.config.text.n_layers {
+            let Some(state) = model.state.linear_state(layer) else {
+                continue;
+            };
+            assert!(state.recurrent().is_none());
+            assert!(state
+                .convolution_suffixes()
+                .into_iter()
+                .all(|suffix| suffix.is_none()));
+        }
         let after_reset = model.forward(&[2, 5], 0).unwrap();
         assert_close(&first, &after_reset, 1.0e-7);
+    }
+
+    #[test]
+    fn checked_reset_surfaces_kv_clear_error_without_masking_state() {
+        let (config, tensors) = fixture();
+        let mut model = GeneralQwen35::from_weights(config, tensors, Device::Cpu, 4).unwrap();
+        model.forward(&[2, 5], 0).unwrap();
+
+        let position_before = model.state.position();
+        let linear_presence_before: Vec<_> = (0..model.config.text.n_layers)
+            .map(|layer| {
+                model.state.linear_state(layer).map(|state| {
+                    (
+                        state.recurrent().is_some(),
+                        state.convolution_suffixes().map(|suffix| suffix.is_some()),
+                    )
+                })
+            })
+            .collect();
+        assert!(linear_presence_before
+            .iter()
+            .flatten()
+            .any(|(recurrent, _)| *recurrent));
+
+        let n_layers = model.state.kv.n_layers();
+        model.state.kv = Box::new(InjectedClearKvCache {
+            seq_len: position_before,
+            n_layers,
+            acknowledge_without_clearing: false,
+        });
+
+        let error = model.reset_checked().unwrap_err();
+        assert_eq!(error.to_string(), "injected KV clear failure");
+        assert_eq!(model.state.position(), position_before);
+        assert_eq!(model.state.kv.seq_len(), position_before);
+        let linear_presence_after: Vec<_> = (0..model.config.text.n_layers)
+            .map(|layer| {
+                model.state.linear_state(layer).map(|state| {
+                    (
+                        state.recurrent().is_some(),
+                        state.convolution_suffixes().map(|suffix| suffix.is_some()),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(linear_presence_after, linear_presence_before);
+    }
+
+    #[test]
+    fn checked_reset_rejects_a_kv_cache_that_acknowledges_without_clearing() {
+        let (config, tensors) = fixture();
+        let mut model = GeneralQwen35::from_weights(config, tensors, Device::Cpu, 4).unwrap();
+        model.forward(&[2, 5], 0).unwrap();
+
+        let position_before = model.state.position();
+        let n_layers = model.state.kv.n_layers();
+        model.state.kv = Box::new(InjectedClearKvCache {
+            seq_len: position_before,
+            n_layers,
+            acknowledge_without_clearing: true,
+        });
+
+        let error = model.reset_checked().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("hybrid position 0, KV position 2, linear state clear true"));
+        assert_eq!(model.state.position(), 0);
+        assert_eq!(model.state.kv.seq_len(), position_before);
     }
 }

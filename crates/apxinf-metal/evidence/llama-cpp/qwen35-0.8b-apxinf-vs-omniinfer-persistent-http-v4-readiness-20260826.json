@@ -1,0 +1,120 @@
+{
+  "format": "apxinf-qwen35-apxinf-vs-omniinfer-persistent-http-readiness-v4",
+  "schema_version": 4,
+  "created_at_utc": "2026-08-26T06:46:36Z",
+  "created_at_local": "2026-08-26T14:46:36+0800",
+  "authored_from_integration_commit": "57ec4783dca0617927d4c9d5100aae9791b1fabe",
+  "status": "READINESS_ONLY_NO_V4_PERFORMANCE_RESULT",
+  "decision": {
+    "persistent_http_named_deployment_comparison_is_feasible": true,
+    "apxinf_vs_omniinfer_ratio_delta_winner_or_ranking_allowed_now": false,
+    "formal_sampling_allowed_now": false,
+    "performance_requests_executed_by_v4": 0,
+    "performance_samples_recorded_by_v4": 0,
+    "reason": "ApxInf does not yet expose the resident HTTP measurement lane and its current EOG selection policy is not equivalent to the OmniInfer request's ignore_eos policy. The host is also outside the formal quiet-host gate."
+  },
+  "comparison_decomposition": {
+    "DEPLOYMENT_AH_VS_OG": {
+      "question": "How do the disclosed ApxInf and OmniInfer deployments compare at one persistent HTTP client's complete-response boundary?",
+      "classification": "named deployment comparison, not an engine-only or equal-artifact comparison",
+      "ApxInf_weight_and_kv_regime": "custom G32/G64 W8 hybrid with CPU F32 remainder and F32 KV",
+      "OmniInfer_weight_and_kv_regime": "Q8_0 GGUF through the pinned llama.cpp-mac backend; KV regime must be restated by the future campaign receipt",
+      "required_disclosure": "weight serialization, quantization, KV precision, placement, prompt processing, EOG policy, runtime commit, binary hash, and timing boundary remain explicit"
+    },
+    "GATEWAY_B_VS_G": {
+      "question": "What client-observed increment is introduced by routing the same resident llama.cpp backend through OmniInfer?",
+      "classification": "same-backend gateway-path comparison, not engine throughput",
+      "existing_formal_driver": "benchmarks/cross_runtime/omniinfer_gateway_formal_v3_driver.py",
+      "existing_execution_plan": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-increment-formal-v3-execution-plan-20260826.json"
+    }
+  },
+  "canonical_http_workload_candidate": {
+    "request_body_size_bytes": 383,
+    "request_body_sha256": "7773f5337693843f1e8cf3017b98868517cbddd3bc32649e550d8f2fec1d5cf6",
+    "semantic_prompt": "Hello",
+    "chat_template_enable_thinking": false,
+    "prompt_token_ids": [248045, 846, 198, 9419, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271],
+    "prompt_token_count": 13,
+    "max_tokens": 128,
+    "temperature": 0,
+    "seed": 0,
+    "stream": false,
+    "cache_prompt": false,
+    "ignore_eos": true,
+    "concurrency": 1,
+    "note": "The request's model field is an opaque served alias for the named-deployment edge. It must not be interpreted as proof that ApxInf loaded the GGUF named by that field."
+  },
+  "fairness_blockers": {
+    "B1_resident_apxinf_http_lane": {
+      "cleared": false,
+      "requirement": "Load one ApxInf model once, retain the model and Metal buffers for the campaign, and expose strict health, state, checked cache-clear, and chat-completions routes on one persistent connection."
+    },
+    "B2_checked_reset_integration": {
+      "cleared": false,
+      "candidate_progress": "GeneralQwen35::reset_checked is implemented in this candidate, exposed through the object-safe LlmTrait and LoadedModel paths, and its CPU success, injected KV-clear failure, stale-KV postcondition, Metal receipt clearing, Metal GDN reset, and fused terminal recovery paths are unit-tested.",
+      "remaining_requirement": "The future HTTP clear route must call reset_checked exactly once outside the measured generation interval, arm exactly one reset epoch, validate zero mutable receipts, and terminate the campaign on any reset error."
+    },
+    "B3_eog_policy_equivalence": {
+      "cleared": false,
+      "current_apxinf_policy": "select and feed back EOG without termination and without EOG-logit suppression",
+      "current_omniinfer_policy": "ignore_eos true suppresses EOG-token logits",
+      "observed_unsuppressed_trajectory_sha256": "2042d5522ed5e768b938ac3fd9e19d3936dfc6e685fc157d41a8e8132c5b42fe",
+      "observed_suppressed_trajectory_sha256": "0a8a6c5ceeb831528480ebcad172fbcdda4ac23478ab051b1f74a00ec6d4f8e4",
+      "requirement": "Freeze one identical EOG-logit policy for both lanes and repeat token-level semantic admission before performance sampling. Equal returned-token count alone is insufficient."
+    },
+    "B4_common_timing_boundary": {
+      "cleared": false,
+      "requirement": "Use the same client implementation and clock. Time immediately before the complete request-wire send through complete response-body read and strict JSON plus semantic validation. Do not join or subtract runtime-native prompt, predicted, TTFT, or TPOT metrics across lanes."
+    },
+    "B5_quiet_host": {
+      "cleared": false,
+      "requirement": "Pass the predeclared live-main, power, thermal, memory-pressure, external-load, runtime-custody, and no-interference gates before campaign start and after every measurement block."
+    }
+  },
+  "required_resident_http_state_machine": {
+    "initial_state": "healthy_unarmed",
+    "clear_transition": "healthy_unarmed -> healthy_armed(epoch=N) only after one successful reset_checked and zero-state receipt",
+    "generation_transition": "healthy_armed(epoch=N) -> healthy_unarmed after consuming the epoch before generation",
+    "forbidden": [
+      "generation without an armed reset epoch",
+      "two cache clears without an intervening generation",
+      "implicit reset inside the measured generation handler",
+      "retry, reconnect, resample, replacement, or continued service after any non-200, reset error, generation error, custody error, or semantic mismatch"
+    ]
+  },
+  "future_admission_receipts": [
+    "exact 383-byte request body and 13 prompt token IDs",
+    "one acknowledged reset epoch per generation outside the timing boundary",
+    "exactly 128 returned raw token IDs and finish_reason length",
+    "one CPU prefill and 127 fused decode calls with zero teacher calls",
+    "no prompt-cache reuse, speculative decoding, continuous batching, retry, reconnect, or replacement",
+    "start/end equality for source, binary, model artifacts, loaded file identities, runtime closure, resident-buffer ledger, PID, and socket identity",
+    "counterbalanced paired schedule and all predeclared stability gates"
+  ],
+  "existing_diagnostic_context": {
+    "side_by_side_summary": {
+      "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-fused-c-vs-llamacpp-and-omniinfer-raw13-free128-diagnostic-summary-v2-20260826.json",
+      "sha256": "1488bc3da768ee2fe9f4fcf12ea52a5d1758715f5b3fba73ad6da24109f6feb3",
+      "classification": "diagnostic observations with no cross-runtime ratio or ranking"
+    },
+    "same_backend_gateway_summary": {
+      "path": "crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-omniinfer-gateway-overhead-diagnostic-summary-v1-20260826.json",
+      "sha256": "0c528da7ac15fb512f453e28513b91930805f817f979f1938956361acadc5029",
+      "point_estimate_gateway_minus_backend_ms": 0.44945898437500986,
+      "ci95_ms": [-19.07107060187828, 19.9699885706283],
+      "stability_gates_passed": 0,
+      "stability_gates_total": 8,
+      "classification": "valid one-shot diagnostic but statistically inconclusive"
+    }
+  },
+  "claim_boundary": {
+    "allowed_now": "A persistent-HTTP ApxInf-versus-OmniInfer named-deployment comparison is technically feasible, and the repository records the exact missing admissions before it can be run honestly.",
+    "not_allowed_now": [
+      "ApxInf is faster or slower than OmniInfer",
+      "a direct ApxInf/OmniInfer speed ratio or delta",
+      "the current side-by-side native timing observations share one timing boundary",
+      "the existing gateway point estimate establishes positive overhead or practical equivalence",
+      "a formal v4 result"
+    ]
+  }
+}

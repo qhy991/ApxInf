@@ -299,6 +299,10 @@ impl LlmTrait for GeneralLlama {
         let _ = self.kv.clear();
     }
 
+    fn reset_checked(&mut self) -> Result<()> {
+        self.kv.clear()
+    }
+
     #[cfg(feature = "cuda")]
     fn decode_token(&mut self, _token: u32, _pos: u32) -> Option<Result<u32>> {
         // GPU-argmax path is disabled: the single-block argmax kernel

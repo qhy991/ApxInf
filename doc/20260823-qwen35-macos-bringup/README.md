@@ -523,3 +523,24 @@ performance result to report.
 
 The predeclaration contains no v3 timing result.  Existing diagnostic samples
 are not reused as formal observations.
+
+### ApxInf versus OmniInfer persistent-HTTP readiness
+
+A direct, end-to-end comparison is feasible as a comparison between two named
+deployments, but it is not yet eligible for sampling or ranking. The tracked
+[`v4 readiness receipt`](../../crates/apxinf-metal/evidence/llama-cpp/qwen35-0.8b-apxinf-vs-omniinfer-persistent-http-v4-readiness-20260826.json)
+requires a resident ApxInf HTTP lane, one checked reset epoch outside every
+measured request, a common client full-response timing boundary, and an
+identical EOG-logit policy. The last requirement is material: ApxInf's current
+free-run selects and feeds back EOG tokens, whereas the canonical OmniInfer
+request uses `ignore_eos:true` and suppresses those logits. Equal prompt and
+returned-token counts therefore do not yet establish the same sampling
+workload.
+
+The checked `GeneralQwen35::reset_checked` entrypoint is the first server-side
+prerequisite. It propagates accelerator/cache reset failures and verifies the
+hybrid position, KV cursor, and recurrent/convolution state before a long-lived
+caller may accept another request. The legacy infallible trait method remains a
+compatibility wrapper. The readiness receipt contains zero v4 performance
+requests and zero v4 samples; it authorizes no ApxInf/OmniInfer ratio, winner,
+or formal result.

@@ -175,6 +175,12 @@ fn loaded_model_uses_the_same_generation_interface() {
         .unwrap();
 
     assert_eq!(generated, vec![2, 3]);
+
+    model.reset().unwrap();
+    let (after_reset, _) = model
+        .generate_streaming(LlmInput::text(&[5, 6]), 2, |_| {}, None)
+        .unwrap();
+    assert_eq!(after_reset, vec![2, 3]);
 }
 
 #[test]

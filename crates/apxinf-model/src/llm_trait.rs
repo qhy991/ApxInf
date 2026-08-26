@@ -130,6 +130,16 @@ pub trait LlmTrait {
     /// Reset state for a new generation.
     fn reset(&mut self);
 
+    /// Reset state for a new generation and surface backend failures.
+    ///
+    /// Implementations with fallible cache or accelerator state clearing
+    /// should override this hook. The default preserves compatibility with
+    /// models whose existing reset is infallible.
+    fn reset_checked(&mut self) -> Result<()> {
+        self.reset();
+        Ok(())
+    }
+
     /// Optional hook called once before prefill, with the prompt length and
     /// the number of tokens that will be generated. Models with a CUDA
     /// decode graph use it to pre-capture every bucket they'll hit so the

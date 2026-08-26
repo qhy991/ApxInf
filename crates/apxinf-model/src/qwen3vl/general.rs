@@ -592,6 +592,12 @@ impl LlmTrait for GeneralQwen3VL {
         self.rope_delta = 0;
     }
 
+    fn reset_checked(&mut self) -> Result<()> {
+        self.kv.clear()?;
+        self.rope_delta = 0;
+        Ok(())
+    }
+
     fn vocab_size(&self) -> usize {
         self.config.text.vocab_size
     }
