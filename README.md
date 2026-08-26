@@ -674,7 +674,8 @@ external OpenDM/Triton adapter. Measurements from that removed implementation
 are not evidence for this Rust runtime and are intentionally not reproduced
 here.
 
-Current-head (`becab8d`) native evidence on the declared RTX 4090 / SM89 cell:
+GPU-qualified runtime source `becab8d` (the following commit changes only this
+qualification text) produced this evidence on the RTX 4090 / SM89 cell:
 
 - the full CUDA build, including regular, split-KV, and causal BF16 FA2
   translation units, compiles with `APXINF_CUDA_ARCH=sm_89`;
