@@ -16,6 +16,7 @@ constexpr uint32_t kMatVecThreads = kRowsPerThreadgroup * 32;
 constexpr uint32_t kElementThreads = 256;
 constexpr uint32_t kTopK = 4;
 constexpr uint32_t kTopKThreads = 256;
+constexpr uint32_t kMaxExcludedTokens = 5;
 constexpr uint32_t kAllOutputsMask = 0b11;
 
 struct LinearLayerParams {
@@ -35,6 +36,8 @@ struct KernelParams {
     uint32_t rows;
     uint32_t groups_per_row;
     uint32_t partial_count;
+    uint32_t excluded_tokens[kMaxExcludedTokens];
+    uint32_t excluded_count;
 };
 
 struct TailDescriptorV1 {
@@ -143,7 +146,49 @@ bool all_positive_finite(const float *values, size_t count) {
     return true;
 }
 
-bool valid_candidates(const uint32_t *tokens, uint32_t vocab_size) {
+bool configure_exclusions(
+    const KernelParams& base, const uint32_t *excluded_tokens,
+    uint32_t excluded_count, KernelParams *output, char *error_output,
+    size_t error_capacity) {
+    if (output == nullptr || excluded_count > kMaxExcludedTokens ||
+        (excluded_count != 0 && excluded_tokens == nullptr) ||
+        base.rows < kTopK) {
+        write_error(error_output, error_capacity,
+                    "invalid Metal W8 tail MLP+head v1 top-4 exclusion contract");
+        return false;
+    }
+    *output = base;
+    for (uint32_t index = 0; index < kMaxExcludedTokens; ++index) {
+        output->excluded_tokens[index] = UINT32_MAX;
+    }
+    for (uint32_t index = 0; index < excluded_count; ++index) {
+        const uint32_t token = excluded_tokens[index];
+        if (token >= base.rows) {
+            write_error(error_output, error_capacity,
+                        "Metal W8 tail MLP+head v1 exclusion token is outside vocabulary");
+            return false;
+        }
+        for (uint32_t earlier = 0; earlier < index; ++earlier) {
+            if (token == excluded_tokens[earlier]) {
+                write_error(error_output, error_capacity,
+                            "Metal W8 tail MLP+head v1 exclusion tokens contain a duplicate");
+                return false;
+            }
+        }
+        output->excluded_tokens[index] = token;
+    }
+    if (excluded_count > base.rows - kTopK) {
+        write_error(error_output, error_capacity,
+                    "Metal W8 tail MLP+head v1 exclusions leave fewer than four vocabulary rows");
+        return false;
+    }
+    output->excluded_count = excluded_count;
+    return true;
+}
+
+bool valid_candidates(
+    const uint32_t *tokens, uint32_t vocab_size,
+    const uint32_t *excluded_tokens, uint32_t excluded_count) {
     if (tokens == nullptr) {
         return false;
     }
@@ -153,6 +198,11 @@ bool valid_candidates(const uint32_t *tokens, uint32_t vocab_size) {
         }
         for (uint32_t earlier = 0; earlier < index; ++earlier) {
             if (tokens[index] == tokens[earlier]) {
+                return false;
+            }
+        }
+        for (uint32_t excluded = 0; excluded < excluded_count; ++excluded) {
+            if (tokens[index] == excluded_tokens[excluded]) {
                 return false;
             }
         }
@@ -185,7 +235,8 @@ bool buffers_valid(const ApxinfMetalW8TailMlpHeadHandleV1 *handle) {
 }
 
 void encode_tail(ApxinfMetalW8TailMlpHeadHandleV1 *handle,
-                 id<MTLComputeCommandEncoder> encoder) {
+                 id<MTLComputeCommandEncoder> encoder,
+                 const KernelParams& head_params) {
     const size_t hidden_bytes =
         static_cast<size_t>(handle->layer_params.hidden_size) * sizeof(float);
 
@@ -268,10 +319,10 @@ void encode_tail(ApxinfMetalW8TailMlpHeadHandleV1 *handle,
     [encoder setBuffer:handle->vocab_scales offset:0 atIndex:1];
     [encoder setBuffer:handle->hidden_a offset:0 atIndex:2];
     [encoder setBuffer:handle->partial_topk offset:0 atIndex:3];
-    [encoder setBytes:&handle->head_params
-                length:sizeof(handle->head_params)
+    [encoder setBytes:&head_params
+                length:sizeof(head_params)
                atIndex:4];
-    [encoder dispatchThreadgroups:MTLSizeMake(handle->head_params.partial_count,
+    [encoder dispatchThreadgroups:MTLSizeMake(head_params.partial_count,
                                               1, 1)
              threadsPerThreadgroup:MTLSizeMake(kMatVecThreads, 1, 1)];
     buffer_barrier(encoder);
@@ -279,8 +330,8 @@ void encode_tail(ApxinfMetalW8TailMlpHeadHandleV1 *handle,
     [encoder setComputePipelineState:handle->final_topk_pipeline];
     [encoder setBuffer:handle->partial_topk offset:0 atIndex:0];
     [encoder setBuffer:handle->output_tokens offset:0 atIndex:1];
-    [encoder setBytes:&handle->head_params
-                length:sizeof(handle->head_params)
+    [encoder setBytes:&head_params
+                length:sizeof(head_params)
                atIndex:2];
     [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
              threadsPerThreadgroup:MTLSizeMake(kTopKThreads, 1, 1)];
@@ -474,6 +525,8 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
             descriptor->vocab_size,
             descriptor->hidden_size / kGroupSize,
             partial_count,
+            {},
+            0,
         };
         handle->terminal_error = false;
         *output = handle;
@@ -481,10 +534,11 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_create_v1(
     }
 }
 
-extern "C" int apxinf_metal_w8_tail_mlp_head_decode_v1(
+extern "C" int apxinf_metal_w8_tail_mlp_head_decode_excluding_v1(
     void *opaque_handle, const float *input, uint32_t input_count,
     float *normalized_hidden, uint32_t normalized_hidden_count,
     uint32_t *candidate_token_ids, uint32_t candidate_count,
+    const uint32_t *excluded_tokens, uint32_t excluded_count,
     uint32_t fault_mode,
     TailExecutionReceiptV1 *receipt, char *error_output,
     size_t error_capacity) {
@@ -503,6 +557,12 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_decode_v1(
             normalized_hidden_count != input_count || candidate_count != kTopK) {
             write_error(error_output, error_capacity,
                         "invalid Metal W8 tail MLP+head v1 decode input or output");
+            return 1;
+        }
+        KernelParams head_params{};
+        if (!configure_exclusions(handle->head_params, excluded_tokens,
+                                  excluded_count, &head_params, error_output,
+                                  error_capacity)) {
             return 1;
         }
         if (handle->terminal_error) {
@@ -536,7 +596,7 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_decode_v1(
             return 1;
         }
         receipt->compute_encoders = 1;
-        encode_tail(handle, encoder);
+        encode_tail(handle, encoder, head_params);
         receipt->kernel_dispatches = 8;
         receipt->buffer_barriers = 7;
         [encoder endEncoding];
@@ -570,7 +630,8 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_decode_v1(
         const uint32_t *published_tokens =
             static_cast<const uint32_t *>(handle->output_tokens.contents);
         if (!all_finite(published_hidden, input_count) ||
-            !valid_candidates(published_tokens, handle->head_params.rows)) {
+            !valid_candidates(published_tokens, handle->head_params.rows,
+                              excluded_tokens, excluded_count)) {
             handle->terminal_error = true;
             write_error(error_output, error_capacity,
                         "Metal W8 tail MLP+head v1 GPU output failed validation");
@@ -584,6 +645,18 @@ extern "C" int apxinf_metal_w8_tail_mlp_head_decode_v1(
         receipt->output_commit_mask = kAllOutputsMask;
         return 0;
     }
+}
+
+extern "C" int apxinf_metal_w8_tail_mlp_head_decode_v1(
+    void *opaque_handle, const float *input, uint32_t input_count,
+    float *normalized_hidden, uint32_t normalized_hidden_count,
+    uint32_t *candidate_token_ids, uint32_t candidate_count,
+    uint32_t fault_mode, TailExecutionReceiptV1 *receipt, char *error_output,
+    size_t error_capacity) {
+    return apxinf_metal_w8_tail_mlp_head_decode_excluding_v1(
+        opaque_handle, input, input_count, normalized_hidden,
+        normalized_hidden_count, candidate_token_ids, candidate_count, nullptr,
+        0, fault_mode, receipt, error_output, error_capacity);
 }
 
 extern "C" int apxinf_metal_w8_tail_mlp_head_reset_v1(

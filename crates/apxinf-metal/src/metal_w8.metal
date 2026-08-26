@@ -6,6 +6,8 @@ struct KernelParams {
     uint rows;
     uint groups_per_row;
     uint partial_count;
+    uint excluded_tokens[5];
+    uint excluded_count;
 };
 
 struct Candidate {
@@ -14,6 +16,18 @@ struct Candidate {
 };
 
 constant uint top_k = 4;
+constant uint max_excluded_tokens = 5;
+
+inline bool token_is_excluded(uint token, constant KernelParams& params) {
+    for (uint index = 0;
+         index < params.excluded_count && index < max_excluded_tokens;
+         ++index) {
+        if (params.excluded_tokens[index] == token) {
+            return true;
+        }
+    }
+    return false;
+}
 
 inline bool candidate_better(float score, uint token, float current_score,
                              uint current_token) {
@@ -68,8 +82,10 @@ kernel void w8_rows_topk4(
     }
     sum = simd_sum(sum);
     if (lane == 0) {
-        row_scores[simdgroup] = row < params.rows && !isnan(sum) ? sum : -INFINITY;
-        row_tokens[simdgroup] = row < params.rows ? row : UINT_MAX;
+        const bool row_is_allowed =
+            row < params.rows && !token_is_excluded(row, params);
+        row_scores[simdgroup] = row_is_allowed && !isnan(sum) ? sum : -INFINITY;
+        row_tokens[simdgroup] = row_is_allowed ? row : UINT_MAX;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 

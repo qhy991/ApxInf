@@ -12,12 +12,22 @@ namespace {
 constexpr uint32_t kRowsPerThreadgroup = 8;
 constexpr uint32_t kTopKThreads = 256;
 constexpr uint32_t kTopK = 4;
+constexpr uint32_t kMaxExcludedTokens = 5;
 
 struct KernelParams {
     uint32_t columns;
     uint32_t rows;
     uint32_t groups_per_row;
     uint32_t partial_count;
+};
+
+struct TopKKernelParams {
+    uint32_t columns;
+    uint32_t rows;
+    uint32_t groups_per_row;
+    uint32_t partial_count;
+    uint32_t excluded_tokens[kMaxExcludedTokens];
+    uint32_t excluded_count;
 };
 
 struct ApxinfMetalW8Handle {
@@ -30,7 +40,7 @@ struct ApxinfMetalW8Handle {
     id<MTLBuffer> hidden;
     id<MTLBuffer> partial;
     id<MTLBuffer> tokens;
-    KernelParams params;
+    TopKKernelParams params;
 };
 
 struct ApxinfMetalW8MatVecHandle {
@@ -57,6 +67,138 @@ void write_error(char *output, size_t capacity, const char *message) {
 void write_nserror(char *output, size_t capacity, NSError *error) {
     write_error(output, capacity,
                 error == nil ? "unknown Metal error" : error.localizedDescription.UTF8String);
+}
+
+bool configure_exclusions(
+    const TopKKernelParams& base, const uint32_t *excluded_tokens,
+    uint32_t excluded_count, TopKKernelParams *output, char *error_output,
+    size_t error_capacity) {
+    if (output == nullptr || excluded_count > kMaxExcludedTokens ||
+        (excluded_count != 0 && excluded_tokens == nullptr) ||
+        base.rows < kTopK) {
+        write_error(error_output, error_capacity,
+                    "invalid Metal W8 top-4 exclusion contract");
+        return false;
+    }
+    *output = base;
+    for (uint32_t index = 0; index < kMaxExcludedTokens; ++index) {
+        output->excluded_tokens[index] = UINT32_MAX;
+    }
+    for (uint32_t index = 0; index < excluded_count; ++index) {
+        const uint32_t token = excluded_tokens[index];
+        if (token >= base.rows) {
+            write_error(error_output, error_capacity,
+                        "Metal W8 top-4 exclusion token is outside vocabulary");
+            return false;
+        }
+        for (uint32_t earlier = 0; earlier < index; ++earlier) {
+            if (token == excluded_tokens[earlier]) {
+                write_error(error_output, error_capacity,
+                            "Metal W8 top-4 exclusion tokens contain a duplicate");
+                return false;
+            }
+        }
+        output->excluded_tokens[index] = token;
+    }
+    if (excluded_count > base.rows - kTopK) {
+        write_error(error_output, error_capacity,
+                    "Metal W8 top-4 exclusions leave fewer than four vocabulary rows");
+        return false;
+    }
+    output->excluded_count = excluded_count;
+    return true;
+}
+
+bool valid_candidates(
+    const uint32_t *tokens, uint32_t vocab_size,
+    const uint32_t *excluded_tokens, uint32_t excluded_count) {
+    if (tokens == nullptr) {
+        return false;
+    }
+    for (uint32_t index = 0; index < kTopK; ++index) {
+        if (tokens[index] >= vocab_size) {
+            return false;
+        }
+        for (uint32_t earlier = 0; earlier < index; ++earlier) {
+            if (tokens[index] == tokens[earlier]) {
+                return false;
+            }
+        }
+        for (uint32_t excluded = 0; excluded < excluded_count; ++excluded) {
+            if (tokens[index] == excluded_tokens[excluded]) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+int run_topk4(
+    ApxinfMetalW8Handle *handle, const float *hidden, uint32_t hidden_count,
+    const uint32_t *excluded_tokens, uint32_t excluded_count,
+    uint32_t *output_tokens, char *error_output, size_t error_capacity) {
+    if (handle == nullptr || hidden == nullptr || output_tokens == nullptr ||
+        hidden_count != handle->params.columns) {
+        write_error(error_output, error_capacity, "invalid Metal W8 decode input");
+        return 1;
+    }
+    TopKKernelParams params{};
+    if (!configure_exclusions(handle->params, excluded_tokens, excluded_count,
+                              &params, error_output, error_capacity)) {
+        return 1;
+    }
+    std::memcpy(handle->hidden.contents, hidden,
+                static_cast<size_t>(hidden_count) * sizeof(float));
+
+    id<MTLCommandBuffer> command = [handle->queue commandBuffer];
+    if (command == nil) {
+        write_error(error_output, error_capacity, "create Metal command buffer failed");
+        return 1;
+    }
+    id<MTLComputeCommandEncoder> rows = [command computeCommandEncoder];
+    if (rows == nil) {
+        write_error(error_output, error_capacity, "create first Metal encoder failed");
+        return 1;
+    }
+    [rows setComputePipelineState:handle->rows_pipeline];
+    [rows setBuffer:handle->weights offset:0 atIndex:0];
+    [rows setBuffer:handle->scales offset:0 atIndex:1];
+    [rows setBuffer:handle->hidden offset:0 atIndex:2];
+    [rows setBuffer:handle->partial offset:0 atIndex:3];
+    [rows setBytes:&params length:sizeof(params) atIndex:4];
+    [rows dispatchThreadgroups:MTLSizeMake(params.partial_count, 1, 1)
+             threadsPerThreadgroup:MTLSizeMake(kRowsPerThreadgroup * 32, 1, 1)];
+    [rows endEncoding];
+
+    id<MTLComputeCommandEncoder> final = [command computeCommandEncoder];
+    if (final == nil) {
+        write_error(error_output, error_capacity, "create final Metal encoder failed");
+        return 1;
+    }
+    [final setComputePipelineState:handle->final_pipeline];
+    [final setBuffer:handle->partial offset:0 atIndex:0];
+    [final setBuffer:handle->tokens offset:0 atIndex:1];
+    [final setBytes:&params length:sizeof(params) atIndex:2];
+    [final dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(kTopKThreads, 1, 1)];
+    [final endEncoding];
+
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted) {
+        write_nserror(error_output, error_capacity, command.error);
+        return 1;
+    }
+    const uint32_t *published_tokens =
+        static_cast<const uint32_t *>(handle->tokens.contents);
+    if (!valid_candidates(published_tokens, handle->params.rows,
+                          excluded_tokens, excluded_count)) {
+        write_error(error_output, error_capacity,
+                    "Metal W8 top-4 GPU output failed validation");
+        return 1;
+    }
+    std::memcpy(output_tokens, published_tokens, kTopK * sizeof(uint32_t));
+    return 0;
 }
 
 }  // namespace
@@ -145,7 +287,8 @@ extern "C" int apxinf_metal_w8_create(
             write_error(error_output, error_capacity, "allocate persistent Metal W8 buffers failed");
             return 1;
         }
-        handle->params = KernelParams{columns, rows, columns / group_size, partial_count};
+        handle->params = TopKKernelParams{
+            columns, rows, columns / group_size, partial_count, {}, 0};
         *output = handle;
         return 0;
     }
@@ -155,56 +298,20 @@ extern "C" int apxinf_metal_w8_topk4(
     void *opaque_handle, const float *hidden, uint32_t hidden_count,
     uint32_t *output_tokens, char *error_output, size_t error_capacity) {
     @autoreleasepool {
-        auto handle = static_cast<ApxinfMetalW8Handle *>(opaque_handle);
-        if (handle == nullptr || hidden == nullptr || output_tokens == nullptr ||
-            hidden_count != handle->params.columns) {
-            write_error(error_output, error_capacity, "invalid Metal W8 decode input");
-            return 1;
-        }
-        std::memcpy(handle->hidden.contents, hidden,
-                    static_cast<size_t>(hidden_count) * sizeof(float));
+        return run_topk4(static_cast<ApxinfMetalW8Handle *>(opaque_handle),
+                         hidden, hidden_count, nullptr, 0, output_tokens,
+                         error_output, error_capacity);
+    }
+}
 
-        id<MTLCommandBuffer> command = [handle->queue commandBuffer];
-        if (command == nil) {
-            write_error(error_output, error_capacity, "create Metal command buffer failed");
-            return 1;
-        }
-        id<MTLComputeCommandEncoder> rows = [command computeCommandEncoder];
-        if (rows == nil) {
-            write_error(error_output, error_capacity, "create first Metal encoder failed");
-            return 1;
-        }
-        [rows setComputePipelineState:handle->rows_pipeline];
-        [rows setBuffer:handle->weights offset:0 atIndex:0];
-        [rows setBuffer:handle->scales offset:0 atIndex:1];
-        [rows setBuffer:handle->hidden offset:0 atIndex:2];
-        [rows setBuffer:handle->partial offset:0 atIndex:3];
-        [rows setBytes:&handle->params length:sizeof(handle->params) atIndex:4];
-        [rows dispatchThreadgroups:MTLSizeMake(handle->params.partial_count, 1, 1)
-                 threadsPerThreadgroup:MTLSizeMake(kRowsPerThreadgroup * 32, 1, 1)];
-        [rows endEncoding];
-
-        id<MTLComputeCommandEncoder> final = [command computeCommandEncoder];
-        if (final == nil) {
-            write_error(error_output, error_capacity, "create final Metal encoder failed");
-            return 1;
-        }
-        [final setComputePipelineState:handle->final_pipeline];
-        [final setBuffer:handle->partial offset:0 atIndex:0];
-        [final setBuffer:handle->tokens offset:0 atIndex:1];
-        [final setBytes:&handle->params length:sizeof(handle->params) atIndex:2];
-        [final dispatchThreadgroups:MTLSizeMake(1, 1, 1)
-                  threadsPerThreadgroup:MTLSizeMake(kTopKThreads, 1, 1)];
-        [final endEncoding];
-
-        [command commit];
-        [command waitUntilCompleted];
-        if (command.status != MTLCommandBufferStatusCompleted) {
-            write_nserror(error_output, error_capacity, command.error);
-            return 1;
-        }
-        std::memcpy(output_tokens, handle->tokens.contents, kTopK * sizeof(uint32_t));
-        return 0;
+extern "C" int apxinf_metal_w8_topk4_excluding(
+    void *opaque_handle, const float *hidden, uint32_t hidden_count,
+    const uint32_t *excluded_tokens, uint32_t excluded_count,
+    uint32_t *output_tokens, char *error_output, size_t error_capacity) {
+    @autoreleasepool {
+        return run_topk4(static_cast<ApxinfMetalW8Handle *>(opaque_handle),
+                         hidden, hidden_count, excluded_tokens, excluded_count,
+                         output_tokens, error_output, error_capacity);
     }
 }
 

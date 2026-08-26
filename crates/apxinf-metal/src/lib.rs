@@ -42,6 +42,7 @@ pub use tail_mlp_head_v1::{
 
 pub const W8_GROUP_SIZE: usize = 64;
 pub const W8_TOP_K: usize = 4;
+pub const W8_MAX_EXCLUDED_TOKENS: usize = 5;
 
 /// Quantization group sizes supported by the CPU packed-weight oracle.
 ///
@@ -239,6 +240,17 @@ impl PackedW8Rows {
     pub fn topk4(&self, input: &[f32]) -> Result<[u32; W8_TOP_K], MetalW8Error> {
         let scores = self.scores(input)?;
         topk4_scores(&scores)
+    }
+
+    /// Deterministic CPU oracle for the four highest quantized scores after
+    /// removing at most five distinct vocabulary rows before selection.
+    pub fn topk4_excluding(
+        &self,
+        input: &[f32],
+        excluded_tokens: &[u32],
+    ) -> Result<[u32; W8_TOP_K], MetalW8Error> {
+        let scores = self.scores(input)?;
+        topk4_scores_excluding(&scores, excluded_tokens)
     }
 }
 
@@ -439,15 +451,24 @@ fn argmax_scores(scores: &[f32]) -> Result<u32, MetalW8Error> {
 }
 
 fn topk4_scores(scores: &[f32]) -> Result<[u32; W8_TOP_K], MetalW8Error> {
+    topk4_scores_excluding(scores, &[])
+}
+
+fn topk4_scores_excluding(
+    scores: &[f32],
+    excluded_tokens: &[u32],
+) -> Result<[u32; W8_TOP_K], MetalW8Error> {
     if scores.len() < W8_TOP_K || scores.len() > u32::MAX as usize {
         return Err(MetalW8Error::new(format!(
             "Metal W8 top-4 requires {W8_TOP_K}..=u32::MAX scores"
         )));
     }
+    validate_topk4_exclusions(excluded_tokens, scores.len())?;
     let mut best_scores = [f32::NEG_INFINITY; W8_TOP_K];
     let mut best_tokens = [u32::MAX; W8_TOP_K];
     for (token, &score) in scores.iter().enumerate() {
-        if score.is_nan()
+        if excluded_tokens.contains(&(token as u32))
+            || score.is_nan()
             || !candidate_better(
                 score,
                 token as u32,
@@ -474,6 +495,35 @@ fn topk4_scores(scores: &[f32]) -> Result<[u32; W8_TOP_K], MetalW8Error> {
         best_tokens[position] = token as u32;
     }
     Ok(best_tokens)
+}
+
+pub(crate) fn validate_topk4_exclusions(
+    excluded_tokens: &[u32],
+    rows: usize,
+) -> Result<(), MetalW8Error> {
+    if excluded_tokens.len() > W8_MAX_EXCLUDED_TOKENS {
+        return Err(MetalW8Error::new(format!(
+            "Metal W8 top-4 accepts at most {W8_MAX_EXCLUDED_TOKENS} excluded tokens"
+        )));
+    }
+    for (index, &token) in excluded_tokens.iter().enumerate() {
+        if token as usize >= rows {
+            return Err(MetalW8Error::new(format!(
+                "Metal W8 top-4 exclusion token {token} is outside vocabulary {rows}"
+            )));
+        }
+        if excluded_tokens[..index].contains(&token) {
+            return Err(MetalW8Error::new(format!(
+                "Metal W8 top-4 exclusion token {token} is duplicated"
+            )));
+        }
+    }
+    if rows.saturating_sub(excluded_tokens.len()) < W8_TOP_K {
+        return Err(MetalW8Error::new(format!(
+            "Metal W8 top-4 exclusions must leave at least {W8_TOP_K} vocabulary rows"
+        )));
+    }
+    Ok(())
 }
 
 fn candidate_better(score: f32, token: u32, current_score: f32, current_token: u32) -> bool {
@@ -640,6 +690,48 @@ impl MetalW8LmHead {
             if tokens[..index].contains(&token) {
                 return Err(MetalW8Error::new(format!(
                     "Metal W8 kernel returned duplicate candidate token {token}"
+                )));
+            }
+        }
+        Ok(tokens)
+    }
+
+    /// Submit the same two reduction stages while forcing at most five
+    /// distinct vocabulary rows out before each row group selects its top-4.
+    pub fn topk4_excluding(
+        &mut self,
+        hidden: &[f32],
+        excluded_tokens: &[u32],
+    ) -> Result<[u32; W8_TOP_K], MetalW8Error> {
+        if hidden.len() != self.columns {
+            return Err(MetalW8Error::new(format!(
+                "Metal W8 hidden row has {} elements, expected {}",
+                hidden.len(),
+                self.columns
+            )));
+        }
+        if let Some(index) = hidden.iter().position(|value| !value.is_finite()) {
+            return Err(MetalW8Error::new(format!(
+                "Metal W8 hidden row contains a non-finite value at element {index}"
+            )));
+        }
+        validate_topk4_exclusions(excluded_tokens, self.rows)?;
+        let tokens = self.inner.topk4_excluding(hidden, excluded_tokens)?;
+        for (index, &token) in tokens.iter().enumerate() {
+            if token as usize >= self.rows {
+                return Err(MetalW8Error::new(format!(
+                    "Metal W8 kernel returned candidate {index} token {token} outside vocabulary {}",
+                    self.rows
+                )));
+            }
+            if tokens[..index].contains(&token) {
+                return Err(MetalW8Error::new(format!(
+                    "Metal W8 kernel returned duplicate candidate token {token}"
+                )));
+            }
+            if excluded_tokens.contains(&token) {
+                return Err(MetalW8Error::new(format!(
+                    "Metal W8 kernel returned excluded candidate token {token}"
                 )));
             }
         }
@@ -825,6 +917,16 @@ mod platform {
             error: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
+        fn apxinf_metal_w8_topk4_excluding(
+            handle: *mut c_void,
+            hidden: *const f32,
+            hidden_count: u32,
+            excluded_tokens: *const u32,
+            excluded_count: u32,
+            output_tokens: *mut u32,
+            error: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn apxinf_metal_w8_destroy(handle: *mut c_void);
         fn apxinf_metal_w8_matvec_create(
             weights: *const i8,
@@ -915,6 +1017,34 @@ mod platform {
             };
             if status != 0 {
                 return Err(bridge_error("run Metal W8 top-4 head", &error));
+            }
+            Ok(tokens)
+        }
+
+        pub(super) fn topk4_excluding(
+            &mut self,
+            hidden: &[f32],
+            excluded_tokens: &[u32],
+        ) -> Result<[u32; W8_TOP_K], MetalW8Error> {
+            let mut tokens = [0u32; W8_TOP_K];
+            let mut error = [0 as c_char; ERROR_CAPACITY];
+            let status = unsafe {
+                apxinf_metal_w8_topk4_excluding(
+                    self.0.as_ptr(),
+                    hidden.as_ptr(),
+                    hidden.len() as u32,
+                    excluded_tokens.as_ptr(),
+                    excluded_tokens.len() as u32,
+                    tokens.as_mut_ptr(),
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                return Err(bridge_error(
+                    "run Metal W8 top-4 excluding vocabulary rows",
+                    &error,
+                ));
             }
             Ok(tokens)
         }
@@ -1066,6 +1196,16 @@ mod platform {
         }
 
         pub(super) fn topk4(&mut self, _hidden: &[f32]) -> Result<[u32; W8_TOP_K], MetalW8Error> {
+            Err(MetalW8Error::new(
+                "Metal W8 language-model head requires macOS",
+            ))
+        }
+
+        pub(super) fn topk4_excluding(
+            &mut self,
+            _hidden: &[f32],
+            _excluded_tokens: &[u32],
+        ) -> Result<[u32; W8_TOP_K], MetalW8Error> {
             Err(MetalW8Error::new(
                 "Metal W8 language-model head requires macOS",
             ))
@@ -1356,6 +1496,42 @@ mod tests {
     }
 
     #[test]
+    fn cpu_topk_oracle_excludes_rows_before_selecting_four_candidates() {
+        let scores = vec![10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0];
+
+        assert_eq!(
+            topk4_scores_excluding(&scores, &[0, 1, 2, 3, 4]).unwrap(),
+            [5, 6, 7, 8]
+        );
+        assert_eq!(
+            topk4_scores_excluding(&scores, &[]).unwrap(),
+            topk4_scores(&scores).unwrap()
+        );
+    }
+
+    #[test]
+    fn cpu_topk_oracle_rejects_invalid_exclusion_contracts() {
+        let scores = vec![0.0; 10];
+
+        assert!(topk4_scores_excluding(&scores, &[0, 1, 2, 3, 4, 5])
+            .unwrap_err()
+            .to_string()
+            .contains("at most 5"));
+        assert!(topk4_scores_excluding(&scores, &[2, 2])
+            .unwrap_err()
+            .to_string()
+            .contains("duplicated"));
+        assert!(topk4_scores_excluding(&scores, &[10])
+            .unwrap_err()
+            .to_string()
+            .contains("outside vocabulary"));
+        assert!(topk4_scores_excluding(&scores[..8], &[0, 1, 2, 3, 4])
+            .unwrap_err()
+            .to_string()
+            .contains("leave at least 4"));
+    }
+
+    #[test]
     fn qwen35_tied_lm_head_ledger_closes_to_the_official_shape() {
         let ledger = LmHeadBufferLedger::from_dimensions(248_320, 1_024).unwrap();
 
@@ -1388,6 +1564,7 @@ mod tests {
         assert!(!shader.contains("kernel void w8_rows_matvec("));
         assert!(shader.contains("kernel void w8_rows_topk4("));
         assert!(shader.contains("kernel void w8_final_topk4("));
+        assert!(shader.contains("token_is_excluded(row, params)"));
         assert!(mlp_shader.contains("kernel void w8_mlp_gate_up("));
         assert!(mlp_shader.contains("kernel void w8_mlp_silu_mul("));
         assert!(mlp_shader.contains("kernel void w8_mlp_down("));
@@ -1399,6 +1576,7 @@ mod tests {
         assert!(!bridge.contains("kernel void w8_rows_matvec("));
         assert!(!bridge.contains("kernel void w8_rows_topk4("));
         assert!(!bridge.contains("kernel void w8_final_topk4("));
+        assert!(bridge.contains("apxinf_metal_w8_topk4_excluding("));
         assert!(!mlp_bridge.contains("kernel void w8_mlp_"));
     }
 
@@ -1434,6 +1612,34 @@ mod tests {
         let expected = packed.topk4(&hidden).unwrap();
         let mut head = MetalW8LmHead::from_packed(&packed).unwrap();
         assert_eq!(head.topk4(&hidden).unwrap(), expected);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_topk4_excluding_matches_cpu_when_all_original_winners_are_removed() {
+        let rows = 17;
+        let columns = 128;
+        let hidden = vec![1.0f32; columns];
+        let mut weights = vec![0.0f32; rows * columns];
+        for row in 0..rows {
+            weights[row * columns..(row + 1) * columns].fill((rows - row) as f32 / rows as f32);
+        }
+        let packed = PackedW8Rows::pack_f32(&weights, rows, columns).unwrap();
+        let excluded = [0, 1, 2, 3, 4];
+        let expected = packed.topk4_excluding(&hidden, &excluded).unwrap();
+        let mut head = MetalW8LmHead::from_packed(&packed).unwrap();
+
+        assert!(head
+            .topk4_excluding(&hidden, &[2, 2])
+            .unwrap_err()
+            .to_string()
+            .contains("duplicated"));
+        assert_eq!(head.topk4_excluding(&hidden, &excluded).unwrap(), expected);
+        assert_eq!(expected, [5, 6, 7, 8]);
+        assert_eq!(
+            head.topk4_excluding(&hidden, &[]).unwrap(),
+            head.topk4(&hidden).unwrap()
+        );
     }
 
     #[cfg(target_os = "macos")]

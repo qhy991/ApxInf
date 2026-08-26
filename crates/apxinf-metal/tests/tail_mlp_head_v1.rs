@@ -27,7 +27,7 @@ fn rms_norm(input: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {
 fn packed_tail_v1_matches_the_manual_oracle_and_breaks_head_ties_by_lowest_token() {
     let hidden_size = 64;
     let intermediate_size = 64;
-    let vocab_size = 8usize;
+    let vocab_size = 9usize;
     let projection_elements = hidden_size * intermediate_size;
     let mlp = PackedW8MlpBlock::pack_f32(
         &values(projection_elements, 17, 251, 0.04),
@@ -74,6 +74,22 @@ fn packed_tail_v1_matches_the_manual_oracle_and_breaks_head_ties_by_lowest_token
 
     assert_eq!(actual.normalized_hidden, expected_hidden);
     assert_eq!(actual.candidate_token_ids, [0, 1, 2, 3]);
+
+    let excluding = packed
+        .decode_reference_excluding(&input, &[0, 1, 2, 3, 4])
+        .unwrap();
+    assert_eq!(excluding.normalized_hidden, expected_hidden);
+    assert_eq!(excluding.candidate_token_ids, [5, 6, 7, 8]);
+    for (excluded, expected_error) in [
+        (vec![0, 1, 2, 3, 4, 5], "at most 5"),
+        (vec![2, 2], "duplicated"),
+        (vec![9], "outside vocabulary"),
+    ] {
+        let error = packed
+            .decode_reference_excluding(&input, &excluded)
+            .unwrap_err();
+        assert!(error.to_string().contains(expected_error), "{error}");
+    }
 }
 
 #[test]
@@ -134,7 +150,7 @@ fn tail_v1_ledger_is_exact_for_tiny_and_qwen35_official_dimensions() {
 fn metal_tail_v1_matches_packed_hidden_and_top4_in_one_transaction() {
     let hidden_size = 64;
     let intermediate_size = 64;
-    let vocab_size = 8;
+    let vocab_size = 9;
     let projection_elements = hidden_size * intermediate_size;
     let mlp = PackedW8MlpBlock::pack_f32(
         &values(projection_elements, 41, 211, 0.04),
@@ -195,6 +211,43 @@ fn metal_tail_v1_matches_packed_hidden_and_top4_in_one_transaction() {
     assert_eq!(stats.output_commits, 2);
     assert_eq!(stats.last_output_commit_mask, 0b11);
     assert!(!stats.terminal_error);
+
+    let mut excluded = [u32::MAX; 5];
+    excluded[..4].copy_from_slice(&expected.candidate_token_ids);
+    excluded[4] = (0..vocab_size as u32)
+        .find(|token| !expected.candidate_token_ids.contains(token))
+        .unwrap();
+    let expected_excluding = packed
+        .decode_reference_excluding(&input, &excluded)
+        .unwrap();
+    metal.reset().unwrap();
+    assert!(metal
+        .decode_excluding(&input, &[2, 2])
+        .unwrap_err()
+        .to_string()
+        .contains("duplicated"));
+    assert_eq!(
+        metal.stats(),
+        Default::default(),
+        "invalid exclusions must submit no Metal work"
+    );
+    let actual_excluding = metal.decode_excluding(&input, &excluded).unwrap();
+
+    assert_close(
+        actual_excluding.normalized_hidden,
+        &expected_excluding.normalized_hidden,
+        3.0e-3,
+        "Metal tail excluding normalized hidden",
+    );
+    assert_eq!(
+        actual_excluding.candidate_token_ids,
+        expected_excluding.candidate_token_ids
+    );
+    assert!(actual_excluding
+        .candidate_token_ids
+        .iter()
+        .all(|token| !excluded.contains(token)));
+    assert_eq!(metal.stats().successful_decodes, 1);
 }
 
 #[cfg(all(target_os = "macos", debug_assertions))]
@@ -568,6 +621,7 @@ fn tail_v1_bridge_shape_and_shader_custody_match_the_public_contract() {
     for symbol in [
         "apxinf_metal_w8_tail_mlp_head_create_v1(",
         "apxinf_metal_w8_tail_mlp_head_decode_v1(",
+        "apxinf_metal_w8_tail_mlp_head_decode_excluding_v1(",
         "apxinf_metal_w8_tail_mlp_head_reset_v1(",
         "apxinf_metal_w8_tail_mlp_head_destroy_v1(",
     ] {
@@ -605,6 +659,10 @@ fn tail_v1_bridge_shape_and_shader_custody_match_the_public_contract() {
     assert_eq!(bridge.matches("[command waitUntilCompleted]").count(), 1);
     assert!(!bridge.contains("kernel void w8_mlp_gate_up("));
     assert!(!bridge.contains("kernel void w8_rows_topk4("));
+
+    let shader = include_str!("../src/metal_w8.metal");
+    assert!(shader.contains("token_is_excluded(row, params)"));
+    assert!(shader.contains("row_is_allowed ? row : UINT_MAX"));
 
     let build = include_str!("../build.rs");
     assert!(build.contains("format!(\"{mlp_shader}\\n{linear_layer_shader}\\n{shader}\")"));

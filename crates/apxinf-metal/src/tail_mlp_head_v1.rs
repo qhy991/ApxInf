@@ -1,4 +1,6 @@
-use crate::{MetalW8Error, PackedW8MlpBlock, PackedW8Rows, W8GroupSize, W8_TOP_K};
+use crate::{
+    validate_topk4_exclusions, MetalW8Error, PackedW8MlpBlock, PackedW8Rows, W8GroupSize, W8_TOP_K,
+};
 
 /// Exact resident-buffer and per-decode transaction contract for tail v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,6 +278,14 @@ impl PackedW8TailMlpHeadV1 {
         &self,
         full_attention_residual: &[f32],
     ) -> Result<TailMlpHeadDecodeResultV1, MetalW8Error> {
+        self.decode_reference_excluding(full_attention_residual, &[])
+    }
+
+    pub fn decode_reference_excluding(
+        &self,
+        full_attention_residual: &[f32],
+        excluded_tokens: &[u32],
+    ) -> Result<TailMlpHeadDecodeResultV1, MetalW8Error> {
         if full_attention_residual.len() != self.hidden_size() {
             return Err(MetalW8Error::new(format!(
                 "Metal W8 tail MLP+head v1 input has {} elements, expected {}",
@@ -284,6 +294,7 @@ impl PackedW8TailMlpHeadV1 {
             )));
         }
         require_finite(full_attention_residual, "Metal W8 tail MLP+head v1 input")?;
+        validate_topk4_exclusions(excluded_tokens, self.vocab_size())?;
         let normalized = rms_norm(
             full_attention_residual,
             &self.post_attention_rms_weight,
@@ -306,7 +317,9 @@ impl PackedW8TailMlpHeadV1 {
             &normalized_hidden,
             "Metal W8 tail MLP+head v1 final normalized row",
         )?;
-        let candidate_token_ids = self.vocab.topk4(&normalized_hidden)?;
+        let candidate_token_ids = self
+            .vocab
+            .topk4_excluding(&normalized_hidden, excluded_tokens)?;
         Ok(TailMlpHeadDecodeResultV1 {
             normalized_hidden,
             candidate_token_ids,
@@ -354,6 +367,35 @@ impl MetalW8TailMlpHeadV1 {
             return Err(error);
         }
         self.validate_staged_output()?;
+        Ok(TailMlpHeadDecodeViewV1 {
+            normalized_hidden: &self.normalized_hidden,
+            candidate_token_ids: self.candidate_token_ids,
+        })
+    }
+
+    /// Execute the fused transaction while removing at most five distinct
+    /// vocabulary rows in the shared Metal row-scoring kernel.
+    pub fn decode_excluding(
+        &mut self,
+        full_attention_residual: &[f32],
+        excluded_tokens: &[u32],
+    ) -> Result<TailMlpHeadDecodeViewV1<'_>, MetalW8Error> {
+        self.validate_decode_input(full_attention_residual)?;
+        validate_topk4_exclusions(excluded_tokens, self.inner.vocab_size())?;
+        let execution = self.inner.decode_excluding(
+            full_attention_residual,
+            &mut self.normalized_hidden,
+            &mut self.candidate_token_ids,
+            excluded_tokens,
+            0,
+        );
+        self.record_execution(&execution);
+        if let Err(error) = execution.result {
+            self.terminal_error = true;
+            self.stats.terminal_error = true;
+            return Err(error);
+        }
+        self.validate_staged_output_excluding(excluded_tokens)?;
         Ok(TailMlpHeadDecodeViewV1 {
             normalized_hidden: &self.normalized_hidden,
             candidate_token_ids: self.candidate_token_ids,
@@ -542,10 +584,18 @@ impl MetalW8TailMlpHeadV1 {
     }
 
     fn validate_staged_output(&mut self) -> Result<(), MetalW8Error> {
+        self.validate_staged_output_excluding(&[])
+    }
+
+    fn validate_staged_output_excluding(
+        &mut self,
+        excluded_tokens: &[u32],
+    ) -> Result<(), MetalW8Error> {
         if let Err(error) = validate_published_output(
             &self.normalized_hidden,
             self.candidate_token_ids,
             self.inner.vocab_size(),
+            excluded_tokens,
         ) {
             debug_assert!(self.stats.successful_decodes > 0);
             self.stats.successful_decodes -= 1;
@@ -562,6 +612,7 @@ fn validate_published_output(
     normalized_hidden: &[f32],
     candidate_token_ids: [u32; W8_TOP_K],
     vocab_size: usize,
+    excluded_tokens: &[u32],
 ) -> Result<(), MetalW8Error> {
     if let Some(index) = normalized_hidden
         .iter()
@@ -580,6 +631,11 @@ fn validate_published_output(
         if candidate_token_ids[..index].contains(&token) {
             return Err(MetalW8Error::new(format!(
                 "Metal W8 tail MLP+head v1 returned duplicate candidate token {token}"
+            )));
+        }
+        if excluded_tokens.contains(&token) {
+            return Err(MetalW8Error::new(format!(
+                "Metal W8 tail MLP+head v1 returned excluded candidate token {token}"
             )));
         }
     }
@@ -655,6 +711,21 @@ mod platform {
             normalized_hidden_count: u32,
             candidate_token_ids: *mut u32,
             candidate_count: u32,
+            fault_mode: u32,
+            receipt: *mut TailExecutionReceiptV1,
+            error: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn apxinf_metal_w8_tail_mlp_head_decode_excluding_v1(
+            handle: *mut c_void,
+            input: *const f32,
+            input_count: u32,
+            normalized_hidden: *mut f32,
+            normalized_hidden_count: u32,
+            candidate_token_ids: *mut u32,
+            candidate_count: u32,
+            excluded_tokens: *const u32,
+            excluded_count: u32,
             fault_mode: u32,
             receipt: *mut TailExecutionReceiptV1,
             error: *mut c_char,
@@ -743,6 +814,44 @@ mod platform {
             TailExecutionV1 { receipt, result }
         }
 
+        pub(super) fn decode_excluding(
+            &mut self,
+            input: &[f32],
+            normalized_hidden: &mut [f32],
+            candidate_token_ids: &mut [u32; W8_TOP_K],
+            excluded_tokens: &[u32],
+            fault_mode: u32,
+        ) -> TailExecutionV1 {
+            let mut receipt = TailExecutionReceiptV1::default();
+            let mut error = [0 as c_char; ERROR_CAPACITY];
+            let status = unsafe {
+                apxinf_metal_w8_tail_mlp_head_decode_excluding_v1(
+                    self.handle.as_ptr(),
+                    input.as_ptr(),
+                    input.len() as u32,
+                    normalized_hidden.as_mut_ptr(),
+                    normalized_hidden.len() as u32,
+                    candidate_token_ids.as_mut_ptr(),
+                    W8_TOP_K as u32,
+                    excluded_tokens.as_ptr(),
+                    excluded_tokens.len() as u32,
+                    fault_mode,
+                    &mut receipt,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            let result = if status == 0 {
+                Ok(())
+            } else {
+                Err(bridge_error(
+                    "run Metal W8 tail MLP+head v1 decode excluding vocabulary rows",
+                    &error,
+                ))
+            };
+            TailExecutionV1 { receipt, result }
+        }
+
         pub(super) fn reset(&mut self) -> Result<(), MetalW8Error> {
             let mut error = [0 as c_char; ERROR_CAPACITY];
             let status = unsafe {
@@ -819,6 +928,22 @@ mod platform {
             _input: &[f32],
             _normalized_hidden: &mut [f32],
             _candidate_token_ids: &mut [u32; W8_TOP_K],
+            _fault_mode: u32,
+        ) -> TailExecutionV1 {
+            TailExecutionV1 {
+                receipt: TailExecutionReceiptV1::default(),
+                result: Err(MetalW8Error::new(
+                    "Metal W8 tail MLP+head v1 requires macOS",
+                )),
+            }
+        }
+
+        pub(super) fn decode_excluding(
+            &mut self,
+            _input: &[f32],
+            _normalized_hidden: &mut [f32],
+            _candidate_token_ids: &mut [u32; W8_TOP_K],
+            _excluded_tokens: &[u32],
             _fault_mode: u32,
         ) -> TailExecutionV1 {
             TailExecutionV1 {
