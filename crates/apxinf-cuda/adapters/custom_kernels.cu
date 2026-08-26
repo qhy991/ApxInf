@@ -317,12 +317,34 @@ apxinf_static_qwen25_omni_vision_gate_up_bias_silu_mul_exact_bf16(
   constexpr int kIntermediate = 3420;
   constexpr int kThreads = 256;
   dim3 grid((kIntermediate + kThreads - 1) / kThreads, sequence, 1);
-  qwen25_omni_vision_gate_up_bias_silu_mul_exact_bf16_kernel<kIntermediate><<<
+  qwen25_omni_vision_gate_up_bias_silu_mul_exact_bf16_kernel<kIntermediate, false><<<
       grid, kThreads, 0, stream>>>(
       static_cast<const __nv_bfloat16*>(gate),
       static_cast<const __nv_bfloat16*>(gate_bias),
       static_cast<const __nv_bfloat16*>(up),
       static_cast<const __nv_bfloat16*>(up_bias),
+      static_cast<__nv_bfloat16*>(output), sequence);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t
+apxinf_static_qwen25_omni_vision_packed_gate_up_bias_silu_mul_exact_bf16(
+    const void* packed_gate_up, const void* gate_bias,
+    const void* up_bias, void* output, int sequence, int intermediate,
+    cudaStream_t stream) {
+  if (packed_gate_up == nullptr || gate_bias == nullptr ||
+      up_bias == nullptr || output == nullptr || sequence <= 0 ||
+      sequence > 65535 || intermediate != 3420) {
+    return cudaErrorInvalidValue;
+  }
+  constexpr int kIntermediate = 3420;
+  constexpr int kThreads = 256;
+  dim3 grid((kIntermediate + kThreads - 1) / kThreads, sequence, 1);
+  const auto* packed = static_cast<const __nv_bfloat16*>(packed_gate_up);
+  qwen25_omni_vision_gate_up_bias_silu_mul_exact_bf16_kernel<
+      kIntermediate, true><<<grid, kThreads, 0, stream>>>(
+      packed, static_cast<const __nv_bfloat16*>(gate_bias),
+      packed, static_cast<const __nv_bfloat16*>(up_bias),
       static_cast<__nv_bfloat16*>(output), sequence);
   return cudaGetLastError();
 }

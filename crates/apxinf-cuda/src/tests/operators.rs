@@ -29,6 +29,7 @@ use crate::kernels::qwen25_omni_vision::{
     bias_residual_exact as qwen25_vision_bias_residual_exact,
     gate_up_bias_silu_mul_exact as qwen25_vision_gate_up_bias_silu_mul_exact,
     grouped_qkv_bias_rope as qwen25_vision_grouped_qkv_bias_rope,
+    packed_gate_up_bias_silu_mul_exact as qwen25_vision_packed_gate_up_bias_silu_mul_exact,
     packed_qkv_bias_rope as qwen25_vision_packed_qkv_bias_rope,
     qkv_bias_rope as qwen25_vision_qkv_bias_rope,
 };
@@ -2497,9 +2498,31 @@ fn qwen25_vision_gate_up_bias_silu_mul_is_bit_exact() {
         &up_bias,
     )
     .unwrap();
+    let packed_values = gate_values
+        .chunks_exact(intermediate)
+        .zip(up_values.chunks_exact(intermediate))
+        .flat_map(|(gate, up)| gate.iter().chain(up).copied())
+        .collect::<Vec<_>>();
+    let packed = upload_fp32_as_bf16(
+        &ctx,
+        &packed_values,
+        vec![sequence, 2 * intermediate],
+    )
+    .unwrap();
+    let packed_candidate = qwen25_vision_packed_gate_up_bias_silu_mul_exact(
+        &ctx,
+        &packed,
+        &gate_bias,
+        &up_bias,
+    )
+    .unwrap();
     ctx.synchronize().unwrap();
     assert_eq!(
         download_bf16_as_fp32(&candidate).unwrap(),
+        download_bf16_as_fp32(&baseline).unwrap()
+    );
+    assert_eq!(
+        download_bf16_as_fp32(&packed_candidate).unwrap(),
         download_bf16_as_fp32(&baseline).unwrap()
     );
 }

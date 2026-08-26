@@ -28,12 +28,37 @@ struct VisionBlock {
     wo: Tensor,
     bo: Tensor,
     norm2: Tensor,
-    w_gate: Tensor,
+    gate_up: VisionGateUpWeights,
     b_gate: Tensor,
-    w_up: Tensor,
     b_up: Tensor,
     w_down: Tensor,
     b_down: Tensor,
+}
+
+enum VisionGateUpWeights {
+    Separate { gate: Tensor, up: Tensor },
+    Packed(Tensor),
+}
+
+impl VisionGateUpWeights {
+    fn separate(&self) -> Result<(&Tensor, &Tensor)> {
+        match self {
+            Self::Separate { gate, up } => Ok((gate, up)),
+            Self::Packed(_) => Err(Error::Other(
+                "Qwen2.5-Omni vision separate Gate/Up path has packed weights".into(),
+            )),
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    fn packed(&self) -> Result<&Tensor> {
+        match self {
+            Self::Packed(weight) => Ok(weight),
+            Self::Separate { .. } => Err(Error::Other(
+                "Qwen2.5-Omni vision packed Gate/Up path has separate weights".into(),
+            )),
+        }
+    }
 }
 
 enum VisionQkvWeights {
@@ -92,9 +117,17 @@ impl Qwen25OmniVisionWeights {
                 wo: transpose_2d(&take(&format!("{prefix}.attn.proj.weight"), tensors)?)?,
                 bo: take(&format!("{prefix}.attn.proj.bias"), tensors)?,
                 norm2: take(&format!("{prefix}.norm2.weight"), tensors)?,
-                w_gate: transpose_2d(&take(&format!("{prefix}.mlp.gate_proj.weight"), tensors)?)?,
+                gate_up: VisionGateUpWeights::Separate {
+                    gate: transpose_2d(&take(
+                        &format!("{prefix}.mlp.gate_proj.weight"),
+                        tensors,
+                    )?)?,
+                    up: transpose_2d(&take(
+                        &format!("{prefix}.mlp.up_proj.weight"),
+                        tensors,
+                    )?)?,
+                },
                 b_gate: take(&format!("{prefix}.mlp.gate_proj.bias"), tensors)?,
-                w_up: transpose_2d(&take(&format!("{prefix}.mlp.up_proj.weight"), tensors)?)?,
                 b_up: take(&format!("{prefix}.mlp.up_proj.bias"), tensors)?,
                 w_down: transpose_2d(&take(&format!("{prefix}.mlp.down_proj.weight"), tensors)?)?,
                 b_down: take(&format!("{prefix}.mlp.down_proj.bias"), tensors)?,
@@ -126,6 +159,17 @@ impl Qwen25OmniVisionWeights {
                         VisionQkvWeights::Packed(backend.to_device(&weight)?)
                     }
                 };
+                let gate_up = match block.gate_up {
+                    VisionGateUpWeights::Separate { gate, up } => {
+                        VisionGateUpWeights::Separate {
+                            gate: backend.to_device(&gate)?,
+                            up: backend.to_device(&up)?,
+                        }
+                    }
+                    VisionGateUpWeights::Packed(weight) => {
+                        VisionGateUpWeights::Packed(backend.to_device(&weight)?)
+                    }
+                };
                 Ok(VisionBlock {
                     norm1: backend.to_device(&block.norm1)?,
                     qkv,
@@ -135,9 +179,8 @@ impl Qwen25OmniVisionWeights {
                     wo: backend.to_device(&block.wo)?,
                     bo: backend.to_device(&block.bo)?,
                     norm2: backend.to_device(&block.norm2)?,
-                    w_gate: backend.to_device(&block.w_gate)?,
+                    gate_up,
                     b_gate: backend.to_device(&block.b_gate)?,
-                    w_up: backend.to_device(&block.w_up)?,
                     b_up: backend.to_device(&block.b_up)?,
                     w_down: backend.to_device(&block.w_down)?,
                     b_down: backend.to_device(&block.b_down)?,
@@ -179,9 +222,52 @@ impl Qwen25OmniVisionWeights {
                     wo: block.wo,
                     bo: block.bo,
                     norm2: block.norm2,
-                    w_gate: block.w_gate,
+                    gate_up: block.gate_up,
                     b_gate: block.b_gate,
-                    w_up: block.w_up,
+                    b_up: block.b_up,
+                    w_down: block.w_down,
+                    b_down: block.b_down,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        backend.synchronize()?;
+        Ok(Self {
+            patch_embed: self.patch_embed,
+            blocks,
+            merger_norm: self.merger_norm,
+            merger_fc1: self.merger_fc1,
+            merger_fc1_bias: self.merger_fc1_bias,
+            merger_fc2: self.merger_fc2,
+            merger_fc2_bias: self.merger_fc2_bias,
+        })
+    }
+
+    pub fn into_packed_gate_up(self, backend: &dyn Backend) -> Result<Self> {
+        let blocks = self
+            .blocks
+            .into_iter()
+            .map(|block| {
+                let gate_up = match block.gate_up {
+                    VisionGateUpWeights::Separate { gate, up } => {
+                        VisionGateUpWeights::Packed(backend.concat_2d(&[&gate, &up])?)
+                    }
+                    VisionGateUpWeights::Packed(_) => {
+                        return Err(Error::Other(
+                            "Qwen2.5-Omni vision Gate/Up weights were packed twice".into(),
+                        ))
+                    }
+                };
+                Ok(VisionBlock {
+                    norm1: block.norm1,
+                    qkv: block.qkv,
+                    bq: block.bq,
+                    bk: block.bk,
+                    bv: block.bv,
+                    wo: block.wo,
+                    bo: block.bo,
+                    norm2: block.norm2,
+                    gate_up,
+                    b_gate: block.b_gate,
                     b_up: block.b_up,
                     w_down: block.w_down,
                     b_down: block.b_down,
@@ -213,9 +299,10 @@ pub fn forward(
     use_fused_gate_up_bias_silu_mul: bool,
     use_grouped_qkv_layout: bool,
     use_packed_qkv: bool,
+    use_packed_gate_up: bool,
 ) -> Result<Tensor> {
     #[cfg(not(feature = "cuda"))]
-    let _ = use_packed_qkv;
+    let _ = (use_packed_qkv, use_packed_gate_up);
     let vision = &config.vision;
     let raw_tokens = validate_input(config, pixel_values, grid_thw)?;
     let uploaded = if pixel_values.device() != backend.device() {
@@ -356,22 +443,33 @@ pub fn forward(
             use_fused_bias_residual,
         )?;
         let normalized = backend.rms_norm(&hidden, &block.norm2, 1e-6)?;
-        let gate = backend.matmul(&normalized, &block.w_gate)?;
         let mlp = if use_fused_gate_up_bias_silu_mul {
             #[cfg(feature = "cuda")]
             {
-                let up = backend.matmul(&normalized, &block.w_up)?;
                 let cuda = cuda_backend(backend).ok_or_else(|| {
                     Error::Other(
                         "vision Gate/Up bias SiLU/multiply fusion requires CudaBackend".into(),
                     )
                 })?;
-                cuda.qwen25_omni_vision_gate_up_bias_silu_mul_exact(
-                    &gate,
-                    &block.b_gate,
-                    &up,
-                    &block.b_up,
-                )?
+                if use_packed_gate_up {
+                    let weight = block.gate_up.packed()?;
+                    let packed = backend.matmul(&normalized, weight)?;
+                    cuda.qwen25_omni_vision_packed_gate_up_bias_silu_mul_exact(
+                        &packed,
+                        &block.b_gate,
+                        &block.b_up,
+                    )?
+                } else {
+                    let (gate_weight, up_weight) = block.gate_up.separate()?;
+                    let gate = backend.matmul(&normalized, gate_weight)?;
+                    let up = backend.matmul(&normalized, up_weight)?;
+                    cuda.qwen25_omni_vision_gate_up_bias_silu_mul_exact(
+                        &gate,
+                        &block.b_gate,
+                        &up,
+                        &block.b_up,
+                    )?
+                }
             }
             #[cfg(not(feature = "cuda"))]
             {
@@ -380,8 +478,10 @@ pub fn forward(
                 ));
             }
         } else {
+            let (gate_weight, up_weight) = block.gate_up.separate()?;
+            let gate = backend.matmul(&normalized, gate_weight)?;
             let gate = backend.add_bias(&gate, &block.b_gate)?;
-            let up = backend.add_bias(&backend.matmul(&normalized, &block.w_up)?, &block.b_up)?;
+            let up = backend.add_bias(&backend.matmul(&normalized, up_weight)?, &block.b_up)?;
             if use_fused_silu_mul {
                 backend.silu_mul(&gate, &up)?
             } else {
