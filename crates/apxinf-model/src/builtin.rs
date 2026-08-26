@@ -38,11 +38,13 @@ fn load_qwen25_omni(
         let m1_gemv_tactics = qwen25_omni_m1_gemv_tactics_enabled()?;
         let prefill_packed_mlp = qwen25_omni_prefill_packed_mlp_enabled()?;
         let m512_packed_qkv_tactic = qwen25_omni_m512_packed_qkv_tactic_enabled()?;
+        let m1760_gemm_tactics = qwen25_omni_m1760_gemm_tactics_enabled()?;
         if chunk_tactics
             || m1_packed_mlp
             || m1_gemv_tactics
             || prefill_packed_mlp
             || m512_packed_qkv_tactic
+            || m1760_gemm_tactics
         {
             use crate::accelerator::cuda::{downcast, kernels};
             let cuda = downcast(&*backend)
@@ -165,6 +167,34 @@ fn load_qwen25_omni(
                     "ApxInf Qwen2.5-Omni M512 packed QKV tactic: cuBLASLt rank3"
                 );
             }
+            if m1760_gemm_tactics {
+                tactics.extend([
+                    Tactic {
+                        m: 1760,
+                        n: 2048,
+                        k: 2048,
+                        heuristic_rank: 2,
+                        milliseconds: 0.10999999195337296,
+                    },
+                    Tactic {
+                        m: 1760,
+                        n: 2560,
+                        k: 2048,
+                        heuristic_rank: 0,
+                        milliseconds: 0.13022401928901672,
+                    },
+                    Tactic {
+                        m: 1760,
+                        n: 2048,
+                        k: 11008,
+                        heuristic_rank: 1,
+                        milliseconds: 0.486846387386322,
+                    },
+                ]);
+                eprintln!(
+                    "ApxInf Qwen2.5-Omni M1760 GEMM tactics: output rank2, packed QKV rank0, Down rank1"
+                );
+            }
             kernels::gemm::install_cublaslt_bf16_tactics(cuda.context(), &tactics)?;
         }
     }
@@ -203,6 +233,12 @@ fn qwen25_omni_prefill_packed_mlp_enabled() -> Result<bool> {
 #[cfg(feature = "cuda")]
 fn qwen25_omni_m512_packed_qkv_tactic_enabled() -> Result<bool> {
     crate::qwen25_omni::parse_binary_env("APXINF_QWEN25_M512_PACKED_QKV_TACTIC")
+        .map_err(Error::Other)
+}
+
+#[cfg(feature = "cuda")]
+fn qwen25_omni_m1760_gemm_tactics_enabled() -> Result<bool> {
+    crate::qwen25_omni::parse_binary_env("APXINF_QWEN25_M1760_GEMM_TACTICS")
         .map_err(Error::Other)
 }
 
