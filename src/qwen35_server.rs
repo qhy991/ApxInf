@@ -5,8 +5,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use apxinf_core::{DType, Tensor};
-use apxinf_cuda::CudaContext;
+use apxinf_core::{Backend, DType, Graph, Tensor};
+use apxinf_cuda::CudaBackend;
 use apxinf_loader::safetensors;
 use apxinf_model::qwen35::{
     compute_mrope_positions, HybridUnit, HybridUnitMode, Qwen35Config, Qwen35LmHead,
@@ -66,7 +66,7 @@ pub fn serve(
 
 struct NativeRuntime {
     embedding: Tensor,
-    context: CudaContext,
+    prefill1k_graph: Option<Box<dyn Graph>>,
     decoder: HybridUnit,
     lm_head: Qwen35LmHead,
     tokenizer: Tokenizer,
@@ -78,6 +78,7 @@ struct NativeRuntime {
     processor_python: Option<String>,
     spatial_merge_size: u32,
     image_token_id: u32,
+    backend: CudaBackend,
 }
 
 impl NativeRuntime {
@@ -91,7 +92,8 @@ impl NativeRuntime {
         let config = Qwen35Config::from_json_file(&model_dir.join("config.json"))
             .map_err(|error| error.to_string())?;
         let manifest = safetensors::inspect_path(model_dir)?;
-        let context = CudaContext::new(0)?;
+        let backend = CudaBackend::new(0).map_err(|error| error.to_string())?;
+        let context = backend.context();
         let prefill_mode = if enable_marlin_m64 {
             Qwen35PrefillMode::MarlinM64
         } else {
@@ -99,12 +101,12 @@ impl NativeRuntime {
         };
         let decoder = HybridUnit::load_all_with_prefill_mode(
             &manifest,
-            &context,
+            context,
             max_model_len,
             prefill_mode,
         )
         .map_err(|error| error.to_string())?;
-        let lm_head = Qwen35LmHead::load(&manifest, &context).map_err(|error| error.to_string())?;
+        let lm_head = Qwen35LmHead::load(&manifest, context).map_err(|error| error.to_string())?;
         let embedding_entry = manifest
             .tensor("model.language_model.embed_tokens.weight")
             .ok_or_else(|| "missing embedding table".to_string())?;
@@ -127,13 +129,16 @@ impl NativeRuntime {
         } else {
             (None, None)
         };
+        let prefill1k_graph = enable_marlin_m64
+            .then(|| capture_prefill1k_graph(&backend, &decoder))
+            .transpose()?;
         println!(
             "resident model loaded in {:.3}s",
             load_start.elapsed().as_secs_f64()
         );
         Ok(Self {
             embedding,
-            context,
+            prefill1k_graph,
             decoder,
             lm_head,
             tokenizer,
@@ -149,6 +154,7 @@ impl NativeRuntime {
             processor_python,
             spatial_merge_size: config.vision.spatial_merge_size as u32,
             image_token_id: config.image_token_id,
+            backend,
         })
     }
 
@@ -191,9 +197,12 @@ impl NativeRuntime {
 
     fn load_embedding_tokens(&self, tokens: &[u32]) -> Result<Tensor, String> {
         const HIDDEN: usize = 5120;
-        if !matches!(tokens.len(), 1 | 8 | 64) {
+        if !matches!(tokens.len(), 1 | 8 | 64)
+            && tokens.len() != HybridUnit::layer_major_prefill_rows()
+        {
             return Err(format!(
-                "Qwen3.8 embedding batch requires 1, 8, or 64 tokens, got {}",
+                "Qwen3.8 embedding batch requires 1, 8, 64, or {} tokens, got {}",
+                HybridUnit::layer_major_prefill_rows(),
                 tokens.len()
             ));
         }
@@ -245,7 +254,7 @@ impl NativeRuntime {
         }
         let first_embedding = self.load_embedding_tokens(&prompt_tokens[..1])?;
         self.decoder
-            .reset_text_request(&self.context, &first_embedding)
+            .reset_text_request(self.backend.context(), &first_embedding)
             .map_err(|error| error.to_string())?;
         let prefill_start = Instant::now();
         if prefill_mode == Qwen35PrefillMode::MarlinM64
@@ -258,17 +267,41 @@ impl NativeRuntime {
                     .into(),
             );
         }
+        let layer_major_tokens = match prefill_mode {
+            Qwen35PrefillMode::MarlinM64
+                if prompt_tokens.len() >= HybridUnit::layer_major_prefill_rows() =>
+            {
+                HybridUnit::layer_major_prefill_rows()
+            }
+            _ => 0,
+        };
+        if layer_major_tokens > 0 {
+            let embedding = self.load_embedding_tokens(&prompt_tokens[..layer_major_tokens])?;
+            self.decoder
+                .set_layer_major_prefill1k_input(self.backend.context(), &embedding)
+                .map_err(|error| error.to_string())?;
+            self.prefill1k_graph
+                .as_ref()
+                .ok_or_else(|| {
+                    "MarlinM64 layer-major request requires the startup-captured graph".to_string()
+                })?
+                .replay()
+                .map_err(|error| error.to_string())?;
+        }
         let marlin_tokens = match prefill_mode {
             Qwen35PrefillMode::M8 => 0,
-            Qwen35PrefillMode::MarlinM64 => prompt_tokens.len() / 64 * 64,
+            Qwen35PrefillMode::MarlinM64 => {
+                layer_major_tokens
+                    + (prompt_tokens.len() - layer_major_tokens) / 64 * 64
+            }
         };
-        for position in (0..marlin_tokens).step_by(64) {
+        for position in (layer_major_tokens..marlin_tokens).step_by(64) {
             let embedding = self.load_embedding_tokens(&prompt_tokens[position..position + 64])?;
             self.decoder
-                .set_marlin_prefill64_input(&self.context, &embedding)
+                .set_marlin_prefill64_input(self.backend.context(), &embedding)
                 .map_err(|error| error.to_string())?;
             self.decoder
-                .forward_marlin_prefill64(&self.context, position, false)
+                .forward_marlin_prefill64(self.backend.context(), position, false)
                 .map_err(|error| error.to_string())?;
         }
         let m8_tokens = (prompt_tokens.len() - marlin_tokens) / 8 * 8;
@@ -276,10 +309,10 @@ impl NativeRuntime {
         for position in (marlin_tokens..tiled_tokens).step_by(8) {
             let embedding = self.load_embedding_tokens(&prompt_tokens[position..position + 8])?;
             self.decoder
-                .set_prefill8_input(&self.context, &embedding)
+                .set_prefill8_input(self.backend.context(), &embedding)
                 .map_err(|error| error.to_string())?;
             self.decoder
-                .forward_prefill8(&self.context, position, false)
+                .forward_prefill8(self.backend.context(), position, false)
                 .map_err(|error| error.to_string())?;
         }
         for (offset, &token) in prompt_tokens[tiled_tokens..].iter().enumerate() {
@@ -287,13 +320,13 @@ impl NativeRuntime {
             if position > 0 || tiled_tokens > 0 {
                 let embedding = self.load_embedding_tokens(std::slice::from_ref(&token))?;
                 self.decoder
-                    .set_token_input(&self.context, &embedding)
+                    .set_token_input(self.backend.context(), &embedding)
                     .map_err(|error| error.to_string())?;
             }
             let bucket = (position + 1).next_power_of_two().min(self.max_model_len);
             self.decoder
                 .forward(
-                    &self.context,
+                    self.backend.context(),
                     HybridUnitMode::ModelOptimized,
                     bucket,
                     position as u32,
@@ -304,15 +337,19 @@ impl NativeRuntime {
         if tiled_tokens == prompt_tokens.len() {
             if m8_tokens > 0 {
                 self.decoder
-                    .commit_prefill8_last(&self.context)
+                    .commit_prefill8_last(self.backend.context())
                     .map_err(|error| error.to_string())?;
-            } else if marlin_tokens > 0 {
+            } else if marlin_tokens > layer_major_tokens {
                 self.decoder
-                    .commit_marlin_prefill64_last(&self.context)
+                    .commit_marlin_prefill64_last(self.backend.context())
+                    .map_err(|error| error.to_string())?;
+            } else if layer_major_tokens > 0 {
+                self.decoder
+                    .commit_layer_major_prefill1k_last(self.backend.context())
                     .map_err(|error| error.to_string())?;
             }
         }
-        self.context.synchronize()?;
+        self.backend.synchronize().map_err(|error| error.to_string())?;
         let prefill_seconds = prefill_start.elapsed().as_secs_f64();
 
         let eos = eos_stop.then(|| self.tokenizer.eos_token_id()).flatten();
@@ -326,13 +363,13 @@ impl NativeRuntime {
                 let previous = generated[step - 1];
                 let embedding = self.load_embedding_tokens(std::slice::from_ref(&previous))?;
                 self.decoder
-                    .set_token_input(&self.context, &embedding)
+                    .set_token_input(self.backend.context(), &embedding)
                     .map_err(|error| error.to_string())?;
                 let position = prompt_tokens.len() + step - 1;
                 let bucket = (position + 1).next_power_of_two().min(self.max_model_len);
                 self.decoder
                     .forward(
-                        &self.context,
+                        self.backend.context(),
                         HybridUnitMode::ModelOptimized,
                         bucket,
                         position as u32,
@@ -341,7 +378,7 @@ impl NativeRuntime {
                     .map_err(|error| error.to_string())?;
             }
             self.lm_head
-                .forward(&self.context, self.decoder.normalized_output())
+                .forward(self.backend.context(), self.decoder.normalized_output())
                 .map_err(|error| error.to_string())?;
             let token = self
                 .lm_head
@@ -448,7 +485,7 @@ impl NativeRuntime {
         let first_embedding = Tensor::from_bf16(vec![1, HIDDEN], &embeddings[..HIDDEN])
             .map_err(|error| error.to_string())?;
         self.decoder
-            .reset_text_request(&self.context, &first_embedding)
+            .reset_text_request(self.backend.context(), &first_embedding)
             .map_err(|error| error.to_string())?;
 
         let tiled_tokens = prompt_tokens.len() / TILE * TILE;
@@ -463,10 +500,10 @@ impl NativeRuntime {
                 .try_into()
                 .map_err(|_| "multimodal mRoPE tile conversion failed".to_string())?;
             self.decoder
-                .set_prefill8_input(&self.context, &input)
+                .set_prefill8_input(self.backend.context(), &input)
                 .map_err(|error| error.to_string())?;
             self.decoder
-                .forward_prefill8_with_mrope(&self.context, position, &rope_positions, false)
+                .forward_prefill8_with_mrope(self.backend.context(), position, &rope_positions, false)
                 .map_err(|error| error.to_string())?;
         }
         for position in tiled_tokens..prompt_tokens.len() {
@@ -474,12 +511,12 @@ impl NativeRuntime {
             let input = Tensor::from_bf16(vec![1, HIDDEN], &embeddings[start..start + HIDDEN])
                 .map_err(|error| error.to_string())?;
             self.decoder
-                .set_token_input(&self.context, &input)
+                .set_token_input(self.backend.context(), &input)
                 .map_err(|error| error.to_string())?;
             let bucket = (position + 1).next_power_of_two().min(self.max_model_len);
             self.decoder
                 .forward_with_mrope(
-                    &self.context,
+                    self.backend.context(),
                     HybridUnitMode::ModelOptimized,
                     bucket,
                     position as u32,
@@ -490,10 +527,10 @@ impl NativeRuntime {
         }
         if tiled_tokens == prompt_tokens.len() {
             self.decoder
-                .commit_prefill8_last(&self.context)
+                .commit_prefill8_last(self.backend.context())
                 .map_err(|error| error.to_string())?;
         }
-        self.context.synchronize()?;
+        self.backend.synchronize().map_err(|error| error.to_string())?;
         let prefill_seconds = prefill_start.elapsed().as_secs_f64();
 
         let eos = eos_stop.then(|| self.tokenizer.eos_token_id()).flatten();
@@ -507,7 +544,7 @@ impl NativeRuntime {
                 let previous = generated[step - 1];
                 let embedding = self.load_embedding_tokens(std::slice::from_ref(&previous))?;
                 self.decoder
-                    .set_token_input(&self.context, &embedding)
+                    .set_token_input(self.backend.context(), &embedding)
                     .map_err(|error| error.to_string())?;
                 let cache_position = prompt_tokens.len() + step - 1;
                 let rope_position = cache_position as i64 + mrope.decode_delta;
@@ -521,7 +558,7 @@ impl NativeRuntime {
                     .min(self.max_model_len);
                 self.decoder
                     .forward_with_mrope(
-                        &self.context,
+                        self.backend.context(),
                         HybridUnitMode::ModelOptimized,
                         bucket,
                         cache_position as u32,
@@ -531,7 +568,7 @@ impl NativeRuntime {
                     .map_err(|error| error.to_string())?;
             }
             self.lm_head
-                .forward(&self.context, self.decoder.normalized_output())
+                .forward(self.backend.context(), self.decoder.normalized_output())
                 .map_err(|error| error.to_string())?;
             let token = self
                 .lm_head
@@ -839,6 +876,29 @@ fn handle_evaluation(
     }
 }
 
+fn select_chat_prefill_mode(
+    requested_mode: Option<&str>,
+    marlin_m64_enabled: bool,
+    prompt_tokens: usize,
+) -> Result<Qwen35PrefillMode, String> {
+    let default_mode = if marlin_m64_enabled && prompt_tokens >= 64 {
+        "marlin-m64"
+    } else {
+        "m8"
+    };
+    match requested_mode.unwrap_or(default_mode) {
+        "m8" => Ok(Qwen35PrefillMode::M8),
+        "marlin-m64" if marlin_m64_enabled => Ok(Qwen35PrefillMode::MarlinM64),
+        "marlin-m64" => Err(
+            "marlin-m64 was requested but the server was not started with --enable-experimental-marlin-m64"
+                .into(),
+        ),
+        other => Err(format!(
+            "unsupported apxinf_prefill_mode `{other}`"
+        )),
+    }
+}
+
 fn handle_chat(runtime: &NativeRuntime, stream: &mut TcpStream, raw: &[u8]) -> Result<(), String> {
     let body: Value = match serde_json::from_slice(raw) {
         Ok(body) => body,
@@ -938,21 +998,11 @@ fn handle_chat(runtime: &NativeRuntime, stream: &mut TcpStream, raw: &[u8]) -> R
             )
         }
     };
-    let prefill_mode = match body
-        .get("apxinf_prefill_mode")
-        .and_then(Value::as_str)
-        .unwrap_or("m8")
-    {
-        "m8" => Qwen35PrefillMode::M8,
-        "marlin-m64" if runtime.marlin_m64_enabled => Qwen35PrefillMode::MarlinM64,
-        "marlin-m64" => {
-            return Err(
-                "marlin-m64 was requested but the server was not started with --enable-experimental-marlin-m64"
-                    .into(),
-            )
-        }
-        other => return Err(format!("unsupported apxinf_prefill_mode `{other}`")),
-    };
+    let prefill_mode = select_chat_prefill_mode(
+        body.get("apxinf_prefill_mode").and_then(Value::as_str),
+        runtime.marlin_m64_enabled,
+        prompt_tokens.len(),
+    )?;
     let max_tokens = body
         .get("max_tokens")
         .or_else(|| body.get("max_completion_tokens"))
@@ -1445,4 +1495,91 @@ fn send_json(stream: &mut TcpStream, status: u16, value: &Value) -> Result<(), S
     .map_err(|error| error.to_string())?;
     stream.write_all(&body).map_err(|error| error.to_string())?;
     stream.flush().map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eligible_chat_defaults_to_marlin_when_enabled() {
+        let mode = select_chat_prefill_mode(None, true, 64).unwrap();
+        assert!(matches!(mode, Qwen35PrefillMode::MarlinM64));
+    }
+
+    #[test]
+    fn chat_defaults_to_m8_when_marlin_is_unavailable_or_prompt_is_short() {
+        let disabled = select_chat_prefill_mode(None, false, 1024).unwrap();
+        let short = select_chat_prefill_mode(None, true, 63).unwrap();
+        assert!(matches!(disabled, Qwen35PrefillMode::M8));
+        assert!(matches!(short, Qwen35PrefillMode::M8));
+    }
+
+    #[test]
+    fn explicit_m8_preserves_the_rollback_path() {
+        let mode = select_chat_prefill_mode(Some("m8"), true, 1024).unwrap();
+        assert!(matches!(mode, Qwen35PrefillMode::M8));
+    }
+
+    #[test]
+    fn explicit_marlin_still_requires_the_server_flag() {
+        let enabled = select_chat_prefill_mode(Some("marlin-m64"), true, 32).unwrap();
+        assert!(matches!(enabled, Qwen35PrefillMode::MarlinM64));
+
+        let error = select_chat_prefill_mode(Some("marlin-m64"), false, 1024).unwrap_err();
+        assert!(error.contains("--enable-experimental-marlin-m64"));
+    }
+
+    #[test]
+    fn unsupported_mode_still_fails() {
+        let error = select_chat_prefill_mode(Some("unknown"), true, 1024).unwrap_err();
+        assert_eq!(
+            error,
+            "unsupported apxinf_prefill_mode `unknown`"
+        );
+    }
+}
+
+fn capture_prefill1k_graph(
+    backend: &CudaBackend,
+    decoder: &HybridUnit,
+) -> Result<Box<dyn Graph>, String> {
+    const HIDDEN: usize = 5120;
+    let rows = HybridUnit::layer_major_prefill_rows();
+    let first_row = Tensor::zeros(vec![1, HIDDEN], DType::BF16);
+    let input = Tensor::zeros(vec![rows, HIDDEN], DType::BF16);
+    let context = backend.context();
+
+    decoder
+        .reset_text_request(context, &first_row)
+        .map_err(|error| error.to_string())?;
+    decoder
+        .set_layer_major_prefill1k_input(context, &input)
+        .map_err(|error| error.to_string())?;
+    decoder
+        .forward_layer_major_prefill1k(context, false)
+        .map_err(|error| error.to_string())?;
+    backend.synchronize().map_err(|error| error.to_string())?;
+
+    decoder
+        .reset_text_request(context, &first_row)
+        .map_err(|error| error.to_string())?;
+    decoder
+        .set_layer_major_prefill1k_input(context, &input)
+        .map_err(|error| error.to_string())?;
+    backend.synchronize().map_err(|error| error.to_string())?;
+
+    let capture_start = Instant::now();
+    backend
+        .begin_capture_relaxed()
+        .map_err(|error| error.to_string())?;
+    let captured = decoder.forward_layer_major_prefill1k(context, false);
+    let graph = backend.end_capture().map_err(|error| error.to_string())?;
+    captured.map_err(|error| error.to_string())?;
+    backend.synchronize().map_err(|error| error.to_string())?;
+    println!(
+        "first-1K CUDA Graph captured and instantiated in {:.9}s",
+        capture_start.elapsed().as_secs_f64()
+    );
+    Ok(graph)
 }
