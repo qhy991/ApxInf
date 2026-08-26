@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from test_dm05_policy import FakeBackend, FakeCombinedBackend, observation
 
 
@@ -90,3 +92,32 @@ def test_dm05_http_rejects_wrong_wire_contract():
         )[0]
         == 415
     )
+
+
+def test_dm05_http_rejects_out_of_range_json_numbers_as_client_errors():
+    body = json.loads(request_body())
+    body["observation"]["state"][0] = 10**1000
+    status, response = service().handle(
+        "POST", "/v1/infer", json.dumps(body).encode()
+    )
+    assert status == 400
+    assert "finite numbers" in response["error"]
+
+    body = json.loads(request_body())
+    body["sampling"]["seed"] = 1 << 64
+    status, response = service().handle(
+        "POST", "/v1/infer", json.dumps(body).encode()
+    )
+    assert status == 400
+    assert "PyTorch's inclusive range" in response["error"]
+
+
+def test_dm05_http_does_not_mislabel_backend_overflow_as_client_error():
+    backend = FakeBackend()
+
+    def fail(**kwargs):
+        raise OverflowError("internal arithmetic failure")
+
+    backend.infer = fail
+    with pytest.raises(OverflowError, match="internal arithmetic failure"):
+        service(backend).handle("POST", "/v1/infer", request_body())

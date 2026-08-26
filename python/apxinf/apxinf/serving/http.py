@@ -107,7 +107,12 @@ class Dm05HttpService:
         try:
             document = json.loads(body.decode("utf-8"))
             return 200, self.infer(document)
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             return 400, {"error": str(exc)}
 
 

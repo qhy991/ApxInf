@@ -1,4 +1,4 @@
-"""DM05-libero policy backed by the pinned official OpenDM implementation.
+"""DM05-libero external-runtime adapter for the pinned official OpenDM source.
 
 The ApxInf-owned boundary is deliberately small: this module validates the
 fixed LIBERO request contract, exposes it through :class:`AutoPolicy`, and
@@ -7,6 +7,10 @@ base DM05 graph and ``inference_action``; the selected execution runtime is
 injected through a neutral factory seam. Heavy imports
 (``torch``, ``transformers``, ``cv2`` and ``opendm``) are deferred until
 ``from_pretrained`` so importing :mod:`apxinf` stays CPU/CUDA neutral.
+
+This is not a native Rust ``VlaRuntime`` port. The required 8D state field is
+validated at the wire boundary but is not consumed by the pinned checkpoint,
+whose official LIBERO configuration sets ``add_state=False``.
 """
 
 from __future__ import annotations
@@ -89,7 +93,24 @@ HISTORY_PAD_TOKEN_ID = 7
 # all default and combined readers in this process.
 _DM05_PROCESS_INFERENCE_LOCK = threading.Lock()
 
-_PROTECTED_POLICY_METADATA = {
+_CANONICAL_POLICY_METADATA = {
+    "schema",
+    "model_type",
+    "model_revision",
+    "action_horizon",
+    "action_dim",
+    "model_action_dim",
+    "state_dim",
+    "image_size",
+    "image_prompts",
+    "robot_type",
+    "diffusion_steps",
+    "concurrency",
+}
+
+_BACKEND_OWNED_METADATA = {
+    "backend",
+    "device",
     "execution_backend",
     "runtime_selector",
     "host_thread_policy",
@@ -102,6 +123,13 @@ _PROTECTED_POLICY_METADATA = {
     "action_attention",
     "path_proof",
 }
+
+_PROTECTED_POLICY_METADATA = (
+    _CANONICAL_POLICY_METADATA | _BACKEND_OWNED_METADATA
+)
+
+_TORCH_SEED_MIN = -(1 << 63)
+_TORCH_SEED_MAX = (1 << 64) - 1
 
 
 def _validate_execution_backend(value: str) -> str:
@@ -1418,7 +1446,12 @@ class OpenDMBackend:
 def _number_list(value: Any, *, width: int, label: str) -> np.ndarray:
     if not isinstance(value, (list, tuple)) or len(value) != width:
         raise ValueError(f"{label} must contain exactly {width} numbers")
-    result = np.asarray(value, dtype=np.float32)
+    try:
+        result = np.asarray(value, dtype=np.float32)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{label} must contain exactly {width} finite numbers"
+        ) from exc
     if result.shape != (width,) or not np.isfinite(result).all():
         raise ValueError(f"{label} must contain exactly {width} finite numbers")
     return result
@@ -1459,6 +1492,42 @@ class Dm05Policy:
         self._infer_lock = threading.Lock()
         self.default_seed = int(default_seed)
         backend_metadata = dict(getattr(backend, "metadata", {}))
+        base_metadata = {
+            "schema": "apxinf.dm05.libero.policy.v1",
+            "model_type": "dm05",
+            "action_horizon": ACTION_HORIZON,
+            "action_dim": ACTION_DIM,
+            "model_action_dim": MODEL_ACTION_DIM,
+            "state_dim": STATE_DIM,
+            "image_size": [IMAGE_SIZE, IMAGE_SIZE],
+            "image_prompts": list(IMAGE_PROMPTS),
+            "robot_type": "Franka",
+            "diffusion_steps": DIFFUSION_STEPS,
+            "concurrency": 1,
+        }
+        conflicting_contract = sorted(
+            key
+            for key in set(base_metadata) & set(backend_metadata)
+            if backend_metadata[key] != base_metadata[key]
+        )
+        if conflicting_contract:
+            raise RuntimeError(
+                "DM05 backend metadata conflicts with the policy contract: "
+                f"{conflicting_contract}"
+            )
+
+        model_revision = backend_metadata.pop("model_revision", None)
+        if model_revision is not None and model_revision != MODEL_REVISION:
+            raise RuntimeError(
+                "DM05 backend model revision mismatch: "
+                f"{model_revision!r} != {MODEL_REVISION!r}"
+            )
+        backend_precision = backend_metadata.pop("precision", None)
+        if backend_precision is not None and backend_precision != "bf16":
+            raise RuntimeError(
+                "DM05 backend precision mismatch: "
+                f"{backend_precision!r} != 'bf16'"
+            )
         self.execution_backend = _validate_execution_backend(
             backend_metadata.get("execution_backend", EXECUTION_BACKEND_DEFAULT)
         )
@@ -1489,19 +1558,9 @@ class Dm05Policy:
             raise RuntimeError("default DM05 backend returned combined host metadata")
 
         self.metadata = {
-            "schema": "apxinf.dm05.libero.policy.v1",
-            "model_type": "dm05",
-            "model_revision": MODEL_REVISION,
-            "precision": "bf16",
-            "action_horizon": ACTION_HORIZON,
-            "action_dim": ACTION_DIM,
-            "model_action_dim": MODEL_ACTION_DIM,
-            "state_dim": STATE_DIM,
-            "image_size": [IMAGE_SIZE, IMAGE_SIZE],
-            "image_prompts": list(IMAGE_PROMPTS),
-            "robot_type": "Franka",
-            "diffusion_steps": DIFFUSION_STEPS,
-            "concurrency": 1,
+            **base_metadata,
+            **({"model_revision": model_revision} if model_revision else {}),
+            **({"precision": backend_precision} if backend_precision else {}),
             **backend_metadata,
             **_validate_policy_metadata(metadata),
             "execution_backend": self.execution_backend,
@@ -1513,7 +1572,6 @@ class Dm05Policy:
         cls,
         model_dir,
         *,
-        backend: Dm05Backend | None = None,
         device: str = "cuda:0",
         precision: str = "bf16",
         default_seed: int = EXACT_SEED,
@@ -1523,6 +1581,7 @@ class Dm05Policy:
     ) -> "Dm05Policy":
         if unsupported:
             raise TypeError(f"unsupported DM05 options: {sorted(unsupported)}")
+        _validate_policy_metadata(metadata)
         if precision.lower() != "bf16":
             raise ValueError("DM05-libero ApxInf deployment supports BF16 only")
         execution_backend = _validate_execution_backend(execution_backend)
@@ -1532,21 +1591,11 @@ class Dm05Policy:
             )
 
         model_dir = Path(model_dir).expanduser().resolve()
-        if backend is None:
-            backend = OpenDMBackend(
-                model_dir,
-                device=device,
-                execution_backend=execution_backend,
-            )
-        else:
-            backend_execution = dict(getattr(backend, "metadata", {})).get(
-                "execution_backend", EXECUTION_BACKEND_DEFAULT
-            )
-            if backend_execution != execution_backend:
-                raise ValueError(
-                    "injected DM05 backend execution_backend mismatch: "
-                    f"{backend_execution!r} != {execution_backend!r}"
-                )
+        backend = OpenDMBackend(
+            model_dir,
+            device=device,
+            execution_backend=execution_backend,
+        )
         return cls(backend, default_seed=default_seed, metadata=metadata)
 
     @property
@@ -1557,7 +1606,17 @@ class Dm05Policy:
     def action_horizon(self) -> int:
         return ACTION_HORIZON
 
-    def infer(self, observation: Mapping[str, Any]) -> dict[str, Any]:
+    def infer(
+        self,
+        observation: Mapping[str, Any],
+        *,
+        noise: np.ndarray | None = None,
+    ) -> dict[str, Any]:
+        if noise is not None:
+            raise ValueError(
+                "DM05 does not accept external noise; select stochastic input "
+                "with sampling.seed"
+            )
         if not isinstance(observation, Mapping):
             raise ValueError("DM05 observation must be an object")
         allowed = {"prompt", "state", "images", "robot_type", "sampling"}
@@ -1591,6 +1650,11 @@ class Dm05Policy:
             raise ValueError(f"sampling.num_steps must be {DIFFUSION_STEPS}")
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ValueError("sampling.seed must be an integer")
+        if seed < _TORCH_SEED_MIN or seed > _TORCH_SEED_MAX:
+            raise ValueError(
+                "sampling.seed must be in PyTorch's inclusive range "
+                f"[{_TORCH_SEED_MIN}, {_TORCH_SEED_MAX}]"
+            )
         if _uses_combined_runtime(self.execution_backend) and seed != EXACT_SEED:
             raise ValueError(
                 f"default_exact_combined requires sampling.seed={EXACT_SEED}"

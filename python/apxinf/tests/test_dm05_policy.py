@@ -731,6 +731,36 @@ def test_dm05_policy_rejects_public_runtime_factory_override(tmp_path):
         )
 
 
+def test_dm05_policy_rejects_public_backend_override(tmp_path):
+    from apxinf import Dm05Policy
+
+    with pytest.raises(TypeError, match="backend"):
+        Dm05Policy.from_pretrained(tmp_path, backend=FakeBackend())
+
+
+def test_dm05_injected_backend_does_not_claim_checkpoint_identity():
+    from apxinf import Dm05Policy
+
+    metadata = Dm05Policy(FakeBackend()).metadata
+    assert metadata["model_type"] == "dm05"
+    assert "model_revision" not in metadata
+    assert "precision" not in metadata
+
+
+def test_dm05_backend_cannot_conflict_with_canonical_contract():
+    from apxinf import Dm05Policy
+
+    backend = FakeBackend()
+    backend.metadata = {**backend.metadata, "action_dim": 8}
+    with pytest.raises(RuntimeError, match="policy contract"):
+        Dm05Policy(backend)
+
+    backend = FakeBackend()
+    backend.metadata = {**backend.metadata, "model_revision": "forged"}
+    with pytest.raises(RuntimeError, match="model revision"):
+        Dm05Policy(backend)
+
+
 def test_dm05_combined_metadata_is_fail_closed():
     from apxinf import Dm05Policy
 
@@ -761,6 +791,20 @@ def test_dm05_combined_metadata_is_fail_closed():
         "vision_attention",
         "action_attention",
         "path_proof",
+        "schema",
+        "model_type",
+        "model_revision",
+        "action_horizon",
+        "action_dim",
+        "model_action_dim",
+        "state_dim",
+        "image_size",
+        "image_prompts",
+        "robot_type",
+        "diffusion_steps",
+        "concurrency",
+        "backend",
+        "device",
     ],
 )
 def test_dm05_policy_rejects_protected_metadata_overrides(field):
@@ -768,6 +812,15 @@ def test_dm05_policy_rejects_protected_metadata_overrides(field):
 
     with pytest.raises(ValueError, match="protected fields"):
         Dm05Policy(FakeBackend(), metadata={field: "forged"})
+
+
+def test_dm05_policy_satisfies_noise_keyword_contract():
+    from apxinf import Dm05Policy
+
+    policy = Dm05Policy(FakeBackend())
+    assert policy.infer(observation(), noise=None)["actions"].shape == (10, 7)
+    with pytest.raises(ValueError, match="does not accept external noise"):
+        policy.infer(observation(), noise=np.zeros((1, 10, 32), dtype=np.float32))
 
 
 @pytest.mark.parametrize(
@@ -786,6 +839,16 @@ def test_dm05_policy_fails_closed(mutate):
     value = observation()
     mutate(value)
     with pytest.raises(ValueError):
+        Dm05Policy(FakeBackend()).infer(value)
+
+
+@pytest.mark.parametrize("seed", [-(1 << 63) - 1, 1 << 64])
+def test_dm05_policy_rejects_seed_outside_pytorch_range(seed):
+    from apxinf import Dm05Policy
+
+    value = observation()
+    value["sampling"]["seed"] = seed
+    with pytest.raises(ValueError, match="PyTorch's inclusive range"):
         Dm05Policy(FakeBackend()).infer(value)
 
 
