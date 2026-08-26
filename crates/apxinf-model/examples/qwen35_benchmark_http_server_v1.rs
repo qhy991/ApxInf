@@ -528,6 +528,10 @@ fn compact_generation_path_receipt(receipt: Value) -> Result<Value, String> {
                 && boundary["terminal_error"] == false
         });
     let decode_api_calls = decode.get("calls").and_then(Value::as_u64).unwrap_or(0);
+    let excluded_decode_api_calls = decode
+        .get("excluded_calls")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let teacher_calls = decode
         .get("teacher_calls")
         .and_then(Value::as_u64)
@@ -560,6 +564,7 @@ fn compact_generation_path_receipt(receipt: Value) -> Result<Value, String> {
         || prefill_body_calls != 1
         || prefill_head_calls != 1
         || decode_api_calls != expected_decode_calls
+        || excluded_decode_api_calls != expected_decode_calls
         || teacher_calls != 0
         || tail_transactions != expected_decode_calls
         || successful_tail_transactions != expected_decode_calls
@@ -579,13 +584,14 @@ fn compact_generation_path_receipt(receipt: Value) -> Result<Value, String> {
         "prefill_head_calls": prefill_head_calls,
         "expected_decode_calls": expected_decode_calls,
         "decode_api_calls": decode_api_calls,
+        "excluded_decode_api_calls": excluded_decode_api_calls,
         "teacher_calls": teacher_calls,
         "tail_transactions": tail_transactions,
         "successful_tail_transactions": successful_tail_transactions,
         "failed_tail_transactions": failed_tail_transactions,
         "initial_valid": initial_valid,
         "boundaries_valid": boundaries_valid,
-        "optimized_excluding_decode_api_hit": decode_api_calls == expected_decode_calls,
+        "optimized_excluding_decode_api_hit": excluded_decode_api_calls == expected_decode_calls,
         "terminal_error": false,
     }))
 }
@@ -1461,6 +1467,7 @@ mod tests {
             "boundaries": vec![boundary; 5],
             "decode_head": {
                 "calls": 127,
+                "excluded_calls": 127,
                 "teacher_calls": 0,
                 "tail_transactions": 127,
                 "successful_transactions": 127,
@@ -1473,6 +1480,7 @@ mod tests {
         assert_eq!(compact["prefill_body_calls"], 1);
         assert_eq!(compact["prefill_head_calls"], 1);
         assert_eq!(compact["decode_api_calls"], 127);
+        assert_eq!(compact["excluded_decode_api_calls"], 127);
         assert_eq!(compact["teacher_calls"], 0);
         assert_eq!(compact["optimized_excluding_decode_api_hit"], true);
 
@@ -1487,6 +1495,10 @@ mod tests {
         let mut invalid_decode = receipt.clone();
         invalid_decode["decode_head"]["calls"] = json!(126);
         assert!(compact_generation_path_receipt(invalid_decode).is_err());
+
+        let mut invalid_excluded_decode = receipt.clone();
+        invalid_excluded_decode["decode_head"]["excluded_calls"] = json!(126);
+        assert!(compact_generation_path_receipt(invalid_excluded_decode).is_err());
 
         let mut invalid_teacher = receipt.clone();
         invalid_teacher["decode_head"]["teacher_calls"] = json!(1);

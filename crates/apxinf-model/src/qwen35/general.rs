@@ -603,6 +603,7 @@ pub struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1Stats {
     pub prefill_body_calls: usize,
     pub prefill_cpu_head_calls: usize,
     pub decode_calls: usize,
+    pub excluded_decode_calls: usize,
     pub teacher_calls: usize,
     pub rerank_elapsed_ns: u128,
     pub terminal_error: bool,
@@ -618,6 +619,7 @@ struct Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
     prefill_body_calls: usize,
     prefill_cpu_head_calls: usize,
     decode_calls: usize,
+    excluded_decode_calls: usize,
     teacher_calls: usize,
     rerank_elapsed_ns: u128,
     terminal_error: bool,
@@ -3109,6 +3111,7 @@ impl GeneralQwen35 {
                     .as_mut()
                     .expect("boundary + tail-head v1 lane must be present");
                 lane.decode_calls = lane.decode_calls.saturating_add(1);
+                lane.excluded_decode_calls = lane.excluded_decode_calls.saturating_add(1);
                 Ok(token)
             })();
             return self
@@ -3629,6 +3632,7 @@ impl LlmTrait for GeneralQwen35 {
                         "mechanism": "metal-w8-tail-v1",
                         "layer_index": lane.tail_layer_index,
                         "calls": lane.decode_calls,
+                        "excluded_calls": lane.excluded_decode_calls,
                         "teacher_calls": lane.teacher_calls,
                         "tail_transactions": lane.tail.decode_calls,
                         "successful_transactions": lane.tail.successful_decodes,
@@ -5983,6 +5987,7 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
             prefill_body_calls: 0,
             prefill_cpu_head_calls: 0,
             decode_calls: 0,
+            excluded_decode_calls: 0,
             teacher_calls: 0,
             rerank_elapsed_ns: 0,
             terminal_error: false,
@@ -6007,6 +6012,7 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
             prefill_body_calls: self.prefill_body_calls,
             prefill_cpu_head_calls: self.prefill_cpu_head_calls,
             decode_calls: self.decode_calls,
+            excluded_decode_calls: self.excluded_decode_calls,
             teacher_calls: self.teacher_calls,
             rerank_elapsed_ns: self.rerank_elapsed_ns,
             terminal_error: self.terminal_error
@@ -6092,6 +6098,7 @@ impl Qwen35MetalW8MlpStack3BoundaryTailHeadV1 {
         self.prefill_body_calls = 0;
         self.prefill_cpu_head_calls = 0;
         self.decode_calls = 0;
+        self.excluded_decode_calls = 0;
         self.teacher_calls = 0;
         self.rerank_elapsed_ns = 0;
         self.terminal_error = false;
@@ -8868,6 +8875,7 @@ mod tests {
             .unwrap();
         assert_eq!(teacher_stats.teacher_calls, 1);
         assert_eq!(teacher_stats.decode_calls, 0);
+        assert_eq!(teacher_stats.excluded_decode_calls, 0);
         assert_eq!(teacher_stats.tail.decode_calls, 1);
 
         let mut free = GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
@@ -8889,6 +8897,7 @@ mod tests {
             .unwrap();
         assert_eq!(free_stats.teacher_calls, 0);
         assert_eq!(free_stats.decode_calls, 1);
+        assert_eq!(free_stats.excluded_decode_calls, 1);
         assert_eq!(free_stats.tail.decode_calls, 1);
     }
 
@@ -8923,6 +8932,7 @@ mod tests {
         assert_eq!(stats.prefill_body_calls, 1);
         assert_eq!(stats.prefill_cpu_head_calls, 1);
         assert_eq!(stats.decode_calls, 2);
+        assert_eq!(stats.excluded_decode_calls, 0);
         assert_eq!(stats.teacher_calls, 0);
         assert_eq!(stats.tail.decode_calls, 2);
         assert_eq!(stats.tail.successful_decodes, 2);
@@ -8933,6 +8943,7 @@ mod tests {
         assert_eq!(receipt["prefill_head"]["calls"], 1);
         assert_eq!(receipt["prefill_head"]["tail_transactions"], 0);
         assert_eq!(receipt["decode_head"]["calls"], 2);
+        assert_eq!(receipt["decode_head"]["excluded_calls"], 0);
         assert_eq!(receipt["decode_head"]["teacher_calls"], 0);
         assert_eq!(receipt["decode_head"]["tail_transactions"], 2);
         assert_eq!(receipt["initial_stack"]["last_state_commit_mask"], 0b111);
