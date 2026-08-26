@@ -55,7 +55,7 @@ import torch
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-QWEN3VL_OUTPUT_DIR = REPO_ROOT / "tests" / "qwen3vl_reference"
+OUTPUT_DIR = REPO_ROOT / "tests" / "qwen3vl_reference"
 QWEN25_OMNI_OUTPUT_DIR = REPO_ROOT / "tests" / "qwen25_omni_reference"
 
 TINYLLAMA_MODEL_ENV = "APXINF_TINYLLAMA_MODEL_DIR"
@@ -702,24 +702,12 @@ def main():
     args = parser.parse_args()
 
     set_seed(args.seed)
-    QWEN3VL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     targets = [
-        (
-            "tinyllama_text",
-            QWEN3VL_OUTPUT_DIR / "tinyllama_text.npz",
-            dump_tinyllama_text,
-        ),
-        (
-            "qwen3vl_text",
-            QWEN3VL_OUTPUT_DIR / "qwen3vl_text.npz",
-            dump_qwen3vl_text,
-        ),
-        (
-            "qwen3vl_image",
-            QWEN3VL_OUTPUT_DIR / "qwen3vl_image.npz",
-            dump_qwen3vl_image,
-        ),
+        ("tinyllama_text", OUTPUT_DIR / "tinyllama_text.npz", dump_tinyllama_text),
+        ("qwen3vl_text", OUTPUT_DIR / "qwen3vl_text.npz", dump_qwen3vl_text),
+        ("qwen3vl_image", OUTPUT_DIR / "qwen3vl_image.npz", dump_qwen3vl_image),
     ]
 
     qwen25_requested = args.only is not None and args.only.startswith("qwen25_omni_")
