@@ -62,6 +62,57 @@ pub fn gate_up_bias_silu_mul_exact(
     Ok(output.into_tensor(Shape::new(vec![sequence, INTERMEDIATE]), DType::BF16))
 }
 
+pub fn packed_gate_up_bias_silu_mul_exact(
+    ctx: &CudaContext,
+    packed_gate_up: &Tensor,
+    gate_bias: &Tensor,
+    up_bias: &Tensor,
+) -> Result<Tensor> {
+    let sequence = packed_gate_up
+        .shape()
+        .dims()
+        .first()
+        .copied()
+        .unwrap_or(0);
+    let device = Device::Cuda(ctx.device_id());
+    if ctx.caps().sm != 89
+        || sequence == 0
+        || sequence > 65_535
+        || packed_gate_up.dtype() != DType::BF16
+        || packed_gate_up.device() != device
+        || packed_gate_up.shape().dims() != [sequence, 2 * INTERMEDIATE]
+        || [gate_bias, up_bias].iter().any(|bias| {
+            bias.dtype() != DType::BF16
+                || bias.device() != device
+                || bias.shape().dims() != [INTERMEDIATE]
+        })
+    {
+        return Err(Error::Other(
+            "Qwen2.5-Omni vision packed Gate/Up bias SiLU/multiply contract mismatch".into(),
+        ));
+    }
+    let packed_gate_up = CudaBuffer::from_tensor(packed_gate_up).map_err(Error::Cuda)?;
+    let gate_bias = CudaBuffer::from_tensor(gate_bias).map_err(Error::Cuda)?;
+    let up_bias = CudaBuffer::from_tensor(up_bias).map_err(Error::Cuda)?;
+    let bytes = sequence
+        .checked_mul(INTERMEDIATE)
+        .and_then(|elements| elements.checked_mul(DType::BF16.size_in_bytes()))
+        .ok_or_else(|| Error::Other("vision packed Gate/Up output size overflow".into()))?;
+    let output = uninitialized_buffer(ctx, bytes)?;
+    check_cuda(unsafe {
+        ffi::apxinf_static_qwen25_omni_vision_packed_gate_up_bias_silu_mul_exact_bf16(
+            packed_gate_up.ptr(),
+            gate_bias.ptr(),
+            up_bias.ptr(),
+            output.ptr(),
+            sequence as i32,
+            INTERMEDIATE as i32,
+            ctx.stream().handle(),
+        )
+    })?;
+    Ok(output.into_tensor(Shape::new(vec![sequence, INTERMEDIATE]), DType::BF16))
+}
+
 pub fn bias_residual_exact(
     ctx: &CudaContext,
     projection: &Tensor,

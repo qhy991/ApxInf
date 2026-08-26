@@ -109,6 +109,7 @@ pub struct GeneralQwen25Omni {
     vision_gate_up_bias_silu_mul: bool,
     vision_grouped_qkv_layout: bool,
     vision_packed_qkv: bool,
+    vision_packed_gate_up: bool,
     #[cfg(feature = "cuda")]
     decode_graph: Option<Qwen25OmniDecodeGraph>,
     #[cfg(feature = "cuda")]
@@ -450,6 +451,26 @@ impl GeneralQwen25Omni {
         #[cfg(not(feature = "cuda"))]
         let vision_packed_qkv = false;
         #[cfg(feature = "cuda")]
+        let vision_packed_gate_up = {
+            let enabled = parse_binary_env("APXINF_QWEN25_VISION_PACKED_GATE_UP")
+                .map_err(Error::Other)?;
+            if enabled {
+                if !vision_packed_qkv {
+                    return Err(Error::Other(
+                        "APXINF_QWEN25_VISION_PACKED_GATE_UP=1 requires APXINF_QWEN25_VISION_PACKED_QKV=1"
+                            .into(),
+                    ));
+                }
+                vision = vision.into_packed_gate_up(&*backend)?;
+                eprintln!(
+                    "ApxInf Qwen2.5-Omni vision packed Gate/Up: one projection with direct activation consumption"
+                );
+            }
+            enabled
+        };
+        #[cfg(not(feature = "cuda"))]
+        let vision_packed_gate_up = false;
+        #[cfg(feature = "cuda")]
         let long_decode_split_cta = if long_decode_split_cta_enabled()? {
             if !parse_binary_env("APXINF_TMROPE_POSITION_CACHE").map_err(Error::Other)? {
                 return Err(Error::Other(
@@ -688,6 +709,7 @@ impl GeneralQwen25Omni {
             vision_gate_up_bias_silu_mul,
             vision_grouped_qkv_layout,
             vision_packed_qkv,
+            vision_packed_gate_up,
             #[cfg(feature = "cuda")]
             decode_graph,
             #[cfg(feature = "cuda")]
@@ -997,6 +1019,7 @@ impl GeneralQwen25Omni {
                 self.vision_gate_up_bias_silu_mul,
                 self.vision_grouped_qkv_layout,
                 self.vision_packed_qkv,
+                self.vision_packed_gate_up,
             )?;
             hidden = scatter_replace(&hidden, &positions, &encoded, &*self.backend)?;
         }

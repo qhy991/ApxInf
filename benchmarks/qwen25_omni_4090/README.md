@@ -205,7 +205,12 @@ GEMM. Its packed weight is the sole owner when selected, and the accepted
 bias/RoPE epilogue reads Q/K/V column regions directly without split views or
 materialization. Windowed blocks still write grouped FA2 consumer order; the
 four full-attention blocks retain ordinary order. It requires the grouped-QKV
-layout selector, and an incomplete composition fails at load. The prefill
+layout selector, and an incomplete composition fails at load. The vision
+packed Gate/Up selector similarly replaces the two sibling MLP projections
+with one output-N-concatenated GEMM. Its packed weight is the sole selected
+owner, and the exact bias/SiLU/multiply epilogue consumes both column regions
+directly without split views or materialization. It requires the packed-QKV
+selector, and an incomplete composition fails at load. The prefill
 position-cache selector uploads one
 TMRoPE position array
 per text or multimodal prefill slice instead of once per Q/K layer call. The
