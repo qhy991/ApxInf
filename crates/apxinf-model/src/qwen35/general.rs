@@ -2143,9 +2143,10 @@ impl GeneralQwen35 {
             )
         };
         Ok(Qwen35BoundaryTailHeadOutputV1 {
-            normalized_hidden: Tensor::from_f32(
-                vec![1, self.config.text.hidden_size],
-                &normalized_hidden,
+            normalized_hidden: tensor_from_owned_metal_output_row(
+                Qwen35MetalHostOutputSite::TailHead,
+                self.config.text.hidden_size,
+                normalized_hidden,
             )?,
             candidates,
             tail_elapsed_ns: started.elapsed().as_nanos(),
@@ -6110,6 +6111,81 @@ impl Qwen35PackedW8LinearLayerReference {
 }
 
 #[cfg(feature = "metal-w8")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Qwen35MetalHostOutputSite {
+    TailHead,
+    Gdn,
+    LinearLayer,
+    LinearLayerStack3,
+    MlpStack3Boundary,
+}
+
+#[cfg(all(test, feature = "metal-w8", target_os = "macos"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Qwen35MetalHostOutputOwnershipEvent {
+    site: Qwen35MetalHostOutputSite,
+    source_ptr: usize,
+    tensor_ptr: usize,
+}
+
+#[cfg(all(test, feature = "metal-w8", target_os = "macos"))]
+std::thread_local! {
+    static QWEN35_METAL_HOST_OUTPUT_OWNERSHIP_EVENTS:
+        std::cell::RefCell<Option<Vec<Qwen35MetalHostOutputOwnershipEvent>>> = const {
+            std::cell::RefCell::new(None)
+        };
+}
+
+#[cfg(feature = "metal-w8")]
+fn tensor_from_owned_metal_output_row(
+    site: Qwen35MetalHostOutputSite,
+    width: usize,
+    output: Vec<f32>,
+) -> Result<Tensor> {
+    // The caller already copied a reusable Metal scratch slice into this Vec.
+    // Transfer that allocation into Tensor instead of cloning it a second time.
+    #[cfg(not(all(test, target_os = "macos")))]
+    let _ = site;
+    #[cfg(all(test, target_os = "macos"))]
+    let source_ptr = output.as_ptr() as usize;
+    let tensor = Tensor::from_f32_vec(vec![1, width], output)?;
+    #[cfg(all(test, target_os = "macos"))]
+    QWEN35_METAL_HOST_OUTPUT_OWNERSHIP_EVENTS.with(|events| {
+        if let Some(events) = events.borrow_mut().as_mut() {
+            events.push(Qwen35MetalHostOutputOwnershipEvent {
+                site,
+                source_ptr,
+                tensor_ptr: tensor
+                    .as_f32()
+                    .expect("owned Metal output Tensor must remain CPU F32")
+                    .as_ptr() as usize,
+            });
+        }
+    });
+    Ok(tensor)
+}
+
+#[cfg(all(test, feature = "metal-w8", target_os = "macos"))]
+fn begin_metal_host_output_ownership_events() {
+    QWEN35_METAL_HOST_OUTPUT_OWNERSHIP_EVENTS.with(|events| {
+        assert!(
+            events.borrow_mut().replace(Vec::new()).is_none(),
+            "Metal host-output ownership recording was already active"
+        );
+    });
+}
+
+#[cfg(all(test, feature = "metal-w8", target_os = "macos"))]
+fn take_metal_host_output_ownership_events() -> Vec<Qwen35MetalHostOutputOwnershipEvent> {
+    QWEN35_METAL_HOST_OUTPUT_OWNERSHIP_EVENTS.with(|events| {
+        events
+            .borrow_mut()
+            .take()
+            .expect("Metal host-output ownership recording was not active")
+    })
+}
+
+#[cfg(feature = "metal-w8")]
 fn gdn_decode_state_from_cpu(
     config: &Qwen35TextConfig,
     state: &Qwen35LinearState,
@@ -6181,7 +6257,11 @@ fn run_linear_attention_with_metal_w8_gdn(
             ))
         })?
         .to_vec();
-    let tensor = Tensor::from_f32(vec![1, gdn.dimensions.hidden_size], &output)?;
+    let tensor = tensor_from_owned_metal_output_row(
+        Qwen35MetalHostOutputSite::Gdn,
+        gdn.dimensions.hidden_size,
+        output,
+    )?;
     gdn.block_elapsed_ns = gdn
         .block_elapsed_ns
         .saturating_add(started.elapsed().as_nanos());
@@ -6249,15 +6329,18 @@ fn run_linear_layer_with_metal_w8(
             )));
         }
     };
-    let tensor = Tensor::from_f32(vec![1, linear_layer.dimensions.hidden_size], &output).map_err(
-        |error| {
+    let tensor = tensor_from_owned_metal_output_row(
+        Qwen35MetalHostOutputSite::LinearLayer,
+        linear_layer.dimensions.hidden_size,
+        output,
+    )
+    .map_err(|error| {
             linear_layer.terminal_error = true;
             Error::Other(format!(
                 "qwen3.5 Metal W8 linear layer {} produced an invalid output terminally: {error}; reset required",
                 linear_layer.layer_index
             ))
-        },
-    )?;
+        })?;
     linear_layer.block_elapsed_ns = linear_layer
         .block_elapsed_ns
         .saturating_add(started.elapsed().as_nanos());
@@ -6325,8 +6408,12 @@ fn run_linear_layer_stack3_with_metal_w8(
             )));
         }
     };
-    let tensor = Tensor::from_f32(vec![1, stack.dimensions.hidden_size], &output).map_err(
-        |error| {
+    let tensor = tensor_from_owned_metal_output_row(
+        Qwen35MetalHostOutputSite::LinearLayerStack3,
+        stack.dimensions.hidden_size,
+        output,
+    )
+    .map_err(|error| {
             stack.terminal_error = true;
             Error::Other(format!(
                 "qwen3.5 Metal W8 stack3-v1 {:?} produced an invalid final output terminally: {error}; reset required",
@@ -6401,8 +6488,12 @@ fn run_mlp_stack3_boundary_with_metal_w8(
             )));
         }
     };
-    let tensor = Tensor::from_f32(vec![1, region.dimensions.hidden_size], &output).map_err(
-        |error| {
+    let tensor = tensor_from_owned_metal_output_row(
+        Qwen35MetalHostOutputSite::MlpStack3Boundary,
+        region.dimensions.hidden_size,
+        output,
+    )
+    .map_err(|error| {
             region.terminal_error = true;
             Error::Other(format!(
                 "qwen3.5 Metal W8 MLP→Stack3 boundary v1 layer {} produced an invalid final output terminally: {error}; reset required",
@@ -7388,6 +7479,104 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, Error::ShapeMismatch { .. }));
+    }
+
+    #[cfg(feature = "metal-w8")]
+    #[test]
+    fn metal_owned_output_tensor_reuses_the_original_f32_allocation() {
+        let output = vec![1.0f32, -2.0, 3.5, -4.25];
+        let original = output.as_ptr();
+
+        let tensor = tensor_from_owned_metal_output_row(
+            Qwen35MetalHostOutputSite::Gdn,
+            output.len(),
+            output,
+        )
+        .unwrap();
+
+        assert_eq!(tensor.shape().dims(), [1, 4]);
+        assert_eq!(tensor.as_f32().unwrap(), [1.0, -2.0, 3.5, -4.25]);
+        assert_eq!(tensor.as_f32().unwrap().as_ptr(), original);
+    }
+
+    #[cfg(all(feature = "metal-w8", target_os = "macos"))]
+    fn assert_owned_metal_output_sites(expected: &[Qwen35MetalHostOutputSite]) {
+        let events = take_metal_host_output_ownership_events();
+        assert_eq!(
+            events.iter().map(|event| event.site).collect::<Vec<_>>(),
+            expected
+        );
+        for event in events {
+            assert_eq!(
+                event.tensor_ptr, event.source_ptr,
+                "{:?} copied an already-owned Metal staging allocation",
+                event.site
+            );
+        }
+    }
+
+    #[cfg(all(feature = "metal-w8", target_os = "macos"))]
+    #[test]
+    fn metal_runtime_callsites_transfer_each_owned_host_output_allocation() {
+        let (config, tensors) = metal_gdn_fixture();
+        let mut gdn = GeneralQwen35::from_weights_with_metal_w8_gdn_layer(
+            config,
+            tensors,
+            Device::Cpu,
+            16,
+            0,
+        )
+        .unwrap();
+        begin_metal_host_output_ownership_events();
+        gdn.forward_hidden(&[1, 2], 0).unwrap();
+        assert_owned_metal_output_sites(&[]);
+        begin_metal_host_output_ownership_events();
+        gdn.forward_hidden(&[3], 2).unwrap();
+        assert_owned_metal_output_sites(&[Qwen35MetalHostOutputSite::Gdn]);
+
+        let (config, tensors) = metal_linear_layer_fixture();
+        let mut linear = GeneralQwen35::from_weights_with_metal_w8_linear_layer(
+            config,
+            tensors,
+            Device::Cpu,
+            16,
+            0,
+        )
+        .unwrap();
+        begin_metal_host_output_ownership_events();
+        linear.forward_hidden(&[1, 2], 0).unwrap();
+        assert_owned_metal_output_sites(&[]);
+        begin_metal_host_output_ownership_events();
+        linear.forward_hidden(&[3], 2).unwrap();
+        assert_owned_metal_output_sites(&[Qwen35MetalHostOutputSite::LinearLayer]);
+
+        let (config, tensors) = metal_all_linear_layers_fixture();
+        let mut boundary_tail =
+            GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
+                config,
+                tensors,
+                Device::Cpu,
+                16,
+            )
+            .unwrap();
+        begin_metal_host_output_ownership_events();
+        boundary_tail
+            .prefill_for_generation(LlmInput::text(&[1, 2]))
+            .unwrap();
+        assert_owned_metal_output_sites(&[]);
+        begin_metal_host_output_ownership_events();
+        boundary_tail
+            .teacher_forced_decode_candidates(3, 2)
+            .unwrap();
+        assert_owned_metal_output_sites(&[
+            Qwen35MetalHostOutputSite::LinearLayerStack3,
+            Qwen35MetalHostOutputSite::MlpStack3Boundary,
+            Qwen35MetalHostOutputSite::MlpStack3Boundary,
+            Qwen35MetalHostOutputSite::MlpStack3Boundary,
+            Qwen35MetalHostOutputSite::MlpStack3Boundary,
+            Qwen35MetalHostOutputSite::MlpStack3Boundary,
+            Qwen35MetalHostOutputSite::TailHead,
+        ]);
     }
 
     #[cfg(all(feature = "metal-w8", target_os = "macos"))]
