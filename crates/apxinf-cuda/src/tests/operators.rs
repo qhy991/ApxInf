@@ -28,6 +28,7 @@ use crate::kernels::qwen25_omni_fused::residual_add_rmsnorm_pack8_bf16_into;
 use crate::kernels::qwen25_omni_vision::{
     bias_residual_exact as qwen25_vision_bias_residual_exact,
     gate_up_bias_silu_mul_exact as qwen25_vision_gate_up_bias_silu_mul_exact,
+    grouped_qkv_bias_rope as qwen25_vision_grouped_qkv_bias_rope,
     qkv_bias_rope as qwen25_vision_qkv_bias_rope,
 };
 use crate::kernels::rope::{apply, apply_batched, apply_mrope, apply_tmrope, apply_vision_2d};
@@ -2308,6 +2309,88 @@ fn qwen25_vision_qkv_bias_rope_is_bit_exact() {
 }
 
 #[test]
+fn qwen25_vision_grouped_qkv_bias_rope_writes_consumer_order_exactly() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    if ctx.caps().sm != 89 {
+        return;
+    }
+    let (sequence, heads, head_dim) = (64usize, 16usize, 80usize);
+    let hidden = heads * head_dim;
+    let values = (0..sequence * hidden)
+        .map(|index| ((index as f32 * 0.017) - 3.0).sin())
+        .collect::<Vec<_>>();
+    let bias_values = (0..hidden)
+        .map(|index| ((index as f32 * 0.013) - 1.0).cos() * 0.25)
+        .collect::<Vec<_>>();
+    let query = upload_fp32_as_bf16(&ctx, &values, vec![sequence, hidden]).unwrap();
+    let key = upload_fp32_as_bf16(&ctx, &values, vec![sequence, hidden]).unwrap();
+    let value = upload_fp32_as_bf16(&ctx, &values, vec![sequence, hidden]).unwrap();
+    let query_bias = upload_fp32_as_bf16(&ctx, &bias_values, vec![hidden]).unwrap();
+    let key_bias = upload_fp32_as_bf16(&ctx, &bias_values, vec![hidden]).unwrap();
+    let value_bias = upload_fp32_as_bf16(&ctx, &bias_values, vec![hidden]).unwrap();
+    let positions = (0..sequence)
+        .flat_map(|token| [u32::try_from(token / 8).unwrap(), u32::try_from(token % 8).unwrap()])
+        .collect::<Vec<_>>();
+    let position_bytes = positions
+        .iter()
+        .flat_map(|position| position.to_ne_bytes())
+        .collect::<Vec<_>>();
+    let position_buffer = CudaBuffer::alloc(position_bytes.len(), ctx.device_id()).unwrap();
+    position_buffer.copy_from_host(&position_bytes).unwrap();
+    let groups = (0..sequence)
+        .map(|token| ((token / 2) % 5) as u32)
+        .collect::<Vec<_>>();
+    let (_, indices) = vision_group_plan(&groups).unwrap();
+    let index_bytes = indices
+        .iter()
+        .flat_map(|index| index.to_ne_bytes())
+        .collect::<Vec<_>>();
+    let index_buffer = CudaBuffer::alloc(index_bytes.len(), ctx.device_id()).unwrap();
+    index_buffer.copy_from_host(&index_bytes).unwrap();
+    let regular = qwen25_vision_qkv_bias_rope(
+        &ctx,
+        &query,
+        &key,
+        &value,
+        &query_bias,
+        &key_bias,
+        &value_bias,
+        10_000.0,
+        &position_buffer,
+    )
+    .unwrap();
+    let grouped = qwen25_vision_grouped_qkv_bias_rope(
+        &ctx,
+        &query,
+        &key,
+        &value,
+        &query_bias,
+        &key_bias,
+        &value_bias,
+        10_000.0,
+        &position_buffer,
+        &index_buffer,
+    )
+    .unwrap();
+    ctx.synchronize().unwrap();
+    for (regular, grouped) in [
+        (&regular.0, &grouped.0),
+        (&regular.1, &grouped.1),
+        (&regular.2, &grouped.2),
+    ] {
+        let regular = download_bf16_as_fp32(regular).unwrap();
+        let expected = indices
+            .iter()
+            .flat_map(|&row| {
+                let start = row as usize * hidden;
+                regular[start..start + hidden].iter().copied()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(download_bf16_as_fp32(grouped).unwrap(), expected);
+    }
+}
+
+#[test]
 fn qwen25_vision_bias_residual_is_bit_exact() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     if ctx.caps().sm != 89 {
@@ -2561,11 +2644,45 @@ fn grouped_varlen_fa2_bf16_matches_reference() {
         &indices,
         offset_values.len() - 1,
         max_group_size,
+        false,
+    )
+    .unwrap();
+    let row_elements = n_heads * head_dim;
+    let pack = |values: &[f32]| {
+        index_values
+            .iter()
+            .flat_map(|&row| {
+                let start = row as usize * row_elements;
+                values[start..start + row_elements].iter().copied()
+            })
+            .collect::<Vec<_>>()
+    };
+    let shape = vec![seq_len, n_heads, head_dim];
+    let packed_q = upload_fp32_as_bf16(&ctx, &pack(&q_values), shape.clone()).unwrap();
+    let packed_k = upload_fp32_as_bf16(&ctx, &pack(&k_values), shape.clone()).unwrap();
+    let packed_v = upload_fp32_as_bf16(&ctx, &pack(&v_values), shape).unwrap();
+    let prepacked = grouped_varlen_fa2(
+        &ctx,
+        &packed_q,
+        &packed_k,
+        &packed_v,
+        seq_len,
+        n_heads,
+        head_dim,
+        &offsets,
+        &indices,
+        offset_values.len() - 1,
+        max_group_size,
+        true,
     )
     .unwrap();
     assert_bf16_close_reduction(
         &download_bf16_as_fp32(&candidate).unwrap(),
         &download_bf16_as_fp32(&baseline).unwrap(),
+    );
+    assert_eq!(
+        download_bf16_as_fp32(&prepacked).unwrap(),
+        download_bf16_as_fp32(&candidate).unwrap()
     );
 }
 

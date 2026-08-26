@@ -216,7 +216,14 @@ fails at load. The vision Gate/Up selector replaces both projection bias nodes
 and the following exact SiLU/multiply node with one owner per vision block. It
 retains independent BF16 rounding after each bias add, after SiLU, and after
 the final multiply. It requires the exact vision bias/residual selector;
-invalid composition fails at load. The prefill position-cache selector uploads one
+invalid composition fails at load. The grouped vision-QKV layout selector lets
+the QKV bias/RoPE producer for the 28 windowed blocks write directly in the
+cached group permutation consumed by variable-length FA2. This removes one
+pack kernel and three transient packed Q/K/V allocations per block while
+retaining the final restore to original token order. The four full-attention
+blocks retain the ordinary QKV layout. It requires the pinned vision shape,
+the accepted Gate/Up chain, and grouped FA2; invalid or incomplete selector
+compositions fail at load. The prefill position-cache selector uploads one
 TMRoPE position array
 per text or multimodal prefill slice instead of once per Q/K layer call. The
 batched-GQA selector additionally packs BF16 prefill query rows by KV head

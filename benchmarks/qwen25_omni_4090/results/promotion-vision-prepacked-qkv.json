@@ -1,0 +1,207 @@
+{
+  "schema": "apxinf.qwen25_omni.promotion.v1",
+  "candidate": "vision_prepacked_grouped_qkv",
+  "completed_on": "2026-08-26",
+  "contract": {
+    "model": "Qwen/Qwen2.5-Omni-3B",
+    "model_revision": "f75b40e3da2003cdd6e1829b1f420ca70797c34e",
+    "hardware": "NVIDIA GeForce RTX 4090",
+    "sm": 89,
+    "cuda": "12.3",
+    "precision": "bf16",
+    "concurrency": 1,
+    "sampling": "greedy",
+    "primary_request": "real PNG 1760+16 with 6912 vision tokens",
+    "guard_requests": ["1024+32", "12288+8", "32760+8", "real WAV 52+16"],
+    "timing_authority": "no-profiler service wall time and service-emitted TTFT/TPOT"
+  },
+  "implementation": {
+    "base_commit": "bb1a6b212e95dd5cbd50125de5ebf4a6fce3f550",
+    "selector": "APXINF_QWEN25_VISION_GROUPED_QKV_LAYOUT=1",
+    "default_enabled_in_runtime": false,
+    "deployment_enabled": true,
+    "classification": "producer-to-consumer layout rewrite",
+    "eligible_path": "the 28 windowed Qwen2.5-Omni vision blocks admitted by grouped variable-length FA2",
+    "baseline_boundary": "regular-order QKV bias/RoPE, one grouped pack kernel, and three packed Q/K/V allocations",
+    "candidate_boundary": "QKV bias/RoPE writes the cached grouped permutation directly; grouped FA2 consumes that storage without a pack kernel or packed Q/K/V allocations",
+    "numerical_order": "Each Q/K/V value retains the incumbent BF16 bias and RoPE arithmetic and is written once to the row selected by the exact processor-owned group permutation.",
+    "required_selectors": [
+      "APXINF_VISION_GROUPED_SPARSE=1",
+      "APXINF_VISION_GROUPED_FA2=1",
+      "APXINF_QWEN25_VISION_QKV_BIAS_ROPE=1",
+      "APXINF_QWEN25_VISION_GATE_UP_BIAS_SILU_MUL=1"
+    ],
+    "windowed_vision_blocks": 28,
+    "full_attention_vision_blocks_unchanged": 4,
+    "excluded_paths": [
+      "full-attention vision blocks",
+      "text-only prefill and decode",
+      "audio encoder",
+      "non-SM89 hardware",
+      "unmatched vision architecture",
+      "video input and speech output"
+    ],
+    "candidate_binary_sha256": "43bfa1993c6b507db44d05d8b7f6a8a02fe061b8bdd52d8b43851f223c2e6ad7",
+    "rollback_binary_sha256": "9e7c314dc1aeb3c413f7c6afa98d60bb0934bfe1c0476ec335631ef8004a342f"
+  },
+  "operator_gate": {
+    "shape": [6912, 1280],
+    "groups": 112,
+    "group_geometry": "104 groups of 64 rows and 8 groups of 32 rows",
+    "values_compared_per_output": 8847360,
+    "outputs_compared": ["Q", "K", "V"],
+    "mismatches": 0,
+    "bit_exact": true,
+    "baseline_microseconds": 221.022385,
+    "candidate_microseconds": 129.644806,
+    "speedup": 1.704830289,
+    "regular_candidate_registers": 22,
+    "grouped_candidate_registers": 20,
+    "spill_bytes": 0,
+    "focused_cuda_tests": "2 passed",
+    "broker_job": "gpuq-2a276404f881"
+  },
+  "no_profiler": {
+    "binary_control": "one immutable SM89 binary with only the grouped vision-QKV layout selector changed from 0 to 1",
+    "order": ["A", "B", "B", "A", "A", "B", "B", "A", "A", "B"],
+    "pairs": 5,
+    "broker_job": "gpuq-469bb1439675",
+    "real_png_1760_16": {
+      "baseline_wall_seconds": [
+        0.552058145403862,
+        0.5545163825154305,
+        0.5515393167734146,
+        0.5577676966786385,
+        0.5540118739008904
+      ],
+      "candidate_wall_seconds": [
+        0.5532968193292618,
+        0.5536180138587952,
+        0.5521073937416077,
+        0.5523248761892319,
+        0.5478881895542145
+      ],
+      "paired_wall_wins": 3,
+      "baseline_wall_median_seconds": 0.5540118739008904,
+      "candidate_wall_median_seconds": 0.5523248761892319,
+      "wall_reduction_pct": 0.3045056958400629,
+      "paired_wall_speedup_median": 1.0016227229500239,
+      "paired_wall_speedup_min": 0.9977612849340045,
+      "wall_admission": "not admitted as a stable improvement because only three of five pairs win",
+      "baseline_ttft_seconds": [
+        0.227426216,
+        0.227580913,
+        0.227488051,
+        0.227831864,
+        0.227584621
+      ],
+      "candidate_ttft_seconds": [
+        0.225715506,
+        0.225550617,
+        0.225637657,
+        0.225495414,
+        0.225605286
+      ],
+      "paired_ttft_wins": 5,
+      "baseline_ttft_median_seconds": 0.227580913,
+      "candidate_ttft_median_seconds": 0.225605286,
+      "ttft_reduction_pct": 0.868098723200046,
+      "paired_ttft_speedup_median": 1.0087734424804213,
+      "paired_ttft_speedup_min": 1.0075790539618488,
+      "ttft_admission": "admitted",
+      "baseline_tpot_median_seconds": 0.008982365066666666,
+      "candidate_tpot_median_seconds": 0.008976329666666666,
+      "candidate_tpot_change_pct": -0.06719165782291657,
+      "paired_tpot_wins": 4,
+      "tpot_admission": "neutral guard",
+      "complete_output_tokens_exact": true
+    }
+  },
+  "systems_profile": {
+    "workload": "real PNG 1760+16 after one unprofiled image warmup",
+    "capture": "one measured request with CUDA graph node tracing",
+    "broker_job": "gpuq-86e515672d76",
+    "baseline": {
+      "first_token_envelope_ms": 228.362834,
+      "first_token_kernel_sum_ms": 204.069618,
+      "first_token_gpu_union_ms": 212.387759,
+      "regular_qkv_ms": 3.949967,
+      "grouped_pack_ms": 2.392906,
+      "unpack_ms": 0.320416,
+      "kernels_to_first_token": 1237,
+      "raw_sha256": "6a4cc68fec91968fe2214a0186325e62267609338057862116dd04f04ca89104"
+    },
+    "candidate": {
+      "first_token_envelope_ms": 225.067983,
+      "first_token_kernel_sum_ms": 202.423746,
+      "first_token_gpu_union_ms": 210.635523,
+      "grouped_qkv_ms": 3.884398,
+      "unchanged_full_attention_qkv_ms": 0.495234,
+      "grouped_pack_ms": 0.0,
+      "unpack_ms": 0.313885,
+      "kernels_to_first_token": 1209,
+      "raw_sha256": "9cfce73e900f47aa71c07b9968bc5d3cb6ef12161ab9f3230cd5fc8114807223"
+    },
+    "target_boundary_baseline_ms": 6.342873,
+    "target_boundary_candidate_ms": 4.379632,
+    "target_boundary_saved_ms": 1.963241,
+    "target_boundary_speedup": 1.448263,
+    "grouped_qkv_producer_cost_increase_ms": 0.429665,
+    "first_token_kernel_sum_saved_ms": 1.645872,
+    "first_token_gpu_union_saved_ms": 1.752236,
+    "first_token_envelope_saved_ms": 3.294851,
+    "kernel_instances_removed": 28,
+    "node_accounting": "The 28 windowed blocks retain one QKV producer and one final unpack, while one grouped pack kernel per block and three transient packed allocations are removed.",
+    "raw_trace_deleted_after_derivation": true
+  },
+  "correctness": {
+    "strict_selector_negative": true,
+    "all_screen_trajectories_exact": true,
+    "screen_cases": 10,
+    "path_markers": {
+      "baseline_installs": 0,
+      "candidate_installs": 5
+    },
+    "acceptance": {
+      "broker_job": "gpuq-8bac29582bef",
+      "quick_three_of_three": true,
+      "quick_trajectory_sha256": "bf1da0a151446e7ff757474de26ceb13ced3cf9a422fcc17b1f4699fb89d38ea",
+      "context_12288_trajectory_sha256": "57c5d6ea1879e2f718dc40d47409b0a6aee31afdbd668c255d97409e4661f832",
+      "context_32760_trajectory_sha256": "f5ef60ededd5770627b7963e24ff339aef60d63d061cafa37b7ee4e4b0598cb9",
+      "http_contract": true,
+      "real_png": true,
+      "real_wav": true,
+      "malformed_media_recovery": true
+    },
+    "tests": {
+      "model_cpu": "68 passed",
+      "benchmark_scripts": "15 passed",
+      "focused_cuda": "2 passed"
+    }
+  },
+  "external_comparison": {
+    "vllm_omni_version": "0.26.0",
+    "vllm_real_png_wall_seconds": 0.5647583678364754,
+    "apxinf_candidate_real_png_wall_p50_seconds": 0.5523248761892319,
+    "vllm_real_png_ttft_seconds": 0.2319645881652832,
+    "apxinf_candidate_real_png_ttft_seconds": 0.225605286,
+    "vllm_real_png_tpot_seconds": 0.021917180716991425,
+    "apxinf_candidate_real_png_tpot_seconds": 0.008976329666666666,
+    "apxinf_ttft_speedup": 1.0281877356600733,
+    "apxinf_tpot_speedup": 2.4416639685572408,
+    "wall_interpretation": "The frozen ApxInf p50 is lower than the frozen vLLM record, but the candidate is not promoted on internal wall timing because only three of five A/B wall pairs win."
+  },
+  "decision": {
+    "status": "promote",
+    "scope": "single-request BF16 Qwen2.5-Omni real-image TTFT and GPU critical path on one RTX 4090",
+    "reason": "The production-shape layout rewrite is exact, all five image TTFT pairs win, Systems attributes 28 removed pack nodes and 1.75 ms of first-token GPU-union saving to the intended boundary, and complete text, image, audio, context, contract and recovery acceptance passes.",
+    "non_claims": [
+      "stable complete-wall improvement over the accepted ApxInf baseline",
+      "multi-request throughput",
+      "continuous batching",
+      "non-SM89 hardware",
+      "video input",
+      "speech generation"
+    ]
+  }
+}

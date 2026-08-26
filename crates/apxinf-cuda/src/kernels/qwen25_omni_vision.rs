@@ -122,6 +122,60 @@ pub fn qkv_bias_rope(
     theta: f32,
     positions: &CudaBuffer,
 ) -> Result<(Tensor, Tensor, Tensor)> {
+    qkv_bias_rope_impl(
+        ctx,
+        query,
+        key,
+        value,
+        query_bias,
+        key_bias,
+        value_bias,
+        theta,
+        positions,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn grouped_qkv_bias_rope(
+    ctx: &CudaContext,
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    query_bias: &Tensor,
+    key_bias: &Tensor,
+    value_bias: &Tensor,
+    theta: f32,
+    positions: &CudaBuffer,
+    group_indices: &CudaBuffer,
+) -> Result<(Tensor, Tensor, Tensor)> {
+    qkv_bias_rope_impl(
+        ctx,
+        query,
+        key,
+        value,
+        query_bias,
+        key_bias,
+        value_bias,
+        theta,
+        positions,
+        Some(group_indices),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn qkv_bias_rope_impl(
+    ctx: &CudaContext,
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    query_bias: &Tensor,
+    key_bias: &Tensor,
+    value_bias: &Tensor,
+    theta: f32,
+    positions: &CudaBuffer,
+    group_indices: Option<&CudaBuffer>,
+) -> Result<(Tensor, Tensor, Tensor)> {
     let sequence = query.shape().dims().first().copied().unwrap_or(0);
     let device = Device::Cuda(ctx.device_id());
     let matrix_shape = [sequence, HIDDEN];
@@ -145,6 +199,10 @@ pub fn qkv_bias_rope(
         || theta.to_bits() != 10_000.0f32.to_bits()
         || positions.device() != ctx.device_id()
         || positions.len() != sequence * 2 * std::mem::size_of::<u32>()
+        || group_indices.is_some_and(|indices| {
+            indices.device() != ctx.device_id()
+                || indices.len() != sequence * std::mem::size_of::<u32>()
+        })
     {
         return Err(Error::Other(
             "Qwen2.5-Omni vision QKV bias/RoPE contract mismatch".into(),
@@ -165,23 +223,44 @@ pub fn qkv_bias_rope(
     let key_output = uninitialized_buffer(ctx, bytes)?;
     let value_output = uninitialized_buffer(ctx, bytes)?;
     check_cuda(unsafe {
-        ffi::apxinf_static_qwen25_omni_vision_qkv_bias_rope_bf16(
-            query.ptr(),
-            key.ptr(),
-            value.ptr(),
-            query_bias.ptr(),
-            key_bias.ptr(),
-            value_bias.ptr(),
-            query_output.ptr(),
-            key_output.ptr(),
-            value_output.ptr(),
-            sequence as i32,
-            HEADS as i32,
-            HEAD_DIM as i32,
-            theta,
-            positions.ptr(),
-            ctx.stream().handle(),
-        )
+        if let Some(indices) = group_indices {
+            ffi::apxinf_static_qwen25_omni_vision_grouped_qkv_bias_rope_bf16(
+                query.ptr(),
+                key.ptr(),
+                value.ptr(),
+                query_bias.ptr(),
+                key_bias.ptr(),
+                value_bias.ptr(),
+                query_output.ptr(),
+                key_output.ptr(),
+                value_output.ptr(),
+                sequence as i32,
+                HEADS as i32,
+                HEAD_DIM as i32,
+                theta,
+                positions.ptr(),
+                indices.ptr(),
+                ctx.stream().handle(),
+            )
+        } else {
+            ffi::apxinf_static_qwen25_omni_vision_qkv_bias_rope_bf16(
+                query.ptr(),
+                key.ptr(),
+                value.ptr(),
+                query_bias.ptr(),
+                key_bias.ptr(),
+                value_bias.ptr(),
+                query_output.ptr(),
+                key_output.ptr(),
+                value_output.ptr(),
+                sequence as i32,
+                HEADS as i32,
+                HEAD_DIM as i32,
+                theta,
+                positions.ptr(),
+                ctx.stream().handle(),
+            )
+        }
     })?;
     let shape = Shape::new(vec![sequence, HEADS, HEAD_DIM]);
     Ok((

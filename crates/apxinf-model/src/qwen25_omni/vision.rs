@@ -132,6 +132,7 @@ pub fn forward(
     use_fused_silu_mul: bool,
     use_fused_bias_residual: bool,
     use_fused_gate_up_bias_silu_mul: bool,
+    use_grouped_qkv_layout: bool,
 ) -> Result<Tensor> {
     let vision = &config.vision;
     let raw_tokens = validate_input(config, pixel_values, grid_thw)?;
@@ -145,6 +146,8 @@ pub fn forward(
     let positions = vision_positions(grid_thw, vision.spatial_merge_size);
     let groups = vision_window_groups(config, grid_thw)?;
     for (index, block) in weights.blocks.iter().enumerate() {
+        let full_attention = vision.full_attention_blocks.contains(&index);
+        let grouped_qkv_layout = use_grouped_qkv_layout && !full_attention;
         let normalized = backend.rms_norm(&hidden, &block.norm1, 1e-6)?;
         let (q, k, v) = if use_fused_qkv_bias_rope {
             #[cfg(feature = "cuda")]
@@ -155,9 +158,30 @@ pub fn forward(
                 let cuda = cuda_backend(backend).ok_or_else(|| {
                     Error::Other("vision QKV bias/RoPE fusion requires CudaBackend".into())
                 })?;
-                cuda.qwen25_omni_vision_qkv_bias_rope(
-                    &query, &key, &value, &block.bq, &block.bk, &block.bv, 10_000.0, &positions,
-                )?
+                if grouped_qkv_layout {
+                    cuda.qwen25_omni_vision_grouped_qkv_bias_rope(
+                        &query,
+                        &key,
+                        &value,
+                        &block.bq,
+                        &block.bk,
+                        &block.bv,
+                        10_000.0,
+                        &positions,
+                        &groups,
+                    )?
+                } else {
+                    cuda.qwen25_omni_vision_qkv_bias_rope(
+                        &query,
+                        &key,
+                        &value,
+                        &block.bq,
+                        &block.bk,
+                        &block.bv,
+                        10_000.0,
+                        &positions,
+                    )?
+                }
             }
             #[cfg(not(feature = "cuda"))]
             {
@@ -188,8 +212,30 @@ pub fn forward(
             )?;
             (q, k, v)
         };
-        let attention = if vision.full_attention_blocks.contains(&index) {
+        let attention = if full_attention {
             backend.vision_sdpa(&q, &k, &v, raw_tokens, vision.n_heads, vision.head_dim)?
+        } else if grouped_qkv_layout {
+            #[cfg(feature = "cuda")]
+            {
+                let cuda = cuda_backend(backend).ok_or_else(|| {
+                    Error::Other("prepacked grouped vision attention requires CudaBackend".into())
+                })?;
+                cuda.qwen25_omni_vision_grouped_sdpa_prepacked(
+                    &q,
+                    &k,
+                    &v,
+                    raw_tokens,
+                    vision.n_heads,
+                    vision.head_dim,
+                    &groups,
+                )?
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                return Err(Error::Other(
+                    "prepacked grouped vision attention requires CUDA".into(),
+                ));
+            }
         } else {
             backend.grouped_sdpa(
                 &q,

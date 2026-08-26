@@ -1426,6 +1426,7 @@ pub fn grouped_varlen_fa2(
     group_indices: &CudaBuffer,
     group_count: usize,
     max_group_size: usize,
+    inputs_prepacked: bool,
 ) -> Result<Tensor> {
     if q.dtype() != DType::BF16 || k.dtype() != DType::BF16 || v.dtype() != DType::BF16 {
         return Err(Error::Other(
@@ -1482,9 +1483,15 @@ pub fn grouped_varlen_fa2(
             "grouped varlen FA2: Q/K/V byte size mismatch".into(),
         ));
     }
-    let packed_q = uninitialized_buffer(ctx, tensor_bytes)?;
-    let packed_k = uninitialized_buffer(ctx, tensor_bytes)?;
-    let packed_v = uninitialized_buffer(ctx, tensor_bytes)?;
+    let packed_inputs = if inputs_prepacked {
+        None
+    } else {
+        Some((
+            uninitialized_buffer(ctx, tensor_bytes)?,
+            uninitialized_buffer(ctx, tensor_bytes)?,
+            uninitialized_buffer(ctx, tensor_bytes)?,
+        ))
+    };
     let packed_output = uninitialized_buffer(ctx, tensor_bytes)?;
     let output = uninitialized_buffer(ctx, tensor_bytes)?;
     let lse_bytes = seq_len
@@ -1493,16 +1500,24 @@ pub fn grouped_varlen_fa2(
         .ok_or_else(|| Error::Other("grouped varlen FA2 LSE size overflow".into()))?;
     let softmax_lse = uninitialized_buffer(ctx, lse_bytes)?;
 
+    let (query, key, value) = if let Some((packed_q, packed_k, packed_v)) = &packed_inputs {
+        unsafe {
+            ffi::check_cuda(ffi::apxinf_pack_grouped_qkv_bf16(
+                gpu_ptr(q)?, gpu_ptr(k)?, gpu_ptr(v)?,
+                packed_q.ptr(), packed_k.ptr(), packed_v.ptr(),
+                group_indices.ptr(), seq_len_u32, row_elements_u32,
+                ctx.stream().handle(),
+            ))
+            .map_err(Error::Cuda)?;
+        }
+        (packed_q.ptr(), packed_k.ptr(), packed_v.ptr())
+    } else {
+        (gpu_ptr(q)?, gpu_ptr(k)?, gpu_ptr(v)?)
+    };
+
     unsafe {
-        ffi::check_cuda(ffi::apxinf_pack_grouped_qkv_bf16(
-            gpu_ptr(q)?, gpu_ptr(k)?, gpu_ptr(v)?,
-            packed_q.ptr(), packed_k.ptr(), packed_v.ptr(),
-            group_indices.ptr(), seq_len_u32, row_elements_u32,
-            ctx.stream().handle(),
-        ))
-        .map_err(Error::Cuda)?;
         ffi::check_cuda(ffi::apxinf_static_fa2_varlen_bf16(
-            packed_q.ptr(), packed_k.ptr(), packed_v.ptr(),
+            query, key, value,
             packed_output.ptr(), softmax_lse.ptr(), group_offsets.ptr(),
             batch_i32, total_i32, max_group_i32, heads_i32, heads_i32,
             head_dim_i32, (head_dim as f32).sqrt().recip(),
