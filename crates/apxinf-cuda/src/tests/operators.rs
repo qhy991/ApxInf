@@ -3,7 +3,7 @@ use apxinf_core::{DType, Error, Result, Shape, Tensor};
 use crate::backend::vision_group_plan;
 use crate::buffer::{CudaBuffer, HostMappedBuffer};
 use crate::context::CudaContext;
-use crate::kernels::activation::{gelu_tanh, silu, silu_mul};
+use crate::kernels::activation::{gelu_tanh, silu, silu_mul, silu_mul_packed_rows_exact};
 use crate::kernels::attention::{
     causal_mask, grouped, grouped_indexed, sdpa_with_batched_prefill, softmax, softmax_causal,
     softmax_causal_bf16_scaled_exp_cache, softmax_causal_bf16_scaled_in_place_gqa_packed,
@@ -117,8 +117,19 @@ fn silu_mul_separate_bf16_is_bit_exact() {
     let activated = silu(&ctx, &gate).unwrap();
     let separate = mul(&ctx, &activated, &up).unwrap();
     let fused = silu_mul(&ctx, &gate, &up).unwrap();
+    let packed_values = gate_values
+        .chunks_exact(cols)
+        .zip(up_values.chunks_exact(cols))
+        .flat_map(|(gate, up)| gate.iter().chain(up).copied())
+        .collect::<Vec<_>>();
+    let packed = upload_fp32_as_bf16(&ctx, &packed_values, vec![rows, 2 * cols]).unwrap();
+    let packed_fused = silu_mul_packed_rows_exact(&ctx, &packed, cols).unwrap();
     assert_eq!(
         download_bf16_as_fp32(&fused).unwrap(),
+        download_bf16_as_fp32(&separate).unwrap()
+    );
+    assert_eq!(
+        download_bf16_as_fp32(&packed_fused).unwrap(),
         download_bf16_as_fp32(&separate).unwrap()
     );
 }

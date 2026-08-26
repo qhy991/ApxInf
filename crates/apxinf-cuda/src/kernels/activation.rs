@@ -144,6 +144,64 @@ pub fn silu_mul(ctx: &CudaContext, gate: &Tensor, up: &Tensor) -> Result<Tensor>
     ))
 }
 
+/// Exact BF16 SiLU/multiply for row-major `[rows, 2 * intermediate]` input.
+pub fn silu_mul_packed_rows_exact(
+    ctx: &CudaContext,
+    gate_up: &Tensor,
+    intermediate: usize,
+) -> Result<Tensor> {
+    let dims = gate_up.shape().dims();
+    let rows = dims.first().copied().unwrap_or(0);
+    let packed_intermediate = intermediate
+        .checked_mul(2)
+        .ok_or_else(|| Error::Other("packed row SiLU multiply width overflow".into()))?;
+    if gate_up.dtype() != DType::BF16
+        || rows == 0
+        || intermediate == 0
+        || dims != [rows, packed_intermediate]
+    {
+        return Err(Error::Other(
+            "packed row SiLU multiply requires BF16 [rows, 2 * intermediate] input".into(),
+        ));
+    }
+    let count = rows
+        .checked_mul(intermediate)
+        .ok_or_else(|| Error::Other("packed row SiLU multiply size overflow".into()))?;
+    let bytes = checked_bytes(DType::BF16, &[count], "packed row SiLU multiply")?;
+    let packed_bytes = bytes
+        .checked_mul(2)
+        .ok_or_else(|| Error::Other("packed row SiLU multiply byte size overflow".into()))?;
+    let gate_up = CudaBuffer::from_tensor(gate_up).map_err(Error::Cuda)?;
+    let output = uninitialized_buffer(ctx, bytes)?;
+    require_buffers(
+        ctx,
+        "packed row SiLU multiply",
+        &[
+            ("gate_up", &gate_up, packed_bytes),
+            ("output", &output, bytes),
+        ],
+    )?;
+    let rows = u32::try_from(rows)
+        .map_err(|_| Error::Other("packed row SiLU multiply rows exceed u32".into()))?;
+    let intermediate = u32::try_from(intermediate)
+        .map_err(|_| Error::Other("packed row SiLU multiply width exceeds u32".into()))?;
+    check_cuda(unsafe {
+        ffi::apxinf_silu_mul_packed_rows_exact_bf16(
+            gate_up.ptr(),
+            output.ptr(),
+            rows,
+            intermediate,
+            ctx.stream().handle(),
+        )
+    })?;
+    Ok(make_gpu_tensor(
+        Shape::new(vec![rows as usize, intermediate as usize]),
+        DType::BF16,
+        ctx.device_id(),
+        output,
+    ))
+}
+
 /// SiLU (Swish) activation on CUDA.
 pub fn silu(ctx: &CudaContext, input: &Tensor) -> Result<Tensor> {
     let device_id = ctx.device_id();

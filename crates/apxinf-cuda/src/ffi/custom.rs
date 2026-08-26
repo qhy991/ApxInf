@@ -760,6 +760,14 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_silu_mul_packed_rows_exact_bf16(
+        gate_up: *const c_void,
+        output: *mut c_void,
+        rows: u32,
+        inter: u32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_softmax_f32(
         input: *const c_void,
         output: *mut c_void,

@@ -66,6 +66,25 @@ __global__ void silu_mul_separate_bf16_kernel(
     output[gid] = __float2bfloat16(__bfloat162float(activated) * u);
 }
 
+// Exact BF16 SiLU/multiply for row-major packed Gate/Up projections. Each row
+// owns `[gate..., up...]`; the activation is rounded to BF16 before multiply.
+__global__ void silu_mul_packed_rows_exact_bf16_kernel(
+    const __nv_bfloat16* gate_up, __nv_bfloat16* output,
+    uint32_t rows, uint32_t inter)
+{
+    uint64_t index = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    uint64_t count = static_cast<uint64_t>(rows) * inter;
+    if (index >= count) return;
+    uint32_t row = static_cast<uint32_t>(index / inter);
+    uint32_t column = static_cast<uint32_t>(index % inter);
+    uint64_t packed_base = static_cast<uint64_t>(row) * 2 * inter;
+    float gate = __bfloat162float(gate_up[packed_base + column]);
+    float up = __bfloat162float(gate_up[packed_base + inter + column]);
+    __nv_bfloat16 activated =
+        __float2bfloat16(gate / (1.0f + expf(-gate)));
+    output[index] = __float2bfloat16(__bfloat162float(activated) * up);
+}
+
 
 
 // ── GELU (tanh approximation, bf16) — Qwen3-VL vision MLP ────────────────

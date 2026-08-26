@@ -95,6 +95,11 @@ fn use_scaled_exp_cache_prefill(
     enabled && !all_chunk_fa2 && sequence > 1 && kv_len <= 4_096
 }
 
+#[cfg(any(feature = "cuda", test))]
+fn use_prefill_packed_mlp(sequence: usize, enabled: bool) -> bool {
+    enabled && matches!(sequence, 512 | 1_024 | 1_760)
+}
+
 pub struct GeneralQwen25Omni {
     config: Qwen25OmniConfig,
     text: Qwen25OmniTextWeights,
@@ -118,6 +123,8 @@ pub struct GeneralQwen25Omni {
     long_decode_split_cta: Option<cuda_kernels::qwen25_omni_attention::SplitCtaWorkspace>,
     #[cfg(feature = "cuda")]
     scaled_exp_cache_prefill: bool,
+    #[cfg(feature = "cuda")]
+    prefill_packed_mlp: bool,
 }
 
 #[cfg(feature = "cuda")]
@@ -499,7 +506,7 @@ impl GeneralQwen25Omni {
             None
         };
         #[cfg(feature = "cuda")]
-        let (decode_graph, long_decode_graph, scaled_exp_cache_prefill) = {
+        let (decode_graph, long_decode_graph, scaled_exp_cache_prefill, prefill_packed_mlp) = {
             let fa2_chunk1024 = fa2_chunk1024_enabled()?;
             let _all_chunk_fa2 = all_chunk_fa2_enabled()?;
             if fa2_chunk1024 && !chunked_prefill_enabled()? {
@@ -513,6 +520,8 @@ impl GeneralQwen25Omni {
             let eager_select_token = eager_gpu_argmax_enabled()?;
             let packed_qkv = packed_qkv_enabled()?;
             let m1_packed_mlp = m1_packed_mlp_enabled()?;
+            let prefill_packed_mlp =
+                parse_binary_env("APXINF_QWEN25_PREFILL_PACKED_MLP").map_err(Error::Other)?;
             let short_exact_residual_norm = short_decode_exact_residual_norm_enabled()?;
             let short_w32_attention = short_decode_w32_attention_enabled()?;
             let short_fused_qkv_prelude = short_decode_fused_qkv_prelude_enabled()?;
@@ -539,6 +548,12 @@ impl GeneralQwen25Omni {
             if m1_packed_mlp && !graph_enabled {
                 return Err(Error::Other(
                     "APXINF_QWEN25_M1_PACKED_MLP=1 requires APXINF_QWEN25_DECODE_GRAPH=1".into(),
+                ));
+            }
+            if prefill_packed_mlp && (!m1_packed_mlp || !fused_silu_mul_enabled()?) {
+                return Err(Error::Other(
+                    "APXINF_QWEN25_PREFILL_PACKED_MLP=1 requires APXINF_QWEN25_M1_PACKED_MLP=1 and APXINF_QWEN25_FUSED_SILU_MUL=1"
+                        .into(),
                 ));
             }
             if short_exact_residual_norm
@@ -664,6 +679,11 @@ impl GeneralQwen25Omni {
                         "ApxInf Qwen2.5-Omni scaled exp-cache prefill: exact fused scale and numerator-cache softmax for 2..=4096 KV tokens"
                     );
                 }
+                if prefill_packed_mlp {
+                    eprintln!(
+                        "ApxInf Qwen2.5-Omni prefill packed MLP: exact rows 512, 1024 and 1760"
+                    );
+                }
                 let short = Qwen25OmniDecodeGraph::new(
                     cuda,
                     Self::decode_graph_config(&config),
@@ -690,9 +710,9 @@ impl GeneralQwen25Omni {
                 } else {
                     None
                 };
-                (Some(short), long, scaled_exp_cache_prefill)
+                (Some(short), long, scaled_exp_cache_prefill, prefill_packed_mlp)
             } else {
-                (None, None, false)
+                (None, None, false, false)
             }
         };
         let model = Self {
@@ -718,6 +738,8 @@ impl GeneralQwen25Omni {
             long_decode_split_cta,
             #[cfg(feature = "cuda")]
             scaled_exp_cache_prefill,
+            #[cfg(feature = "cuda")]
+            prefill_packed_mlp,
         };
         #[cfg(feature = "cuda")]
         {
@@ -1296,16 +1318,34 @@ impl GeneralQwen25Omni {
         let normalized = self
             .backend
             .rms_norm(&residual, &layer.ffn_norm, text.rms_norm_eps)?;
-        let gate = self.backend.matmul(&normalized, &layer.w_gate)?;
-        let up = self.backend.matmul(&normalized, &layer.w_up)?;
         #[cfg(feature = "cuda")]
-        let activated = if fused_silu_mul_enabled()? {
-            self.backend.silu_mul(&gate, &up)?
+        let activated = if use_prefill_packed_mlp(sequence, self.prefill_packed_mlp) {
+            let weight = layer.gate_up_packed.as_ref().ok_or_else(|| {
+                Error::Other("prefill packed MLP selector has no packed Gate/Up weight".into())
+            })?;
+            let gate_up = self.backend.matmul(&normalized, weight)?;
+            let cuda = cuda_backend(&*self.backend).ok_or_else(|| {
+                Error::Other("prefill packed MLP requires CudaBackend".into())
+            })?;
+            cuda.qwen25_omni_prefill_packed_silu_mul_exact(
+                &gate_up,
+                text.intermediate_size,
+            )?
         } else {
-            self.backend.mul(&self.backend.silu(&gate)?, &up)?
+            let gate = self.backend.matmul(&normalized, &layer.w_gate)?;
+            let up = self.backend.matmul(&normalized, &layer.w_up)?;
+            if fused_silu_mul_enabled()? {
+                self.backend.silu_mul(&gate, &up)?
+            } else {
+                self.backend.mul(&self.backend.silu(&gate)?, &up)?
+            }
         };
         #[cfg(not(feature = "cuda"))]
-        let activated = self.backend.mul(&self.backend.silu(&gate)?, &up)?;
+        let activated = {
+            let gate = self.backend.matmul(&normalized, &layer.w_gate)?;
+            let up = self.backend.matmul(&normalized, &layer.w_up)?;
+            self.backend.mul(&self.backend.silu(&gate)?, &up)?
+        };
         let mlp = self.backend.matmul(&activated, &layer.w_down)?;
         self.backend.add(&residual, &mlp)
     }
@@ -1805,6 +1845,17 @@ mod tests {
         assert!(!use_scaled_exp_cache_prefill(1, 1, true, false));
         assert!(!use_scaled_exp_cache_prefill(1_024, 4_097, true, false));
         assert!(!use_scaled_exp_cache_prefill(1_024, 1_024, false, false));
+    }
+
+    #[test]
+    fn prefill_packed_mlp_owns_only_exact_validated_rows() {
+        for rows in [512, 1_024, 1_760] {
+            assert!(use_prefill_packed_mlp(rows, true));
+        }
+        for rows in [1, 52, 128, 256, 511, 513, 2_048] {
+            assert!(!use_prefill_packed_mlp(rows, true));
+        }
+        assert!(!use_prefill_packed_mlp(1_024, false));
     }
 
     #[test]

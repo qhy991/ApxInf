@@ -238,6 +238,22 @@ extern "C" cudaError_t apxinf_silu_mul_separate_bf16(
     return cudaGetLastError();
 }
 
+extern "C" cudaError_t apxinf_silu_mul_packed_rows_exact_bf16(
+    const void* gate_up, void* output, uint32_t rows, uint32_t inter,
+    void* stream)
+{
+    if (gate_up == nullptr || output == nullptr || rows == 0 || inter == 0)
+        return cudaErrorInvalidConfiguration;
+    uint64_t count = static_cast<uint64_t>(rows) * inter;
+    uint64_t blocks = (count + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    if (blocks == 0 || blocks > 0xffffffffULL)
+        return cudaErrorInvalidConfiguration;
+    silu_mul_packed_rows_exact_bf16_kernel<<<
+        static_cast<uint32_t>(blocks), BLOCK_SIZE, 0, (cudaStream_t)stream>>>(
+        (const __nv_bfloat16*)gate_up, (__nv_bfloat16*)output, rows, inter);
+    return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_rms_norm_bf16(
     const void* input, const void* weight, void* output,
     uint32_t cols, uint32_t rows, float eps, void* stream)

@@ -384,6 +384,14 @@ impl CudaBackend {
         )
     }
 
+    pub fn qwen25_omni_prefill_packed_silu_mul_exact(
+        &self,
+        gate_up: &Tensor,
+        intermediate: usize,
+    ) -> Result<Tensor> {
+        kernels::activation::silu_mul_packed_rows_exact(&self.ctx, gate_up, intermediate)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn qwen25_omni_vision_qkv_bias_rope(
         &self,

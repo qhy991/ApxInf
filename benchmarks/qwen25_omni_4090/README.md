@@ -97,6 +97,7 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_QWEN25_GPU_ARGMAX=1`, `APXINF_QWEN25_EAGER_GPU_ARGMAX=1` and
 `APXINF_QWEN25_GPU_LAST_ROW=1`, plus
 `APXINF_QWEN25_M1_PACKED_MLP=1` and
+`APXINF_QWEN25_PREFILL_PACKED_MLP=1`, plus
 `APXINF_QWEN25_M1_GEMV_TACTICS=1`, plus
 `APXINF_QWEN25_SHORT_DECODE_EXACT_RESIDUAL_NORM=1` and
 `APXINF_QWEN25_SHORT_DECODE_W32_ATTENTION=1`, plus
@@ -127,6 +128,13 @@ their prior tactics. The M1 GEMV selector installs exact RTX 4090 cuBLASLt
 tactics for the one-token WO `[1,2048] @ [2048,2048]` and Down
 `[1,11008] @ [11008,2048]` projections. Exact keys prevent those tactics from
 changing prefill or unmatched shapes; unset or `0` retains vendor selection.
+The prefill packed-MLP selector reuses that startup-owned Gate/Up weight for
+exact row counts 512, 1,024, and 1,760. It replaces the two sibling projections
+with one `[M,2048] @ [2048,22016]` projection and consumes the two column
+regions directly in an exact BF16 SiLU/multiply kernel. It requires both the
+M1 packed-MLP and fused-SiLU selectors. Row count 256 and every other unmatched
+shape retain separate Gate/Up projections; invalid selector composition fails
+model load instead of falling back.
 The short-decode exact residual selector replaces each BF16 residual add and
 following RMSNorm with one graph node. It explicitly rounds the updated
 residual to BF16 before the RMS reduction, so both the residual state and norm
