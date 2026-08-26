@@ -13,7 +13,7 @@ import sys
 CONTRACT_FORMAT = "apxinf-qwen35-cross-runtime-formal-predeclaration-v3"
 VALIDATION_FORMAT = "apxinf-qwen35-cross-runtime-formal-validation-v3"
 PINNED_CANONICAL_CONTRACT_SHA256 = (
-    "bfad38dd2138374f5623e6930cc5443197a5c928a92d6084e2e34f061a51ebce"
+    "3b21953eb5eaa59fbdc7296ee5ddb7e70597427a1aeb49b28813660db1b89243"
 )
 _CAMPAIGN_ID = "qwen35-0.8b-cross-runtime-formal-v3-20260826"
 _SCOPE_SHA256 = "5a9869cdd6866bef4c030ba98144d98963d2a03a14bcded6ee12f0f180f51d18"
@@ -1126,8 +1126,8 @@ def _validate_activation_and_custody(
         "source_tree": "21045aed8b426d7a5e25a98e646054cbd9487e81",
         "clean_detached_checkout_required": True,
         "runner_binary_name": "apxinf-llama-cpp-raw-token-runner",
-        "runner_binary_size_bytes": 6_516_368,
-        "runner_binary_sha256": "66a5bfac8b9434296e4bf5c69312e71b98f83467ce73b0a27042e3987b29f8b6",
+        "runner_binary_size_bytes": 6_535_088,
+        "runner_binary_sha256": "cdf46814c70a30f9e183c83d5aa9617698137567697403406c987b3c0e4793a4",
         "loaded_non_system_library_closure_sha256_required": True,
         "GGML_BACKEND_PATH_must_be_unset": True,
         "dynamic_backend_scan_allowed": False,

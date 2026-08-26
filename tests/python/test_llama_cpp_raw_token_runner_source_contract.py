@@ -146,6 +146,95 @@ class LlamaCppRawTokenRunnerSourceContractTests(unittest.TestCase):
         self.assertIn("(native_v3 ? 0 : kGeneratedTokenCount)", source)
         self.assertIn("full-vocabulary argmax encountered a non-finite logit", source)
 
+    def test_v3_runtime_custody_brackets_timed_work_and_post_measurement_proof(self):
+        source = RUNNER.read_text(encoding="utf-8")
+        run_body = source[source.index("RunResult run(") : source.index("} // namespace")]
+
+        self.assertIn("#include <mach-o/dyld.h>", source)
+        self.assertIn("capture_runtime_library_closure", source)
+        self.assertIn("RuntimeLibraryClosure runtime_custody_start", run_body)
+        self.assertIn("RuntimeLibraryClosure runtime_custody_end", run_body)
+        self.assertLess(
+            run_body.index("runtime_custody_start = capture_runtime_library_closure()"),
+            run_body.index(
+                "if (teacher_forced) {\n    llama_batch teacher_prefill_batch"
+            ),
+        )
+        self.assertGreater(
+            run_body.index("runtime_custody_end = capture_runtime_library_closure()"),
+            run_body.index("run_post_measurement_execution_proof("),
+        )
+        self.assertLess(
+            run_body.index("runtime_custody_end = capture_runtime_library_closure()"),
+            run_body.index("std::ostringstream out;"),
+        )
+        self.assertIn("runtime_custody_start != runtime_custody_end", run_body)
+        self.assertIn("loaded non-system library closure changed during the v3 run", run_body)
+        self.assertIn("if (native_v3)", run_body)
+
+    def test_v3_runtime_custody_securely_hashes_unique_non_system_dyld_images(self):
+        source = RUNNER.read_text(encoding="utf-8")
+
+        self.assertIn("#include <CommonCrypto/CommonDigest.h>", source)
+        self.assertIn("_dyld_image_count()", source)
+        self.assertIn("_dyld_get_image_name(image_index)", source)
+        self.assertIn("_NSGetExecutablePath", source)
+        self.assertIn("std::set<std::string> unique_paths", source)
+        self.assertIn("is_explicit_system_library", source)
+        self.assertIn('has_path_prefix(path, "/System/Library/")', source)
+        self.assertIn('has_path_prefix(path, "/usr/lib/")', source)
+        self.assertIn("attest_runtime_library", source)
+        attestation = source[
+            source.index("capture_runtime_library_identity(int fd") :
+            source.index("RuntimeLibraryClosure capture_runtime_library_closure")
+        ]
+        self.assertIn(
+            "::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)",
+            attestation,
+        )
+        self.assertIn("S_ISREG(attributes.st_mode)", attestation)
+        self.assertIn("attributes.st_nlink != 1", attestation)
+        self.assertIn("CC_SHA256_Init", attestation)
+        self.assertIn("CC_SHA256_Update", attestation)
+        self.assertIn("CC_SHA256_Final", attestation)
+        self.assertIn("::read", attestation)
+        self.assertIn("total_bytes != identity_start.size_bytes", attestation)
+        self.assertIn("require_same_runtime_library_identity", attestation)
+
+    def test_v3_runtime_custody_emits_the_exact_compact_json_and_three_hashes(self):
+        source = RUNNER.read_text(encoding="utf-8")
+        run_body = source[source.index("RunResult run(") : source.index("} // namespace")]
+
+        self.assertIn("serialize_runtime_library_closure", source)
+        self.assertIn("sha256_bytes", source)
+        for field in (
+            "absolute_path",
+            "size_bytes",
+            "sha256",
+            "device",
+            "inode",
+            "change_time_seconds",
+            "change_time_nanoseconds",
+        ):
+            self.assertIn(f'\\"{field}\\"', source)
+        self.assertIn("runtime_custody_start_json", run_body)
+        self.assertIn("runtime_custody_end_json", run_body)
+        self.assertIn("runtime_custody_start_sha256", run_body)
+        self.assertIn("runtime_custody_end_sha256", run_body)
+        self.assertIn("runtime_custody_start_json != runtime_custody_end_json", run_body)
+        self.assertIn("runtime_custody_start_sha256 != runtime_custody_end_sha256", run_body)
+        for field in (
+            "loaded_non_system_library_closure",
+            "loaded_non_system_library_closure_start",
+            "loaded_non_system_library_closure_end",
+            "loaded_non_system_library_closure_sha256",
+            "loaded_non_system_library_closure_start_sha256",
+            "loaded_non_system_library_closure_end_sha256",
+        ):
+            self.assertIn(f'\\"{field}\\"', run_body)
+        custody_write = run_body.index('out << ",\\"runtime_custody\\":{"')
+        self.assertGreater(custody_write, run_body.index("if (native_v3)"))
+
 
 if __name__ == "__main__":
     unittest.main()

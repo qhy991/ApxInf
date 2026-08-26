@@ -3,6 +3,7 @@
 #include "llama-model.h"
 #include "llama.h"
 
+#include <CommonCrypto/CommonDigest.h>
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -18,7 +19,9 @@
 #include <iomanip>
 #include <iostream>
 #include <locale>
+#include <mach-o/dyld.h>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -204,6 +207,35 @@ struct ExecutionProof {
   int64_t elapsed_ns = 0;
 };
 
+struct RuntimeLibraryIdentity {
+  uint64_t device;
+  uint64_t inode;
+  uint64_t size_bytes;
+  uint64_t hard_link_count;
+  int64_t change_time_seconds;
+  int64_t change_time_nanoseconds;
+};
+
+struct RuntimeLibraryEntry {
+  std::string absolute_path;
+  uint64_t size_bytes;
+  std::string sha256;
+  uint64_t device;
+  uint64_t inode;
+  int64_t change_time_seconds;
+  int64_t change_time_nanoseconds;
+
+  bool operator==(const RuntimeLibraryEntry &other) const {
+    return absolute_path == other.absolute_path &&
+           size_bytes == other.size_bytes && sha256 == other.sha256 &&
+           device == other.device && inode == other.inode &&
+           change_time_seconds == other.change_time_seconds &&
+           change_time_nanoseconds == other.change_time_nanoseconds;
+  }
+};
+
+using RuntimeLibraryClosure = std::vector<RuntimeLibraryEntry>;
+
 using ModelPtr = std::unique_ptr<llama_model, ModelDeleter>;
 using ContextPtr = std::unique_ptr<llama_context, ContextDeleter>;
 using SamplerPtr = std::unique_ptr<llama_sampler, SamplerDeleter>;
@@ -211,6 +243,191 @@ using FilePtr = std::unique_ptr<FILE, FileDeleter>;
 
 [[noreturn]] void fail(const std::string &message) {
   throw std::runtime_error(message);
+}
+
+bool has_path_prefix(std::string_view path, std::string_view prefix) {
+  return path.size() >= prefix.size() &&
+         path.compare(0, prefix.size(), prefix) == 0;
+}
+
+bool is_explicit_system_library(std::string_view path) {
+  return has_path_prefix(path, "/System/Library/") ||
+         has_path_prefix(path, "/usr/lib/") ||
+         has_path_prefix(path, "/Library/Apple/System/") ||
+         has_path_prefix(path, "/System/Cryptexes/OS/System/Library/") ||
+         has_path_prefix(path, "/System/Cryptexes/OS/usr/lib/") ||
+         has_path_prefix(
+             path, "/System/Volumes/Preboot/Cryptexes/OS/System/Library/") ||
+         has_path_prefix(path, "/System/Volumes/Preboot/Cryptexes/OS/usr/lib/");
+}
+
+std::string canonical_runtime_path(const std::filesystem::path &path,
+                                   std::string_view label) {
+  std::error_code error;
+  const std::filesystem::path canonical =
+      std::filesystem::canonical(path, error).lexically_normal();
+  if (error || !canonical.is_absolute()) {
+    fail("cannot canonicalize " + std::string(label) + ": " +
+         (error ? error.message() : path.string()));
+  }
+  return canonical.string();
+}
+
+std::string current_executable_path() {
+  uint32_t capacity = 1024;
+  std::vector<char> buffer(capacity, '\0');
+  if (_NSGetExecutablePath(buffer.data(), &capacity) != 0) {
+    if (capacity == 0) {
+      fail("_NSGetExecutablePath did not report a required buffer size");
+    }
+    buffer.assign(static_cast<size_t>(capacity), '\0');
+    if (_NSGetExecutablePath(buffer.data(), &capacity) != 0) {
+      fail("_NSGetExecutablePath failed for the resized buffer");
+    }
+  }
+  return canonical_runtime_path(buffer.data(), "main executable path");
+}
+
+RuntimeLibraryIdentity
+capture_runtime_library_identity(int fd, const std::string &path) {
+  struct stat attributes {};
+  if (::fstat(fd, &attributes) != 0) {
+    fail("fstat failed for loaded runtime library " + path + ": " +
+         std::string(std::strerror(errno)));
+  }
+  if (!S_ISREG(attributes.st_mode)) {
+    fail("loaded runtime library is not a regular file: " + path);
+  }
+  if (attributes.st_nlink != 1) {
+    fail("loaded runtime library must have exactly one hard link: " + path);
+  }
+  if (attributes.st_size <= 0 || attributes.st_dev <= 0 ||
+      attributes.st_ino <= 0) {
+    fail("loaded runtime library has an invalid file identity: " + path);
+  }
+  const auto change_time_seconds = attributes.st_ctimespec.tv_sec;
+  const auto change_time_nanoseconds = attributes.st_ctimespec.tv_nsec;
+  if (change_time_seconds <= 0 || change_time_nanoseconds < 0 ||
+      change_time_nanoseconds >= 1000000000) {
+    fail("loaded runtime library has an invalid change time: " + path);
+  }
+  return {
+      static_cast<uint64_t>(attributes.st_dev),
+      static_cast<uint64_t>(attributes.st_ino),
+      static_cast<uint64_t>(attributes.st_size),
+      static_cast<uint64_t>(attributes.st_nlink),
+      static_cast<int64_t>(change_time_seconds),
+      static_cast<int64_t>(change_time_nanoseconds),
+  };
+}
+
+void require_same_runtime_library_identity(
+    const RuntimeLibraryIdentity &expected,
+    const RuntimeLibraryIdentity &actual, const std::string &path) {
+  if (expected.device != actual.device || expected.inode != actual.inode ||
+      expected.size_bytes != actual.size_bytes ||
+      expected.hard_link_count != actual.hard_link_count ||
+      expected.change_time_seconds != actual.change_time_seconds ||
+      expected.change_time_nanoseconds != actual.change_time_nanoseconds) {
+    fail("loaded runtime library identity changed while hashing: " + path);
+  }
+}
+
+RuntimeLibraryEntry attest_runtime_library(const std::string &path) {
+  int raw_fd;
+  do {
+    raw_fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  } while (raw_fd < 0 && errno == EINTR);
+  if (raw_fd < 0) {
+    fail("open failed for loaded runtime library " + path + ": " +
+         std::string(std::strerror(errno)));
+  }
+  UniqueFd fd(raw_fd);
+  const RuntimeLibraryIdentity identity_start =
+      capture_runtime_library_identity(fd.get(), path);
+  CC_SHA256_CTX context{};
+  if (CC_SHA256_Init(&context) != 1) {
+    fail("CC_SHA256_Init failed for loaded runtime library: " + path);
+  }
+  std::array<unsigned char, 64 * 1024> buffer{};
+  uint64_t total_bytes = 0;
+  for (;;) {
+    ssize_t count;
+    do {
+      count = ::read(fd.get(), buffer.data(), buffer.size());
+    } while (count < 0 && errno == EINTR);
+    if (count < 0) {
+      fail("read failed for loaded runtime library " + path + ": " +
+           std::string(std::strerror(errno)));
+    }
+    if (count == 0) {
+      break;
+    }
+    if (CC_SHA256_Update(&context, buffer.data(),
+                         static_cast<CC_LONG>(count)) != 1) {
+      fail("CC_SHA256_Update failed for loaded runtime library: " + path);
+    }
+    const uint64_t byte_count = static_cast<uint64_t>(count);
+    if (total_bytes > UINT64_MAX - byte_count) {
+      fail("loaded runtime library byte count overflow: " + path);
+    }
+    total_bytes += byte_count;
+  }
+  std::array<unsigned char, CC_SHA256_DIGEST_LENGTH> digest{};
+  if (CC_SHA256_Final(digest.data(), &context) != 1) {
+    fail("CC_SHA256_Final failed for loaded runtime library: " + path);
+  }
+  const RuntimeLibraryIdentity identity_end =
+      capture_runtime_library_identity(fd.get(), path);
+  require_same_runtime_library_identity(identity_start, identity_end, path);
+  if (total_bytes != identity_start.size_bytes) {
+    fail("loaded runtime library size changed while hashing: " + path);
+  }
+  std::ostringstream hash;
+  hash.imbue(std::locale::classic());
+  hash << std::hex << std::setfill('0');
+  for (const unsigned char byte : digest) {
+    hash << std::setw(2) << static_cast<unsigned int>(byte);
+  }
+  return {
+      path,
+      identity_start.size_bytes,
+      hash.str(),
+      identity_start.device,
+      identity_start.inode,
+      identity_start.change_time_seconds,
+      identity_start.change_time_nanoseconds,
+  };
+}
+
+RuntimeLibraryClosure capture_runtime_library_closure() {
+  const std::string main_executable = current_executable_path();
+  std::set<std::string> unique_paths;
+  const uint32_t image_count = _dyld_image_count();
+  for (uint32_t image_index = 0; image_index < image_count; ++image_index) {
+    const char *raw_path = _dyld_get_image_name(image_index);
+    if (raw_path == nullptr || raw_path[0] == '\0') {
+      fail("dyld image omitted its loaded path at index " +
+           std::to_string(image_index));
+    }
+    const std::string observed_path(raw_path);
+    if (is_explicit_system_library(observed_path)) {
+      continue;
+    }
+    const std::string canonical_path =
+        canonical_runtime_path(observed_path, "dyld image path");
+    if (canonical_path == main_executable ||
+        is_explicit_system_library(canonical_path)) {
+      continue;
+    }
+    unique_paths.insert(canonical_path);
+  }
+  RuntimeLibraryClosure result;
+  result.reserve(unique_paths.size());
+  for (const std::string &path : unique_paths) {
+    result.push_back(attest_runtime_library(path));
+  }
+  return result;
 }
 
 void reject_environment_variable(const char *name) {
@@ -257,6 +474,61 @@ std::string json_escape(std::string_view input) {
     }
   }
   return out.str();
+}
+
+std::string
+serialize_runtime_library_closure(const RuntimeLibraryClosure &closure) {
+  std::ostringstream out;
+  out.imbue(std::locale::classic());
+  out << '[';
+  std::string previous_path;
+  for (size_t index = 0; index < closure.size(); ++index) {
+    const RuntimeLibraryEntry &entry = closure[index];
+    if (entry.absolute_path.empty() || entry.absolute_path.front() != '/' ||
+        (!previous_path.empty() && previous_path >= entry.absolute_path)) {
+      fail("loaded runtime library paths are not absolute, unique, and sorted");
+    }
+    if (index != 0) {
+      out << ',';
+    }
+    out << "{\"absolute_path\":\"" << json_escape(entry.absolute_path) << '"'
+        << ",\"size_bytes\":" << entry.size_bytes << ",\"sha256\":\""
+        << entry.sha256 << '"' << ",\"device\":" << entry.device
+        << ",\"inode\":" << entry.inode
+        << ",\"change_time_seconds\":" << entry.change_time_seconds
+        << ",\"change_time_nanoseconds\":" << entry.change_time_nanoseconds
+        << '}';
+    previous_path = entry.absolute_path;
+  }
+  out << ']';
+  return out.str();
+}
+
+std::string sha256_bytes(std::string_view bytes) {
+  CC_SHA256_CTX context{};
+  if (CC_SHA256_Init(&context) != 1) {
+    fail("CC_SHA256_Init failed for compact runtime custody JSON");
+  }
+  size_t offset = 0;
+  while (offset < bytes.size()) {
+    const size_t count = std::min<size_t>(bytes.size() - offset, 1024 * 1024);
+    if (CC_SHA256_Update(&context, bytes.data() + offset,
+                         static_cast<CC_LONG>(count)) != 1) {
+      fail("CC_SHA256_Update failed for compact runtime custody JSON");
+    }
+    offset += count;
+  }
+  std::array<unsigned char, CC_SHA256_DIGEST_LENGTH> digest{};
+  if (CC_SHA256_Final(digest.data(), &context) != 1) {
+    fail("CC_SHA256_Final failed for compact runtime custody JSON");
+  }
+  std::ostringstream hash;
+  hash.imbue(std::locale::classic());
+  hash << std::hex << std::setfill('0');
+  for (const unsigned char byte : digest) {
+    hash << std::setw(2) << static_cast<unsigned int>(byte);
+  }
+  return hash.str();
 }
 
 template <typename Integer>
@@ -1034,6 +1306,15 @@ RunResult run(const Options &options) {
   mismatch_positions.reserve(kGeneratedTokenCount);
 
   const auto teacher_inputs = make_teacher_input_tokens();
+  RuntimeLibraryClosure runtime_custody_start;
+  std::string runtime_custody_start_json;
+  std::string runtime_custody_start_sha256;
+  if (native_v3) {
+    runtime_custody_start = capture_runtime_library_closure();
+    runtime_custody_start_json =
+        serialize_runtime_library_closure(runtime_custody_start);
+    runtime_custody_start_sha256 = sha256_bytes(runtime_custody_start_json);
+  }
   int64_t teacher_prefill_elapsed_ns = 0;
   Clock::time_point generation_start;
   Clock::time_point generation_end;
@@ -1186,6 +1467,20 @@ RunResult run(const Options &options) {
   require_same_file_identity(model_identity_start,
                              model_identity_before_receipt,
                              "before receipt publication");
+  RuntimeLibraryClosure runtime_custody_end;
+  std::string runtime_custody_end_json;
+  std::string runtime_custody_end_sha256;
+  if (native_v3) {
+    runtime_custody_end = capture_runtime_library_closure();
+    runtime_custody_end_json =
+        serialize_runtime_library_closure(runtime_custody_end);
+    runtime_custody_end_sha256 = sha256_bytes(runtime_custody_end_json);
+    if (runtime_custody_start != runtime_custody_end ||
+        runtime_custody_start_json != runtime_custody_end_json ||
+        runtime_custody_start_sha256 != runtime_custody_end_sha256) {
+      fail("loaded non-system library closure changed during the v3 run");
+    }
+  }
   const auto receipt_ready_end = Clock::now();
 
   std::ostringstream out;
@@ -1200,6 +1495,18 @@ RunResult run(const Options &options) {
         << ",\"selection_work_included\":true"
         << ",\"accelerator_completion_before_each_token_ready_timestamp\":"
            "true";
+    out << ",\"runtime_custody\":{"
+        << "\"loaded_non_system_library_closure\":" << runtime_custody_end_json
+        << ",\"loaded_non_system_library_closure_start\":"
+        << runtime_custody_start_json
+        << ",\"loaded_non_system_library_closure_end\":"
+        << runtime_custody_end_json
+        << ",\"loaded_non_system_library_closure_sha256\":\""
+        << runtime_custody_end_sha256 << '"'
+        << ",\"loaded_non_system_library_closure_start_sha256\":\""
+        << runtime_custody_start_sha256 << '"'
+        << ",\"loaded_non_system_library_closure_end_sha256\":\""
+        << runtime_custody_end_sha256 << "\"}";
   }
   out << ",\"contract\":{\"prompt_token_ids\":";
   append_token_array(out, kPromptTokens);
