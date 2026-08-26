@@ -602,16 +602,30 @@ export APXINF_DM05_MODEL=/path/to/DM05-libero
 hf download Dexmal/DM05-libero \
   --revision 25a8e0d38a8eaeaae41a44d7b4a2378fd8ce1088 \
   --local-dir "$APXINF_DM05_MODEL"
-sha256sum "$APXINF_DM05_MODEL/model.safetensors" \
-          "$APXINF_DM05_MODEL/tokenizer.json"
+sha256sum \
+  "$APXINF_DM05_MODEL/chat_template.jinja" \
+  "$APXINF_DM05_MODEL/config.json" \
+  "$APXINF_DM05_MODEL/generation_config.json" \
+  "$APXINF_DM05_MODEL/model.safetensors" \
+  "$APXINF_DM05_MODEL/norm_stats.json" \
+  "$APXINF_DM05_MODEL/processor_config.json" \
+  "$APXINF_DM05_MODEL/tokenizer.json" \
+  "$APXINF_DM05_MODEL/tokenizer_config.json"
 ```
 
-The adapter verifies these files before importing the GPU runtime:
+Before parsing configuration or importing the GPU runtime, the adapter verifies
+the complete snapshot surface used by model and processor construction:
 
-```text
-575d0d8e0f75822e95f7adf3a5e62a7c331da0b82e6fc3efeea19ef1b927353f  model.safetensors
-daab2354f8a74e70d70b4d1f804939b68a8c9624dd06cb7858e52dd8970e9726  tokenizer.json
-```
+| file | exact bytes | SHA-256 |
+|---|---:|---|
+| `chat_template.jinja` | 1,532 | `7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4` |
+| `config.json` | 6,795 | `43b2a56ed9c79c3068849caa0a140458515e654d34ae0b06bb0bbb3ef4dd0f80` |
+| `generation_config.json` | 204 | `640dbc106facaf0fb90980b5e182ce0c1fcfad6e88da14737578b5b65cb42f7a` |
+| `model.safetensors` | 11,658,431,136 | `575d0d8e0f75822e95f7adf3a5e62a7c331da0b82e6fc3efeea19ef1b927353f` |
+| `norm_stats.json` | 1,900 | `06382f26d9f9fdba10ee2dba77783ec8c31e6a6dcb348806583cb6217e18303b` |
+| `processor_config.json` | 560 | `9eb2e8baf401c81b1517343d1dfc799a4c1b2238acaece111fe68f5fbe3a8d57` |
+| `tokenizer.json` | 33,384,567 | `daab2354f8a74e70d70b4d1f804939b68a8c9624dd06cb7858e52dd8970e9726` |
+| `tokenizer_config.json` | 715 | `eb28e3a9807f77cd74dce1b8aed91884621c0302941794470c5a46f884462615` |
 
 Use the fixed combined-runtime environment—PyTorch `2.11.0+cu130`, CUDA `13.0`,
 Transformers `5.3.0`, and Triton `3.6.0`—keep the official OpenDM checkout
@@ -642,6 +656,10 @@ There are exactly two public runtime selectors:
   post-reduction affine kernel behind the neutral `RuntimeFactory` seam.
   Unsupported shape, source, code generation, or runtime drift raises an error
   instead of falling back to `default`.
+
+`Dm05Policy.from_pretrained` and the HTTP CLI always bind ApxInf's built-in
+factory; callers cannot substitute an unqualified runtime factory on the public
+serving path.
 
 The model-local runtime calls the official Euler suffix mathematics without
 patching OpenDM. It verifies the official e41 `dm05_arch.py` digest as

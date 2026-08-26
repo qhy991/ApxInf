@@ -353,6 +353,15 @@ class CombinedRuntimeContractTest(unittest.TestCase):
         )
 
         self.assertTrue(record["ptx_codegen_verified"])
+        from apxinf.policies.impls import dm05
+
+        self.assertEqual(
+            tuple(record), dm05._COMBINED_PTX_CODEGEN_FIELDS
+        )
+        self.assertEqual(record["checks"], dm05._COMBINED_PTX_CHECKS)
+        self.assertEqual(
+            record["forbidden_hits"], dm05._COMBINED_PTX_FORBIDDEN_HITS
+        )
         self.assertEqual(len(record["ptx_sha256"]), 64)
         self.assertEqual(len(record["cubin_sha256"]), 64)
         self.assertTrue(record["sass_external_receipt_required"])

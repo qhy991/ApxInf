@@ -29,7 +29,7 @@ from PIL import Image, UnidentifiedImageError
 
 from ..registry import register_policy
 
-__all__ = ["Dm05Policy", "OpenDMBackend", "RuntimeFactory"]
+__all__ = ["Dm05Policy"]
 
 MODEL_REVISION = "25a8e0d38a8eaeaae41a44d7b4a2378fd8ce1088"
 MODEL_SHA256 = "575d0d8e0f75822e95f7adf3a5e62a7c331da0b82e6fc3efeea19ef1b927353f"
@@ -37,6 +37,35 @@ MODEL_SIZE = 11_658_431_136
 TOKENIZER_SHA256 = "daab2354f8a74e70d70b4d1f804939b68a8c9624dd06cb7858e52dd8970e9726"
 TOKENIZER_SIZE = 33_384_567
 OPENDM_COMMIT = "e41e501bb82e9c3cb8138c0fb4687faa5f98c690"
+
+_CHECKPOINT_MANIFEST = {
+    "chat_template.jinja": (
+        1_532,
+        "7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4",
+    ),
+    "config.json": (
+        6_795,
+        "43b2a56ed9c79c3068849caa0a140458515e654d34ae0b06bb0bbb3ef4dd0f80",
+    ),
+    "generation_config.json": (
+        204,
+        "640dbc106facaf0fb90980b5e182ce0c1fcfad6e88da14737578b5b65cb42f7a",
+    ),
+    "model.safetensors": (MODEL_SIZE, MODEL_SHA256),
+    "norm_stats.json": (
+        1_900,
+        "06382f26d9f9fdba10ee2dba77783ec8c31e6a6dcb348806583cb6217e18303b",
+    ),
+    "processor_config.json": (
+        560,
+        "9eb2e8baf401c81b1517343d1dfc799a4c1b2238acaece111fe68f5fbe3a8d57",
+    ),
+    "tokenizer.json": (TOKENIZER_SIZE, TOKENIZER_SHA256),
+    "tokenizer_config.json": (
+        715,
+        "eb28e3a9807f77cd74dce1b8aed91884621c0302941794470c5a46f884462615",
+    ),
+}
 
 EXECUTION_BACKEND_DEFAULT = "default"
 EXECUTION_BACKEND_COMBINED = "default_exact_combined"
@@ -186,6 +215,9 @@ def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
 
 
 def _validate_checkpoint(model_dir: Path) -> tuple[np.ndarray, np.ndarray]:
+    for filename, (size, sha256) in _CHECKPOINT_MANIFEST.items():
+        _verified_file(model_dir / filename, size=size, sha256=sha256)
+
     config = _read_json_object(model_dir / "config.json", label="DM05 config")
     if config.get("model_type") != "dm05":
         raise ValueError("DM05 config.model_type must be 'dm05'")
@@ -195,13 +227,6 @@ def _validate_checkpoint(model_dir: Path) -> tuple[np.ndarray, np.ndarray]:
         raise ValueError("DM05 deployment supports the pinned BF16 checkpoint only")
     if config.get("action_dim") != MODEL_ACTION_DIM:
         raise ValueError("DM05 internal action_dim must be 32")
-
-    _verified_file(
-        model_dir / "model.safetensors", size=MODEL_SIZE, sha256=MODEL_SHA256
-    )
-    _verified_file(
-        model_dir / "tokenizer.json", size=TOKENIZER_SIZE, sha256=TOKENIZER_SHA256
-    )
 
     document = _read_json_object(model_dir / "norm_stats.json", label="norm stats")
     stats = document.get("norm_stats")
@@ -235,15 +260,16 @@ def _opendm_source_root() -> Path:
             "on PYTHONPATH"
         )
     root = Path(spec.origin).resolve().parent.parent
+    git = ["git", "-c", f"safe.directory={root}", "-C", str(root)]
     try:
         commit = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            [*git, "rev-parse", "HEAD"],
             check=True,
             capture_output=True,
             text=True,
         ).stdout.strip()
         dirty = subprocess.run(
-            ["git", "-C", str(root), "status", "--porcelain"],
+            [*git, "status", "--porcelain"],
             check=True,
             capture_output=True,
             text=True,
@@ -576,6 +602,231 @@ _COMBINED_REQUEST_DELTAS = {
     "suffix_input_tensor_copies": 2,
     "suffix_graph_replay_count": 1,
 }
+_COMBINED_MECHANISMS = [
+    "static_mask_prefix_suffix_graph",
+    "modulation_table_690",
+    "suffix_metadata_first_owner",
+    "two_expanded_kv_pack_workspaces",
+    "exact_postreduce_affine_triton",
+]
+_COMBINED_PTX_CHECKS = {
+    "device_sm89": True,
+    "ptx_target_sm89": True,
+    "compiled_entry_selected": True,
+    "ptx_entry_selected": True,
+    "two_scalar_fmul_rn_f32": True,
+    "two_scalar_fadd_rn_f32": True,
+    "bf16_rne_store": True,
+    "forbidden_codegen_absent": True,
+}
+_COMBINED_PTX_FORBIDDEN_HITS = {
+    "fma_f32": 0,
+    "mad_f32": 0,
+    "packed_f32x2": 0,
+    "local_declaration": 0,
+    "local_load": 0,
+    "local_store": 0,
+}
+_COMBINED_PTX_CODEGEN_FIELDS = (
+    "level",
+    "ptx_sha256",
+    "cubin_sha256",
+    "scalar_fmul_rn_f32_count",
+    "scalar_fadd_rn_f32_count",
+    "bf16_rne_conversion_count",
+    "forbidden_hits",
+    "checks",
+    "ptx_codegen_verified",
+    "sass_external_receipt_required",
+)
+_COMBINED_PROOF_TOP_LEVEL_FIELDS = (
+    "schema",
+    "selector",
+    "execution_backend",
+    "arithmetic_backend",
+    "graph_scope",
+    "profile_prefix_lengths",
+    "initialized",
+    "initialization_ms",
+    "mask_owner_symbol",
+    "mask_modeling_source_sha256",
+    "mask_utils_source_sha256",
+    "dm05_arch_source_sha256",
+    "mask_layout_key_verified",
+    "mask_helper_build_count",
+    "mask_mapping_keys",
+    "mask_static_address_verified",
+    "mask_immutable_verified",
+    "prefix_startup_capture_count",
+    "suffix_startup_capture_count",
+    "prefix_capture_execution_count",
+    "suffix_capture_execution_count",
+    "prefix_input_stage_requests",
+    "prefix_input_tensor_copies",
+    "prefix_graph_replay_count",
+    "prefix_graph_cache_write_tensor_copies",
+    "eager_noise_count",
+    "suffix_input_stage_requests",
+    "suffix_input_tensor_copies",
+    "suffix_graph_replay_count",
+    "prefix_eager_count",
+    "post_prefix_cache_stage_requests",
+    "post_prefix_cache_tensor_copies",
+    "fallback_count",
+    "history_count",
+    "result_reuse_count",
+    "request_prefix_length",
+    "selected_prefix_length",
+    "cache_layer_count",
+    "prefix_static_cache_address_verified",
+    "suffix_static_output_address_verified",
+    "closed",
+    "combined_ready",
+    "no_fallback",
+    "combined_mechanisms",
+    "fixed_cell",
+    "runtime_versions",
+    "combined_capture_census",
+    "combined_expected_census",
+    "combined_capture_census_exact",
+    "combined_patches_restored",
+    "modulation_table_build_count",
+    "modulation_table_entry_count",
+    "modulation_table_rng_unchanged",
+    "modulation_table_addresses_stable",
+    "modulation_table_immutable",
+    "metadata_owner_tensor_count",
+    "metadata_owner_addresses_stable",
+    "replay_content_baseline_established",
+    "metadata_owner_second_replay_exact",
+    "metadata_owner_bytes_are_request_dynamic",
+    "pack_workspace_count",
+    "pack_workspace_addresses_stable",
+    "pack_workspace_second_replay_exact",
+    "affine_output_count",
+    "affine_output_addresses_stable",
+    "affine_output_second_replay_exact",
+    "exact_affine_compile_count",
+    "exact_affine_fallback_count",
+    "exact_affine_ptx_codegen_verified",
+    "exact_affine_ptx_sha256",
+    "exact_affine_cubin_sha256",
+    "sass_external_receipt_required",
+    "exact_affine_ptx_codegen",
+    "startup_native_suffix_reference_count",
+    "startup_graph_replay_count",
+    "startup_first_replay_output_bitwise_exact",
+    "startup_second_replay_output_bitwise_exact",
+    "startup_changed_noise_control_count",
+    "startup_changed_noise_graph_vs_eager_bitwise_exact",
+    "startup_changed_noise_differs_from_zero_baseline",
+    "startup_static_zero_input_restored",
+    "startup_static_zero_repeat_bitwise_exact",
+    "startup_output_poison_count",
+    "startup_native_reference_bitwise",
+    "source_candidate_gpu_validation_required",
+)
+_COMBINED_PROOF_TOP_LEVEL_KEYS = frozenset(
+    _COMBINED_PROOF_TOP_LEVEL_FIELDS
+)
+# The runtime publishes one stable envelope in both lifecycle states. Values
+# differ, but neither pre-initialization health nor ready request proofs may add
+# fields outside this closed schema.
+_COMBINED_PREINIT_TOP_LEVEL_KEYS = _COMBINED_PROOF_TOP_LEVEL_KEYS
+_COMBINED_READY_TOP_LEVEL_KEYS = _COMBINED_PROOF_TOP_LEVEL_KEYS
+_COMBINED_COMMON_FIELDS = {
+    "schema": _COMBINED_SCHEMA,
+    "selector": EXECUTION_BACKEND_COMBINED,
+    "execution_backend": EXECUTION_BACKEND_COMBINED,
+    "arithmetic_backend": "native_sdpa_plus_exact_postreduce_triton",
+    "graph_scope": "native_prefix_564_plus_combined_suffix_10step",
+    "profile_prefix_lengths": [EXACT_PREFIX_LEN],
+    "mask_owner_symbol": (
+        "transformers.models.gemma3.modeling_gemma3."
+        "create_causal_mask_mapping"
+    ),
+    "mask_modeling_source_sha256": (
+        "a1115edf9e0c4a3b53657f21e2de5de0a99488767d84181db6e05e082adb4f69"
+    ),
+    "mask_utils_source_sha256": (
+        "c3c82f7b7b6e03d3f04ba6c6c58a3dd6910623636452ec67ef70e3eb522f9fe7"
+    ),
+    "dm05_arch_source_sha256": (
+        "b5ab170374fbc965aa86d7d370075e8c8bc21bcf46bc6de34e7e336df1af9ce8"
+    ),
+    "cache_layer_count": 34,
+    "closed": False,
+    "no_fallback": True,
+    "metadata_owner_bytes_are_request_dynamic": True,
+    "sass_external_receipt_required": True,
+    "source_candidate_gpu_validation_required": True,
+}
+_COMBINED_PREINIT_FIELDS = {
+    "initialized": False,
+    "initialization_ms": None,
+    "mask_layout_key_verified": False,
+    "mask_helper_build_count": 0,
+    "mask_mapping_keys": [],
+    "mask_static_address_verified": False,
+    "mask_immutable_verified": False,
+    "prefix_startup_capture_count": 0,
+    "suffix_startup_capture_count": 0,
+    "prefix_capture_execution_count": 0,
+    "suffix_capture_execution_count": 0,
+    "prefix_input_stage_requests": 0,
+    "prefix_input_tensor_copies": 0,
+    "prefix_graph_replay_count": 0,
+    "prefix_graph_cache_write_tensor_copies": 0,
+    "eager_noise_count": 0,
+    "suffix_input_stage_requests": 0,
+    "suffix_input_tensor_copies": 0,
+    "suffix_graph_replay_count": 0,
+    "prefix_eager_count": 0,
+    "post_prefix_cache_stage_requests": 0,
+    "post_prefix_cache_tensor_copies": 0,
+    "fallback_count": 0,
+    "history_count": 0,
+    "result_reuse_count": 0,
+    "request_prefix_length": None,
+    "selected_prefix_length": None,
+    "prefix_static_cache_address_verified": False,
+    "suffix_static_output_address_verified": False,
+    "combined_ready": False,
+    "combined_capture_census_exact": False,
+    "combined_patches_restored": True,
+    "modulation_table_build_count": 0,
+    "modulation_table_entry_count": 0,
+    "modulation_table_rng_unchanged": False,
+    "modulation_table_addresses_stable": False,
+    "modulation_table_immutable": False,
+    "metadata_owner_tensor_count": 0,
+    "metadata_owner_addresses_stable": False,
+    "replay_content_baseline_established": False,
+    "metadata_owner_second_replay_exact": False,
+    "pack_workspace_count": 0,
+    "pack_workspace_addresses_stable": False,
+    "pack_workspace_second_replay_exact": False,
+    "affine_output_count": 0,
+    "affine_output_addresses_stable": False,
+    "affine_output_second_replay_exact": False,
+    "exact_affine_compile_count": 0,
+    "exact_affine_fallback_count": 0,
+    "exact_affine_ptx_codegen_verified": False,
+    "exact_affine_ptx_sha256": None,
+    "exact_affine_cubin_sha256": None,
+    "exact_affine_ptx_codegen": None,
+    "startup_native_suffix_reference_count": 0,
+    "startup_graph_replay_count": 0,
+    "startup_first_replay_output_bitwise_exact": False,
+    "startup_second_replay_output_bitwise_exact": False,
+    "startup_changed_noise_control_count": 0,
+    "startup_changed_noise_graph_vs_eager_bitwise_exact": False,
+    "startup_changed_noise_differs_from_zero_baseline": False,
+    "startup_static_zero_input_restored": False,
+    "startup_static_zero_repeat_bitwise_exact": False,
+    "startup_output_poison_count": 0,
+    "startup_native_reference_bitwise": False,
+}
 
 
 def _copy_path_proof(value: Any) -> dict[str, Any]:
@@ -626,6 +877,66 @@ def _copy_path_proof(value: Any) -> dict[str, Any]:
     return proof
 
 
+def _require_exact_keys(
+    value: Any, expected: frozenset[str], *, label: str
+) -> dict[str, Any]:
+    if type(value) is not dict:
+        raise RuntimeError(f"DM05 {label} must be an object")
+    observed = set(value)
+    unknown = sorted(observed - expected)
+    missing = sorted(expected - observed)
+    if unknown:
+        raise RuntimeError(f"DM05 {label} has unknown fields: {unknown}")
+    if missing:
+        raise RuntimeError(f"DM05 {label} omitted fields: {missing}")
+    return value
+
+
+def _require_exact_mapping(
+    value: Any, expected: Mapping[str, Any], *, label: str
+) -> dict[str, Any]:
+    mapping = _require_exact_keys(
+        value, frozenset(expected), label=label
+    )
+    for name, expected_value in expected.items():
+        _require_proof_field(mapping, name, expected_value)
+    return {name: mapping[name] for name in expected}
+
+
+def _validate_and_project_ptx_codegen(value: Any) -> dict[str, Any]:
+    codegen = _require_exact_keys(
+        value,
+        frozenset(_COMBINED_PTX_CODEGEN_FIELDS),
+        label="combined exact_affine_ptx_codegen",
+    )
+    expected_scalars = {
+        "level": "compiled_ptx",
+        "scalar_fmul_rn_f32_count": 2,
+        "scalar_fadd_rn_f32_count": 2,
+        "bf16_rne_conversion_count": 1,
+        "ptx_codegen_verified": True,
+        "sass_external_receipt_required": True,
+    }
+    for name, expected in expected_scalars.items():
+        _require_proof_field(codegen, name, expected)
+    _require_sha256_field(codegen, "ptx_sha256")
+    _require_sha256_field(codegen, "cubin_sha256")
+    forbidden = _require_exact_mapping(
+        codegen["forbidden_hits"],
+        _COMBINED_PTX_FORBIDDEN_HITS,
+        label="combined exact_affine_ptx_codegen.forbidden_hits",
+    )
+    checks = _require_exact_mapping(
+        codegen["checks"],
+        _COMBINED_PTX_CHECKS,
+        label="combined exact_affine_ptx_codegen.checks",
+    )
+    projected = {name: codegen[name] for name in _COMBINED_PTX_CODEGEN_FIELDS}
+    projected["forbidden_hits"] = forbidden
+    projected["checks"] = checks
+    return projected
+
+
 def _require_proof_field(
     proof: Mapping[str, Any], name: str, expected: Any
 ) -> None:
@@ -671,15 +982,84 @@ def _require_sha256_field(proof: Mapping[str, Any], name: str) -> None:
         )
 
 
+def _validate_combined_common_proof(proof: dict[str, Any]) -> None:
+    _require_exact_keys(
+        proof,
+        _COMBINED_PROOF_TOP_LEVEL_KEYS,
+        label="combined path proof",
+    )
+    for name, expected in _COMBINED_COMMON_FIELDS.items():
+        _require_proof_field(proof, name, expected)
+    _require_exact_mapping(
+        proof["fixed_cell"],
+        _COMBINED_FIXED_CELL,
+        label="combined fixed_cell",
+    )
+    _require_exact_mapping(
+        proof["runtime_versions"],
+        _COMBINED_RUNTIME_VERSIONS,
+        label="combined runtime_versions",
+    )
+    _require_proof_field(
+        proof, "combined_mechanisms", _COMBINED_MECHANISMS
+    )
+    _require_exact_mapping(
+        proof["combined_expected_census"],
+        _COMBINED_CAPTURE_CENSUS,
+        label="combined expected census",
+    )
+
+
+def _project_combined_proof(
+    proof: dict[str, Any], *, ready: bool
+) -> dict[str, Any]:
+    projected = {
+        name: proof[name] for name in _COMBINED_PROOF_TOP_LEVEL_FIELDS
+    }
+    projected["combined_mechanisms"] = list(_COMBINED_MECHANISMS)
+    projected["fixed_cell"] = {
+        name: proof["fixed_cell"][name] for name in _COMBINED_FIXED_CELL
+    }
+    projected["runtime_versions"] = {
+        name: proof["runtime_versions"][name]
+        for name in _COMBINED_RUNTIME_VERSIONS
+    }
+    projected["combined_expected_census"] = {
+        name: proof["combined_expected_census"][name]
+        for name in _COMBINED_CAPTURE_CENSUS
+    }
+    projected["combined_capture_census"] = (
+        {
+            name: proof["combined_capture_census"][name]
+            for name in _COMBINED_CAPTURE_CENSUS
+        }
+        if ready
+        else {}
+    )
+    projected["exact_affine_ptx_codegen"] = (
+        _validate_and_project_ptx_codegen(proof["exact_affine_ptx_codegen"])
+        if ready
+        else None
+    )
+    return projected
+
+
 def _validate_combined_ready_proof(proof: dict[str, Any]) -> dict[str, Any]:
     for name, expected in _COMBINED_READY_FIELDS.items():
         _require_proof_field(proof, name, expected)
-    _require_proof_field(proof, "fixed_cell", _COMBINED_FIXED_CELL)
-    _require_proof_field(
-        proof, "combined_capture_census", _COMBINED_CAPTURE_CENSUS
-    )
-    _require_proof_field(
-        proof, "combined_expected_census", _COMBINED_CAPTURE_CENSUS
+    initialization_ms = proof["initialization_ms"]
+    if (
+        type(initialization_ms) is not float
+        or not math.isfinite(initialization_ms)
+        or initialization_ms <= 0.0
+    ):
+        raise RuntimeError(
+            "DM05 combined path proof initialization_ms must be positive and finite"
+        )
+    _require_exact_mapping(
+        proof["combined_capture_census"],
+        _COMBINED_CAPTURE_CENSUS,
+        label="combined capture census",
     )
     for name in _COMBINED_ZERO_FIELDS:
         _require_proof_field(proof, name, 0)
@@ -687,6 +1067,13 @@ def _validate_combined_ready_proof(proof: dict[str, Any]) -> dict[str, Any]:
         _require_nonnegative_counter(proof, name)
     _require_sha256_field(proof, "exact_affine_ptx_sha256")
     _require_sha256_field(proof, "exact_affine_cubin_sha256")
+    codegen = _validate_and_project_ptx_codegen(
+        proof["exact_affine_ptx_codegen"]
+    )
+    if codegen["ptx_sha256"] != proof["exact_affine_ptx_sha256"]:
+        raise RuntimeError("DM05 combined PTX SHA-256 projection mismatch")
+    if codegen["cubin_sha256"] != proof["exact_affine_cubin_sha256"]:
+        raise RuntimeError("DM05 combined cubin SHA-256 projection mismatch")
     return proof
 
 
@@ -694,31 +1081,23 @@ def _validated_path_proof(
     value: Any, *, require_ready: bool = False
 ) -> dict[str, Any]:
     proof = _copy_path_proof(value)
-    _require_proof_field(proof, "schema", _COMBINED_SCHEMA)
-    _require_proof_field(
-        proof, "execution_backend", EXECUTION_BACKEND_COMBINED
-    )
-    _require_proof_field(proof, "selector", EXECUTION_BACKEND_COMBINED)
-    _require_proof_field(proof, "no_fallback", True)
-    _require_proof_field(
-        proof, "runtime_versions", _COMBINED_RUNTIME_VERSIONS
-    )
+    _validate_combined_common_proof(proof)
     initialized = proof.get("initialized")
     if require_ready or initialized is True:
-        return _validate_combined_ready_proof(proof)
+        _validate_combined_ready_proof(proof)
+        return _project_combined_proof(proof, ready=True)
     if initialized is not False:
         raise RuntimeError(
             "DM05 combined path proof initialized must be a strict boolean"
         )
-    if proof.get("combined_ready") is not False:
-        raise RuntimeError(
-            "DM05 pre-initialization proof must report combined_ready=false"
-        )
-    for name in _COMBINED_ZERO_FIELDS:
-        _require_proof_field(proof, name, 0)
-    for name in _COMBINED_REQUEST_DELTAS:
-        _require_nonnegative_counter(proof, name)
-    return proof
+    for name, expected in _COMBINED_PREINIT_FIELDS.items():
+        _require_proof_field(proof, name, expected)
+    _require_exact_keys(
+        proof["combined_capture_census"],
+        frozenset(),
+        label="combined preinit capture census",
+    )
+    return _project_combined_proof(proof, ready=False)
 
 
 def _validate_combined_request_transition(
@@ -1139,7 +1518,6 @@ class Dm05Policy:
         precision: str = "bf16",
         default_seed: int = EXACT_SEED,
         execution_backend: str = EXECUTION_BACKEND_DEFAULT,
-        runtime_factory: RuntimeFactory | None = None,
         metadata: Mapping[str, Any] | None = None,
         **unsupported,
     ) -> "Dm05Policy":
@@ -1155,18 +1533,12 @@ class Dm05Policy:
 
         model_dir = Path(model_dir).expanduser().resolve()
         if backend is None:
-            options: dict[str, Any] = {
-                "device": device,
-                "execution_backend": execution_backend,
-            }
-            if runtime_factory is not None:
-                options["runtime_factory"] = runtime_factory
-            backend = OpenDMBackend(model_dir, **options)
+            backend = OpenDMBackend(
+                model_dir,
+                device=device,
+                execution_backend=execution_backend,
+            )
         else:
-            if runtime_factory is not None:
-                raise ValueError(
-                    "runtime_factory cannot be supplied with an injected DM05 backend"
-                )
             backend_execution = dict(getattr(backend, "metadata", {})).get(
                 "execution_backend", EXECUTION_BACKEND_DEFAULT
             )

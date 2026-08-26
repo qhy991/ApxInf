@@ -46,7 +46,7 @@ def test_dm05_combined_http_exposes_outer_contract_and_independent_proofs():
 
     _, first_response = api.handle("POST", "/v1/infer", request_body())
     first = first_response["metadata"]["path_proof"]
-    assert first["request_count"] == 1
+    assert first["prefix_graph_replay_count"] == 1
     assert first_response["metadata"]["execution_backend"] == "default_exact_combined"
     assert first_response["metadata"]["runtime_selector"] == "default_exact_combined"
     assert first_response["metadata"]["host_thread_policy"] == "fixed_intraop_2"
@@ -62,15 +62,18 @@ def test_dm05_combined_http_exposes_outer_contract_and_independent_proofs():
 
     _, second_response = api.handle("POST", "/v1/infer", request_body())
     second = second_response["metadata"]["path_proof"]
-    assert second["request_count"] == 2
-    assert first["request_count"] == 1
+    assert second["prefix_graph_replay_count"] == 2
+    assert first["prefix_graph_replay_count"] == 1
 
     _, health_after = api.handle("GET", "/health")
-    assert health_after["policy"]["path_proof"]["request_count"] == 2
+    assert (
+        health_after["policy"]["path_proof"]["prefix_graph_replay_count"]
+        == 2
+    )
     for proof in (first, second, health_after["policy"]["path_proof"]):
         assert proof["execution_backend"] == "default_exact_combined"
         assert proof["fallback_count"] == 0
-        assert proof["exact_actions"] is True
+        assert proof["startup_native_reference_bitwise"] is True
         assert proof["mask_static_address_verified"] is True
         assert proof["pack_workspace_addresses_stable"] is True
         assert not any("ptr" in key for key in proof)
