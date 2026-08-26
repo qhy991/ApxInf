@@ -98,6 +98,7 @@ The accepted deployment keeps all optimized paths explicit through
 `APXINF_QWEN25_GPU_LAST_ROW=1`, plus
 `APXINF_QWEN25_M1_PACKED_MLP=1` and
 `APXINF_QWEN25_PREFILL_PACKED_MLP=1`, plus
+`APXINF_QWEN25_PREFILL_PACKED_QKV_PRELUDE=1`, plus
 `APXINF_QWEN25_M1_GEMV_TACTICS=1`, plus
 `APXINF_QWEN25_SHORT_DECODE_EXACT_RESIDUAL_NORM=1` and
 `APXINF_QWEN25_SHORT_DECODE_W32_ATTENTION=1`, plus
@@ -135,6 +136,13 @@ regions directly in an exact BF16 SiLU/multiply kernel. It requires both the
 M1 packed-MLP and fused-SiLU selectors. Row count 256 and every other unmatched
 shape retain separate Gate/Up projections; invalid selector composition fails
 model load instead of falling back.
+The prefill packed-QKV prelude selector is restricted to 1,024-row BF16 text
+chunks on the pinned SM89 model. It consumes the existing packed QKV projection
+and bias, preserves the projection-plus-bias BF16 seam, writes rotated Q
+directly in attention layout, and publishes rotated K plus rounded V directly
+to the persistent cache. It requires packed QKV and both TMRoPE position-cache
+selectors. Every other row count retains the split, TMRoPE, and cache-write
+path; an invalid selector composition or model shape fails at load.
 The short-decode exact residual selector replaces each BF16 residual add and
 following RMSNorm with one graph node. It explicitly rounds the updated
 residual to BF16 before the RMS reduction, so both the residual state and norm

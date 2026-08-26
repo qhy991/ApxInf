@@ -1,5 +1,6 @@
-use apxinf_core::{DType, Device, Error, Result, Tensor};
+use apxinf_core::{DType, Device, Error, Result, Shape, Tensor};
 
+use crate::workspace::uninitialized_buffer;
 use crate::{ffi, CudaBuffer, CudaContext, CudaDeviceAddress};
 
 pub const QUERY_HEADS: usize = 16;
@@ -62,6 +63,93 @@ pub fn packed_qkv_prelude_write(
         )
         .map_err(Error::Cuda)
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prefill_packed_qkv_prelude_write(
+    ctx: &CudaContext,
+    packed_qkv: &Tensor,
+    bias: &Tensor,
+    key_cache: &CudaBuffer,
+    value_cache: &CudaBuffer,
+    positions: &CudaBuffer,
+    start_position: usize,
+) -> Result<Tensor> {
+    let rows = packed_qkv.shape().dims().first().copied().unwrap_or(0);
+    let device = Device::Cuda(ctx.device_id());
+    let element_bytes = DType::BF16.size_in_bytes();
+    let packed_bytes = rows
+        .checked_mul(PACKED_QKV_WIDTH)
+        .and_then(|elements| elements.checked_mul(element_bytes))
+        .ok_or_else(|| Error::Other("prefill packed QKV input size overflow".into()))?;
+    let query_bytes = rows
+        .checked_mul(WIDTH)
+        .and_then(|elements| elements.checked_mul(element_bytes))
+        .ok_or_else(|| Error::Other("prefill packed QKV query size overflow".into()))?;
+    let cache_bytes = KV_HEADS
+        .checked_mul(32_768)
+        .and_then(|elements| elements.checked_mul(HEAD_DIM))
+        .and_then(|elements| elements.checked_mul(element_bytes))
+        .ok_or_else(|| Error::Other("prefill packed QKV cache size overflow".into()))?;
+    let position_bytes = rows
+        .checked_mul(3)
+        .and_then(|elements| elements.checked_mul(std::mem::size_of::<u32>()))
+        .ok_or_else(|| Error::Other("prefill packed QKV position size overflow".into()))?;
+    let end_position = start_position
+        .checked_add(rows)
+        .ok_or_else(|| Error::Other("prefill packed QKV position overflow".into()))?;
+    if ctx.caps().sm != 89
+        || rows != 1_024
+        || end_position > 32_768
+        || packed_qkv.dtype() != DType::BF16
+        || packed_qkv.device() != device
+        || packed_qkv.shape().dims() != [rows, PACKED_QKV_WIDTH]
+        || bias.dtype() != DType::BF16
+        || bias.device() != device
+        || bias.shape().dims() != [PACKED_QKV_WIDTH]
+        || key_cache.device() != ctx.device_id()
+        || key_cache.len() < cache_bytes
+        || value_cache.device() != ctx.device_id()
+        || value_cache.len() < cache_bytes
+        || positions.device() != ctx.device_id()
+        || positions.len() < position_bytes
+    {
+        return Err(Error::Other(
+            "Qwen2.5-Omni prefill packed QKV prelude contract mismatch".into(),
+        ));
+    }
+    let packed_qkv = CudaBuffer::from_tensor(packed_qkv).map_err(Error::Cuda)?;
+    if packed_qkv.len() < packed_bytes {
+        return Err(Error::Other(
+            "Qwen2.5-Omni prefill packed QKV storage is truncated".into(),
+        ));
+    }
+    let bias = CudaBuffer::from_tensor(bias).map_err(Error::Cuda)?;
+    let query = uninitialized_buffer(ctx, query_bytes)?;
+    let rows = i32::try_from(rows)
+        .map_err(|_| Error::Other("prefill packed QKV rows exceed i32".into()))?;
+    let start_position = i32::try_from(start_position)
+        .map_err(|_| Error::Other("prefill packed QKV start exceeds i32".into()))?;
+    unsafe {
+        ffi::check_cuda(
+            ffi::apxinf_static_qwen25_omni_prefill_qkv_bias_tmrope_kv_write_bf16(
+                packed_qkv.ptr(),
+                bias.ptr(),
+                query.ptr(),
+                key_cache.ptr(),
+                value_cache.ptr(),
+                rows,
+                start_position,
+                positions.ptr(),
+                ctx.stream().handle(),
+            ),
+        )
+        .map_err(Error::Cuda)?;
+    }
+    Ok(query.into_tensor(
+        Shape::new(vec![rows as usize, QUERY_HEADS, HEAD_DIM]),
+        DType::BF16,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

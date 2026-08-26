@@ -39,6 +39,18 @@ extern "C" {
         stream: cudaStream_t,
     ) -> cudaError_t;
 
+    pub fn apxinf_static_qwen25_omni_prefill_qkv_bias_tmrope_kv_write_bf16(
+        packed_qkv: *const c_void,
+        bias: *const c_void,
+        query: *mut c_void,
+        key_cache: *mut c_void,
+        value_cache: *mut c_void,
+        rows: i32,
+        start_position: i32,
+        positions: *const c_void,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_static_qwen25_omni_residual_rmsnorm_pack8_bf16(
         residual: *mut c_void,
         delta: *const c_void,

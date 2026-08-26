@@ -140,6 +140,29 @@ apxinf_static_qwen25_omni_qkv_bias_tmrope_kv_write_bf16(
 }
 
 extern "C" cudaError_t
+apxinf_static_qwen25_omni_prefill_qkv_bias_tmrope_kv_write_bf16(
+    const void* packed_qkv, const void* bias, void* query, void* key_cache,
+    void* value_cache, int rows, int start_position, const void* positions,
+    cudaStream_t stream) {
+  if (packed_qkv == nullptr || bias == nullptr || query == nullptr ||
+      key_cache == nullptr || value_cache == nullptr || positions == nullptr ||
+      rows != 1024 || start_position < 0 ||
+      start_position > 32768 - rows) {
+    return cudaErrorInvalidValue;
+  }
+  dim3 grid(20, rows, 1);
+  qwen25_omni_prefill_qkv_bias_tmrope_kv_write_bf16_kernel<<<
+      grid, 64, 0, stream>>>(
+      static_cast<const __nv_bfloat16*>(packed_qkv),
+      static_cast<const __nv_bfloat16*>(bias),
+      static_cast<__nv_bfloat16*>(query),
+      static_cast<__nv_bfloat16*>(key_cache),
+      static_cast<__nv_bfloat16*>(value_cache), rows, start_position,
+      static_cast<const uint32_t*>(positions));
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t
 apxinf_static_qwen25_omni_residual_rmsnorm_pack8_bf16(
     void* residual, const void* delta, const void* weight, void* output,
     int rows, int columns, float eps, cudaStream_t stream) {

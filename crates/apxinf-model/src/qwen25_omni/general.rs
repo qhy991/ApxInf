@@ -100,6 +100,11 @@ fn use_prefill_packed_mlp(sequence: usize, enabled: bool) -> bool {
     enabled && matches!(sequence, 512 | 1_024 | 1_760)
 }
 
+#[cfg(any(feature = "cuda", test))]
+fn use_prefill_packed_qkv_prelude(sequence: usize, enabled: bool) -> bool {
+    enabled && sequence == 1_024
+}
+
 pub struct GeneralQwen25Omni {
     config: Qwen25OmniConfig,
     text: Qwen25OmniTextWeights,
@@ -125,6 +130,8 @@ pub struct GeneralQwen25Omni {
     scaled_exp_cache_prefill: bool,
     #[cfg(feature = "cuda")]
     prefill_packed_mlp: bool,
+    #[cfg(feature = "cuda")]
+    prefill_packed_qkv_prelude: bool,
 }
 
 #[cfg(feature = "cuda")]
@@ -506,7 +513,13 @@ impl GeneralQwen25Omni {
             None
         };
         #[cfg(feature = "cuda")]
-        let (decode_graph, long_decode_graph, scaled_exp_cache_prefill, prefill_packed_mlp) = {
+        let (
+            decode_graph,
+            long_decode_graph,
+            scaled_exp_cache_prefill,
+            prefill_packed_mlp,
+            prefill_packed_qkv_prelude,
+        ) = {
             let fa2_chunk1024 = fa2_chunk1024_enabled()?;
             let _all_chunk_fa2 = all_chunk_fa2_enabled()?;
             if fa2_chunk1024 && !chunked_prefill_enabled()? {
@@ -522,6 +535,9 @@ impl GeneralQwen25Omni {
             let m1_packed_mlp = m1_packed_mlp_enabled()?;
             let prefill_packed_mlp =
                 parse_binary_env("APXINF_QWEN25_PREFILL_PACKED_MLP").map_err(Error::Other)?;
+            let prefill_packed_qkv_prelude =
+                parse_binary_env("APXINF_QWEN25_PREFILL_PACKED_QKV_PRELUDE")
+                    .map_err(Error::Other)?;
             let short_exact_residual_norm = short_decode_exact_residual_norm_enabled()?;
             let short_w32_attention = short_decode_w32_attention_enabled()?;
             let short_fused_qkv_prelude = short_decode_fused_qkv_prelude_enabled()?;
@@ -553,6 +569,33 @@ impl GeneralQwen25Omni {
             if prefill_packed_mlp && (!m1_packed_mlp || !fused_silu_mul_enabled()?) {
                 return Err(Error::Other(
                     "APXINF_QWEN25_PREFILL_PACKED_MLP=1 requires APXINF_QWEN25_M1_PACKED_MLP=1 and APXINF_QWEN25_FUSED_SILU_MUL=1"
+                        .into(),
+                ));
+            }
+            if prefill_packed_qkv_prelude
+                && (!packed_qkv
+                    || !parse_binary_env("APXINF_TMROPE_POSITION_CACHE")
+                        .map_err(Error::Other)?
+                    || !parse_binary_env("APXINF_TMROPE_POSITION_CACHE_PREFILL")
+                        .map_err(Error::Other)?)
+            {
+                return Err(Error::Other(
+                    "APXINF_QWEN25_PREFILL_PACKED_QKV_PRELUDE=1 requires APXINF_QWEN25_PACKED_QKV=1, APXINF_TMROPE_POSITION_CACHE=1 and APXINF_TMROPE_POSITION_CACHE_PREFILL=1"
+                        .into(),
+                ));
+            }
+            if prefill_packed_qkv_prelude
+                && (config.text.n_layers != 36
+                    || config.text.hidden_size != 2_048
+                    || config.text.n_heads != 16
+                    || config.text.n_kv_heads != 2
+                    || config.text.head_dim != 128
+                    || config.text.max_position_embeddings != 32_768
+                    || config.text.rope_theta.to_bits() != 1_000_000.0f32.to_bits()
+                    || config.text.mrope_section != [16, 24, 24])
+            {
+                return Err(Error::Other(
+                    "APXINF_QWEN25_PREFILL_PACKED_QKV_PRELUDE requires the pinned Qwen2.5-Omni-3B text architecture"
                         .into(),
                 ));
             }
@@ -684,6 +727,11 @@ impl GeneralQwen25Omni {
                         "ApxInf Qwen2.5-Omni prefill packed MLP: exact rows 512, 1024 and 1760"
                     );
                 }
+                if prefill_packed_qkv_prelude {
+                    eprintln!(
+                        "ApxInf Qwen2.5-Omni prefill packed QKV prelude: exact rows 1024"
+                    );
+                }
                 let short = Qwen25OmniDecodeGraph::new(
                     cuda,
                     Self::decode_graph_config(&config),
@@ -710,9 +758,15 @@ impl GeneralQwen25Omni {
                 } else {
                     None
                 };
-                (Some(short), long, scaled_exp_cache_prefill, prefill_packed_mlp)
+                (
+                    Some(short),
+                    long,
+                    scaled_exp_cache_prefill,
+                    prefill_packed_mlp,
+                    prefill_packed_qkv_prelude,
+                )
             } else {
-                (None, None, false, false)
+                (None, None, false, false, false)
             }
         };
         let model = Self {
@@ -740,6 +794,8 @@ impl GeneralQwen25Omni {
             scaled_exp_cache_prefill,
             #[cfg(feature = "cuda")]
             prefill_packed_mlp,
+            #[cfg(feature = "cuda")]
+            prefill_packed_qkv_prelude,
         };
         #[cfg(feature = "cuda")]
         {
@@ -1129,7 +1185,16 @@ impl GeneralQwen25Omni {
         let normalized = self
             .backend
             .rms_norm(hidden, &layer.attn_norm, text.rms_norm_eps)?;
-        let (q, k, v) = match &layer.qkv {
+        #[cfg(feature = "cuda")]
+        let fuse_prefill_packed_qkv = use_prefill_packed_qkv_prelude(
+            sequence,
+            self.prefill_packed_qkv_prelude,
+        );
+        #[cfg(not(feature = "cuda"))]
+        let fuse_prefill_packed_qkv = false;
+        #[cfg(not(feature = "cuda"))]
+        let _ = fuse_prefill_packed_qkv;
+        let (q, k, v, kv_published) = match &layer.qkv {
             Qwen25OmniQkvWeights::Separate {
                 wq,
                 bq,
@@ -1140,10 +1205,15 @@ impl GeneralQwen25Omni {
             } => (
                 self.backend
                     .add_bias(&self.backend.matmul(&normalized, wq)?, bq)?,
-                self.backend
-                    .add_bias(&self.backend.matmul(&normalized, wk)?, bk)?,
-                self.backend
-                    .add_bias(&self.backend.matmul(&normalized, wv)?, bv)?,
+                Some(
+                    self.backend
+                        .add_bias(&self.backend.matmul(&normalized, wk)?, bk)?,
+                ),
+                Some(
+                    self.backend
+                        .add_bias(&self.backend.matmul(&normalized, wv)?, bv)?,
+                ),
+                false,
             ),
             #[cfg(feature = "cuda")]
             Qwen25OmniQkvWeights::Packed { weight, bias } => {
@@ -1151,42 +1221,62 @@ impl GeneralQwen25Omni {
                 let cuda = cuda_backend(&*self.backend).ok_or_else(|| {
                     Error::Other("Qwen2.5-Omni packed QKV requires CudaBackend".into())
                 })?;
-                let split = cuda_kernels::attention::split_gqa_qkv_bias_bf16(
-                    cuda.context(),
-                    &packed,
-                    Some(bias),
-                    text.n_heads,
-                    text.n_kv_heads,
-                    text.head_dim,
-                )?;
-                (split.q, split.k, split.v)
+                if fuse_prefill_packed_qkv {
+                    let query = cuda.qwen25_omni_prefill_packed_qkv_prelude(
+                        &packed,
+                        bias,
+                        &mut *self.kv,
+                        index,
+                        positions,
+                    )?;
+                    (query, None, None, true)
+                } else {
+                    let split = cuda_kernels::attention::split_gqa_qkv_bias_bf16(
+                        cuda.context(),
+                        &packed,
+                        Some(bias),
+                        text.n_heads,
+                        text.n_kv_heads,
+                        text.head_dim,
+                    )?;
+                    (split.q, Some(split.k), Some(split.v), false)
+                }
             }
             #[cfg(not(feature = "cuda"))]
             Qwen25OmniQkvWeights::Packed { .. } => {
                 return Err(Error::Other("Qwen2.5-Omni packed QKV requires CUDA".into()))
             }
         };
-        let q = q.reshape(vec![sequence, text.n_heads, text.head_dim])?;
-        let k = k.reshape(vec![sequence, text.n_kv_heads, text.head_dim])?;
-        let v = v.reshape(vec![sequence, text.n_kv_heads, text.head_dim])?;
-        let q = self.backend.rope_tmrope(
-            &q,
-            text.n_heads,
-            text.head_dim,
-            text.rope_theta,
-            text.mrope_section,
-            positions,
-        )?;
-        let k = self.backend.rope_tmrope(
-            &k,
-            text.n_kv_heads,
-            text.head_dim,
-            text.rope_theta,
-            text.mrope_section,
-            positions,
-        )?;
-        self.backend
-            .kv_append(&mut *self.kv, index, &k, &v, sequence)?;
+        let q = if kv_published {
+            q
+        } else {
+            self.backend.rope_tmrope(
+                &q.reshape(vec![sequence, text.n_heads, text.head_dim])?,
+                text.n_heads,
+                text.head_dim,
+                text.rope_theta,
+                text.mrope_section,
+                positions,
+            )?
+        };
+        if !kv_published {
+            let k = k
+                .ok_or_else(|| Error::Other("unpublished QKV path is missing K".into()))?
+                .reshape(vec![sequence, text.n_kv_heads, text.head_dim])?;
+            let v = v
+                .ok_or_else(|| Error::Other("unpublished QKV path is missing V".into()))?
+                .reshape(vec![sequence, text.n_kv_heads, text.head_dim])?;
+            let k = self.backend.rope_tmrope(
+                &k,
+                text.n_kv_heads,
+                text.head_dim,
+                text.rope_theta,
+                text.mrope_section,
+                positions,
+            )?;
+            self.backend
+                .kv_append(&mut *self.kv, index, &k, &v, sequence)?;
+        }
         let kv_len = self.kv.seq_len() + sequence;
         let attention = if sequence == 1 {
             #[cfg(feature = "cuda")]
@@ -1848,14 +1938,19 @@ mod tests {
     }
 
     #[test]
-    fn prefill_packed_mlp_owns_only_exact_validated_rows() {
+    fn prefill_packed_owners_use_only_exact_validated_rows() {
         for rows in [512, 1_024, 1_760] {
             assert!(use_prefill_packed_mlp(rows, true));
         }
+        assert!(use_prefill_packed_qkv_prelude(1_024, true));
+        assert!(!use_prefill_packed_qkv_prelude(512, true));
+        assert!(!use_prefill_packed_qkv_prelude(1_760, true));
         for rows in [1, 52, 128, 256, 511, 513, 2_048] {
             assert!(!use_prefill_packed_mlp(rows, true));
+            assert!(!use_prefill_packed_qkv_prelude(rows, true));
         }
         assert!(!use_prefill_packed_mlp(1_024, false));
+        assert!(!use_prefill_packed_qkv_prelude(1_024, false));
     }
 
     #[test]

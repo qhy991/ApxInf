@@ -79,6 +79,96 @@ __global__ void qwen25_omni_qkv_bias_tmrope_kv_write_bf16_kernel(
   }
 }
 
+// Prefill counterpart of the decode QKV prelude. The packed projection is
+// already BF16. This kernel preserves the incumbent projection+bias BF16 seam,
+// writes rotated Q directly in its attention layout, and publishes rotated K
+// plus rounded V directly into the persistent head-major cache.
+__global__ void qwen25_omni_prefill_qkv_bias_tmrope_kv_write_bf16_kernel(
+    const __nv_bfloat16* packed_qkv, const __nv_bfloat16* bias,
+    __nv_bfloat16* query, __nv_bfloat16* key_cache,
+    __nv_bfloat16* value_cache, int rows, int start_position,
+    const uint32_t* positions) {
+  constexpr int kQueryHeads = 16;
+  constexpr int kKvHeads = 2;
+  constexpr int kHeadDim = 128;
+  constexpr int kHalf = kHeadDim / 2;
+  constexpr int kQueryWidth = kQueryHeads * kHeadDim;
+  constexpr int kKvWidth = kKvHeads * kHeadDim;
+  constexpr int kFusedWidth = kQueryWidth + 2 * kKvWidth;
+  constexpr int kMaxSeqLen = 32768;
+  constexpr int kSectionT = 16;
+  constexpr int kSectionH = 24;
+  constexpr float kTheta = 1000000.0f;
+
+  const int projection_head = blockIdx.x;
+  const int row = blockIdx.y;
+  const int pair = threadIdx.x;
+  if (projection_head >= kQueryHeads + 2 * kKvHeads || row >= rows ||
+      pair >= kHalf) {
+    return;
+  }
+
+  const int row_base = row * kFusedWidth;
+  if (projection_head >= kQueryHeads + kKvHeads) {
+    const int head = projection_head - kQueryHeads - kKvHeads;
+    const int source_base = row_base + kQueryWidth + kKvWidth + head * kHeadDim;
+    const int64_t destination_base =
+        (static_cast<int64_t>(head) * kMaxSeqLen + start_position + row) *
+        kHeadDim;
+#pragma unroll
+    for (int half = 0; half < 2; ++half) {
+      const int dimension = pair + half * kHalf;
+      value_cache[destination_base + dimension] = __float2bfloat16(
+          __bfloat162float(packed_qkv[source_base + dimension]) +
+          __bfloat162float(bias[kQueryWidth + kKvWidth +
+                                head * kHeadDim + dimension]));
+    }
+    return;
+  }
+
+  const bool is_query = projection_head < kQueryHeads;
+  const int head = is_query ? projection_head : projection_head - kQueryHeads;
+  const int projection_offset =
+      (is_query ? 0 : kQueryWidth) + head * kHeadDim;
+  const int source_base = row_base + projection_offset;
+  const __nv_bfloat16 first_rounded = __float2bfloat16(
+      __bfloat162float(packed_qkv[source_base + pair]) +
+      __bfloat162float(bias[projection_offset + pair]));
+  const __nv_bfloat16 second_rounded = __float2bfloat16(
+      __bfloat162float(packed_qkv[source_base + pair + kHalf]) +
+      __bfloat162float(bias[projection_offset + pair + kHalf]));
+  const float frequency =
+      1.0f / powf(kTheta, 2.0f * static_cast<float>(pair) / kHeadDim);
+
+#pragma unroll
+  for (int half = 0; half < 2; ++half) {
+    const int dimension = pair + half * kHalf;
+    const int axis = dimension < 2 * kSectionT
+        ? 0
+        : (dimension < 2 * (kSectionT + kSectionH) ? 1 : 2);
+    const float angle =
+        static_cast<float>(positions[row * 3 + axis]) * frequency;
+    const float cosine = cosf(angle);
+    const float sine = sinf(angle);
+    const float value = __bfloat162float(
+        half == 0 ? first_rounded : second_rounded);
+    const float rotated = half == 0 ? -__bfloat162float(second_rounded)
+                                    : __bfloat162float(first_rounded);
+    const __nv_bfloat16 output =
+        __float2bfloat16(value * cosine + rotated * sine);
+    if (is_query) {
+      query[(static_cast<int64_t>(row) * kQueryHeads + head) * kHeadDim +
+            dimension] = output;
+    } else {
+      const int64_t destination =
+          (static_cast<int64_t>(head) * kMaxSeqLen + start_position + row) *
+              kHeadDim +
+          dimension;
+      key_cache[destination] = output;
+    }
+  }
+}
+
 // Long-context decode candidate.  The incumbent assigns one CTA to each Q
 // head, which exposes only 24 CTAs on an RTX 4090.  This stage partitions the
 // valid KV interval across CTAs and writes numerically stable online-softmax

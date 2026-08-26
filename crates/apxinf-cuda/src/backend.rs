@@ -260,6 +260,47 @@ impl CudaBackend {
         Ok(cache)
     }
 
+    fn tmrope_position_cache(
+        &self,
+        positions: &[u32],
+        sequence: usize,
+    ) -> Result<std::sync::MutexGuard<'_, Option<TmropePositionCache>>> {
+        let expected = sequence
+            .checked_mul(3)
+            .ok_or_else(|| Error::Other("Qwen2.5-Omni TMRoPE position size overflow".into()))?;
+        if positions.len() != expected {
+            return Err(Error::Other(format!(
+                "Qwen2.5-Omni TMRoPE position length {} != {sequence} * 3",
+                positions.len()
+            )));
+        }
+        let mut cache = self
+            .tmrope_positions
+            .lock()
+            .map_err(|_| Error::Other("TMRoPE position cache lock poisoned".into()))?;
+        if cache
+            .as_ref()
+            .is_none_or(|cached| cached.values.as_slice() != positions)
+        {
+            let bytes = u32_bytes(positions);
+            let buffer = CudaBuffer::alloc_stream_ordered(
+                bytes.len(),
+                self.ctx.device_id(),
+                self.ctx.stream(),
+            )
+            .map_err(Error::Cuda)?;
+            buffer
+                .copy_from_host_async(&bytes, self.ctx.stream())
+                .map_err(Error::Cuda)?;
+            *cache = Some(TmropePositionCache {
+                values: positions.to_vec(),
+                _source_bytes: bytes,
+                buffer,
+            });
+        }
+        Ok(cache)
+    }
+
     fn vision_group_cache(
         &self,
         group_ids: &[u32],
@@ -390,6 +431,48 @@ impl CudaBackend {
         intermediate: usize,
     ) -> Result<Tensor> {
         kernels::activation::silu_mul_packed_rows_exact(&self.ctx, gate_up, intermediate)
+    }
+
+    pub fn qwen25_omni_prefill_packed_qkv_prelude(
+        &self,
+        packed_qkv: &Tensor,
+        bias: &Tensor,
+        kv: &mut dyn KvCache,
+        layer_idx: usize,
+        positions: &[u32],
+    ) -> Result<Tensor> {
+        let rows = packed_qkv.shape().dims().first().copied().unwrap_or(0);
+        if !tmrope_position_cache_enabled()? || !tmrope_prefill_position_cache_enabled()? {
+            return Err(Error::Other(
+                "Qwen2.5-Omni prefill packed QKV prelude requires cached prefill positions"
+                    .into(),
+            ));
+        }
+        if layer_idx >= kv.n_layers() {
+            return Err(Error::Other(format!(
+                "Qwen2.5-Omni prefill packed QKV layer {layer_idx} exceeds cache depth {}",
+                kv.n_layers()
+            )));
+        }
+        let start_position = kv.seq_len();
+        let position_cache = self.tmrope_position_cache(positions, rows)?;
+        let position_buffer = &position_cache
+            .as_ref()
+            .ok_or_else(|| Error::Other("TMRoPE position cache is missing".into()))?
+            .buffer;
+        let cache = kv
+            .as_any()
+            .downcast_ref::<CudaKVCache>()
+            .ok_or_else(|| Error::Other("prefill packed QKV requires CudaKVCache".into()))?;
+        kernels::qwen25_omni_attention::prefill_packed_qkv_prelude_write(
+            &self.ctx,
+            packed_qkv,
+            bias,
+            cache.k_buffer(layer_idx),
+            cache.v_buffer(layer_idx),
+            position_buffer,
+            start_position,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -807,33 +890,7 @@ impl Backend for CudaBackend {
             );
         }
 
-        let mut cache = self
-            .tmrope_positions
-            .lock()
-            .map_err(|_| Error::Other("TMRoPE position cache lock poisoned".into()))?;
-        if cache
-            .as_ref()
-            .is_none_or(|cached| cached.values.as_slice() != pos_ids)
-        {
-            let bytes = pos_ids
-                .iter()
-                .flat_map(|value| value.to_ne_bytes())
-                .collect::<Vec<_>>();
-            let buffer = CudaBuffer::alloc_stream_ordered(
-                bytes.len(),
-                self.ctx.device_id(),
-                self.ctx.stream(),
-            )
-            .map_err(Error::Cuda)?;
-            buffer
-                .copy_from_host_async(&bytes, self.ctx.stream())
-                .map_err(Error::Cuda)?;
-            *cache = Some(TmropePositionCache {
-                values: pos_ids.to_vec(),
-                _source_bytes: bytes,
-                buffer,
-            });
-        }
+        let cache = self.tmrope_position_cache(pos_ids, seq_len)?;
         let positions = &cache.as_ref().expect("position cache populated").buffer;
         kernels::rope::apply_tmrope(
             &self.ctx, input, n_heads, head_dim, theta, sections, positions,
