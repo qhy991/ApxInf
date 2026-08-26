@@ -8816,6 +8816,84 @@ mod tests {
 
     #[cfg(all(feature = "metal-w8", target_os = "macos"))]
     #[test]
+    fn metal_boundary_tail_head_v1_masks_before_candidates_and_advances_once() {
+        let (config, tensors) = metal_all_linear_layers_fixture();
+        let mut cpu =
+            GeneralQwen35::from_weights(config.clone(), tensors.clone(), Device::Cpu, 16).unwrap();
+        let cpu_prefill = cpu.prefill_for_generation(LlmInput::text(&[1, 2])).unwrap();
+        let prefill_winner = argmax_f32_row(&cpu_prefill, cpu.vocab_size()).unwrap();
+        let cpu_hidden = cpu.forward_hidden(&[3], 2).unwrap();
+        let cpu_decode = cpu.project_logits(&cpu_hidden).unwrap();
+        let decode_winner = argmax_f32_row(&cpu_decode, cpu.vocab_size()).unwrap();
+        let mut excluded = vec![prefill_winner, decode_winner];
+        excluded.sort_unstable();
+        excluded.dedup();
+        let expected_prefill =
+            argmax_f32_row_excluding(&cpu_prefill, cpu.vocab_size(), &excluded).unwrap();
+        let expected_decode =
+            argmax_f32_row_excluding(&cpu_decode, cpu.vocab_size(), &excluded).unwrap();
+
+        let mut teacher =
+            GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
+                config.clone(),
+                tensors.clone(),
+                Device::Cpu,
+                16,
+            )
+            .unwrap();
+        let malformed = teacher
+            .decode_token_excluding(3, 0, &[0, 1, 2, 3, 4, 5])
+            .unwrap_err();
+        assert!(malformed.to_string().contains("at most 5"));
+        assert_eq!(teacher.state.position(), 0);
+
+        assert_eq!(
+            teacher
+                .prefill_token_for_generation_excluding(LlmInput::text(&[1, 2]), &excluded)
+                .unwrap(),
+            expected_prefill
+        );
+        let comparison = teacher
+            .teacher_forced_decode_candidates_excluding(3, 2, &excluded)
+            .unwrap();
+        assert_eq!(comparison.cpu_token, expected_decode);
+        assert_eq!(comparison.reranked_token, expected_decode);
+        assert!(comparison
+            .w8_candidates
+            .iter()
+            .all(|token| !excluded.contains(token)));
+        assert_eq!(teacher.state.position(), 3);
+        let teacher_stats = teacher
+            .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
+            .unwrap();
+        assert_eq!(teacher_stats.teacher_calls, 1);
+        assert_eq!(teacher_stats.decode_calls, 0);
+        assert_eq!(teacher_stats.tail.decode_calls, 1);
+
+        let mut free = GeneralQwen35::from_weights_with_metal_w8_mlp_stack3_boundary_tail_head_v1(
+            config,
+            tensors,
+            Device::Cpu,
+            16,
+        )
+        .unwrap();
+        free.prefill_token_for_generation_excluding(LlmInput::text(&[1, 2]), &excluded)
+            .unwrap();
+        assert_eq!(
+            free.decode_token_excluding(3, 2, &excluded).unwrap(),
+            expected_decode
+        );
+        assert_eq!(free.state.position(), 3);
+        let free_stats = free
+            .metal_w8_mlp_stack3_boundary_tail_head_v1_stats()
+            .unwrap();
+        assert_eq!(free_stats.teacher_calls, 0);
+        assert_eq!(free_stats.decode_calls, 1);
+        assert_eq!(free_stats.tail.decode_calls, 1);
+    }
+
+    #[cfg(all(feature = "metal-w8", target_os = "macos"))]
+    #[test]
     fn metal_boundary_tail_head_v1_generation_uses_cpu_prefill_and_exactly_two_tail_decodes() {
         let (config, tensors) = metal_all_linear_layers_fixture();
         let mut cpu =
