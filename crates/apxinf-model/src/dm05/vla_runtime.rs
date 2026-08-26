@@ -184,7 +184,7 @@ impl Dm05PreparedInference {
             }
         }
         graph.replay()?;
-        Ok(Action::new(graph.output().clone()))
+        Ok(Action::new(graph.snapshot_output()?))
     }
 
     /// Observable execution metadata for qualification and service logs.
@@ -255,7 +255,7 @@ impl PreparedInference for Dm05PreparedInference {
                 match self.capture_loaded(&inputs, request) {
                     Ok(graph) => {
                         graph.replay()?;
-                        let action = Action::new(graph.output().clone());
+                        let action = Action::new(graph.snapshot_output()?);
                         *strategy = ExecStrategy::Graph(graph);
                         Ok(action)
                     }

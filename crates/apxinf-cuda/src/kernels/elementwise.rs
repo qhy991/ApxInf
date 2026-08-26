@@ -330,37 +330,28 @@ pub fn mul(ctx: &CudaContext, a: &Tensor, b: &Tensor) -> Result<Tensor> {
 
 /// Multiply every element by a scalar. Dispatches on dtype.
 pub fn scale(ctx: &CudaContext, input: &Tensor, scale_factor: f32) -> Result<Tensor> {
-    let device_id = ctx.device_id();
-    let count = input.numel() as u32;
-
-    let out_bytes = input.size_in_bytes();
-    let out_buf = CudaBuffer::alloc_zeros(out_bytes, device_id).map_err(Error::Cuda)?;
-
-    unsafe {
-        let res = match input.dtype() {
-            DType::F32 => ffi::apxinf_scale_f32(
-                gpu_ptr(input)?,
-                out_buf.ptr(),
-                count,
-                scale_factor,
-                ctx.stream().handle(),
-            ),
-            DType::BF16 => ffi::apxinf_scale_bf16(
-                gpu_ptr(input)?,
-                out_buf.ptr(),
-                count,
-                scale_factor,
-                ctx.stream().handle(),
-            ),
-            dtype => return unsupported_dtype("scale", dtype),
-        };
-        ffi::check_cuda(res).map_err(Error::Cuda)?;
+    if input.device() != apxinf_core::Device::Cuda(ctx.device_id()) {
+        return Err(Error::Other(
+            "scale expects input on the active CUDA device".into(),
+        ));
     }
-
+    if !matches!(input.dtype(), DType::F32 | DType::BF16) {
+        return unsupported_dtype("scale", input.dtype());
+    }
+    let input_buffer = CudaBuffer::from_tensor(input).map_err(Error::Cuda)?;
+    let out_buf = output_buffer(ctx, input.size_in_bytes())?;
+    scale_into(
+        ctx,
+        input.dtype(),
+        &input_buffer,
+        &out_buf,
+        input.numel(),
+        scale_factor,
+    )?;
     Ok(make_gpu_tensor(
         input.shape().clone(),
         input.dtype(),
-        device_id,
+        ctx.device_id(),
         out_buf,
     ))
 }

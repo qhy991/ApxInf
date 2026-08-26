@@ -83,8 +83,13 @@ impl Dm05CapturedGraph {
         self.runtime.backend.synchronize()
     }
 
-    pub fn output(&self) -> &Tensor {
-        &self.output
+    /// Publish a stable, independently owned action tensor.
+    ///
+    /// The captured output is a view into the multi-GiB graph arena and is
+    /// overwritten by every replay. Returning that view would both mutate old
+    /// `Action` values and keep the entire arena alive after graph invalidation.
+    pub fn snapshot_output(&self) -> Result<Tensor> {
+        kernels::elementwise::scale(self.runtime.ctx(), &self.output, 1.0)
     }
 
     pub fn workspace_bytes(&self) -> usize {
