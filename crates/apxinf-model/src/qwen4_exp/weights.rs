@@ -223,7 +223,8 @@ impl Qwen4ExpWeightSchema {
                             Error::Other("qwen4-exp hybrid parameter count overflow".into())
                         })
                     })?;
-                    let bytes = if name.contains(".mlp.experts.") { 2 } else { 4 };
+                    let checkpoint_resident = shape.len() == 2 || name.contains(".mlp.experts.");
+                    let bytes = if checkpoint_resident { 2 } else { 4 };
                     (elements, bytes)
                 }
                 RuntimeShape::PleShard {

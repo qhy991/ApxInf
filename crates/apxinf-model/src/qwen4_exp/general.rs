@@ -115,11 +115,13 @@ impl GeneralQwen4Exp {
                 text.vocab_size
             )));
         }
-        let start = token as usize * text.hidden_size;
-        let embedding = &self.weights.token_embedding[start..start + text.hidden_size];
+        let embedding = self
+            .weights
+            .token_embedding
+            .row(token as usize, text.hidden_size)?;
         let mut hyper = Vec::with_capacity(text.hc_count * text.hidden_size);
         for _ in 0..text.hc_count {
-            hyper.extend_from_slice(embedding);
+            hyper.extend_from_slice(&embedding);
         }
 
         for layer_index in 0..text.n_layers {
@@ -153,7 +155,7 @@ impl GeneralQwen4Exp {
         }
 
         let hidden = run_gated_residual(text, &hyper, &self.weights.final_connection, false)?.mixed;
-        Ok(linear(&hidden, &self.weights.lm_head, text.vocab_size))
+        self.weights.lm_head.apply(&hidden)
     }
 }
 
@@ -224,10 +226,10 @@ impl LlmTrait for GeneralQwen4Exp {
 }
 
 struct RuntimeWeights {
-    token_embedding: Vec<f32>,
+    token_embedding: ResidentEmbedding,
     layers: Vec<LayerWeights>,
     final_connection: GatedResidualWeights,
-    lm_head: Vec<f32>,
+    lm_head: ResidentMatrix,
 }
 
 struct LayerWeights {
@@ -240,9 +242,9 @@ struct LayerWeights {
 
 struct GatedResidualWeights {
     norm: Vec<f32>,
-    down: Vec<f32>,
-    up: Vec<f32>,
-    inject: Option<Vec<f32>>,
+    down: ResidentMatrix,
+    up: ResidentMatrix,
+    inject: Option<ResidentMatrix>,
 }
 
 enum AttentionWeights {
@@ -251,38 +253,37 @@ enum AttentionWeights {
 }
 
 struct GdnWeights {
-    in_qkv: Vec<f32>,
-    in_z: Vec<f32>,
-    in_a: Vec<f32>,
-    in_b: Vec<f32>,
+    in_qkv: ResidentMatrix,
+    in_z: ResidentMatrix,
+    in_a: ResidentMatrix,
+    in_b: ResidentMatrix,
     conv: Tensor,
     a_log: Tensor,
     dt_bias: Tensor,
     norm: Tensor,
-    out: Vec<f32>,
+    out: ResidentMatrix,
 }
 
 struct QsaWeights {
-    q: Vec<f32>,
-    gate: Vec<f32>,
-    k: Vec<f32>,
-    v: Vec<f32>,
-    out: Vec<f32>,
+    query_gate: QueryGateWeights,
+    k: ResidentMatrix,
+    v: ResidentMatrix,
+    out: ResidentMatrix,
     q_norm: Vec<f32>,
     k_norm: Vec<f32>,
-    index_qk: Vec<f32>,
+    index_qk: ResidentMatrix,
     index_q_norm: Vec<f32>,
     index_k_norm: Vec<f32>,
     selector: Qwen4ExpQsaSelector,
 }
 
 struct MoeWeights {
-    router: Vec<f32>,
+    router: ResidentMatrix,
     experts: ExpertWeights,
-    shared_gate: Vec<f32>,
-    shared_up: Vec<f32>,
-    shared_down: Vec<f32>,
-    shared_expert_gate: Vec<f32>,
+    shared_gate: ResidentMatrix,
+    shared_up: ResidentMatrix,
+    shared_down: ResidentMatrix,
+    shared_expert_gate: ResidentMatrix,
 }
 
 enum ExpertWeights {
@@ -302,12 +303,33 @@ struct PleWeights {
     head_offsets: Vec<usize>,
     multipliers: Vec<i64>,
     head_dim: usize,
-    key: Vec<f32>,
-    value: Vec<f32>,
+    key: ResidentMatrix,
+    value: ResidentMatrix,
     norm_key: Vec<f32>,
     norm_query: Vec<f32>,
     norm_conv: Vec<f32>,
     conv: Vec<f32>,
+}
+
+enum ResidentEmbedding {
+    Synthetic(Vec<f32>),
+    Checkpoint(Tensor),
+}
+
+enum ResidentMatrix {
+    Synthetic {
+        values: Vec<f32>,
+        output_size: usize,
+    },
+    Checkpoint(Tensor),
+}
+
+enum QueryGateWeights {
+    Synthetic {
+        query: ResidentMatrix,
+        gate: ResidentMatrix,
+    },
+    Checkpoint(Tensor),
 }
 
 enum PleEmbedding {
@@ -316,6 +338,70 @@ enum PleEmbedding {
         shards: Vec<Tensor>,
         row_ends: Vec<usize>,
     },
+}
+
+impl ResidentEmbedding {
+    fn row(&self, row: usize, columns: usize) -> Result<Vec<f32>> {
+        let mut output = Vec::with_capacity(columns);
+        match self {
+            Self::Synthetic(values) => {
+                output.extend_from_slice(&values[row * columns..(row + 1) * columns]);
+            }
+            Self::Checkpoint(tensor) => {
+                append_tensor_values(tensor, row * columns, (row + 1) * columns, &mut output)?;
+            }
+        }
+        Ok(output)
+    }
+}
+
+impl ResidentMatrix {
+    fn synthetic(values: Vec<f32>, output_size: usize) -> Self {
+        Self::Synthetic {
+            values,
+            output_size,
+        }
+    }
+
+    fn apply(&self, input: &[f32]) -> Result<Vec<f32>> {
+        match self {
+            Self::Synthetic {
+                values,
+                output_size,
+            } => Ok(linear(input, values, *output_size)),
+            Self::Checkpoint(tensor) => {
+                let shape = tensor.shape().dims();
+                linear_checkpoint_matrix(input, tensor, 0, shape[0], shape[1])
+            }
+        }
+    }
+}
+
+impl QueryGateWeights {
+    fn apply(&self, config: &Qwen4ExpTextConfig, hidden: &[f32]) -> Result<(Vec<f32>, Vec<f32>)> {
+        match self {
+            Self::Synthetic { query, gate } => Ok((query.apply(hidden)?, gate.apply(hidden)?)),
+            Self::Checkpoint(tensor) => {
+                let packed = linear_checkpoint_matrix(
+                    hidden,
+                    tensor,
+                    0,
+                    config.full_q_projection_width(),
+                    config.hidden_size,
+                )?;
+                let mut query = Vec::with_capacity(config.full_query_width());
+                let mut gate = Vec::with_capacity(config.full_query_width());
+                for head in 0..config.n_attention_heads {
+                    let start = head * 2 * config.head_dim;
+                    query.extend_from_slice(&packed[start..start + config.head_dim]);
+                    gate.extend_from_slice(
+                        &packed[start + config.head_dim..start + 2 * config.head_dim],
+                    );
+                }
+                Ok((query, gate))
+            }
+        }
+    }
 }
 
 impl ExpertWeights {
@@ -450,13 +536,11 @@ impl RuntimeWeights {
         config: &Qwen4ExpTextConfig,
         mut tensors: HashMap<String, Tensor>,
     ) -> Result<Self> {
-        let token_embedding = take_f32(&mut tensors, "model.language_model.embed_tokens.weight")?;
-        let lm_head = take_transposed(
+        let token_embedding = ResidentEmbedding::Checkpoint(take_tensor(
             &mut tensors,
-            "lm_head.weight",
-            config.vocab_size,
-            config.hidden_size,
-        )?;
+            "model.language_model.embed_tokens.weight",
+        )?);
+        let lm_head = ResidentMatrix::Checkpoint(take_tensor(&mut tensors, "lm_head.weight")?);
         let final_connection = GatedResidualWeights::from_tensors(
             config,
             &mut tensors,
@@ -524,8 +608,9 @@ impl RuntimeWeights {
     fn synthetic(config: &Qwen4ExpTextConfig, seed: u64) -> Result<Self> {
         let mut rng = SyntheticRng::new(seed);
         let hidden = config.hidden_size;
-        let token_embedding = rng.matrix(config.vocab_size, hidden);
-        let lm_head = rng.matrix(hidden, config.vocab_size);
+        let token_embedding = ResidentEmbedding::Synthetic(rng.matrix(config.vocab_size, hidden));
+        let lm_head =
+            ResidentMatrix::synthetic(rng.matrix(hidden, config.vocab_size), config.vocab_size);
         let mut layers = Vec::with_capacity(config.n_layers);
         for (index, layer_type) in config.layer_types.iter().enumerate() {
             let attention = match layer_type {
@@ -538,10 +623,19 @@ impl RuntimeWeights {
                             - 1] = 1.0;
                     }
                     AttentionWeights::Linear(Box::new(GdnWeights {
-                        in_qkv: rng.matrix(hidden, qkv),
-                        in_z: rng.matrix(hidden, config.linear_value_width()),
-                        in_a: rng.matrix(hidden, config.linear_num_value_heads),
-                        in_b: rng.matrix(hidden, config.linear_num_value_heads),
+                        in_qkv: ResidentMatrix::synthetic(rng.matrix(hidden, qkv), qkv),
+                        in_z: ResidentMatrix::synthetic(
+                            rng.matrix(hidden, config.linear_value_width()),
+                            config.linear_value_width(),
+                        ),
+                        in_a: ResidentMatrix::synthetic(
+                            rng.matrix(hidden, config.linear_num_value_heads),
+                            config.linear_num_value_heads,
+                        ),
+                        in_b: ResidentMatrix::synthetic(
+                            rng.matrix(hidden, config.linear_num_value_heads),
+                            config.linear_num_value_heads,
+                        ),
                         conv: Tensor::from_f32(vec![qkv, config.linear_conv_kernel_dim], &conv)?,
                         a_log: Tensor::from_f32(
                             vec![config.linear_num_value_heads],
@@ -555,20 +649,44 @@ impl RuntimeWeights {
                             vec![config.linear_value_head_dim],
                             &vec![1.0; config.linear_value_head_dim],
                         )?,
-                        out: rng.matrix(config.linear_value_width(), hidden),
+                        out: ResidentMatrix::synthetic(
+                            rng.matrix(config.linear_value_width(), hidden),
+                            hidden,
+                        ),
                     }))
                 }
                 Qwen4ExpLayerType::QwenSparseAttention => {
                     AttentionWeights::Qsa(Box::new(QsaWeights {
-                        q: rng.matrix(hidden, config.full_query_width()),
-                        gate: rng.matrix(hidden, config.full_query_width()),
-                        k: rng.matrix(hidden, config.full_kv_width()),
-                        v: rng.matrix(hidden, config.full_kv_width()),
-                        out: rng.matrix(config.full_query_width(), hidden),
+                        query_gate: QueryGateWeights::Synthetic {
+                            query: ResidentMatrix::synthetic(
+                                rng.matrix(hidden, config.full_query_width()),
+                                config.full_query_width(),
+                            ),
+                            gate: ResidentMatrix::synthetic(
+                                rng.matrix(hidden, config.full_query_width()),
+                                config.full_query_width(),
+                            ),
+                        },
+                        k: ResidentMatrix::synthetic(
+                            rng.matrix(hidden, config.full_kv_width()),
+                            config.full_kv_width(),
+                        ),
+                        v: ResidentMatrix::synthetic(
+                            rng.matrix(hidden, config.full_kv_width()),
+                            config.full_kv_width(),
+                        ),
+                        out: ResidentMatrix::synthetic(
+                            rng.matrix(config.full_query_width(), hidden),
+                            hidden,
+                        ),
                         q_norm: vec![0.0; config.head_dim],
                         k_norm: vec![0.0; config.head_dim],
-                        index_qk: rng.matrix(
-                            hidden,
+                        index_qk: ResidentMatrix::synthetic(
+                            rng.matrix(
+                                hidden,
+                                (config.indexer_n_heads + config.indexer_kv_heads)
+                                    * config.indexer_head_dim,
+                            ),
                             (config.indexer_n_heads + config.indexer_kv_heads)
                                 * config.indexer_head_dim,
                         ),
@@ -610,34 +728,25 @@ impl RuntimeWeights {
 
 impl GatedResidualWeights {
     fn from_tensors(
-        config: &Qwen4ExpTextConfig,
+        _config: &Qwen4ExpTextConfig,
         tensors: &mut HashMap<String, Tensor>,
         prefix: &str,
         combine: bool,
     ) -> Result<Self> {
-        let hc_hidden = config.hc_count * config.hidden_size;
         Ok(Self {
             norm: take_f32(tensors, &format!("{prefix}.hc_norm.weight"))?,
-            down: take_transposed(
+            down: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.input_mix_weight_down.weight"),
-                config.hc_lowrank,
-                hc_hidden,
-            )?,
-            up: take_transposed(
+            )?),
+            up: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.input_mix_weight_up.weight"),
-                hc_hidden,
-                config.hc_lowrank,
-            )?,
+            )?),
             inject: combine
                 .then(|| {
-                    take_transposed(
-                        tensors,
-                        &format!("{prefix}.block_inject_weight.weight"),
-                        config.hc_count,
-                        hc_hidden,
-                    )
+                    take_tensor(tensors, &format!("{prefix}.block_inject_weight.weight"))
+                        .map(ResidentMatrix::Checkpoint)
                 })
                 .transpose()?,
         })
@@ -647,9 +756,14 @@ impl GatedResidualWeights {
         let hc_hidden = config.hc_count * config.hidden_size;
         Self {
             norm: vec![0.0; hc_hidden],
-            down: rng.matrix(hc_hidden, config.hc_lowrank),
-            up: rng.matrix(config.hc_lowrank, hc_hidden),
-            inject: combine.then(|| rng.matrix(hc_hidden, config.hc_count)),
+            down: ResidentMatrix::synthetic(
+                rng.matrix(hc_hidden, config.hc_lowrank),
+                config.hc_lowrank,
+            ),
+            up: ResidentMatrix::synthetic(rng.matrix(config.hc_lowrank, hc_hidden), hc_hidden),
+            inject: combine.then(|| {
+                ResidentMatrix::synthetic(rng.matrix(hc_hidden, config.hc_count), config.hc_count)
+            }),
         }
     }
 }
@@ -668,40 +782,30 @@ impl GdnWeights {
             &conv.to_f32_vec()?,
         )?;
         Ok(Self {
-            in_qkv: take_transposed(
+            in_qkv: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.in_proj_qkv.weight"),
-                qkv,
-                config.hidden_size,
-            )?,
-            in_z: take_transposed(
+            )?),
+            in_z: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.in_proj_z.weight"),
-                config.linear_value_width(),
-                config.hidden_size,
-            )?,
-            in_a: take_transposed(
+            )?),
+            in_a: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.in_proj_a.weight"),
-                config.linear_num_value_heads,
-                config.hidden_size,
-            )?,
-            in_b: take_transposed(
+            )?),
+            in_b: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.in_proj_b.weight"),
-                config.linear_num_value_heads,
-                config.hidden_size,
-            )?,
+            )?),
             conv,
             a_log: take_f32_tensor(tensors, &format!("{prefix}.A_log"))?,
             dt_bias: take_f32_tensor(tensors, &format!("{prefix}.dt_bias"))?,
             norm: take_f32_tensor(tensors, &format!("{prefix}.norm.weight"))?,
-            out: take_transposed(
+            out: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.out_proj.weight"),
-                config.hidden_size,
-                config.linear_value_width(),
-            )?,
+            )?),
         })
     }
 }
@@ -713,37 +817,29 @@ impl QsaWeights {
         layer_prefix: &str,
     ) -> Result<Self> {
         let prefix = format!("{layer_prefix}.self_attn");
-        let packed_query = take_f32(tensors, &format!("{prefix}.q_proj.weight"))?;
-        let (q, gate) = deinterleave_query_gate(config, &packed_query);
         Ok(Self {
-            q,
-            gate,
-            k: take_transposed(
+            query_gate: QueryGateWeights::Checkpoint(take_tensor(
+                tensors,
+                &format!("{prefix}.q_proj.weight"),
+            )?),
+            k: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.k_proj.weight"),
-                config.full_kv_width(),
-                config.hidden_size,
-            )?,
-            v: take_transposed(
+            )?),
+            v: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.v_proj.weight"),
-                config.full_kv_width(),
-                config.hidden_size,
-            )?,
-            out: take_transposed(
+            )?),
+            out: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.o_proj.weight"),
-                config.hidden_size,
-                config.full_query_width(),
-            )?,
+            )?),
             q_norm: take_f32(tensors, &format!("{prefix}.q_norm.weight"))?,
             k_norm: take_f32(tensors, &format!("{prefix}.k_norm.weight"))?,
-            index_qk: take_transposed(
+            index_qk: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.indexer.index_qk_proj.weight"),
-                (config.indexer_n_heads + config.indexer_kv_heads) * config.indexer_head_dim,
-                config.hidden_size,
-            )?,
+            )?),
             index_q_norm: take_f32(tensors, &format!("{prefix}.indexer.q_layernorm.weight"))?,
             index_k_norm: take_f32(tensors, &format!("{prefix}.indexer.k_layernorm.weight"))?,
             selector: Qwen4ExpQsaSelector::new(
@@ -761,52 +857,45 @@ impl QsaWeights {
 
 impl MoeWeights {
     fn from_tensors(
-        config: &Qwen4ExpTextConfig,
+        _config: &Qwen4ExpTextConfig,
         tensors: &mut HashMap<String, Tensor>,
         layer_prefix: &str,
     ) -> Result<Self> {
         let prefix = format!("{layer_prefix}.mlp");
         Ok(Self {
-            router: take_transposed(
+            router: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.gate.weight"),
-                config.num_experts,
-                config.hidden_size,
-            )?,
+            )?),
             experts: ExpertWeights::Checkpoint {
                 gate_up: take_tensor(tensors, &format!("{prefix}.experts.gate_up_proj"))?,
                 down: take_tensor(tensors, &format!("{prefix}.experts.down_proj"))?,
             },
-            shared_gate: take_transposed(
+            shared_gate: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.shared_expert.gate_proj.weight"),
-                config.shared_expert_intermediate_size,
-                config.hidden_size,
-            )?,
-            shared_up: take_transposed(
+            )?),
+            shared_up: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.shared_expert.up_proj.weight"),
-                config.shared_expert_intermediate_size,
-                config.hidden_size,
-            )?,
-            shared_down: take_transposed(
+            )?),
+            shared_down: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.shared_expert.down_proj.weight"),
-                config.hidden_size,
-                config.shared_expert_intermediate_size,
-            )?,
-            shared_expert_gate: take_transposed(
+            )?),
+            shared_expert_gate: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.shared_expert_gate.weight"),
-                1,
-                config.hidden_size,
-            )?,
+            )?),
         })
     }
 
     fn synthetic(config: &Qwen4ExpTextConfig, rng: &mut SyntheticRng) -> Self {
         Self {
-            router: rng.matrix(config.hidden_size, config.num_experts),
+            router: ResidentMatrix::synthetic(
+                rng.matrix(config.hidden_size, config.num_experts),
+                config.num_experts,
+            ),
             experts: ExpertWeights::Synthetic {
                 gate_up: (0..config.num_experts)
                     .map(|_| rng.matrix(config.hidden_size, 2 * config.moe_intermediate_size))
@@ -815,10 +904,19 @@ impl MoeWeights {
                     .map(|_| rng.matrix(config.moe_intermediate_size, config.hidden_size))
                     .collect(),
             },
-            shared_gate: rng.matrix(config.hidden_size, config.shared_expert_intermediate_size),
-            shared_up: rng.matrix(config.hidden_size, config.shared_expert_intermediate_size),
-            shared_down: rng.matrix(config.shared_expert_intermediate_size, config.hidden_size),
-            shared_expert_gate: rng.matrix(config.hidden_size, 1),
+            shared_gate: ResidentMatrix::synthetic(
+                rng.matrix(config.hidden_size, config.shared_expert_intermediate_size),
+                config.shared_expert_intermediate_size,
+            ),
+            shared_up: ResidentMatrix::synthetic(
+                rng.matrix(config.hidden_size, config.shared_expert_intermediate_size),
+                config.shared_expert_intermediate_size,
+            ),
+            shared_down: ResidentMatrix::synthetic(
+                rng.matrix(config.shared_expert_intermediate_size, config.hidden_size),
+                config.hidden_size,
+            ),
+            shared_expert_gate: ResidentMatrix::synthetic(rng.matrix(config.hidden_size, 1), 1),
         }
     }
 }
@@ -868,18 +966,14 @@ impl PleWeights {
                 config.seed,
             ),
             head_dim,
-            key: take_transposed(
+            key: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.key_proj.weight"),
-                config.hc_count * config.hidden_size,
-                config.ple_embed_dim,
-            )?,
-            value: take_transposed(
+            )?),
+            value: ResidentMatrix::Checkpoint(take_tensor(
                 tensors,
                 &format!("{prefix}.value_proj.weight"),
-                config.hidden_size,
-                config.ple_embed_dim,
-            )?,
+            )?),
             norm_key: take_f32(tensors, &format!("{prefix}.norm_key.weight"))?,
             norm_query: take_f32(tensors, &format!("{prefix}.norm_query.weight"))?,
             norm_conv: take_f32(tensors, &format!("{prefix}.norm_conv.weight"))?,
@@ -911,8 +1005,14 @@ impl PleWeights {
                 config.seed,
             ),
             head_dim,
-            key: rng.matrix(config.ple_embed_dim, config.hc_count * config.hidden_size),
-            value: rng.matrix(config.ple_embed_dim, config.hidden_size),
+            key: ResidentMatrix::synthetic(
+                rng.matrix(config.ple_embed_dim, config.hc_count * config.hidden_size),
+                config.hc_count * config.hidden_size,
+            ),
+            value: ResidentMatrix::synthetic(
+                rng.matrix(config.ple_embed_dim, config.hidden_size),
+                config.hidden_size,
+            ),
             norm_key: vec![0.0; config.hc_count * config.hidden_size],
             norm_query: vec![0.0; config.hc_count * config.hidden_size],
             norm_conv: vec![0.0; config.hc_count * config.hidden_size],
@@ -946,11 +1046,15 @@ fn run_gated_residual(
         config.hidden_size,
         config.rms_norm_eps,
     );
-    let down = linear(&normalized, &weights.down, config.hc_lowrank)
+    let down = weights
+        .down
+        .apply(&normalized)?
         .into_iter()
         .map(|value| silu(value / config.hc_count as f32))
         .collect::<Vec<_>>();
-    let mix_weights = linear(&down, &weights.up, hc_hidden)
+    let mix_weights = weights
+        .up
+        .apply(&down)?
         .into_iter()
         .map(sigmoid)
         .collect::<Vec<_>>();
@@ -962,17 +1066,14 @@ fn run_gated_residual(
         }
     }
     let injection = if combine {
-        linear(
-            &normalized,
-            weights
-                .inject
-                .as_ref()
-                .ok_or_else(|| Error::Other("qwen4-exp injection weights missing".into()))?,
-            config.hc_count,
-        )
-        .into_iter()
-        .map(|value| 2.0 * sigmoid(value / config.hc_count as f32))
-        .collect()
+        weights
+            .inject
+            .as_ref()
+            .ok_or_else(|| Error::Other("qwen4-exp injection weights missing".into()))?
+            .apply(&normalized)?
+            .into_iter()
+            .map(|value| 2.0 * sigmoid(value / config.hc_count as f32))
+            .collect()
     } else {
         Vec::new()
     };
@@ -1004,10 +1105,7 @@ fn run_gdn(
     let key_width = config.linear_key_width();
     let value_width = config.linear_value_width();
     let qkv_width = 2 * key_width + value_width;
-    let qkv = Tensor::from_f32(
-        vec![1, qkv_width],
-        &linear(hidden, &weights.in_qkv, qkv_width),
-    )?;
+    let qkv = Tensor::from_f32(vec![1, qkv_width], &weights.in_qkv.apply(hidden)?)?;
     let (qkv, next_conv) =
         backend.causal_depthwise_conv1d(&qkv, &weights.conv, None, state.conv.as_ref())?;
     let qkv = backend.silu(&qkv)?.to_f32_vec()?;
@@ -1032,11 +1130,11 @@ fn run_gdn(
     )?;
     let a = Tensor::from_f32(
         vec![1, config.linear_num_value_heads],
-        &linear(hidden, &weights.in_a, config.linear_num_value_heads),
+        &weights.in_a.apply(hidden)?,
     )?;
     let b = Tensor::from_f32(
         vec![1, config.linear_num_value_heads],
-        &linear(hidden, &weights.in_b, config.linear_num_value_heads),
+        &weights.in_b.apply(hidden)?,
     )?;
     let (core, recurrent) = backend.gated_delta_recurrent(
         &q,
@@ -1055,12 +1153,12 @@ fn run_gdn(
     let core = backend
         .rms_norm(&core, &weights.norm, config.rms_norm_eps)?
         .to_f32_vec()?;
-    let z = linear(hidden, &weights.in_z, value_width)
-        .into_iter()
-        .map(|value| match config.output_gate_type.as_str() {
+    let z = weights.in_z.apply(hidden)?.into_iter().map(|value| {
+        match config.output_gate_type.as_str() {
             "sigmoid" => sigmoid(value),
             _ => silu(value),
-        });
+        }
+    });
     let gated = core
         .into_iter()
         .zip(z)
@@ -1068,7 +1166,7 @@ fn run_gdn(
         .collect::<Vec<_>>();
     state.conv = Some(next_conv);
     state.recurrent = Some(recurrent);
-    Ok(linear(&gated, &weights.out, config.hidden_size))
+    weights.out.apply(&gated)
 }
 
 fn run_qsa(
@@ -1078,28 +1176,21 @@ fn run_qsa(
     weights: &QsaWeights,
     state: &mut QsaState,
 ) -> Result<Vec<f32>> {
-    let mut query = linear(hidden, &weights.q, config.full_query_width());
-    let gate = linear(hidden, &weights.gate, config.full_query_width())
-        .into_iter()
-        .map(sigmoid)
-        .collect::<Vec<_>>();
+    let (mut query, gate) = weights.query_gate.apply(config, hidden)?;
+    let gate = gate.into_iter().map(sigmoid).collect::<Vec<_>>();
     for head in query.chunks_exact_mut(config.head_dim) {
         let source = head.to_vec();
         rms_norm_zero_centered_into(&source, &weights.q_norm, config.rms_norm_eps, head);
         apply_partial_rope(head, config.rotary_dim(), config.rope.theta, position);
     }
-    let mut key = linear(hidden, &weights.k, config.full_kv_width());
+    let mut key = weights.k.apply(hidden)?;
     for head in key.chunks_exact_mut(config.head_dim) {
         let source = head.to_vec();
         rms_norm_zero_centered_into(&source, &weights.k_norm, config.rms_norm_eps, head);
         apply_partial_rope(head, config.rotary_dim(), config.rope.theta, position);
     }
-    let value = linear(hidden, &weights.v, config.full_kv_width());
-    let index_qk = linear(
-        hidden,
-        &weights.index_qk,
-        (config.indexer_n_heads + config.indexer_kv_heads) * config.indexer_head_dim,
-    );
+    let value = weights.v.apply(hidden)?;
+    let index_qk = weights.index_qk.apply(hidden)?;
     let query_width = config.indexer_n_heads * config.indexer_head_dim;
     let index_query = &index_qk[..query_width];
     state.raw_keys.extend_from_slice(&index_qk[query_width..]);
@@ -1141,11 +1232,11 @@ fn run_qsa(
     for (attention, gate) in attention.iter_mut().zip(gate) {
         *attention *= gate;
     }
-    Ok(linear(&attention, &weights.out, config.hidden_size))
+    weights.out.apply(&attention)
 }
 
 fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) -> Result<Vec<f32>> {
-    let mut probabilities = linear(hidden, &weights.router, config.num_experts);
+    let mut probabilities = weights.router.apply(hidden)?;
     softmax_in_place(&mut probabilities);
     let mut ranked = probabilities
         .iter()
@@ -1175,23 +1266,15 @@ fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) ->
             *output += probability * value;
         }
     }
-    let shared_gate = linear(
-        hidden,
-        &weights.shared_gate,
-        config.shared_expert_intermediate_size,
-    );
-    let shared_up = linear(
-        hidden,
-        &weights.shared_up,
-        config.shared_expert_intermediate_size,
-    );
+    let shared_gate = weights.shared_gate.apply(hidden)?;
+    let shared_up = weights.shared_up.apply(hidden)?;
     let shared = shared_gate
         .into_iter()
         .zip(shared_up)
         .map(|(gate, up)| silu(gate) * up)
         .collect::<Vec<_>>();
-    let shared = linear(&shared, &weights.shared_down, config.hidden_size);
-    let gate = sigmoid(linear(hidden, &weights.shared_expert_gate, 1)[0]);
+    let shared = weights.shared_down.apply(&shared)?;
+    let gate = sigmoid(weights.shared_expert_gate.apply(hidden)?[0]);
     for (output, shared) in output.iter_mut().zip(shared) {
         *output += gate * shared;
     }
@@ -1224,12 +1307,8 @@ fn run_ple(
             head += 1;
         }
     }
-    let key = linear(
-        &embedding,
-        &weights.key,
-        config.hc_count * config.hidden_size,
-    );
-    let value = linear(&embedding, &weights.value, config.hidden_size);
+    let key = weights.key.apply(&embedding)?;
+    let value = weights.value.apply(&embedding)?;
     let key = grouped_rms_norm(
         &key,
         &weights.norm_key,
@@ -1308,15 +1387,6 @@ fn take_f32_tensor(tensors: &mut HashMap<String, Tensor>, name: &str) -> Result<
     Tensor::from_f32(tensor.shape().dims().to_vec(), &tensor.to_f32_vec()?)
 }
 
-fn take_transposed(
-    tensors: &mut HashMap<String, Tensor>,
-    name: &str,
-    rows: usize,
-    columns: usize,
-) -> Result<Vec<f32>> {
-    Ok(transpose_matrix(&take_f32(tensors, name)?, rows, columns))
-}
-
 fn append_tensor_values(
     tensor: &Tensor,
     start: usize,
@@ -1390,41 +1460,6 @@ fn linear_checkpoint_matrix(
         }
     }
     Ok(output)
-}
-
-fn transpose_matrix(input: &[f32], rows: usize, columns: usize) -> Vec<f32> {
-    debug_assert_eq!(input.len(), rows * columns);
-    let mut output = vec![0.0; input.len()];
-    for row in 0..rows {
-        for column in 0..columns {
-            output[column * rows + row] = input[row * columns + column];
-        }
-    }
-    output
-}
-
-fn deinterleave_query_gate(config: &Qwen4ExpTextConfig, packed: &[f32]) -> (Vec<f32>, Vec<f32>) {
-    let query_width = config.full_query_width();
-    debug_assert_eq!(
-        packed.len(),
-        config.full_q_projection_width() * config.hidden_size
-    );
-    let mut query = vec![0.0; config.hidden_size * query_width];
-    let mut gate = vec![0.0; config.hidden_size * query_width];
-    for input in 0..config.hidden_size {
-        for head in 0..config.n_attention_heads {
-            for column in 0..config.head_dim {
-                let output = head * config.head_dim + column;
-                let packed_query = head * 2 * config.head_dim + column;
-                let packed_gate = packed_query + config.head_dim;
-                query[input * query_width + output] =
-                    packed[packed_query * config.hidden_size + input];
-                gate[input * query_width + output] =
-                    packed[packed_gate * config.hidden_size + input];
-            }
-        }
-    }
-    (query, gate)
 }
 
 fn grouped_rms_norm(
@@ -1685,6 +1720,49 @@ mod tests {
     fn keeps_routed_experts_and_ple_shards_bf16_resident() {
         let (config, tensors) = crate::qwen4_exp::weights::tests::zero_bf16_runtime_tensors();
         let mut model = GeneralQwen4Exp::from_tensors(config, tensors, 64).unwrap();
+        let assert_matrix_bf16 = |matrix: &ResidentMatrix| match matrix {
+            ResidentMatrix::Checkpoint(tensor) => assert_eq!(tensor.dtype(), DType::BF16),
+            ResidentMatrix::Synthetic { .. } => panic!("checkpoint matrix was expanded"),
+        };
+        match &model.weights.token_embedding {
+            ResidentEmbedding::Checkpoint(tensor) => assert_eq!(tensor.dtype(), DType::BF16),
+            ResidentEmbedding::Synthetic(_) => panic!("checkpoint embedding was expanded"),
+        }
+        assert_matrix_bf16(&model.weights.lm_head);
+        assert_matrix_bf16(&model.weights.layers[0].attention_connection.down);
+        assert_matrix_bf16(&model.weights.layers[0].attention_connection.up);
+        assert_matrix_bf16(
+            model.weights.layers[0]
+                .attention_connection
+                .inject
+                .as_ref()
+                .unwrap(),
+        );
+        match &model.weights.layers[0].attention {
+            AttentionWeights::Linear(weights) => {
+                assert_matrix_bf16(&weights.in_qkv);
+                assert_matrix_bf16(&weights.in_z);
+                assert_matrix_bf16(&weights.out);
+            }
+            AttentionWeights::Qsa(_) => panic!("layer zero must be GDN"),
+        }
+        match &model.weights.layers[3].attention {
+            AttentionWeights::Qsa(weights) => {
+                match &weights.query_gate {
+                    QueryGateWeights::Checkpoint(tensor) => {
+                        assert_eq!(tensor.dtype(), DType::BF16)
+                    }
+                    QueryGateWeights::Synthetic { .. } => {
+                        panic!("checkpoint query gate was expanded")
+                    }
+                }
+                assert_matrix_bf16(&weights.k);
+                assert_matrix_bf16(&weights.v);
+                assert_matrix_bf16(&weights.out);
+                assert_matrix_bf16(&weights.index_qk);
+            }
+            AttentionWeights::Linear(_) => panic!("layer three must be QSA"),
+        }
         match &model.weights.layers[0].moe.experts {
             ExpertWeights::Checkpoint { gate_up, down } => {
                 assert_eq!(gate_up.dtype(), DType::BF16);
@@ -1692,6 +1770,9 @@ mod tests {
             }
             ExpertWeights::Synthetic { .. } => panic!("checkpoint experts were expanded"),
         }
+        assert_matrix_bf16(&model.weights.layers[0].moe.router);
+        assert_matrix_bf16(&model.weights.layers[0].moe.shared_gate);
+        assert_matrix_bf16(&model.weights.layers[0].moe.shared_down);
         match &model.weights.layers[1].ple.as_ref().unwrap().embedding {
             PleEmbedding::Checkpoint { shards, row_ends } => {
                 assert_eq!(shards.len(), 2);
@@ -1700,6 +1781,8 @@ mod tests {
             }
             PleEmbedding::Synthetic(_) => panic!("checkpoint PLE was concatenated"),
         }
+        assert_matrix_bf16(&model.weights.layers[1].ple.as_ref().unwrap().key);
+        assert_matrix_bf16(&model.weights.layers[1].ple.as_ref().unwrap().value);
         let logits = model.forward(&[1, 3, 5], 0).unwrap();
         assert!(logits
             .as_f32()
@@ -1744,18 +1827,27 @@ mod tests {
         let packed = (0..text.full_q_projection_width() * text.hidden_size)
             .map(|value| value as f32)
             .collect::<Vec<_>>();
-        let (query, gate) = deinterleave_query_gate(text, &packed);
+        let weights = QueryGateWeights::Checkpoint(
+            Tensor::from_f32(
+                vec![text.full_q_projection_width(), text.hidden_size],
+                &packed,
+            )
+            .unwrap(),
+        );
         for input in 0..text.hidden_size {
+            let mut hidden = vec![0.0; text.hidden_size];
+            hidden[input] = 1.0;
+            let (query, gate) = weights.apply(text, &hidden).unwrap();
             for head in 0..text.n_attention_heads {
                 for column in 0..text.head_dim {
                     let output = head * text.head_dim + column;
                     let packed_query = head * 2 * text.head_dim + column;
                     assert_eq!(
-                        query[input * text.full_query_width() + output],
+                        query[output],
                         packed[packed_query * text.hidden_size + input]
                     );
                     assert_eq!(
-                        gate[input * text.full_query_width() + output],
+                        gate[output],
                         packed[(packed_query + text.head_dim) * text.hidden_size + input]
                     );
                 }

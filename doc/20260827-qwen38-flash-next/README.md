@@ -75,8 +75,10 @@ per-layer activations and greedy tokens.
 - The official text path contains 176,943,899,520 parameters and the current
   all-F32 pack needed at least 659 GiB. Routed experts now remain in their packed
   checkpoint BF16 tensors and PLE performs row lookup across the original 128
-  BF16 shards, without whole-table concatenation. The measured contract floor
-  is now 339 GiB (-48.6%); other weights and arithmetic remain F32. The 180B
+  BF16 shards, without whole-table concatenation. All other checkpoint matrices
+  retain their published BF16 `[out,in]` layout and multiply without a transpose
+  copy. The measured contract floor is now about 330 GiB, within roughly 5 MiB
+  of the all-BF16 floor; small norm/conv weights and arithmetic remain F32. The 180B
   checkpoint therefore remains unexecuted on this 16 GiB host; CUDA,
   distributed execution, vision, and MTP remain explicit errors or non-goals.
 
