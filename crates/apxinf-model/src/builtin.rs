@@ -58,10 +58,11 @@ fn load_qwen4_exp(
             .iter()
             .cloned()
             .collect::<HashSet<_>>();
-        let (tensors, _) = apxinf_loader::safetensors::load_native_path_filtered(path, |name| {
-            runtime_names.contains(name)
-        })
-        .map_err(|error| Error::Other(format!("load {}: {error}", path.display())))?;
+        let (tensors, _) =
+            apxinf_loader::safetensors::load_native_path_mmap_filtered(path, |name| {
+                runtime_names.contains(name)
+            })
+            .map_err(|error| Error::Other(format!("load {}: {error}", path.display())))?;
         GeneralQwen4Exp::from_tensors_with_backend(config, tensors, max_context, backend)?
     };
     Ok(LoadedModel::text(Box::new(model)))

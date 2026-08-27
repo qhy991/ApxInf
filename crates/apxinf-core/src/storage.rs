@@ -8,8 +8,22 @@ use crate::Device;
 /// handle that the backend crate interprets.
 #[derive(Debug, Clone)]
 pub enum Storage {
-    /// CPU-side contiguous byte buffer.
-    Cpu(Vec<u8>),
+    /// CPU-side contiguous byte buffer. Metadata-only tensor views share the
+    /// allocation; mutable access uses copy-on-write.
+    Cpu(Arc<Vec<u8>>),
+    /// CPU-side F32 allocation retained in its native element type.
+    ///
+    /// Keeping operation outputs as `Vec<f32>` avoids copying every freshly
+    /// computed tensor into a second byte vector. Byte-oriented callers still
+    /// see the same contiguous representation through [`Self::as_cpu`].
+    CpuF32(Arc<Vec<f32>>),
+    /// Read-only byte range backed by a file mapping. Tensor clones and views
+    /// share the mapping without copying checkpoint payloads.
+    CpuMmap {
+        mapping: Arc<memmap2::Mmap>,
+        offset: usize,
+        len: usize,
+    },
     /// GPU storage owned by the CUDA backend.
     Gpu {
         device: Device,
@@ -43,18 +57,36 @@ impl std::fmt::Debug for GpuStorageHandle {
 impl Storage {
     /// Create a zeroed CPU buffer.
     pub fn cpu_zeros(num_bytes: usize) -> Self {
-        Storage::Cpu(vec![0u8; num_bytes])
+        Storage::Cpu(Arc::new(vec![0u8; num_bytes]))
     }
 
     /// Create a CPU buffer from existing bytes.
     pub fn cpu_from_bytes(data: Vec<u8>) -> Self {
-        Storage::Cpu(data)
+        Storage::Cpu(Arc::new(data))
+    }
+
+    /// Take ownership of an existing F32 allocation without copying it.
+    pub fn cpu_from_f32(data: Vec<f32>) -> Self {
+        Storage::CpuF32(Arc::new(data))
+    }
+
+    pub fn cpu_from_mmap(mapping: Arc<memmap2::Mmap>, offset: usize, len: usize) -> Option<Self> {
+        offset
+            .checked_add(len)
+            .filter(|end| *end <= mapping.len())
+            .map(|_| Storage::CpuMmap {
+                mapping,
+                offset,
+                len,
+            })
     }
 
     /// Number of bytes in this storage.
     pub fn len(&self) -> usize {
         match self {
             Storage::Cpu(v) => v.len(),
+            Storage::CpuF32(v) => v.len() * std::mem::size_of::<f32>(),
+            Storage::CpuMmap { len, .. } => *len,
             Storage::Gpu { handle, .. } => handle.len,
         }
     }
@@ -67,7 +99,13 @@ impl Storage {
     /// Get a reference to the CPU data, or `None` if on GPU.
     pub fn as_cpu(&self) -> Option<&[u8]> {
         match self {
-            Storage::Cpu(v) => Some(v),
+            Storage::Cpu(v) => Some(v.as_slice()),
+            Storage::CpuF32(v) => Some(bytemuck::cast_slice(v.as_slice())),
+            Storage::CpuMmap {
+                mapping,
+                offset,
+                len,
+            } => Some(&mapping[*offset..*offset + *len]),
             Storage::Gpu { .. } => None,
         }
     }
@@ -75,7 +113,9 @@ impl Storage {
     /// Get a mutable reference to the CPU data, or `None` if on GPU.
     pub fn as_cpu_mut(&mut self) -> Option<&mut [u8]> {
         match self {
-            Storage::Cpu(v) => Some(v),
+            Storage::Cpu(v) => Some(Arc::make_mut(v).as_mut_slice()),
+            Storage::CpuF32(v) => Some(bytemuck::cast_slice_mut(Arc::make_mut(v).as_mut_slice())),
+            Storage::CpuMmap { .. } => None,
             Storage::Gpu { .. } => None,
         }
     }
@@ -83,7 +123,7 @@ impl Storage {
     /// Get a reference to the GPU handle, or `None` if on CPU.
     pub fn as_gpu(&self) -> Option<&GpuStorageHandle> {
         match self {
-            Storage::Cpu(_) => None,
+            Storage::Cpu(_) | Storage::CpuF32(_) | Storage::CpuMmap { .. } => None,
             Storage::Gpu { handle, .. } => Some(handle),
         }
     }

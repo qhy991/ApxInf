@@ -77,9 +77,11 @@ per-layer activations and greedy tokens.
   checkpoint BF16 tensors and PLE performs row lookup across the original 128
   BF16 shards, without whole-table concatenation. All other checkpoint matrices
   retain their published BF16 `[out,in]` layout and multiply without a transpose
-  copy. The measured contract floor is now about 330 GiB, within roughly 5 MiB
-  of the all-BF16 floor; small norm/conv weights and arithmetic remain F32. The 180B
-  checkpoint therefore remains unexecuted on this 16 GiB host; CUDA,
+  copy. SafeTensors payloads are read-only mmap ranges, so startup copies zero
+  payload bytes and physical RSS is demand-paged; about 330 GiB is the logical
+  mapped text weight size, within roughly 5 MiB of the all-BF16 floor. Small
+  norm/conv weights and arithmetic remain F32. The 180B checkpoint remains
+  unstaged and unexecuted on this host with about 21 GiB free; CUDA,
   distributed execution, vision, and MTP remain explicit errors or non-goals.
 
 ## Reproduce the no-weight gates

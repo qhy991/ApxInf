@@ -37,11 +37,13 @@ reconstructs deterministic PLE integer buffers while ignoring only the vision
 and MTP towers. Routed experts stay packed in their checkpoint BF16 tensors;
 PLE embeddings stay in 128 BF16 shards and are decoded by row on demand. All
 checkpoint matrices retain their published layout and dtype; only small
-normalization/convolution weights and all arithmetic remain F32. This lowers
-the official resident estimate from 659 GiB to about 330 GiB, within roughly
-5 MiB of the all-BF16 weight floor. CUDA, vision input, and MTP still fail closed;
-no code silently falls back to Qwen3.5, and the 180B checkpoint still cannot run
-on the 16 GiB development Mac. The exact contract, upstream hashes, oracle,
+normalization/convolution weights and all arithmetic remain F32. SafeTensors
+payloads are read-only mmap ranges: startup copies zero checkpoint payload
+bytes and physical RSS is demand-paged, while the logical mapped text weights
+remain about 330 GiB. CUDA, vision input, and MTP still fail closed; no code
+silently falls back to Qwen3.5. The 180B checkpoint is not staged on the
+development Mac because it has only about 21 GiB free. The exact contract,
+upstream hashes, oracle,
 current limitations, and checkpoint-free QSA measurements are recorded in
 [the Qwen3.8-Flash-Next bring-up](doc/20260827-qwen38-flash-next/README.md).
 

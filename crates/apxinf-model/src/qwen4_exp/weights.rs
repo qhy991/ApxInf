@@ -212,7 +212,7 @@ impl Qwen4ExpWeightSchema {
             .ok_or_else(|| Error::Other("qwen4-exp F32 runtime byte count overflow".into()))
     }
 
-    pub fn runtime_hybrid_resident_bytes(&self) -> Result<u64> {
+    pub fn runtime_hybrid_weight_bytes(&self) -> Result<u64> {
         let mut bytes = 0u64;
         let mut ple_groups = HashSet::new();
         for name in &self.runtime_names {
@@ -734,7 +734,7 @@ pub(crate) mod tests {
             .any(|name| name.contains("shard_2.weight")));
         assert!(schema.runtime_f32_bytes().unwrap() > 0);
         assert!(
-            schema.runtime_hybrid_resident_bytes().unwrap() < schema.runtime_f32_bytes().unwrap()
+            schema.runtime_hybrid_weight_bytes().unwrap() < schema.runtime_f32_bytes().unwrap()
         );
     }
 

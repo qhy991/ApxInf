@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let index = std::fs::read_to_string(&index_path)?;
     let validation = schema.validate_index_json_str(&index)?;
     let runtime_f32_bytes = schema.runtime_f32_bytes()?;
-    let runtime_hybrid_resident_bytes = schema.runtime_hybrid_resident_bytes()?;
+    let runtime_hybrid_weight_bytes = schema.runtime_hybrid_weight_bytes()?;
     let runtime_validation = header_manifest
         .map(|path| validate_header_manifest(&schema, &path))
         .transpose()?;
@@ -53,7 +53,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "text_tensors": validation.text_tensors,
                 "runtime_tensors": validation.runtime_tensors,
                 "runtime_f32_bytes": runtime_f32_bytes,
-                "runtime_hybrid_resident_bytes": runtime_hybrid_resident_bytes,
+                "runtime_hybrid_weight_bytes": runtime_hybrid_weight_bytes,
+                "checkpoint_payload_copy_bytes": 0,
                 "ignored_vision_tensors": validation.ignored_vision_tensors,
                 "ignored_mtp_tensors": validation.ignored_mtp_tensors,
                 "runtime_metadata": runtime_validation.map(|validation| serde_json::json!({

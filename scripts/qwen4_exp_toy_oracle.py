@@ -142,12 +142,15 @@ def main() -> int:
     top1_equal = rust_logits.argmax(dim=-1).eq(stepwise.argmax(dim=-1))
     one_shot_stepwise_max_abs = (one_shot - stepwise).abs().max().item()
     finite = bool(torch.isfinite(rust_logits).all() and torch.isfinite(stepwise).all())
-    checkpoint_path_observed = rust.get("generation_path", {}).get("weights") == "checkpoint"
+    generation_path = rust.get("generation_path", {})
+    checkpoint_path_observed = generation_path.get("weights") == "checkpoint"
+    checkpoint_payloads_mmap = generation_path.get("checkpoint_payloads_mmap") is True
     passed = (
         finite
         and max_abs <= args.max_abs
         and bool(top1_equal.all())
         and checkpoint_path_observed
+        and checkpoint_payloads_mmap
     )
     report = {
         "format": "apxinf-qwen4-exp-toy-oracle-v1",
@@ -170,6 +173,7 @@ def main() -> int:
             "top1_equal": top1_equal.tolist(),
             "one_shot_vs_stepwise_max_abs": one_shot_stepwise_max_abs,
             "checkpoint_path_observed": checkpoint_path_observed,
+            "checkpoint_payloads_mmap": checkpoint_payloads_mmap,
         },
         "rust": {
             "checksum": rust["checksum"],

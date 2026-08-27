@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .cloned()
         .collect::<HashSet<_>>();
     let (tensors, _) =
-        apxinf_loader::safetensors::load_native_path_filtered(&checkpoint_path, |name| {
+        apxinf_loader::safetensors::load_native_path_mmap_filtered(&checkpoint_path, |name| {
             runtime_names.contains(name)
         })?;
     let mut model = GeneralQwen4Exp::from_tensors(config, tensors, tokens.len() + 8)?;

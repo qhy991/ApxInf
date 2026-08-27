@@ -83,6 +83,7 @@ dependencies = [
  "cblas",
  "half",
  "libc",
+ "memmap2",
  "thiserror",
 ]
 

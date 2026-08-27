@@ -22,6 +22,7 @@ pub struct GeneralQwen4Exp {
     backend: Arc<dyn Backend>,
     max_context: usize,
     weight_source: &'static str,
+    checkpoint_payloads_mmap: bool,
 }
 
 impl GeneralQwen4Exp {
@@ -56,6 +57,9 @@ impl GeneralQwen4Exp {
         }
         let schema = Qwen4ExpWeightSchema::new(&config)?;
         schema.validate_runtime_metadata(&metadata_from_tensors(&tensors))?;
+        let checkpoint_payloads_mmap = tensors
+            .values()
+            .all(|tensor| matches!(tensor.storage(), apxinf_core::Storage::CpuMmap { .. }));
         let weights = RuntimeWeights::from_tensors(&config.text, tensors)?;
         let state = RuntimeState::new(&config.text);
         let max_context = requested_max_context.min(config.text.max_position_embeddings);
@@ -66,6 +70,7 @@ impl GeneralQwen4Exp {
             backend,
             max_context,
             weight_source: "checkpoint",
+            checkpoint_payloads_mmap,
         })
     }
 
@@ -104,6 +109,7 @@ impl GeneralQwen4Exp {
             backend,
             max_context,
             weight_source: "deterministic-synthetic",
+            checkpoint_payloads_mmap: false,
         })
     }
 
@@ -207,6 +213,7 @@ impl LlmTrait for GeneralQwen4Exp {
         Some(serde_json::json!({
             "format": "apxinf-qwen4-exp-synthetic-text-v1",
             "weights": self.weight_source,
+            "checkpoint_payloads_mmap": self.checkpoint_payloads_mmap,
             "device": "cpu-f32",
             "position": self.state.position,
             "layers": self.config.text.n_layers,
@@ -1810,10 +1817,14 @@ mod tests {
             .cloned()
             .collect::<HashSet<_>>();
         let (loaded, _) =
-            apxinf_loader::safetensors::load_native_path_filtered(&checkpoint, |name| {
+            apxinf_loader::safetensors::load_native_path_mmap_filtered(&checkpoint, |name| {
                 runtime_names.contains(name)
             })
             .unwrap();
+        assert!(matches!(
+            loaded["model.language_model.embed_tokens.weight"].storage(),
+            apxinf_core::Storage::CpuMmap { .. }
+        ));
         let mut model = GeneralQwen4Exp::from_tensors(config, loaded, 64).unwrap();
         let logits = model.forward(&[1, 3, 5], 0).unwrap();
         assert_eq!(logits.shape().dims(), [3, 32]);
