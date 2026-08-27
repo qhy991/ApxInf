@@ -80,7 +80,8 @@ per-layer activations and greedy tokens.
   copy. SafeTensors payloads are read-only mmap ranges, so startup copies zero
   payload bytes and physical RSS is demand-paged; about 330 GiB is the logical
   mapped text weight size, within roughly 5 MiB of the all-BF16 floor. Small
-  norm/conv weights and arithmetic remain F32. The 180B checkpoint remains
+  norm/conv weights and arithmetic remain F32. Shard files are an immutable
+  runtime input for the lifetime of the mappings. The 180B checkpoint remains
   unstaged and unexecuted on this host with about 21 GiB free; CUDA,
   distributed execution, vision, and MTP remain explicit errors or non-goals.
 

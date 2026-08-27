@@ -54,8 +54,11 @@ impl Tensor {
                 "memory-mapped tensor offset {offset} is not aligned for {dtype}"
             )));
         }
-        let storage = Storage::cpu_from_mmap(mapping, offset, expected)
-            .ok_or(Error::DataLengthMismatch { expected, got: 0 })?;
+        let storage = Storage::cpu_from_mmap(mapping, offset, expected).ok_or_else(|| {
+            Error::Other(format!(
+                "memory-mapped tensor range offset={offset}, bytes={expected} exceeds mapping"
+            ))
+        })?;
         Ok(Self {
             shape,
             dtype,

@@ -499,8 +499,30 @@ fn load_impl_filtered_mapping(
             .ok_or_else(|| format!("unsupported dtype '{}' for tensor '{name}'", info.dtype))?;
 
         let [start, end] = info.data_offsets;
-        let abs_start = data_start + start;
-        let abs_end = data_start + end;
+        let declared_bytes = end
+            .checked_sub(start)
+            .ok_or_else(|| format!("tensor '{name}': reversed data_offsets [{start}, {end}]"))?;
+        let expected_bytes = info
+            .shape
+            .iter()
+            .try_fold(1usize, |product, dimension| {
+                product
+                    .checked_mul(*dimension)
+                    .ok_or_else(|| format!("tensor '{name}': shape element count overflows usize"))
+            })?
+            .checked_mul(dtype.size_in_bytes())
+            .ok_or_else(|| format!("tensor '{name}': byte count overflows usize"))?;
+        if declared_bytes != expected_bytes {
+            return Err(format!(
+                "tensor '{name}': data_offsets declare {declared_bytes} bytes, shape/dtype require {expected_bytes}"
+            ));
+        }
+        let abs_start = data_start
+            .checked_add(start)
+            .ok_or_else(|| format!("tensor '{name}': start offset overflows usize"))?;
+        let abs_end = data_start
+            .checked_add(end)
+            .ok_or_else(|| format!("tensor '{name}': end offset overflows usize"))?;
 
         if abs_end > mmap.len() {
             return Err(format!(
@@ -797,6 +819,28 @@ mod tests {
             apxinf_core::Storage::CpuMmap { .. }
         ));
         assert_eq!(tensors["keep"].as_f32().unwrap(), &[2.5]);
+    }
+
+    #[test]
+    fn malformed_tensor_offsets_fail_without_slice_panics() {
+        for (header, expected) in [
+            (
+                r#"{"x":{"dtype":"F32","shape":[1],"data_offsets":[4,0]}}"#,
+                "reversed data_offsets",
+            ),
+            (
+                r#"{"x":{"dtype":"F32","shape":[2],"data_offsets":[0,4]}}"#,
+                "shape/dtype require 8",
+            ),
+        ] {
+            let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(header.as_bytes());
+            bytes.extend_from_slice(&[0u8; 8]);
+            let mut tmp = NamedTempFile::new().unwrap();
+            tmp.write_all(&bytes).unwrap();
+            let error = load_native_path_mmap_filtered(tmp.path(), |_| true).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
     }
 
     #[test]

@@ -40,7 +40,8 @@ checkpoint matrices retain their published layout and dtype; only small
 normalization/convolution weights and all arithmetic remain F32. SafeTensors
 payloads are read-only mmap ranges: startup copies zero checkpoint payload
 bytes and physical RSS is demand-paged, while the logical mapped text weights
-remain about 330 GiB. CUDA, vision input, and MTP still fail closed; no code
+remain about 330 GiB. Checkpoint shard files must remain immutable while a
+model is loaded. CUDA, vision input, and MTP still fail closed; no code
 silently falls back to Qwen3.5. The 180B checkpoint is not staged on the
 development Mac because it has only about 21 GiB free. The exact contract,
 upstream hashes, oracle,
