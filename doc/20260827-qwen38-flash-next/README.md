@@ -73,9 +73,12 @@ per-layer activations and greedy tokens.
   absolute error with 5/5 top-1 agreement. See
   `source-contract-and-toy-oracle-v1.json`.
 - The official text path contains 176,943,899,520 parameters and the current
-  F32 pack needs at least 659 GiB. The 180B checkpoint therefore remains
-  unexecuted on this 16 GiB host; CUDA/BF16, distributed execution, vision, and
-  MTP remain explicit errors or non-goals for this slice.
+  all-F32 pack needed at least 659 GiB. Routed experts now remain in their packed
+  checkpoint BF16 tensors and PLE performs row lookup across the original 128
+  BF16 shards, without whole-table concatenation. The measured contract floor
+  is now 339 GiB (-48.6%); other weights and arithmetic remain F32. The 180B
+  checkpoint therefore remains unexecuted on this 16 GiB host; CUDA,
+  distributed execution, vision, and MTP remain explicit errors or non-goals.
 
 ## Reproduce the no-weight gates
 

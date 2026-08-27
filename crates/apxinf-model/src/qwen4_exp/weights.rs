@@ -212,6 +212,44 @@ impl Qwen4ExpWeightSchema {
             .ok_or_else(|| Error::Other("qwen4-exp F32 runtime byte count overflow".into()))
     }
 
+    pub fn runtime_hybrid_resident_bytes(&self) -> Result<u64> {
+        let mut bytes = 0u64;
+        let mut ple_groups = HashSet::new();
+        for name in &self.runtime_names {
+            let (elements, bytes_per_element) = match &self.runtime_shapes[name] {
+                RuntimeShape::Exact(shape) => {
+                    let elements = shape.iter().try_fold(1u64, |product, &dimension| {
+                        product.checked_mul(dimension as u64).ok_or_else(|| {
+                            Error::Other("qwen4-exp hybrid parameter count overflow".into())
+                        })
+                    })?;
+                    let bytes = if name.contains(".mlp.experts.") { 2 } else { 4 };
+                    (elements, bytes)
+                }
+                RuntimeShape::PleShard {
+                    group,
+                    columns,
+                    total_rows,
+                } if ple_groups.insert(group) => (
+                    (*columns as u64)
+                        .checked_mul(*total_rows as u64)
+                        .ok_or_else(|| {
+                            Error::Other("qwen4-exp hybrid PLE count overflow".into())
+                        })?,
+                    2,
+                ),
+                RuntimeShape::PleShard { .. } => (0, 2),
+            };
+            bytes =
+                bytes
+                    .checked_add(elements.checked_mul(bytes_per_element).ok_or_else(|| {
+                        Error::Other("qwen4-exp hybrid byte count overflow".into())
+                    })?)
+                    .ok_or_else(|| Error::Other("qwen4-exp hybrid byte count overflow".into()))?;
+        }
+        Ok(bytes)
+    }
+
     pub fn validate_index_json_str(&self, raw: &str) -> Result<Qwen4ExpWeightIndexValidation> {
         let root: serde_json::Value = serde_json::from_str(raw)
             .map_err(|error| Error::Other(format!("qwen4-exp weight index json: {error}")))?;
@@ -642,6 +680,22 @@ pub(crate) mod tests {
         (config, tensors)
     }
 
+    pub(crate) fn zero_bf16_runtime_tensors() -> (Qwen4ExpConfig, HashMap<String, Tensor>) {
+        let config = Qwen4ExpConfig::from_json_str(MINI_CONFIG).unwrap();
+        let schema = Qwen4ExpWeightSchema::new(&config).unwrap();
+        let metadata = runtime_metadata(&schema);
+        let tensors = metadata
+            .into_iter()
+            .map(|(name, metadata)| {
+                let elements = metadata.shape.iter().product();
+                let tensor =
+                    Tensor::from_bf16(metadata.shape, &vec![half::bf16::ZERO; elements]).unwrap();
+                (name, tensor)
+            })
+            .collect();
+        (config, tensors)
+    }
+
     fn index_json(schema: &Qwen4ExpWeightSchema) -> String {
         let mut weights = schema
             .expected_names()
@@ -678,6 +732,9 @@ pub(crate) mod tests {
             .iter()
             .any(|name| name.contains("shard_2.weight")));
         assert!(schema.runtime_f32_bytes().unwrap() > 0);
+        assert!(
+            schema.runtime_hybrid_resident_bytes().unwrap() < schema.runtime_f32_bytes().unwrap()
+        );
     }
 
     #[test]

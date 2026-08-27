@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use apxinf_core::{Backend, CpuBackend, Device, Error, Result, Tensor};
+use apxinf_core::{Backend, CpuBackend, DType, Device, Error, Result, Tensor};
 use apxinf_loader::ModelConfig;
 
 use super::config::{Qwen4ExpConfig, Qwen4ExpLayerType, Qwen4ExpTextConfig};
@@ -126,7 +126,7 @@ impl GeneralQwen4Exp {
             let weights = &self.weights.layers[layer_index];
             let state = &mut self.state.layers[layer_index];
             if let (Some(ple_weights), Some(ple_state)) = (&weights.ple, &mut state.ple) {
-                let ple = run_ple(text, &hyper, token, ple_weights, ple_state);
+                let ple = run_ple(text, &hyper, token, ple_weights, ple_state)?;
                 add_assign(&mut hyper, &ple);
             }
 
@@ -148,7 +148,7 @@ impl GeneralQwen4Exp {
             hyper = inject(&hyper, &attention_output, &attention_mix.injection, text);
 
             let mlp_mix = run_gated_residual(text, &hyper, &weights.mlp_connection, true)?;
-            let mlp_output = run_moe(text, &mlp_mix.mixed, &weights.moe);
+            let mlp_output = run_moe(text, &mlp_mix.mixed, &weights.moe)?;
             hyper = inject(&hyper, &mlp_output, &mlp_mix.injection, text);
         }
 
@@ -278,16 +278,26 @@ struct QsaWeights {
 
 struct MoeWeights {
     router: Vec<f32>,
-    expert_gate_up: Vec<Vec<f32>>,
-    expert_down: Vec<Vec<f32>>,
+    experts: ExpertWeights,
     shared_gate: Vec<f32>,
     shared_up: Vec<f32>,
     shared_down: Vec<f32>,
     shared_expert_gate: Vec<f32>,
 }
 
+enum ExpertWeights {
+    Synthetic {
+        gate_up: Vec<Vec<f32>>,
+        down: Vec<Vec<f32>>,
+    },
+    Checkpoint {
+        gate_up: Tensor,
+        down: Tensor,
+    },
+}
+
 struct PleWeights {
-    embedding: Vec<f32>,
+    embedding: PleEmbedding,
     head_vocab_sizes: Vec<usize>,
     head_offsets: Vec<usize>,
     multipliers: Vec<i64>,
@@ -298,6 +308,78 @@ struct PleWeights {
     norm_query: Vec<f32>,
     norm_conv: Vec<f32>,
     conv: Vec<f32>,
+}
+
+enum PleEmbedding {
+    Synthetic(Vec<f32>),
+    Checkpoint {
+        shards: Vec<Tensor>,
+        row_ends: Vec<usize>,
+    },
+}
+
+impl ExpertWeights {
+    fn gate_up(
+        &self,
+        config: &Qwen4ExpTextConfig,
+        hidden: &[f32],
+        expert: usize,
+    ) -> Result<Vec<f32>> {
+        match self {
+            Self::Synthetic { gate_up, .. } => Ok(linear(
+                hidden,
+                &gate_up[expert],
+                2 * config.moe_intermediate_size,
+            )),
+            Self::Checkpoint { gate_up, .. } => linear_checkpoint_matrix(
+                hidden,
+                gate_up,
+                expert * 2 * config.moe_intermediate_size * config.hidden_size,
+                2 * config.moe_intermediate_size,
+                config.hidden_size,
+            ),
+        }
+    }
+
+    fn down(&self, config: &Qwen4ExpTextConfig, hidden: &[f32], expert: usize) -> Result<Vec<f32>> {
+        match self {
+            Self::Synthetic { down, .. } => Ok(linear(hidden, &down[expert], config.hidden_size)),
+            Self::Checkpoint { down, .. } => linear_checkpoint_matrix(
+                hidden,
+                down,
+                expert * config.hidden_size * config.moe_intermediate_size,
+                config.hidden_size,
+                config.moe_intermediate_size,
+            ),
+        }
+    }
+}
+
+impl PleEmbedding {
+    fn extend_row(&self, row: usize, columns: usize, output: &mut Vec<f32>) -> Result<()> {
+        match self {
+            Self::Synthetic(values) => {
+                output.extend_from_slice(&values[row * columns..(row + 1) * columns]);
+            }
+            Self::Checkpoint { shards, row_ends } => {
+                let shard_index = row_ends.partition_point(|end| row >= *end);
+                let previous_end = shard_index
+                    .checked_sub(1)
+                    .map_or(0, |index| row_ends[index]);
+                let local_row = row - previous_end;
+                let tensor = shards.get(shard_index).ok_or_else(|| {
+                    Error::Other(format!("qwen4-exp PLE row {row} is outside shards"))
+                })?;
+                append_tensor_values(
+                    tensor,
+                    local_row * columns,
+                    local_row * columns + columns,
+                    output,
+                )?;
+            }
+        }
+        Ok(())
+    }
 }
 
 struct RuntimeState {
@@ -684,24 +766,6 @@ impl MoeWeights {
         layer_prefix: &str,
     ) -> Result<Self> {
         let prefix = format!("{layer_prefix}.mlp");
-        let gate_up = take_f32(tensors, &format!("{prefix}.experts.gate_up_proj"))?;
-        let down = take_f32(tensors, &format!("{prefix}.experts.down_proj"))?;
-        let gate_up_per_expert = 2 * config.moe_intermediate_size * config.hidden_size;
-        let down_per_expert = config.hidden_size * config.moe_intermediate_size;
-        let mut expert_gate_up = Vec::with_capacity(config.num_experts);
-        let mut expert_down = Vec::with_capacity(config.num_experts);
-        for expert in 0..config.num_experts {
-            expert_gate_up.push(transpose_matrix(
-                &gate_up[expert * gate_up_per_expert..(expert + 1) * gate_up_per_expert],
-                2 * config.moe_intermediate_size,
-                config.hidden_size,
-            ));
-            expert_down.push(transpose_matrix(
-                &down[expert * down_per_expert..(expert + 1) * down_per_expert],
-                config.hidden_size,
-                config.moe_intermediate_size,
-            ));
-        }
         Ok(Self {
             router: take_transposed(
                 tensors,
@@ -709,8 +773,10 @@ impl MoeWeights {
                 config.num_experts,
                 config.hidden_size,
             )?,
-            expert_gate_up,
-            expert_down,
+            experts: ExpertWeights::Checkpoint {
+                gate_up: take_tensor(tensors, &format!("{prefix}.experts.gate_up_proj"))?,
+                down: take_tensor(tensors, &format!("{prefix}.experts.down_proj"))?,
+            },
             shared_gate: take_transposed(
                 tensors,
                 &format!("{prefix}.shared_expert.gate_proj.weight"),
@@ -741,12 +807,14 @@ impl MoeWeights {
     fn synthetic(config: &Qwen4ExpTextConfig, rng: &mut SyntheticRng) -> Self {
         Self {
             router: rng.matrix(config.hidden_size, config.num_experts),
-            expert_gate_up: (0..config.num_experts)
-                .map(|_| rng.matrix(config.hidden_size, 2 * config.moe_intermediate_size))
-                .collect(),
-            expert_down: (0..config.num_experts)
-                .map(|_| rng.matrix(config.moe_intermediate_size, config.hidden_size))
-                .collect(),
+            experts: ExpertWeights::Synthetic {
+                gate_up: (0..config.num_experts)
+                    .map(|_| rng.matrix(config.hidden_size, 2 * config.moe_intermediate_size))
+                    .collect(),
+                down: (0..config.num_experts)
+                    .map(|_| rng.matrix(config.moe_intermediate_size, config.hidden_size))
+                    .collect(),
+            },
             shared_gate: rng.matrix(config.hidden_size, config.shared_expert_intermediate_size),
             shared_up: rng.matrix(config.hidden_size, config.shared_expert_intermediate_size),
             shared_down: rng.matrix(config.shared_expert_intermediate_size, config.hidden_size),
@@ -771,23 +839,26 @@ impl PleWeights {
         let ngram_heads = (config.ngram_size - 1) * config.heads_per_ngram;
         let head_dim = config.ple_embed_dim / ngram_heads;
         let (head_vocab_sizes, head_offsets, padded) = ple_vocab_layout(config, ordinal);
-        let mut embedding = Vec::with_capacity(padded * head_dim);
+        let mut shards = Vec::with_capacity(config.split_ngram_parts);
+        let mut row_ends = Vec::with_capacity(config.split_ngram_parts);
+        let mut rows = 0usize;
         for shard in 0..config.split_ngram_parts {
-            embedding.extend(take_f32(
+            let tensor = take_tensor(
                 tensors,
                 &format!("{prefix}.ple_embedding.ngram_embedding.shard_{shard}.weight"),
-            )?);
+            )?;
+            rows += tensor.shape().dims()[0];
+            row_ends.push(rows);
+            shards.push(tensor);
         }
-        if embedding.len() != padded * head_dim {
+        if rows != padded {
             return Err(Error::Other(format!(
-                "qwen4-exp {prefix} embedding has {} elements, expected {}",
-                embedding.len(),
-                padded * head_dim
+                "qwen4-exp {prefix} embedding has {rows} rows, expected {padded}"
             )));
         }
         let conv = take_f32(tensors, &format!("{prefix}.conv1d.weight"))?;
         Ok(Self {
-            embedding,
+            embedding: PleEmbedding::Checkpoint { shards, row_ends },
             head_vocab_sizes,
             head_offsets,
             multipliers: build_multipliers(
@@ -830,7 +901,7 @@ impl PleWeights {
             .ok_or_else(|| Error::Other("qwen4-exp PLE ordinal missing".into()))?;
         let (head_vocab_sizes, head_offsets, padded) = ple_vocab_layout(config, ordinal);
         Ok(Self {
-            embedding: rng.matrix(padded, head_dim),
+            embedding: PleEmbedding::Synthetic(rng.matrix(padded, head_dim)),
             head_vocab_sizes,
             head_offsets,
             multipliers: build_multipliers(
@@ -1073,7 +1144,7 @@ fn run_qsa(
     Ok(linear(&attention, &weights.out, config.hidden_size))
 }
 
-fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) -> Vec<f32> {
+fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) -> Result<Vec<f32>> {
     let mut probabilities = linear(hidden, &weights.router, config.num_experts);
     softmax_in_place(&mut probabilities);
     let mut ranked = probabilities
@@ -1095,15 +1166,11 @@ fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) ->
     }
     let mut output = vec![0.0; config.hidden_size];
     for (expert, probability) in ranked {
-        let gate_up = linear(
-            hidden,
-            &weights.expert_gate_up[expert],
-            2 * config.moe_intermediate_size,
-        );
+        let gate_up = weights.experts.gate_up(config, hidden, expert)?;
         let activated = (0..config.moe_intermediate_size)
             .map(|index| silu(gate_up[index]) * gate_up[config.moe_intermediate_size + index])
             .collect::<Vec<_>>();
-        let expert_output = linear(&activated, &weights.expert_down[expert], config.hidden_size);
+        let expert_output = weights.experts.down(config, &activated, expert)?;
         for (output, value) in output.iter_mut().zip(expert_output) {
             *output += probability * value;
         }
@@ -1128,7 +1195,7 @@ fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) ->
     for (output, shared) in output.iter_mut().zip(shared) {
         *output += gate * shared;
     }
-    output
+    Ok(output)
 }
 
 fn run_ple(
@@ -1137,7 +1204,7 @@ fn run_ple(
     token: u32,
     weights: &PleWeights,
     state: &mut PleState,
-) -> Vec<f32> {
+) -> Result<Vec<f32>> {
     let mut recent = Vec::with_capacity(config.ngram_size);
     recent.push(token);
     recent.extend(state.context.iter().rev().copied());
@@ -1151,9 +1218,9 @@ fn run_ple(
         for _ in 0..config.heads_per_ngram {
             let row = mixed.rem_euclid(weights.head_vocab_sizes[head] as i64) as usize
                 + weights.head_offsets[head];
-            embedding.extend_from_slice(
-                &weights.embedding[row * weights.head_dim..(row + 1) * weights.head_dim],
-            );
+            weights
+                .embedding
+                .extend_row(row, weights.head_dim, &mut embedding)?;
             head += 1;
         }
     }
@@ -1223,7 +1290,7 @@ fn run_ple(
         state.context.rotate_left(1);
         *state.context.last_mut().unwrap() = token;
     }
-    output
+    Ok(output)
 }
 
 fn take_tensor(tensors: &mut HashMap<String, Tensor>, name: &str) -> Result<Tensor> {
@@ -1248,6 +1315,81 @@ fn take_transposed(
     columns: usize,
 ) -> Result<Vec<f32>> {
     Ok(transpose_matrix(&take_f32(tensors, name)?, rows, columns))
+}
+
+fn append_tensor_values(
+    tensor: &Tensor,
+    start: usize,
+    end: usize,
+    output: &mut Vec<f32>,
+) -> Result<()> {
+    match tensor.dtype() {
+        DType::F32 => output.extend_from_slice(&tensor.as_f32()?[start..end]),
+        DType::BF16 => output.extend(
+            tensor.as_bf16()?[start..end]
+                .iter()
+                .map(|value| value.to_f32()),
+        ),
+        DType::F16 => output.extend(
+            tensor.as_f16()?[start..end]
+                .iter()
+                .map(|value| value.to_f32()),
+        ),
+        dtype => {
+            return Err(Error::Other(format!(
+                "qwen4-exp resident tensor dtype {dtype} is unsupported"
+            )))
+        }
+    }
+    Ok(())
+}
+
+fn linear_checkpoint_matrix(
+    input: &[f32],
+    tensor: &Tensor,
+    offset: usize,
+    output_size: usize,
+    input_size: usize,
+) -> Result<Vec<f32>> {
+    debug_assert_eq!(input.len(), input_size);
+    let mut output = vec![0.0f32; output_size];
+    match tensor.dtype() {
+        DType::F32 => {
+            let weights = tensor.as_f32()?;
+            for (row, output) in output.iter_mut().enumerate() {
+                let start = offset + row * input_size;
+                *output = dot(input, &weights[start..start + input_size]);
+            }
+        }
+        DType::BF16 => {
+            let weights = tensor.as_bf16()?;
+            for (row, output) in output.iter_mut().enumerate() {
+                let start = offset + row * input_size;
+                *output = input
+                    .iter()
+                    .zip(&weights[start..start + input_size])
+                    .map(|(input, weight)| input * weight.to_f32())
+                    .sum();
+            }
+        }
+        DType::F16 => {
+            let weights = tensor.as_f16()?;
+            for (row, output) in output.iter_mut().enumerate() {
+                let start = offset + row * input_size;
+                *output = input
+                    .iter()
+                    .zip(&weights[start..start + input_size])
+                    .map(|(input, weight)| input * weight.to_f32())
+                    .sum();
+            }
+        }
+        dtype => {
+            return Err(Error::Other(format!(
+                "qwen4-exp resident matrix dtype {dtype} is unsupported"
+            )))
+        }
+    }
+    Ok(output)
 }
 
 fn transpose_matrix(input: &[f32], rows: usize, columns: usize) -> Vec<f32> {
@@ -1532,6 +1674,33 @@ mod tests {
         let mut model = GeneralQwen4Exp::from_tensors(config, tensors, 64).unwrap();
         let logits = model.forward(&[1, 3, 5, 7, 9], 0).unwrap();
         assert_eq!(logits.shape().dims(), [5, 32]);
+        assert!(logits
+            .as_f32()
+            .unwrap()
+            .iter()
+            .all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn keeps_routed_experts_and_ple_shards_bf16_resident() {
+        let (config, tensors) = crate::qwen4_exp::weights::tests::zero_bf16_runtime_tensors();
+        let mut model = GeneralQwen4Exp::from_tensors(config, tensors, 64).unwrap();
+        match &model.weights.layers[0].moe.experts {
+            ExpertWeights::Checkpoint { gate_up, down } => {
+                assert_eq!(gate_up.dtype(), DType::BF16);
+                assert_eq!(down.dtype(), DType::BF16);
+            }
+            ExpertWeights::Synthetic { .. } => panic!("checkpoint experts were expanded"),
+        }
+        match &model.weights.layers[1].ple.as_ref().unwrap().embedding {
+            PleEmbedding::Checkpoint { shards, row_ends } => {
+                assert_eq!(shards.len(), 2);
+                assert!(shards.iter().all(|tensor| tensor.dtype() == DType::BF16));
+                assert_eq!(row_ends.last().copied(), Some(168));
+            }
+            PleEmbedding::Synthetic(_) => panic!("checkpoint PLE was concatenated"),
+        }
+        let logits = model.forward(&[1, 3, 5], 0).unwrap();
         assert!(logits
             .as_f32()
             .unwrap()

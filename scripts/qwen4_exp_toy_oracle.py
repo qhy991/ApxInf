@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tokens", default="1,3,5,7,9")
     parser.add_argument("--seed", type=int, default=38)
     parser.add_argument("--max-abs", type=float, default=1e-4)
+    parser.add_argument("--checkpoint-dtype", choices=("bf16", "f32"), default="bf16")
     return parser.parse_args()
 
 
@@ -63,19 +64,20 @@ def published_name(name: str) -> str:
 
 
 def published_state_dict(
-    model: Qwen4ExpForCausalLM, split_ngram_parts: int
+    model: Qwen4ExpForCausalLM, split_ngram_parts: int, checkpoint_dtype: str
 ) -> dict[str, torch.Tensor]:
     converted: dict[str, torch.Tensor] = {}
     for name, tensor in model.state_dict().items():
         if name.endswith(DERIVED_SUFFIXES):
             continue
+        stored = tensor.to(torch.bfloat16) if checkpoint_dtype == "bf16" and tensor.is_floating_point() else tensor
         if name.endswith(".ple_embedding.ngram_embedding.weight"):
             prefix = published_name(name).removesuffix(".weight")
-            shards = torch.tensor_split(tensor, split_ngram_parts, dim=0)
+            shards = torch.tensor_split(stored, split_ngram_parts, dim=0)
             for index, shard in enumerate(shards):
                 converted[f"{prefix}.shard_{index}.weight"] = shard.contiguous()
             continue
-        converted[published_name(name)] = tensor.contiguous()
+        converted[published_name(name)] = stored.contiguous()
     return converted
 
 
@@ -110,6 +112,11 @@ def main() -> int:
     torch.set_num_threads(1)
     torch.manual_seed(args.seed)
     model = Qwen4ExpForCausalLM(config).eval()
+    if args.checkpoint_dtype == "bf16":
+        with torch.no_grad():
+            for tensor in list(model.parameters()) + list(model.buffers()):
+                if tensor.is_floating_point():
+                    tensor.copy_(tensor.to(torch.bfloat16).float())
     one_shot, stepwise = torch_logits(model, tokens)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -117,7 +124,7 @@ def main() -> int:
     checkpoint_path = args.output_dir / "model.safetensors"
     report_path = args.output_dir / "report.json"
     config_path.write_text(json.dumps(root, sort_keys=True) + "\n", encoding="utf-8")
-    state = published_state_dict(model, config.split_ngram_parts)
+    state = published_state_dict(model, config.split_ngram_parts, args.checkpoint_dtype)
     save_file(state, checkpoint_path)
 
     command = [
@@ -153,6 +160,7 @@ def main() -> int:
             "sha256": sha256(checkpoint_path),
             "bytes": checkpoint_path.stat().st_size,
             "tensor_count": len(state),
+            "dtype": args.checkpoint_dtype,
         },
         "comparison": {
             "finite": finite,

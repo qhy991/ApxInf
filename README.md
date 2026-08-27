@@ -34,9 +34,11 @@ cargo run -p apxinf-model --example qwen4_exp_contract -- \
 
 The registered `AutoModel` path accepts the published text tensor schema and
 reconstructs deterministic PLE integer buffers while ignoring only the vision
-and MTP towers. CUDA, BF16 execution, vision input, and MTP still fail closed;
-no code silently falls back to Qwen3.5. The official text weights require at
-least 659 GiB after the current F32 packing, so the 180B checkpoint cannot run
+and MTP towers. Routed experts stay packed in their checkpoint BF16 tensors;
+PLE embeddings stay in 128 BF16 shards and are decoded by row on demand. Other
+weights and all arithmetic remain F32. This lowers the official resident-weight
+estimate from 659 GiB to 339 GiB. CUDA, vision input, and MTP still fail closed;
+no code silently falls back to Qwen3.5, and the 180B checkpoint still cannot run
 on the 16 GiB development Mac. The exact contract, upstream hashes, oracle,
 current limitations, and checkpoint-free QSA measurements are recorded in
 [the Qwen3.8-Flash-Next bring-up](doc/20260827-qwen38-flash-next/README.md).

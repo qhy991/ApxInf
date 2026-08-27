@@ -11,6 +11,7 @@
     "header_manifest_sha256": "293c1d39e6d6b97f2e7559d581486edc561429a73106448f066f3a8475a478c0",
     "runtime_parameter_elements": 176943899520,
     "minimum_f32_runtime_bytes": 707775598080,
+    "hybrid_bf16_resident_bytes": 363783196160,
     "weights_downloaded": false,
     "contract_passed": true
   },
@@ -21,13 +22,14 @@
     "seed": 38,
     "tokens": [1, 3, 5, 7, 9],
     "checkpoint_tensors": 109,
-    "checkpoint_bytes": 108632,
-    "checkpoint_sha256": "68eda915cb3e36dde27e89d8f881878489c0424adbe63d3742c3106f0ef3194d",
-    "max_abs": 1.4901161193847656e-8,
-    "mean_abs": 3.694549333133068e-9,
+    "checkpoint_dtype": "bf16",
+    "checkpoint_bytes": 61176,
+    "checkpoint_sha256": "c685c4d5a2305066c24ea34791fb4517d83c6502f0946207c0cb9b5f9732e856",
+    "max_abs": 2.9802322387695312e-8,
+    "mean_abs": 3.4200637877290774e-9,
     "checkpoint_path_observed": true,
     "top1_equal": [true, true, true, true, true],
     "passed": true
   },
-  "claim_boundary": "The complete CPU/F32 text architecture and published checkpoint mapping are qualified on a downsized official Transformers oracle. The 180B checkpoint was not loaded or executed; CUDA, distributed execution, vision, and MTP remain unqualified."
+  "claim_boundary": "The complete CPU/F32 text architecture, published checkpoint mapping, BF16-resident routed experts, and BF16 PLE shard lookup are qualified on a downsized official Transformers oracle. The 180B checkpoint was not loaded or executed; CUDA, distributed execution, vision, and MTP remain unqualified."
 }
