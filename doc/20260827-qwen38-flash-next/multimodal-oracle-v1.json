@@ -1,0 +1,29 @@
+{
+  "format": "apxinf-qwen4-exp-multimodal-oracle-v1",
+  "date": "2026-08-28",
+  "transformers_commit": "19876312341f42cf49467bb24d67271cf28cb599",
+  "seed": 38,
+  "tokens": [1, 28, 28, 28, 28, 3],
+  "decode_token": 4,
+  "grid_thw": [[1, 4, 4]],
+  "checkpoint_dtype": "bf16",
+  "checkpoint_tensors": 142,
+  "rope_delta": -2,
+  "comparison": {
+    "rows": 7,
+    "max_abs": 2.987682819366455e-6,
+    "mean_abs": 6.738950446560921e-7,
+    "threshold": 1e-4,
+    "top1_equal": [true, true, true, true, true, true, true]
+  },
+  "covered": [
+    "vision_encoder",
+    "image_placeholder_embedding_injection",
+    "multimodal_position_ids",
+    "qsa_indexer_mrope",
+    "attention_mrope",
+    "rope_delta_decode_continuation"
+  ],
+  "not_covered": ["video_timestamp_groups", "mtp", "cuda", "distributed_execution"],
+  "passed": true
+}

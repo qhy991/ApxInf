@@ -11,9 +11,9 @@ use apxinf_core::{Backend, CpuBackend, DType, Device, Error, Result, Tensor};
 use apxinf_loader::ModelConfig;
 
 use super::config::{Qwen4ExpConfig, Qwen4ExpLayerType, Qwen4ExpTextConfig};
-use super::qsa::{apply_partial_rope, rms_norm_zero_centered_into, Qwen4ExpQsaSelector};
+use super::qsa::{apply_partial_mrope, rms_norm_zero_centered_into, Qwen4ExpQsaSelector};
 use super::weights::{metadata_from_tensors, ple_vocab_layout, Qwen4ExpWeightSchema};
-use crate::llm_trait::LlmTrait;
+use crate::llm_trait::{LlmCapabilities, LlmInput, LlmTrait};
 use crate::qwen3vl::config::{Qwen3VLConfig, Qwen3VLTextConfig, Qwen3VLVisionConfig};
 use crate::qwen3vl::Qwen3VLVisionWeights;
 
@@ -26,6 +26,7 @@ pub struct GeneralQwen4Exp {
     weight_source: &'static str,
     checkpoint_payloads_mmap: bool,
     vision: Option<Qwen4ExpVisionRuntime>,
+    rope_delta: i64,
 }
 
 struct Qwen4ExpVisionRuntime {
@@ -97,6 +98,7 @@ impl GeneralQwen4Exp {
             weight_source: "checkpoint",
             checkpoint_payloads_mmap,
             vision: None,
+            rope_delta: 0,
         })
     }
 
@@ -137,6 +139,7 @@ impl GeneralQwen4Exp {
             weight_source: "deterministic-synthetic",
             checkpoint_payloads_mmap: false,
             vision: None,
+            rope_delta: 0,
         })
     }
 
@@ -150,17 +153,30 @@ impl GeneralQwen4Exp {
             .vision
             .as_ref()
             .ok_or_else(|| Error::Other("qwen4-exp vision weights are not loaded".into()))?;
+        let pixels = if pixel_values.dtype() == DType::F32 {
+            pixel_values.clone()
+        } else {
+            Tensor::from_f32(
+                pixel_values.shape().dims().to_vec(),
+                &pixel_values.to_f32_vec()?,
+            )?
+        };
         Ok(crate::qwen3vl::vision::forward(
             &vision.config,
             &vision.weights,
             &*self.backend,
-            pixel_values,
+            &pixels,
             grid_thw,
         )?
         .primary)
     }
 
-    fn forward_one(&mut self, token: u32, position: usize) -> Result<Vec<f32>> {
+    fn forward_one(
+        &mut self,
+        token: u32,
+        position: [u32; 3],
+        embedding_override: Option<&[f32]>,
+    ) -> Result<Vec<f32>> {
         let text = &self.config.text;
         if token as usize >= text.vocab_size {
             return Err(Error::Other(format!(
@@ -168,10 +184,19 @@ impl GeneralQwen4Exp {
                 text.vocab_size
             )));
         }
-        let embedding = self
-            .weights
-            .token_embedding
-            .row(token as usize, text.hidden_size)?;
+        let embedding = match embedding_override {
+            Some(embedding) if embedding.len() == text.hidden_size => embedding.to_vec(),
+            Some(embedding) => {
+                return Err(Error::ShapeMismatch {
+                    expected: format!("[{}] visual embedding", text.hidden_size),
+                    got: format!("[{}]", embedding.len()),
+                })
+            }
+            None => self
+                .weights
+                .token_embedding
+                .row(token as usize, text.hidden_size)?,
+        };
         let mut hyper = Vec::with_capacity(text.hc_count * text.hidden_size);
         for _ in 0..text.hc_count {
             hyper.extend_from_slice(&embedding);
@@ -226,6 +251,75 @@ fn build_vision_runtime(
     Ok(Qwen4ExpVisionRuntime { config, weights })
 }
 
+fn multimodal_positions(
+    token_ids: &[u32],
+    image_token_id: u32,
+    grids: &[[u32; 3]],
+    merge: usize,
+) -> Result<(Vec<[u32; 3]>, i64)> {
+    let mut positions = Vec::with_capacity(token_ids.len());
+    let mut current = 0u32;
+    let mut token_index = 0usize;
+    let mut grid_index = 0usize;
+    while token_index < token_ids.len() {
+        let is_image = token_ids[token_index] == image_token_id;
+        let end = token_ids[token_index..]
+            .iter()
+            .position(|token| (*token == image_token_id) != is_image)
+            .map_or(token_ids.len(), |offset| token_index + offset);
+        if !is_image {
+            for offset in 0..end - token_index {
+                positions.push([current + offset as u32; 3]);
+            }
+            current += (end - token_index) as u32;
+        } else {
+            let grid = grids.get(grid_index).ok_or_else(|| {
+                Error::Other("qwen4-exp image token group has no grid_thw entry".into())
+            })?;
+            grid_index += 1;
+            let (time, height, width) = (
+                grid[0] as usize,
+                grid[1] as usize / merge,
+                grid[2] as usize / merge,
+            );
+            let expected = time * height * width;
+            if end - token_index != expected {
+                return Err(Error::Other(format!(
+                    "qwen4-exp image placeholder group has {} tokens, grid requires {expected}",
+                    end - token_index
+                )));
+            }
+            for temporal in 0..time {
+                for row in 0..height {
+                    for column in 0..width {
+                        positions.push([
+                            current + temporal as u32,
+                            current + row as u32,
+                            current + column as u32,
+                        ]);
+                    }
+                }
+            }
+            current += height.max(width) as u32;
+        }
+        token_index = end;
+    }
+    if grid_index != grids.len() {
+        return Err(Error::Other(format!(
+            "qwen4-exp received {} image grids for {grid_index} token groups",
+            grids.len()
+        )));
+    }
+    let max_position = positions
+        .iter()
+        .flat_map(|position| position.iter())
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let delta = max_position as i64 + 1 - token_ids.len() as i64;
+    Ok((positions, delta))
+}
+
 impl LlmTrait for GeneralQwen4Exp {
     fn load(
         _config: ModelConfig,
@@ -260,14 +354,87 @@ impl LlmTrait for GeneralQwen4Exp {
         }
         let mut logits = Vec::with_capacity(token_ids.len() * self.config.text.vocab_size);
         for (offset, &token) in token_ids.iter().enumerate() {
-            logits.extend(self.forward_one(token, start_pos + offset)?);
+            let position = (start_pos + offset) as i64 + self.rope_delta;
+            let position = u32::try_from(position).map_err(|_| {
+                Error::Other(format!(
+                    "qwen4-exp effective position {position} is outside u32"
+                ))
+            })?;
+            logits.extend(self.forward_one(token, [position; 3], None)?);
             self.state.position += 1;
         }
         Tensor::from_f32(vec![token_ids.len(), self.config.text.vocab_size], &logits)
     }
 
+    fn capabilities(&self) -> LlmCapabilities {
+        LlmCapabilities {
+            image: self.vision.is_some(),
+        }
+    }
+
+    fn prefill(&mut self, input: LlmInput<'_>) -> Result<Tensor> {
+        let Some(image) = input.image else {
+            return self.forward(input.token_ids, 0);
+        };
+        if self.state.position != 0 {
+            return Err(Error::Other(
+                "qwen4-exp multimodal prefill requires empty state".into(),
+            ));
+        }
+        if input.token_ids.is_empty() || input.token_ids.len() > self.max_context {
+            return Err(Error::Other(
+                "qwen4-exp multimodal prompt length is invalid".into(),
+            ));
+        }
+        let visual = self.encode_image(image.pixel_values, image.grid_thw)?;
+        let visual_dims = visual.shape().dims();
+        if visual_dims.len() != 2 || visual_dims[1] != self.config.text.hidden_size {
+            return Err(Error::ShapeMismatch {
+                expected: format!("[image_tokens, {}]", self.config.text.hidden_size),
+                got: visual.shape().to_string(),
+            });
+        }
+        let image_tokens = input
+            .token_ids
+            .iter()
+            .filter(|token| **token == self.config.image_token_id)
+            .count();
+        if image_tokens != visual_dims[0] {
+            return Err(Error::Other(format!(
+                "qwen4-exp image features {} != placeholder tokens {image_tokens}",
+                visual_dims[0]
+            )));
+        }
+        let (positions, rope_delta) = multimodal_positions(
+            input.token_ids,
+            self.config.image_token_id,
+            image.grid_thw,
+            self.config.vision.spatial_merge_size,
+        )?;
+        self.rope_delta = rope_delta;
+        let visual = visual.as_f32()?;
+        let mut visual_row = 0usize;
+        let mut logits = Vec::with_capacity(input.token_ids.len() * self.config.text.vocab_size);
+        for (&token, position) in input.token_ids.iter().zip(positions) {
+            let embedding = if token == self.config.image_token_id {
+                let start = visual_row * self.config.text.hidden_size;
+                visual_row += 1;
+                Some(&visual[start..start + self.config.text.hidden_size])
+            } else {
+                None
+            };
+            logits.extend(self.forward_one(token, position, embedding)?);
+            self.state.position += 1;
+        }
+        Tensor::from_f32(
+            vec![input.token_ids.len(), self.config.text.vocab_size],
+            &logits,
+        )
+    }
+
     fn reset(&mut self) {
         self.state = RuntimeState::new(&self.config.text);
+        self.rope_delta = 0;
     }
 
     fn generation_path_receipt(&self) -> Option<serde_json::Value> {
@@ -283,8 +450,10 @@ impl LlmTrait for GeneralQwen4Exp {
             "gated_residual_streams": self.config.text.hc_count,
             "routed_moe": true,
             "ple_layers": self.config.text.ple_layer_ids,
-            "vision": false,
+            "vision": self.vision.is_some(),
             "vision_encoder_loaded": self.vision.is_some(),
+            "multimodal_prefill": self.vision.is_some(),
+            "rope_delta": self.rope_delta,
             "mtp": false,
         }))
     }
@@ -563,6 +732,7 @@ struct QsaState {
     raw_keys: Vec<f32>,
     keys: Vec<f32>,
     values: Vec<f32>,
+    positions: Vec<[u32; 3]>,
 }
 
 struct PleState {
@@ -1241,7 +1411,7 @@ fn run_gdn(
 fn run_qsa(
     config: &Qwen4ExpTextConfig,
     hidden: &[f32],
-    position: usize,
+    position: [u32; 3],
     weights: &QsaWeights,
     state: &mut QsaState,
 ) -> Result<Vec<f32>> {
@@ -1250,13 +1420,25 @@ fn run_qsa(
     for head in query.chunks_exact_mut(config.head_dim) {
         let source = head.to_vec();
         rms_norm_zero_centered_into(&source, &weights.q_norm, config.rms_norm_eps, head);
-        apply_partial_rope(head, config.rotary_dim(), config.rope.theta, position);
+        apply_partial_mrope(
+            head,
+            config.rotary_dim(),
+            config.rope.theta,
+            position,
+            config.rope.mrope_section,
+        );
     }
     let mut key = weights.k.apply(hidden)?;
     for head in key.chunks_exact_mut(config.head_dim) {
         let source = head.to_vec();
         rms_norm_zero_centered_into(&source, &weights.k_norm, config.rms_norm_eps, head);
-        apply_partial_rope(head, config.rotary_dim(), config.rope.theta, position);
+        apply_partial_mrope(
+            head,
+            config.rotary_dim(),
+            config.rope.theta,
+            position,
+            config.rope.mrope_section,
+        );
     }
     let value = weights.v.apply(hidden)?;
     let index_qk = weights.index_qk.apply(hidden)?;
@@ -1265,11 +1447,12 @@ fn run_qsa(
     state.raw_keys.extend_from_slice(&index_qk[query_width..]);
     state.keys.extend_from_slice(&key);
     state.values.extend_from_slice(&value);
-    let visible = state.raw_keys.len() / config.indexer_head_dim;
-    let selected = weights.selector.select(
+    state.positions.push(position);
+    let selected = weights.selector.select_with_positions(
         index_query,
         &state.raw_keys,
-        visible,
+        &state.positions,
+        config.rope.mrope_section,
         &weights.index_q_norm,
         &weights.index_k_norm,
     )?;
@@ -1808,6 +1991,25 @@ mod tests {
                 55_314_113_489_879_221,
             ]
         );
+    }
+
+    #[test]
+    fn multimodal_positions_match_official_grouping_and_delta() {
+        let (positions, delta) =
+            multimodal_positions(&[1, 28, 28, 28, 28, 3], 28, &[[1, 4, 4]], 2).unwrap();
+        assert_eq!(
+            positions,
+            vec![
+                [0, 0, 0],
+                [1, 1, 1],
+                [1, 1, 2],
+                [1, 2, 1],
+                [1, 2, 2],
+                [3, 3, 3],
+            ]
+        );
+        assert_eq!(delta, -2);
+        assert!(multimodal_positions(&[1, 28, 28, 3], 28, &[[1, 4, 4]], 2).is_err());
     }
 
     #[test]

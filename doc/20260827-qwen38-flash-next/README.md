@@ -83,13 +83,18 @@ per-layer activations and greedy tokens.
   norm/conv weights and arithmetic remain F32. Shard files are an immutable
   runtime input for the lifetime of the mappings. The 180B checkpoint remains
   unstaged and unexecuted on this host with about 21 GiB free; CUDA,
-  distributed execution, image-text generation, and MTP remain explicit errors or non-goals.
+  distributed execution, video generation, and MTP remain explicit errors or non-goals.
 - The Qwen4 vision tower now reuses the generalized Qwen3-VL block/merger
   primitive with zero deepstack mergers. CPU reference implementations cover
   LayerNorm, GELU-tanh, bias, 2D RoPE, and non-causal SDPA. A frozen BF16 toy
   oracle matches the official Transformers pooler output to `9.34e-7` max
-  absolute error; see `vision-oracle-v1.json`. Text injection and multimodal
-  mRoPE are not yet qualified.
+  absolute error; see the encoder-only `vision-oracle-v1.json`.
+- The complete image-text prefill and one cached decode step now match the
+  frozen official conditional-generation model to `2.99e-6` max absolute
+  error with 7/7 top-1 agreement. The gate covers image-placeholder injection,
+  official modality-group position IDs, main-attention and QSA-indexer mRoPE,
+  and `rope_delta=-2` decode continuation; see `multimodal-oracle-v1.json`.
+  Video timestamp groups, MTP, CUDA, and distributed execution remain open.
 
 ## Reproduce the no-weight gates
 

@@ -73,6 +73,29 @@ impl Qwen4ExpQsaSelector {
         query_norm_weight: &[f32],
         key_norm_weight: &[f32],
     ) -> Result<Vec<usize>> {
+        let positions = (0..visible_tokens)
+            .map(|position| [position as u32; 3])
+            .collect::<Vec<_>>();
+        self.select_with_positions(
+            query,
+            raw_keys,
+            &positions,
+            [self.rotary_dim / 2, 0, 0],
+            query_norm_weight,
+            key_norm_weight,
+        )
+    }
+
+    pub fn select_with_positions(
+        &self,
+        query: &[f32],
+        raw_keys: &[f32],
+        positions: &[[u32; 3]],
+        mrope_sections: [usize; 3],
+        query_norm_weight: &[f32],
+        key_norm_weight: &[f32],
+    ) -> Result<Vec<usize>> {
+        let visible_tokens = positions.len();
         let query_len = self
             .query_heads
             .checked_mul(self.head_dim)
@@ -97,6 +120,11 @@ impl Qwen4ExpQsaSelector {
                 "QSA requires at least the current visible token".into(),
             ));
         }
+        if mrope_sections.iter().sum::<usize>() != self.rotary_dim / 2 {
+            return Err(Error::Other(format!(
+                "QSA mRoPE sections {mrope_sections:?} do not cover rotary pairs"
+            )));
+        }
         if query_norm_weight.len() != self.head_dim || key_norm_weight.len() != self.head_dim {
             return Err(Error::Other(format!(
                 "QSA norm weights must both have {} elements",
@@ -113,7 +141,7 @@ impl Qwen4ExpQsaSelector {
             return Err(Error::Other("QSA inputs must be finite".into()));
         }
 
-        let query_position = visible_tokens - 1;
+        let query_position = positions[visible_tokens - 1];
         let mut normalized_query = Vec::with_capacity(query_len);
         for head in 0..self.query_heads {
             let start = head * self.head_dim;
@@ -122,7 +150,13 @@ impl Qwen4ExpQsaSelector {
                 query_norm_weight,
                 self.rms_norm_eps,
             );
-            apply_partial_rope(&mut values, self.rotary_dim, self.theta, query_position);
+            apply_partial_mrope(
+                &mut values,
+                self.rotary_dim,
+                self.theta,
+                query_position,
+                mrope_sections,
+            );
             normalized_query.extend(values);
         }
 
@@ -149,11 +183,12 @@ impl Qwen4ExpQsaSelector {
                 self.rms_norm_eps,
                 &mut normalized_key,
             );
-            apply_partial_rope(
+            apply_partial_mrope(
                 &mut normalized_key,
                 self.rotary_dim,
                 self.theta,
-                block_start,
+                positions[block_start],
+                mrope_sections,
             );
 
             let mut score = 0.0f32;
@@ -212,21 +247,29 @@ pub(super) fn rms_norm_zero_centered_into(
     }
 }
 
-pub(super) fn apply_partial_rope(
+pub(super) fn apply_partial_mrope(
     values: &mut [f32],
     rotary_dim: usize,
     theta: f32,
-    position: usize,
+    position: [u32; 3],
+    sections: [usize; 3],
 ) {
     let half = rotary_dim / 2;
-    for index in 0..half {
-        let inverse_frequency = theta.powf(-((2 * index) as f32) / rotary_dim as f32);
-        let angle = position as f32 * inverse_frequency;
+    for pair in 0..half {
+        let axis = if pair % 3 == 1 && pair < sections[1] * 3 {
+            1
+        } else if pair % 3 == 2 && pair < sections[2] * 3 {
+            2
+        } else {
+            0
+        };
+        let inverse_frequency = theta.powf(-((2 * pair) as f32) / rotary_dim as f32);
+        let angle = position[axis] as f32 * inverse_frequency;
         let (sin, cos) = angle.sin_cos();
-        let first = values[index];
-        let second = values[index + half];
-        values[index] = first * cos - second * sin;
-        values[index + half] = second * cos + first * sin;
+        let first = values[pair];
+        let second = values[half + pair];
+        values[pair] = first * cos - second * sin;
+        values[half + pair] = second * cos + first * sin;
     }
 }
 

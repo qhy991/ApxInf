@@ -1,10 +1,10 @@
 {
   "model_type": "qwen4_exp",
   "language_model_only": false,
-  "image_token_id": 101,
-  "video_token_id": 102,
-  "vision_start_token_id": 103,
-  "vision_end_token_id": 104,
+  "image_token_id": 28,
+  "video_token_id": 29,
+  "vision_start_token_id": 30,
+  "vision_end_token_id": 31,
   "text_config": {
     "attention_bias": false,
     "dtype": "bfloat16",

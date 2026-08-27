@@ -41,18 +41,19 @@ normalization/convolution weights and all arithmetic remain F32. SafeTensors
 payloads are read-only mmap ranges: startup copies zero checkpoint payload
 bytes and physical RSS is demand-paged, while the logical mapped text weights
 remain about 330 GiB. Checkpoint shard files must remain immutable while a
-model is loaded. CUDA text execution, vision input to generation, and MTP fail closed; no code
+model is loaded. CUDA text execution, video input, and MTP fail closed; no code
 silently falls back to Qwen3.5. The 180B checkpoint is not staged on the
 development Mac because it has only about 21 GiB free. The exact contract,
 upstream hashes, oracle,
 current limitations, and checkpoint-free QSA measurements are recorded in
 [the Qwen3.8-Flash-Next bring-up](doc/20260827-qwen38-flash-next/README.md).
 
-The published vision tower is also supported as a native CPU/F32 reference
-encoder. Its BF16 toy oracle covers patch embedding, interpolated positions,
-2D RoPE, non-causal attention, MLP blocks, and the primary merger. Image
-embedding injection into the Qwen4 text stream and multimodal mRoPE remain
-explicitly unqualified.
+The published vision tower and image-text generation path are supported by the
+native CPU/F32 reference runtime. The BF16 oracle covers patch embedding,
+interpolated positions, 2D RoPE, non-causal attention, the primary merger,
+image-placeholder injection, three-axis text mRoPE, QSA index selection, and
+rope-delta continuation into cached decode. Video timestamp grouping remains
+unqualified.
 
 The first version of ApxInf ships with highly optimized PI-0.5 VLA model on Jetson Thor &
 Orin devices, and supports BF16, FP8 and INT8 precisions.
