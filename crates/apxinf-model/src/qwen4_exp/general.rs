@@ -12,6 +12,7 @@ use apxinf_loader::ModelConfig;
 
 use super::config::{Qwen4ExpConfig, Qwen4ExpLayerType, Qwen4ExpTextConfig};
 use super::qsa::{apply_partial_rope, rms_norm_zero_centered_into, Qwen4ExpQsaSelector};
+use super::weights::{metadata_from_tensors, ple_vocab_layout, Qwen4ExpWeightSchema};
 use crate::llm_trait::LlmTrait;
 
 pub struct GeneralQwen4Exp {
@@ -20,9 +21,54 @@ pub struct GeneralQwen4Exp {
     state: RuntimeState,
     backend: Arc<dyn Backend>,
     max_context: usize,
+    weight_source: &'static str,
 }
 
 impl GeneralQwen4Exp {
+    pub fn from_tensors(
+        config: Qwen4ExpConfig,
+        tensors: HashMap<String, Tensor>,
+        requested_max_context: usize,
+    ) -> Result<Self> {
+        Self::from_tensors_with_backend(
+            config,
+            tensors,
+            requested_max_context,
+            Arc::new(CpuBackend),
+        )
+    }
+
+    pub(crate) fn from_tensors_with_backend(
+        config: Qwen4ExpConfig,
+        tensors: HashMap<String, Tensor>,
+        requested_max_context: usize,
+        backend: Arc<dyn Backend>,
+    ) -> Result<Self> {
+        if backend.device() != Device::Cpu {
+            return Err(Error::Other(
+                "qwen4-exp checkpoint runtime currently supports CPU only".into(),
+            ));
+        }
+        if requested_max_context == 0 {
+            return Err(Error::Other(
+                "qwen4-exp checkpoint max_context must be positive".into(),
+            ));
+        }
+        let schema = Qwen4ExpWeightSchema::new(&config)?;
+        schema.validate_runtime_metadata(&metadata_from_tensors(&tensors))?;
+        let weights = RuntimeWeights::from_tensors(&config.text, tensors)?;
+        let state = RuntimeState::new(&config.text);
+        let max_context = requested_max_context.min(config.text.max_position_embeddings);
+        Ok(Self {
+            config,
+            weights,
+            state,
+            backend,
+            max_context,
+            weight_source: "checkpoint",
+        })
+    }
+
     pub fn from_synthetic(
         config: Qwen4ExpConfig,
         seed: u64,
@@ -57,6 +103,7 @@ impl GeneralQwen4Exp {
             state,
             backend,
             max_context,
+            weight_source: "deterministic-synthetic",
         })
     }
 
@@ -157,7 +204,7 @@ impl LlmTrait for GeneralQwen4Exp {
     fn generation_path_receipt(&self) -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "format": "apxinf-qwen4-exp-synthetic-text-v1",
-            "weights": "deterministic-synthetic",
+            "weights": self.weight_source,
             "device": "cpu-f32",
             "position": self.state.position,
             "layers": self.config.text.n_layers,
@@ -217,6 +264,7 @@ struct GdnWeights {
 
 struct QsaWeights {
     q: Vec<f32>,
+    gate: Vec<f32>,
     k: Vec<f32>,
     v: Vec<f32>,
     out: Vec<f32>,
@@ -316,6 +364,81 @@ impl RuntimeState {
 }
 
 impl RuntimeWeights {
+    fn from_tensors(
+        config: &Qwen4ExpTextConfig,
+        mut tensors: HashMap<String, Tensor>,
+    ) -> Result<Self> {
+        let token_embedding = take_f32(&mut tensors, "model.language_model.embed_tokens.weight")?;
+        let lm_head = take_transposed(
+            &mut tensors,
+            "lm_head.weight",
+            config.vocab_size,
+            config.hidden_size,
+        )?;
+        let final_connection = GatedResidualWeights::from_tensors(
+            config,
+            &mut tensors,
+            "model.language_model.hyper_connection_mixer",
+            false,
+        )?;
+        let mut layers = Vec::with_capacity(config.n_layers);
+        for (layer_index, layer_type) in config.layer_types.iter().copied().enumerate() {
+            let prefix = format!("model.language_model.layers.{layer_index}");
+            let attention_connection = GatedResidualWeights::from_tensors(
+                config,
+                &mut tensors,
+                &format!("{prefix}.attn_hyper_connection"),
+                true,
+            )?;
+            let attention = match layer_type {
+                Qwen4ExpLayerType::LinearAttention => AttentionWeights::Linear(Box::new(
+                    GdnWeights::from_tensors(config, &mut tensors, &prefix)?,
+                )),
+                Qwen4ExpLayerType::QwenSparseAttention => AttentionWeights::Qsa(Box::new(
+                    QsaWeights::from_tensors(config, &mut tensors, &prefix)?,
+                )),
+            };
+            let mlp_connection = GatedResidualWeights::from_tensors(
+                config,
+                &mut tensors,
+                &format!("{prefix}.mlp_hyper_connection"),
+                true,
+            )?;
+            let moe = MoeWeights::from_tensors(config, &mut tensors, &prefix)?;
+            let ple = if config.ple_layer_ids.contains(&(layer_index + 1)) {
+                Some(PleWeights::from_tensors(
+                    config,
+                    &mut tensors,
+                    &prefix,
+                    layer_index,
+                )?)
+            } else {
+                None
+            };
+            layers.push(LayerWeights {
+                attention_connection,
+                attention,
+                mlp_connection,
+                moe,
+                ple,
+            });
+        }
+        if !tensors.is_empty() {
+            let mut names = tensors.into_keys().collect::<Vec<_>>();
+            names.sort_unstable();
+            return Err(Error::Other(format!(
+                "qwen4-exp checkpoint packer left unconsumed tensor {}",
+                names[0]
+            )));
+        }
+        Ok(Self {
+            token_embedding,
+            layers,
+            final_connection,
+            lm_head,
+        })
+    }
+
     fn synthetic(config: &Qwen4ExpTextConfig, seed: u64) -> Result<Self> {
         let mut rng = SyntheticRng::new(seed);
         let hidden = config.hidden_size;
@@ -356,6 +479,7 @@ impl RuntimeWeights {
                 Qwen4ExpLayerType::QwenSparseAttention => {
                     AttentionWeights::Qsa(Box::new(QsaWeights {
                         q: rng.matrix(hidden, config.full_query_width()),
+                        gate: rng.matrix(hidden, config.full_query_width()),
                         k: rng.matrix(hidden, config.full_kv_width()),
                         v: rng.matrix(hidden, config.full_kv_width()),
                         out: rng.matrix(config.full_query_width(), hidden),
@@ -403,6 +527,40 @@ impl RuntimeWeights {
 }
 
 impl GatedResidualWeights {
+    fn from_tensors(
+        config: &Qwen4ExpTextConfig,
+        tensors: &mut HashMap<String, Tensor>,
+        prefix: &str,
+        combine: bool,
+    ) -> Result<Self> {
+        let hc_hidden = config.hc_count * config.hidden_size;
+        Ok(Self {
+            norm: take_f32(tensors, &format!("{prefix}.hc_norm.weight"))?,
+            down: take_transposed(
+                tensors,
+                &format!("{prefix}.input_mix_weight_down.weight"),
+                config.hc_lowrank,
+                hc_hidden,
+            )?,
+            up: take_transposed(
+                tensors,
+                &format!("{prefix}.input_mix_weight_up.weight"),
+                hc_hidden,
+                config.hc_lowrank,
+            )?,
+            inject: combine
+                .then(|| {
+                    take_transposed(
+                        tensors,
+                        &format!("{prefix}.block_inject_weight.weight"),
+                        config.hc_count,
+                        hc_hidden,
+                    )
+                })
+                .transpose()?,
+        })
+    }
+
     fn synthetic(config: &Qwen4ExpTextConfig, rng: &mut SyntheticRng, combine: bool) -> Self {
         let hc_hidden = config.hc_count * config.hidden_size;
         Self {
@@ -414,7 +572,172 @@ impl GatedResidualWeights {
     }
 }
 
+impl GdnWeights {
+    fn from_tensors(
+        config: &Qwen4ExpTextConfig,
+        tensors: &mut HashMap<String, Tensor>,
+        layer_prefix: &str,
+    ) -> Result<Self> {
+        let prefix = format!("{layer_prefix}.linear_attn");
+        let qkv = 2 * config.linear_key_width() + config.linear_value_width();
+        let conv = take_tensor(tensors, &format!("{prefix}.conv1d.weight"))?;
+        let conv = Tensor::from_f32(
+            vec![qkv, config.linear_conv_kernel_dim],
+            &conv.to_f32_vec()?,
+        )?;
+        Ok(Self {
+            in_qkv: take_transposed(
+                tensors,
+                &format!("{prefix}.in_proj_qkv.weight"),
+                qkv,
+                config.hidden_size,
+            )?,
+            in_z: take_transposed(
+                tensors,
+                &format!("{prefix}.in_proj_z.weight"),
+                config.linear_value_width(),
+                config.hidden_size,
+            )?,
+            in_a: take_transposed(
+                tensors,
+                &format!("{prefix}.in_proj_a.weight"),
+                config.linear_num_value_heads,
+                config.hidden_size,
+            )?,
+            in_b: take_transposed(
+                tensors,
+                &format!("{prefix}.in_proj_b.weight"),
+                config.linear_num_value_heads,
+                config.hidden_size,
+            )?,
+            conv,
+            a_log: take_f32_tensor(tensors, &format!("{prefix}.A_log"))?,
+            dt_bias: take_f32_tensor(tensors, &format!("{prefix}.dt_bias"))?,
+            norm: take_f32_tensor(tensors, &format!("{prefix}.norm.weight"))?,
+            out: take_transposed(
+                tensors,
+                &format!("{prefix}.out_proj.weight"),
+                config.hidden_size,
+                config.linear_value_width(),
+            )?,
+        })
+    }
+}
+
+impl QsaWeights {
+    fn from_tensors(
+        config: &Qwen4ExpTextConfig,
+        tensors: &mut HashMap<String, Tensor>,
+        layer_prefix: &str,
+    ) -> Result<Self> {
+        let prefix = format!("{layer_prefix}.self_attn");
+        let packed_query = take_f32(tensors, &format!("{prefix}.q_proj.weight"))?;
+        let (q, gate) = deinterleave_query_gate(config, &packed_query);
+        Ok(Self {
+            q,
+            gate,
+            k: take_transposed(
+                tensors,
+                &format!("{prefix}.k_proj.weight"),
+                config.full_kv_width(),
+                config.hidden_size,
+            )?,
+            v: take_transposed(
+                tensors,
+                &format!("{prefix}.v_proj.weight"),
+                config.full_kv_width(),
+                config.hidden_size,
+            )?,
+            out: take_transposed(
+                tensors,
+                &format!("{prefix}.o_proj.weight"),
+                config.hidden_size,
+                config.full_query_width(),
+            )?,
+            q_norm: take_f32(tensors, &format!("{prefix}.q_norm.weight"))?,
+            k_norm: take_f32(tensors, &format!("{prefix}.k_norm.weight"))?,
+            index_qk: take_transposed(
+                tensors,
+                &format!("{prefix}.indexer.index_qk_proj.weight"),
+                (config.indexer_n_heads + config.indexer_kv_heads) * config.indexer_head_dim,
+                config.hidden_size,
+            )?,
+            index_q_norm: take_f32(tensors, &format!("{prefix}.indexer.q_layernorm.weight"))?,
+            index_k_norm: take_f32(tensors, &format!("{prefix}.indexer.k_layernorm.weight"))?,
+            selector: Qwen4ExpQsaSelector::new(
+                config.indexer_n_heads,
+                config.indexer_head_dim,
+                config.indexer_budget,
+                config.indexer_compress_ratio,
+                config.rotary_dim(),
+                config.rope.theta,
+                config.rms_norm_eps,
+            )?,
+        })
+    }
+}
+
 impl MoeWeights {
+    fn from_tensors(
+        config: &Qwen4ExpTextConfig,
+        tensors: &mut HashMap<String, Tensor>,
+        layer_prefix: &str,
+    ) -> Result<Self> {
+        let prefix = format!("{layer_prefix}.mlp");
+        let gate_up = take_f32(tensors, &format!("{prefix}.experts.gate_up_proj"))?;
+        let down = take_f32(tensors, &format!("{prefix}.experts.down_proj"))?;
+        let gate_up_per_expert = 2 * config.moe_intermediate_size * config.hidden_size;
+        let down_per_expert = config.hidden_size * config.moe_intermediate_size;
+        let mut expert_gate_up = Vec::with_capacity(config.num_experts);
+        let mut expert_down = Vec::with_capacity(config.num_experts);
+        for expert in 0..config.num_experts {
+            expert_gate_up.push(transpose_matrix(
+                &gate_up[expert * gate_up_per_expert..(expert + 1) * gate_up_per_expert],
+                2 * config.moe_intermediate_size,
+                config.hidden_size,
+            ));
+            expert_down.push(transpose_matrix(
+                &down[expert * down_per_expert..(expert + 1) * down_per_expert],
+                config.hidden_size,
+                config.moe_intermediate_size,
+            ));
+        }
+        Ok(Self {
+            router: take_transposed(
+                tensors,
+                &format!("{prefix}.gate.weight"),
+                config.num_experts,
+                config.hidden_size,
+            )?,
+            expert_gate_up,
+            expert_down,
+            shared_gate: take_transposed(
+                tensors,
+                &format!("{prefix}.shared_expert.gate_proj.weight"),
+                config.shared_expert_intermediate_size,
+                config.hidden_size,
+            )?,
+            shared_up: take_transposed(
+                tensors,
+                &format!("{prefix}.shared_expert.up_proj.weight"),
+                config.shared_expert_intermediate_size,
+                config.hidden_size,
+            )?,
+            shared_down: take_transposed(
+                tensors,
+                &format!("{prefix}.shared_expert.down_proj.weight"),
+                config.hidden_size,
+                config.shared_expert_intermediate_size,
+            )?,
+            shared_expert_gate: take_transposed(
+                tensors,
+                &format!("{prefix}.shared_expert_gate.weight"),
+                1,
+                config.hidden_size,
+            )?,
+        })
+    }
+
     fn synthetic(config: &Qwen4ExpTextConfig, rng: &mut SyntheticRng) -> Self {
         Self {
             router: rng.matrix(config.hidden_size, config.num_experts),
@@ -433,6 +756,66 @@ impl MoeWeights {
 }
 
 impl PleWeights {
+    fn from_tensors(
+        config: &Qwen4ExpTextConfig,
+        tensors: &mut HashMap<String, Tensor>,
+        layer_prefix: &str,
+        layer_index: usize,
+    ) -> Result<Self> {
+        let prefix = format!("{layer_prefix}.ple");
+        let ordinal = config
+            .ple_layer_ids
+            .iter()
+            .position(|id| *id == layer_index + 1)
+            .ok_or_else(|| Error::Other("qwen4-exp PLE ordinal missing".into()))?;
+        let ngram_heads = (config.ngram_size - 1) * config.heads_per_ngram;
+        let head_dim = config.ple_embed_dim / ngram_heads;
+        let (head_vocab_sizes, head_offsets, padded) = ple_vocab_layout(config, ordinal);
+        let mut embedding = Vec::with_capacity(padded * head_dim);
+        for shard in 0..config.split_ngram_parts {
+            embedding.extend(take_f32(
+                tensors,
+                &format!("{prefix}.ple_embedding.ngram_embedding.shard_{shard}.weight"),
+            )?);
+        }
+        if embedding.len() != padded * head_dim {
+            return Err(Error::Other(format!(
+                "qwen4-exp {prefix} embedding has {} elements, expected {}",
+                embedding.len(),
+                padded * head_dim
+            )));
+        }
+        let conv = take_f32(tensors, &format!("{prefix}.conv1d.weight"))?;
+        Ok(Self {
+            embedding,
+            head_vocab_sizes,
+            head_offsets,
+            multipliers: build_multipliers(
+                config.vocab_size,
+                config.ngram_size,
+                ordinal,
+                config.seed,
+            ),
+            head_dim,
+            key: take_transposed(
+                tensors,
+                &format!("{prefix}.key_proj.weight"),
+                config.hc_count * config.hidden_size,
+                config.ple_embed_dim,
+            )?,
+            value: take_transposed(
+                tensors,
+                &format!("{prefix}.value_proj.weight"),
+                config.hidden_size,
+                config.ple_embed_dim,
+            )?,
+            norm_key: take_f32(tensors, &format!("{prefix}.norm_key.weight"))?,
+            norm_query: take_f32(tensors, &format!("{prefix}.norm_query.weight"))?,
+            norm_conv: take_f32(tensors, &format!("{prefix}.norm_conv.weight"))?,
+            conv,
+        })
+    }
+
     fn synthetic(
         config: &Qwen4ExpTextConfig,
         rng: &mut SyntheticRng,
@@ -445,20 +828,7 @@ impl PleWeights {
             .iter()
             .position(|id| *id == layer_index + 1)
             .ok_or_else(|| Error::Other("qwen4-exp PLE ordinal missing".into()))?;
-        let mut head_vocab_sizes = Vec::with_capacity(ngram_heads);
-        let mut head_offsets = Vec::with_capacity(ngram_heads);
-        let mut total = 0usize;
-        for head in 0..ngram_heads {
-            let size = find_nth_prime_after(
-                config.ngram_vocab_size_base - 1,
-                ordinal * ngram_heads + head + 1,
-            );
-            head_vocab_sizes.push(size);
-            head_offsets.push(total);
-            total += size;
-        }
-        let divisor = config.make_ngram_vocab_size_divisible_by;
-        let padded = total.div_ceil(divisor) * divisor;
+        let (head_vocab_sizes, head_offsets, padded) = ple_vocab_layout(config, ordinal);
         Ok(Self {
             embedding: rng.matrix(padded, head_dim),
             head_vocab_sizes,
@@ -638,6 +1008,10 @@ fn run_qsa(
     state: &mut QsaState,
 ) -> Result<Vec<f32>> {
     let mut query = linear(hidden, &weights.q, config.full_query_width());
+    let gate = linear(hidden, &weights.gate, config.full_query_width())
+        .into_iter()
+        .map(sigmoid)
+        .collect::<Vec<_>>();
     for head in query.chunks_exact_mut(config.head_dim) {
         let source = head.to_vec();
         rms_norm_zero_centered_into(&source, &weights.q_norm, config.rms_norm_eps, head);
@@ -692,6 +1066,9 @@ fn run_qsa(
                     scores[slot] * state.values[value_start + column];
             }
         }
+    }
+    for (attention, gate) in attention.iter_mut().zip(gate) {
+        *attention *= gate;
     }
     Ok(linear(&attention, &weights.out, config.hidden_size))
 }
@@ -849,6 +1226,65 @@ fn run_ple(
     output
 }
 
+fn take_tensor(tensors: &mut HashMap<String, Tensor>, name: &str) -> Result<Tensor> {
+    tensors
+        .remove(name)
+        .ok_or_else(|| Error::Other(format!("qwen4-exp checkpoint: missing {name}")))
+}
+
+fn take_f32(tensors: &mut HashMap<String, Tensor>, name: &str) -> Result<Vec<f32>> {
+    take_tensor(tensors, name)?.to_f32_vec()
+}
+
+fn take_f32_tensor(tensors: &mut HashMap<String, Tensor>, name: &str) -> Result<Tensor> {
+    let tensor = take_tensor(tensors, name)?;
+    Tensor::from_f32(tensor.shape().dims().to_vec(), &tensor.to_f32_vec()?)
+}
+
+fn take_transposed(
+    tensors: &mut HashMap<String, Tensor>,
+    name: &str,
+    rows: usize,
+    columns: usize,
+) -> Result<Vec<f32>> {
+    Ok(transpose_matrix(&take_f32(tensors, name)?, rows, columns))
+}
+
+fn transpose_matrix(input: &[f32], rows: usize, columns: usize) -> Vec<f32> {
+    debug_assert_eq!(input.len(), rows * columns);
+    let mut output = vec![0.0; input.len()];
+    for row in 0..rows {
+        for column in 0..columns {
+            output[column * rows + row] = input[row * columns + column];
+        }
+    }
+    output
+}
+
+fn deinterleave_query_gate(config: &Qwen4ExpTextConfig, packed: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let query_width = config.full_query_width();
+    debug_assert_eq!(
+        packed.len(),
+        config.full_q_projection_width() * config.hidden_size
+    );
+    let mut query = vec![0.0; config.hidden_size * query_width];
+    let mut gate = vec![0.0; config.hidden_size * query_width];
+    for input in 0..config.hidden_size {
+        for head in 0..config.n_attention_heads {
+            for column in 0..config.head_dim {
+                let output = head * config.head_dim + column;
+                let packed_query = head * 2 * config.head_dim + column;
+                let packed_gate = packed_query + config.head_dim;
+                query[input * query_width + output] =
+                    packed[packed_query * config.hidden_size + input];
+                gate[input * query_width + output] =
+                    packed[packed_gate * config.hidden_size + input];
+            }
+        }
+    }
+    (query, gate)
+}
+
 fn grouped_rms_norm(
     input: &[f32],
     weight: &[f32],
@@ -981,36 +1417,10 @@ fn build_multipliers(vocab: usize, ngram: usize, ordinal: usize, seed: u64) -> V
         .collect()
 }
 
-fn find_nth_prime_after(start: usize, count: usize) -> usize {
-    let mut prime = start;
-    for _ in 0..count {
-        prime += 1;
-        while !is_prime(prime) {
-            prime += 1;
-        }
-    }
-    prime
-}
-
-fn is_prime(value: usize) -> bool {
-    if value < 2 {
-        return false;
-    }
-    if value.is_multiple_of(2) {
-        return value == 2;
-    }
-    let mut divisor = 3;
-    while divisor * divisor <= value {
-        if value.is_multiple_of(divisor) {
-            return false;
-        }
-        divisor += 2;
-    }
-    true
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, HashSet};
+    use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
@@ -1020,6 +1430,39 @@ mod tests {
     fn model() -> GeneralQwen4Exp {
         let config = Qwen4ExpConfig::from_json_str(MINI_CONFIG).unwrap();
         GeneralQwen4Exp::from_synthetic(config, 38, 64).unwrap()
+    }
+
+    fn write_safetensors(path: &std::path::Path, tensors: &HashMap<String, Tensor>) {
+        let mut entries = BTreeMap::new();
+        let mut offset = 0usize;
+        let mut names = tensors.keys().collect::<Vec<_>>();
+        names.sort_unstable();
+        for name in &names {
+            let tensor = &tensors[*name];
+            let bytes = tensor.shape().numel() * std::mem::size_of::<f32>();
+            entries.insert(
+                (*name).clone(),
+                serde_json::json!({
+                    "dtype": "F32",
+                    "shape": tensor.shape().dims(),
+                    "data_offsets": [offset, offset + bytes],
+                }),
+            );
+            offset += bytes;
+        }
+        let mut header = serde_json::to_vec(&entries).unwrap();
+        while header.len() % 8 != 0 {
+            header.push(b' ');
+        }
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(&(header.len() as u64).to_le_bytes())
+            .unwrap();
+        file.write_all(&header).unwrap();
+        for name in names {
+            for value in tensors[name].as_f32().unwrap() {
+                file.write_all(&value.to_le_bytes()).unwrap();
+            }
+        }
     }
 
     #[test]
@@ -1084,6 +1527,74 @@ mod tests {
     }
 
     #[test]
+    fn consumes_a_complete_toy_checkpoint_map() {
+        let (config, tensors) = crate::qwen4_exp::weights::tests::zero_runtime_tensors();
+        let mut model = GeneralQwen4Exp::from_tensors(config, tensors, 64).unwrap();
+        let logits = model.forward(&[1, 3, 5, 7, 9], 0).unwrap();
+        assert_eq!(logits.shape().dims(), [5, 32]);
+        assert!(logits
+            .as_f32()
+            .unwrap()
+            .iter()
+            .all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn loads_a_complete_toy_safetensors_file() {
+        static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+        let (config, tensors) = crate::qwen4_exp::weights::tests::zero_runtime_tensors();
+        let directory = std::env::temp_dir().join(format!(
+            "apxinf-qwen4-exp-safetensors-{}-{}",
+            std::process::id(),
+            NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let checkpoint = directory.join("model.safetensors");
+        write_safetensors(&checkpoint, &tensors);
+        let schema = Qwen4ExpWeightSchema::new(&config).unwrap();
+        let runtime_names = schema
+            .runtime_names()
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let (loaded, _) =
+            apxinf_loader::safetensors::load_native_path_filtered(&checkpoint, |name| {
+                runtime_names.contains(name)
+            })
+            .unwrap();
+        let mut model = GeneralQwen4Exp::from_tensors(config, loaded, 64).unwrap();
+        let logits = model.forward(&[1, 3, 5], 0).unwrap();
+        assert_eq!(logits.shape().dims(), [3, 32]);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_query_gate_is_deinterleaved_per_head() {
+        let config = Qwen4ExpConfig::from_json_str(MINI_CONFIG).unwrap();
+        let text = &config.text;
+        let packed = (0..text.full_q_projection_width() * text.hidden_size)
+            .map(|value| value as f32)
+            .collect::<Vec<_>>();
+        let (query, gate) = deinterleave_query_gate(text, &packed);
+        for input in 0..text.hidden_size {
+            for head in 0..text.n_attention_heads {
+                for column in 0..text.head_dim {
+                    let output = head * text.head_dim + column;
+                    let packed_query = head * 2 * text.head_dim + column;
+                    assert_eq!(
+                        query[input * text.full_query_width() + output],
+                        packed[packed_query * text.hidden_size + input]
+                    );
+                    assert_eq!(
+                        gate[input * text.full_query_width() + output],
+                        packed[(packed_query + text.head_dim) * text.hidden_size + input]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn auto_model_registers_the_explicit_synthetic_path() {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
@@ -1105,14 +1616,24 @@ mod tests {
     }
 
     #[test]
-    fn auto_model_real_checkpoint_request_fails_closed() {
+    fn auto_model_loads_the_real_toy_checkpoint_path() {
+        static NEXT_REAL: AtomicU64 = AtomicU64::new(0);
+        let (_config, tensors) = crate::qwen4_exp::weights::tests::zero_runtime_tensors();
+        let directory = std::env::temp_dir().join(format!(
+            "apxinf-qwen4-exp-auto-real-{}-{}",
+            std::process::id(),
+            NEXT_REAL.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("config.json"), MINI_CONFIG).unwrap();
+        write_safetensors(&directory.join("model.safetensors"), &tensors);
         let options = LoadOptions {
-            model_name: Some("qwen4_exp".into()),
+            max_context: Some(64),
             ..LoadOptions::default()
         };
-        let error = AutoModel::load_model(Device::Cpu, "/does/not/matter", &options)
-            .err()
-            .unwrap();
-        assert!(error.to_string().contains("not yet qualified"));
+        let mut loaded = AutoModel::load_model(Device::Cpu, &directory, &options).unwrap();
+        let logits = loaded.forward(&[1, 2, 3], 0).unwrap();
+        assert_eq!(logits.shape().dims(), [3, 32]);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

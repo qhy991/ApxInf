@@ -10,4 +10,7 @@ pub use config::{
 };
 pub use general::GeneralQwen4Exp;
 pub use qsa::Qwen4ExpQsaSelector;
-pub use weights::{Qwen4ExpWeightIndexValidation, Qwen4ExpWeightSchema};
+pub use weights::{
+    metadata_from_tensors, Qwen4ExpRuntimeWeightValidation, Qwen4ExpWeightIndexValidation,
+    Qwen4ExpWeightMetadata, Qwen4ExpWeightSchema,
+};

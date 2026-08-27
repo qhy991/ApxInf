@@ -74,6 +74,10 @@ impl Qwen4ExpTextConfig {
         self.n_attention_heads * self.head_dim
     }
 
+    pub fn full_q_projection_width(&self) -> usize {
+        2 * self.full_query_width()
+    }
+
     pub fn full_kv_width(&self) -> usize {
         self.n_kv_heads * self.head_dim
     }
@@ -655,6 +659,7 @@ pub(crate) mod tests {
         let config = Qwen4ExpConfig::from_json_str(MINI_CONFIG).unwrap();
         assert_eq!(config.text.hidden_size, 16);
         assert_eq!(config.text.full_query_width(), 16);
+        assert_eq!(config.text.full_q_projection_width(), 32);
         assert_eq!(config.text.full_kv_width(), 8);
         assert_eq!(config.text.linear_key_width(), 8);
         assert_eq!(config.text.linear_value_width(), 16);

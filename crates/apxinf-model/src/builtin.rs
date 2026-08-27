@@ -1,6 +1,6 @@
 //! Built-in model registrations used by [`crate::AutoModel`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ use apxinf_core::{Backend, DType, Device, Error, Result, Tensor};
 use crate::auto::{LoadOptions, LoadedModel};
 use crate::llama::{GeneralLlama, LlamaWeights};
 use crate::qwen3vl::{GeneralQwen3VL, Qwen3VLConfig};
-use crate::qwen4_exp::{GeneralQwen4Exp, Qwen4ExpConfig};
+use crate::qwen4_exp::{GeneralQwen4Exp, Qwen4ExpConfig, Qwen4ExpWeightSchema};
 use crate::registry;
 
 /// Register every implementation shipped in this crate. Re-registering is
@@ -34,15 +34,9 @@ fn load_qwen4_exp(
 ) -> Result<LoadedModel> {
     if device != Device::Cpu {
         return Err(Error::Other(
-            "Qwen4-Exp currently supports the synthetic CPU reference path only".into(),
+            "Qwen4-Exp currently supports the CPU/F32 text path only".into(),
         ));
     }
-    let synthetic = options.synthetic.ok_or_else(|| {
-        Error::Other(
-            "Qwen4-Exp real-checkpoint loading is not yet qualified; request deterministic synthetic weights explicitly"
-                .into(),
-        )
-    })?;
     let model_dir = if path.is_dir() {
         path
     } else {
@@ -50,8 +44,26 @@ fn load_qwen4_exp(
     };
     let config = Qwen4ExpConfig::from_json_file(&model_dir.join("config.json"))?;
     let max_context = options.max_context.unwrap_or(4096);
-    let model =
-        GeneralQwen4Exp::from_synthetic_with_backend(config, synthetic.seed, max_context, backend)?;
+    let model = if let Some(synthetic) = options.synthetic {
+        GeneralQwen4Exp::from_synthetic_with_backend(config, synthetic.seed, max_context, backend)?
+    } else {
+        if matches!(options.text_weight_dtype, Some(dtype) if dtype != DType::F32) {
+            return Err(Error::Other(
+                "Qwen4-Exp checkpoint runtime currently requires F32 CPU weights".into(),
+            ));
+        }
+        let schema = Qwen4ExpWeightSchema::new(&config)?;
+        let runtime_names = schema
+            .runtime_names()
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let (tensors, _) = apxinf_loader::safetensors::load_native_path_filtered(path, |name| {
+            runtime_names.contains(name)
+        })
+        .map_err(|error| Error::Other(format!("load {}: {error}", path.display())))?;
+        GeneralQwen4Exp::from_tensors_with_backend(config, tensors, max_context, backend)?
+    };
     Ok(LoadedModel::text(Box::new(model)))
 }
 

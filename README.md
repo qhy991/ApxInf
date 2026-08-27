@@ -13,10 +13,10 @@ with an evolving agentic workflow that radically simplifies custom model develop
 ## Qwen3.8-Flash-Next synthetic-first bring-up
 
 ApxInf recognizes the released Hugging Face `model_type=qwen4_exp` and has a
-native CPU/F32 text reference path for checkpoint-free architecture work. The
-path executes the four-stream gated residual, PLE n-gram embedding, hybrid
-Gated DeltaNet/QSA schedule, routed MoE, caches, and untied output head with
-deterministic downsized weights:
+native CPU/F32 text reference path for both SafeTensors checkpoints and
+checkpoint-free architecture work. The path executes the four-stream gated
+residual, PLE n-gram embedding, hybrid Gated DeltaNet/QSA schedule, routed MoE,
+caches, and untied output head. Run the downsized deterministic fixture with:
 
 ```bash
 cargo run --release -p apxinf-model --example qwen4_exp_synthetic -- \
@@ -32,9 +32,12 @@ cargo run -p apxinf-model --example qwen4_exp_contract -- \
   /path/to/Qwen3.8-Flash-Next/model.safetensors.index.json
 ```
 
-The registered `AutoModel` path is deliberately synthetic-only today. A real
-checkpoint request, CUDA request, vision input, or MTP request fails closed;
-no code silently falls back to Qwen3.5. The exact contract, upstream hashes,
+The registered `AutoModel` path accepts the published text tensor schema and
+reconstructs deterministic PLE integer buffers while ignoring only the vision
+and MTP towers. CUDA, BF16 execution, vision input, and MTP still fail closed;
+no code silently falls back to Qwen3.5. The official text weights require at
+least 659 GiB after the current F32 packing, so the 180B checkpoint cannot run
+on the 16 GiB development Mac. The exact contract, upstream hashes, oracle,
 current limitations, and checkpoint-free QSA measurements are recorded in
 [the Qwen3.8-Flash-Next bring-up](doc/20260827-qwen38-flash-next/README.md).
 

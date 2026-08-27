@@ -64,8 +64,38 @@ per-layer activations and greedy tokens.
   cached tokenwise paths agree within `1e-6`; reset reproduces logits exactly.
   The checked-in `configs/qwen4-exp/synthetic-tiny.json` fixture exercises one
   PLE layer, three GDN layers, one QSA layer, four residual streams, and
-  top-2-of-4 routed MoE. Real checkpoint, CUDA, vision, and MTP requests remain
-  explicit errors.
+  top-2-of-4 routed MoE.
+- The real SafeTensors text route now validates and consumes the published
+  tensor layout, including QSA's interleaved per-head query/output gate and
+  PLE shard concatenation. All 1,291 BF16 runtime tensor headers across the
+  official 131 shards pass without downloading payloads. A frozen official
+  Transformers toy checkpoint matches all ApxInf logits to `1.49e-8` max
+  absolute error with 5/5 top-1 agreement. See
+  `source-contract-and-toy-oracle-v1.json`.
+- The official text path contains 176,943,899,520 parameters and the current
+  F32 pack needs at least 659 GiB. The 180B checkpoint therefore remains
+  unexecuted on this 16 GiB host; CUDA/BF16, distributed execution, vision, and
+  MTP remain explicit errors or non-goals for this slice.
+
+## Reproduce the no-weight gates
+
+The header fetcher refuses non-`206` responses and never requests tensor
+payload ranges:
+
+```bash
+python3 scripts/fetch_qwen4_exp_headers.py > /tmp/qwen4-exp-headers.json
+cargo run -p apxinf-model --example qwen4_exp_contract -- \
+  /path/to/config.json /path/to/model.safetensors.index.json \
+  /tmp/qwen4-exp-headers.json
+```
+
+Build the ignored local oracle environment from the frozen Transformers commit,
+compile `qwen4_exp_checkpoint`, then run:
+
+```bash
+.apxinf/toolchains/qwen4-oracle/bin/python \
+  scripts/qwen4_exp_toy_oracle.py
+```
 
 ## Frozen upstream evidence
 
