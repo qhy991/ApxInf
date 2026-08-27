@@ -495,6 +495,11 @@ impl LlmTrait for GeneralQwen3VL {
     }
 
     fn prefill(&mut self, input: LlmInput<'_>) -> Result<Tensor> {
+        if input.video.is_some() {
+            return Err(Error::Other(
+                "Qwen3-VL video input is not supported by this runtime".into(),
+            ));
+        }
         match input.image {
             Some(image) => self.prefill_with_image(
                 input.token_ids,

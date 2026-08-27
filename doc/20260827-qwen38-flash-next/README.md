@@ -94,7 +94,13 @@ per-layer activations and greedy tokens.
   error with 7/7 top-1 agreement. The gate covers image-placeholder injection,
   official modality-group position IDs, main-attention and QSA-indexer mRoPE,
   and `rope_delta=-2` decode continuation; see `multimodal-oracle-v1.json`.
-  Video timestamp groups, MTP, CUDA, and distributed execution remain open.
+  MTP, CUDA, and distributed execution remain open.
+- Video input is now a separate `VideoInput` capability. The encoder attends
+  within each frame, while text mRoPE expands `T` into timestamp-separated
+  `[1,H,W]` groups exactly like Transformers. A two-frame BF16 prefill plus
+  cached decode matches to `3.19e-6` max absolute error with 12/12 top-1 and
+  `rope_delta=-4`; see `video-oracle-v1.json`. MTP, CUDA, and distributed
+  execution remain open.
 
 ## Reproduce the no-weight gates
 

@@ -31,6 +31,21 @@ impl<'a> ImageInput<'a> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct VideoInput<'a> {
+    pub pixel_values: &'a Tensor,
+    pub grid_thw: &'a [[u32; 3]],
+}
+
+impl<'a> VideoInput<'a> {
+    pub const fn new(pixel_values: &'a Tensor, grid_thw: &'a [[u32; 3]]) -> Self {
+        Self {
+            pixel_values,
+            grid_thw,
+        }
+    }
+}
+
 /// Unified prompt input for text and vision-language generation.
 ///
 /// Media is attached to the prompt and consumed during prefill. Autoregressive
@@ -40,6 +55,7 @@ impl<'a> ImageInput<'a> {
 pub struct LlmInput<'a> {
     pub token_ids: &'a [u32],
     pub image: Option<ImageInput<'a>>,
+    pub video: Option<VideoInput<'a>>,
 }
 
 impl<'a> LlmInput<'a> {
@@ -47,6 +63,7 @@ impl<'a> LlmInput<'a> {
         Self {
             token_ids,
             image: None,
+            video: None,
         }
     }
 
@@ -54,6 +71,15 @@ impl<'a> LlmInput<'a> {
         Self {
             token_ids,
             image: Some(image),
+            video: None,
+        }
+    }
+
+    pub const fn with_video(token_ids: &'a [u32], video: VideoInput<'a>) -> Self {
+        Self {
+            token_ids,
+            image: None,
+            video: Some(video),
         }
     }
 }
@@ -62,11 +88,18 @@ impl<'a> LlmInput<'a> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LlmCapabilities {
     pub image: bool,
+    pub video: bool,
 }
 
 impl LlmCapabilities {
-    pub const TEXT_ONLY: Self = Self { image: false };
-    pub const VISION: Self = Self { image: true };
+    pub const TEXT_ONLY: Self = Self {
+        image: false,
+        video: false,
+    };
+    pub const VISION: Self = Self {
+        image: true,
+        video: false,
+    };
 }
 
 /// Complete prompt plus generation policy.
@@ -125,7 +158,18 @@ pub trait LlmTrait {
                 "this model does not support image input".into(),
             ));
         }
+        if input.video.is_some() {
+            return Err(Error::Other(
+                "this model does not support video input".into(),
+            ));
+        }
         self.forward(input.token_ids, 0)
+    }
+
+    /// Process a complete prompt for autoregressive generation. Implementors
+    /// may return only the final logits row while preserving ordinary prefill.
+    fn prefill_for_generation(&mut self, input: LlmInput<'_>) -> Result<Tensor> {
+        self.prefill(input)
     }
 
     /// Reset state for a new generation.
@@ -136,6 +180,11 @@ pub trait LlmTrait {
     /// decode graph use it to pre-capture every bucket they'll hit so the
     /// per-token TPOT stays at pure graph-replay cost. Default: no-op.
     fn prewarm_decode(&mut self, _prompt_len: usize, _max_new_tokens: usize) {}
+
+    /// Optional machine-readable receipt for explicitly selected runtime paths.
+    fn generation_path_receipt(&self) -> Option<serde_json::Value> {
+        None
+    }
 
     /// Vocabulary size used to validate logits and allocate sampler state.
     fn vocab_size(&self) -> usize;
@@ -226,6 +275,11 @@ where
             "this model does not support image input".into(),
         ));
     }
+    if input.video.is_some() && !model.capabilities().video {
+        return Err(Error::Other(
+            "this model does not support video input".into(),
+        ));
+    }
     let mut profile = GenerationProfile::new();
     if options.max_new_tokens == 0 {
         profile.finalize(prompt_tokens.len(), 0);
@@ -254,7 +308,7 @@ where
     model.prewarm_decode(prompt_tokens.len(), options.max_new_tokens);
 
     let mut generated = Vec::with_capacity(options.max_new_tokens);
-    let logits = model.prefill(input)?;
+    let logits = model.prefill_for_generation(input)?;
     let first = sampler.sample(NextTokenLogits::last(&logits, spec.vocab_size)?)?;
     profile.record_first_token();
     let mut current = GeneratedToken {

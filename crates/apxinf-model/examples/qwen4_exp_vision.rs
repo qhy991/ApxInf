@@ -7,9 +7,24 @@ use apxinf_model::{encode_qwen4_exp_vision, Qwen4ExpConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
-    let usage = "usage: qwen4_exp_vision CONFIG CHECKPOINT";
+    let usage = "usage: qwen4_exp_vision CONFIG CHECKPOINT [T,H,W]";
     let config_path = PathBuf::from(args.next().ok_or(usage)?);
     let checkpoint_path = PathBuf::from(args.next().ok_or(usage)?);
+    let grid = match args.next() {
+        Some(value) => {
+            let values = value
+                .into_string()
+                .map_err(|_| "grid must be UTF-8")?
+                .split(',')
+                .map(str::parse::<u32>)
+                .collect::<Result<Vec<_>, _>>()?;
+            if values.len() != 3 {
+                return Err(usage.into());
+            }
+            [[values[0], values[1], values[2]]]
+        }
+        None => [[1, 2, 2]],
+    };
     if args.next().is_some() {
         return Err(usage.into());
     }
@@ -18,8 +33,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         apxinf_loader::safetensors::load_native_path_mmap_filtered(&checkpoint_path, |name| {
             name.starts_with("model.visual.")
         })?;
-    let grid = [[1u32, 2, 2]];
-    let patches = 4usize;
+    let patches = grid[0]
+        .iter()
+        .map(|value| *value as usize)
+        .product::<usize>();
     let patch_width = config.vision.in_channels
         * config.vision.temporal_patch_size
         * config.vision.patch_size

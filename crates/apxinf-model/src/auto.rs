@@ -109,6 +109,13 @@ impl LoadedModel {
         }
     }
 
+    pub fn generation_path_receipt(&self) -> Result<Option<serde_json::Value>> {
+        match self {
+            Self::Text { model, .. } => Ok(model.generation_path_receipt()),
+            Self::Vla(_) => Err(Error::Other("loaded model is VLA, not text".into())),
+        }
+    }
+
     /// Model plus deployment generation settings before request overrides.
     pub fn generation_defaults(&self) -> Result<&GenerationOptions> {
         match self {

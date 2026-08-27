@@ -41,7 +41,7 @@ normalization/convolution weights and all arithmetic remain F32. SafeTensors
 payloads are read-only mmap ranges: startup copies zero checkpoint payload
 bytes and physical RSS is demand-paged, while the logical mapped text weights
 remain about 330 GiB. Checkpoint shard files must remain immutable while a
-model is loaded. CUDA text execution, video input, and MTP fail closed; no code
+model is loaded. CUDA text execution and MTP fail closed; no code
 silently falls back to Qwen3.5. The 180B checkpoint is not staged on the
 development Mac because it has only about 21 GiB free. The exact contract,
 upstream hashes, oracle,
@@ -52,8 +52,10 @@ The published vision tower and image-text generation path are supported by the
 native CPU/F32 reference runtime. The BF16 oracle covers patch embedding,
 interpolated positions, 2D RoPE, non-causal attention, the primary merger,
 image-placeholder injection, three-axis text mRoPE, QSA index selection, and
-rope-delta continuation into cached decode. Video timestamp grouping remains
-unqualified.
+rope-delta continuation into cached decode. Video input uses the same encoder,
+expands temporal grids into timestamp-separated position groups, and preserves
+rope-delta through cached decode; its BF16 oracle covers two frames with
+12/12 top-1 agreement.
 
 The first version of ApxInf ships with highly optimized PI-0.5 VLA model on Jetson Thor &
 Orin devices, and supports BF16, FP8 and INT8 precisions.

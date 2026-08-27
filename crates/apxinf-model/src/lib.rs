@@ -21,7 +21,7 @@ pub use generation_config::{GenerationConfigSource, GenerationOptions, SamplingM
 pub use llama::{GeneralLlama, LlamaModel, LlamaWeights, TransformerLayer, KVCache};
 pub use llm_trait::{
     generate_streaming, generate_streaming_with_options, GeneratedToken, GenerationOutput,
-    GenerationRequest, ImageInput, LlmCapabilities, LlmInput, LlmTrait,
+    GenerationRequest, ImageInput, LlmCapabilities, LlmInput, LlmTrait, VideoInput,
 };
 pub use registry::{register, get, list};
 pub use auto::{AutoModel, LoadOptions, LoadedModel, ModelPrecision, SyntheticWeights};

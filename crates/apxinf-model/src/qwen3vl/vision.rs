@@ -108,7 +108,7 @@ fn forward_impl(
         let k = b.rope_vision_2d(&k, n_heads, head_dim, 10000.0, &pos_ids)?;
 
         // Non-causal full attention
-        let attn_out = b.vision_sdpa(&q, &k, &v, n_patches, n_heads, head_dim)?;
+        let attn_out = vision_sdpa_by_frame(b, &q, &k, &v, t, h, width, n_heads, head_dim)?;
         // Output projection + residual
         let attn_out = b.matmul(&attn_out, &blk.proj_w)?;
         let attn_out = b.add_bias(&attn_out, &blk.proj_b)?;
@@ -151,6 +151,51 @@ fn forward_impl(
     }
 
     Ok(VisionOutput { primary, deepstack })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn vision_sdpa_by_frame(
+    backend: &dyn Backend,
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    time: usize,
+    height: usize,
+    width: usize,
+    heads: usize,
+    head_dim: usize,
+) -> Result<Tensor> {
+    let frame_tokens = height * width;
+    if time == 1 {
+        return backend.vision_sdpa(query, key, value, frame_tokens, heads, head_dim);
+    }
+    let query = backend.to_cpu(query)?.to_f32_vec()?;
+    let key = backend.to_cpu(key)?.to_f32_vec()?;
+    let value = backend.to_cpu(value)?.to_f32_vec()?;
+    let frame_elements = frame_tokens * heads * head_dim;
+    let mut output = Vec::with_capacity(time * frame_tokens * heads * head_dim);
+    for frame in 0..time {
+        let start = frame * frame_elements;
+        let end = start + frame_elements;
+        let query_frame =
+            Tensor::from_f32(vec![frame_tokens, heads, head_dim], &query[start..end])?;
+        let key_frame = Tensor::from_f32(vec![frame_tokens, heads, head_dim], &key[start..end])?;
+        let value_frame =
+            Tensor::from_f32(vec![frame_tokens, heads, head_dim], &value[start..end])?;
+        let attention = backend.vision_sdpa(
+            &backend.to_device(&query_frame)?,
+            &backend.to_device(&key_frame)?,
+            &backend.to_device(&value_frame)?,
+            frame_tokens,
+            heads,
+            head_dim,
+        )?;
+        output.extend(backend.to_cpu(&attention)?.to_f32_vec()?);
+    }
+    backend.to_device(&Tensor::from_f32(
+        vec![time * frame_tokens, heads * head_dim],
+        &output,
+    )?)
 }
 
 /// Primary merger: LayerNorm(1024) → reshape [N,1024]→[N/4,4096] → fc1 → GELU → fc2.
@@ -309,14 +354,14 @@ fn compute_pos_embeds(
     let n_tokens = t * merged_h * merged_w * merge * merge;  // = t * h * width
     let mut permuted = vec![0.0f32; n_tokens * hidden];
     let mut idx = 0usize;
-    for ti in 0..t {
+    for _ti in 0..t {
         for mh in 0..merged_h {
             for mw in 0..merged_w {
                 for ih in 0..merge {
                     for iw in 0..merge {
                         let src_hi = mh * merge + ih;
                         let src_wi = mw * merge + iw;
-                        let src = (ti * h * width + src_hi * width + src_wi) * hidden;
+                        let src = (src_hi * width + src_wi) * hidden;
                         for c in 0..hidden {
                             permuted[idx * hidden + c] = interp[src + c];
                         }

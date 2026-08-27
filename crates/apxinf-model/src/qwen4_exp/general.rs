@@ -366,16 +366,47 @@ impl LlmTrait for GeneralQwen4Exp {
         Tensor::from_f32(vec![token_ids.len(), self.config.text.vocab_size], &logits)
     }
 
+    fn backend(&self) -> &dyn Backend {
+        &*self.backend
+    }
+
     fn capabilities(&self) -> LlmCapabilities {
         LlmCapabilities {
             image: self.vision.is_some(),
+            video: self.vision.is_some(),
         }
     }
 
     fn prefill(&mut self, input: LlmInput<'_>) -> Result<Tensor> {
-        let Some(image) = input.image else {
-            return self.forward(input.token_ids, 0);
-        };
+        let (pixel_values, encoder_grids, placeholder_token, position_grids, media_label) =
+            match (input.image, input.video) {
+                (None, None) => return self.forward(input.token_ids, 0),
+                (Some(_), Some(_)) => {
+                    return Err(Error::Other(
+                        "qwen4-exp accepts image or video in one request, not both".into(),
+                    ))
+                }
+                (Some(image), None) => (
+                    image.pixel_values,
+                    image.grid_thw,
+                    self.config.image_token_id,
+                    image.grid_thw.to_vec(),
+                    "image",
+                ),
+                (None, Some(video)) => {
+                    let mut frame_grids = Vec::new();
+                    for &[time, height, width] in video.grid_thw {
+                        frame_grids.extend((0..time).map(|_| [1, height, width]));
+                    }
+                    (
+                        video.pixel_values,
+                        video.grid_thw,
+                        self.config.video_token_id,
+                        frame_grids,
+                        "video",
+                    )
+                }
+            };
         if self.state.position != 0 {
             return Err(Error::Other(
                 "qwen4-exp multimodal prefill requires empty state".into(),
@@ -386,7 +417,7 @@ impl LlmTrait for GeneralQwen4Exp {
                 "qwen4-exp multimodal prompt length is invalid".into(),
             ));
         }
-        let visual = self.encode_image(image.pixel_values, image.grid_thw)?;
+        let visual = self.encode_image(pixel_values, encoder_grids)?;
         let visual_dims = visual.shape().dims();
         if visual_dims.len() != 2 || visual_dims[1] != self.config.text.hidden_size {
             return Err(Error::ShapeMismatch {
@@ -394,21 +425,21 @@ impl LlmTrait for GeneralQwen4Exp {
                 got: visual.shape().to_string(),
             });
         }
-        let image_tokens = input
+        let placeholder_tokens = input
             .token_ids
             .iter()
-            .filter(|token| **token == self.config.image_token_id)
+            .filter(|token| **token == placeholder_token)
             .count();
-        if image_tokens != visual_dims[0] {
+        if placeholder_tokens != visual_dims[0] {
             return Err(Error::Other(format!(
-                "qwen4-exp image features {} != placeholder tokens {image_tokens}",
+                "qwen4-exp {media_label} features {} != placeholder tokens {placeholder_tokens}",
                 visual_dims[0]
             )));
         }
         let (positions, rope_delta) = multimodal_positions(
             input.token_ids,
-            self.config.image_token_id,
-            image.grid_thw,
+            placeholder_token,
+            &position_grids,
             self.config.vision.spatial_merge_size,
         )?;
         self.rope_delta = rope_delta;
@@ -416,7 +447,7 @@ impl LlmTrait for GeneralQwen4Exp {
         let mut visual_row = 0usize;
         let mut logits = Vec::with_capacity(input.token_ids.len() * self.config.text.vocab_size);
         for (&token, position) in input.token_ids.iter().zip(positions) {
-            let embedding = if token == self.config.image_token_id {
+            let embedding = if token == placeholder_token {
                 let start = visual_row * self.config.text.hidden_size;
                 visual_row += 1;
                 Some(&visual[start..start + self.config.text.hidden_size])
@@ -451,6 +482,7 @@ impl LlmTrait for GeneralQwen4Exp {
             "routed_moe": true,
             "ple_layers": self.config.text.ple_layer_ids,
             "vision": self.vision.is_some(),
+            "video": self.vision.is_some(),
             "vision_encoder_loaded": self.vision.is_some(),
             "multimodal_prefill": self.vision.is_some(),
             "rope_delta": self.rope_delta,

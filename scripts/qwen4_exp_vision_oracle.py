@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 from pathlib import Path
 
@@ -24,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=38)
     parser.add_argument("--max-abs", type=float, default=1e-4)
+    parser.add_argument("--grid", default="1,2,2")
     return parser.parse_args()
 
 
@@ -42,7 +44,10 @@ def main() -> int:
             if tensor.is_floating_point():
                 tensor.copy_(tensor.to(torch.bfloat16).float())
 
-    patches = 4
+    grid_values = [int(value) for value in args.grid.split(",")]
+    if len(grid_values) != 3:
+        raise SystemExit("--grid must be T,H,W")
+    patches = math.prod(grid_values)
     patch_width = (
         config.in_channels
         * config.temporal_patch_size
@@ -50,7 +55,7 @@ def main() -> int:
         * config.patch_size
     )
     pixels = torch.arange(patches * patch_width, dtype=torch.float32).reshape(patches, patch_width) / 100.0
-    grid = torch.tensor([[1, 2, 2]], dtype=torch.long)
+    grid = torch.tensor([grid_values], dtype=torch.long)
     with torch.inference_mode():
         expected = model(pixels, grid).pooler_output.float().cpu()
 
@@ -66,7 +71,12 @@ def main() -> int:
     }
     save_file(state, checkpoint_path)
     completed = subprocess.run(
-        [str(args.rust_binary.resolve()), str(config_path), str(checkpoint_path)],
+        [
+            str(args.rust_binary.resolve()),
+            str(config_path),
+            str(checkpoint_path),
+            args.grid,
+        ],
         check=True,
         text=True,
         capture_output=True,

@@ -7,7 +7,7 @@ use apxinf_loader::ModelConfig;
 use apxinf_model::{
     register, Action, AutoModel, GenerationOptions, GenerationRequest, ImageInput, InferenceSpec,
     LlmCapabilities, LlmInput, LlmTrait, LoadOptions, LoadedModel, PreparedInference, SamplingMode,
-    VlaContract, VlaRequest, VlaRuntime,
+    VideoInput, VlaContract, VlaRequest, VlaRuntime,
 };
 
 #[derive(Default)]
@@ -198,6 +198,25 @@ fn text_only_model_rejects_an_image_before_forward() {
     };
 
     assert!(error.to_string().contains("does not support image input"));
+    assert!(model.forward_calls.is_empty());
+    assert!(model.prewarm_calls.is_empty());
+}
+
+#[test]
+fn text_only_model_rejects_a_video_before_forward() {
+    let pixels = Tensor::from_f32(vec![2, 4], &[0.0; 8]).unwrap();
+    let grid = [[2, 2, 2]];
+    let mut model = TextOnlyModel::default();
+    let error = match model.generate_streaming(
+        LlmInput::with_video(&[7, 8], VideoInput::new(&pixels, &grid)),
+        1,
+        |_| {},
+        None,
+    ) {
+        Ok(_) => panic!("text-only model accepted video input"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("does not support video input"));
     assert!(model.forward_calls.is_empty());
     assert!(model.prewarm_calls.is_empty());
 }
