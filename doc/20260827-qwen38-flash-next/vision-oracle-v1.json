@@ -1,0 +1,24 @@
+{
+  "format": "apxinf-qwen4-exp-vision-oracle-v1",
+  "date": "2026-08-28",
+  "transformers_commit": "19876312341f42cf49467bb24d67271cf28cb599",
+  "seed": 38,
+  "grid_thw": [[1, 2, 2]],
+  "checkpoint_dtype": "bf16",
+  "checkpoint_tensors": 33,
+  "comparison": {
+    "max_abs": 9.336508810520172e-7,
+    "mean_abs": 3.000604920089245e-7,
+    "threshold": 1e-4
+  },
+  "covered": [
+    "patch_embed",
+    "position_interpolation",
+    "vision_2d_rope",
+    "noncausal_attention",
+    "vision_mlp",
+    "primary_merger"
+  ],
+  "not_covered": ["text_embedding_injection", "multimodal_mrope", "image_text_generation"],
+  "passed": true
+}

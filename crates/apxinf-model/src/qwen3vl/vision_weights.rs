@@ -76,9 +76,9 @@ impl Qwen3VLVisionWeights {
         let patch_embed_weight = {
             let raw = tensors.remove("model.visual.patch_embed.proj.weight")
                 .ok_or_else(|| Error::Other("missing patch_embed.proj.weight".into()))?;
-            // Shape [1024, 3, 2, 16, 16] → reshape to [1024, 1536] then
-            // transpose to [1536, 1024] for matmul (cuBLAS row-major).
-            let flattened = reshape_5d_to_2d(&raw, 1024, 1536)?;
+            let patch_width =
+                vc.in_channels * vc.temporal_patch_size * vc.patch_size * vc.patch_size;
+            let flattened = reshape_5d_to_2d(&raw, vc.hidden_size, patch_width)?;
             transpose_2d(&flattened)?
         };
         let patch_embed_bias = tensors.remove("model.visual.patch_embed.proj.bias")
@@ -87,8 +87,14 @@ impl Qwen3VLVisionWeights {
             .ok_or_else(|| Error::Other("missing pos_embed.weight".into()))?;
 
         let merger = load_merger("model.visual.merger", &mut tensors, false)?;
-        let deepstack_mergers = (0..3)
-            .map(|i| load_merger(&format!("model.visual.deepstack_merger_list.{i}"), &mut tensors, true))
+        let deepstack_mergers = (0..vc.deepstack_visual_indexes.len())
+            .map(|i| {
+                load_merger(
+                    &format!("model.visual.deepstack_merger_list.{i}"),
+                    &mut tensors,
+                    true,
+                )
+            })
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Self { patch_embed_weight, patch_embed_bias, pos_embed, blocks, merger, deepstack_mergers })

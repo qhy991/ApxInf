@@ -58,12 +58,33 @@ fn load_qwen4_exp(
             .iter()
             .cloned()
             .collect::<HashSet<_>>();
-        let (tensors, _) =
+        let load_vision = !config.language_model_only;
+        let (mut tensors, _) =
             apxinf_loader::safetensors::load_native_path_mmap_filtered(path, |name| {
-                runtime_names.contains(name)
+                runtime_names.contains(name) || (load_vision && name.starts_with("model.visual."))
             })
             .map_err(|error| Error::Other(format!("load {}: {error}", path.display())))?;
-        GeneralQwen4Exp::from_tensors_with_backend(config, tensors, max_context, backend)?
+        let vision_names = tensors
+            .keys()
+            .filter(|name| name.starts_with("model.visual."))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut vision_tensors = HashMap::with_capacity(vision_names.len());
+        for name in vision_names {
+            vision_tensors.insert(
+                name.clone(),
+                tensors
+                    .remove(&name)
+                    .expect("collected vision tensor exists"),
+            );
+        }
+        let model =
+            GeneralQwen4Exp::from_tensors_with_backend(config, tensors, max_context, backend)?;
+        if load_vision {
+            model.with_vision_tensors(vision_tensors)?
+        } else {
+            model
+        }
     };
     Ok(LoadedModel::text(Box::new(model)))
 }

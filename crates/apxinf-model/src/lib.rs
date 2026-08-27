@@ -35,7 +35,8 @@ pub use vla::{
 #[cfg(feature = "cuda")]
 pub use llama::{DecodeGraph, DecodeGraphConfig, DecodeGraphWeights, DecodeLayerWeights};
 pub use qwen4_exp::{
-    GeneralQwen4Exp, Qwen4ExpConfig, Qwen4ExpLayerType, Qwen4ExpQsaSelector, Qwen4ExpRopeConfig,
-    Qwen4ExpRuntimeWeightValidation, Qwen4ExpTextConfig, Qwen4ExpVisionConfig,
-    Qwen4ExpWeightIndexValidation, Qwen4ExpWeightMetadata, Qwen4ExpWeightSchema,
+    encode_qwen4_exp_vision, GeneralQwen4Exp, Qwen4ExpConfig, Qwen4ExpLayerType,
+    Qwen4ExpQsaSelector, Qwen4ExpRopeConfig, Qwen4ExpRuntimeWeightValidation, Qwen4ExpTextConfig,
+    Qwen4ExpVisionConfig, Qwen4ExpWeightIndexValidation, Qwen4ExpWeightMetadata,
+    Qwen4ExpWeightSchema,
 };

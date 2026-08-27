@@ -327,9 +327,21 @@ fn compute_pos_embeds(
         }
     }
 
-    // Cast to bf16 (to match x's dtype) and upload.
-    let bf16: Vec<half::bf16> = permuted.iter().map(|&v| half::bf16::from_f32(v)).collect();
-    let tensor = Tensor::from_bf16(vec![n_tokens, hidden], &bf16)?;
+    let tensor = match pos_embed_table.dtype() {
+        apxinf_core::DType::F32 => Tensor::from_f32(vec![n_tokens, hidden], &permuted)?,
+        apxinf_core::DType::BF16 => {
+            let bf16 = permuted
+                .iter()
+                .map(|&value| half::bf16::from_f32(value))
+                .collect::<Vec<_>>();
+            Tensor::from_bf16(vec![n_tokens, hidden], &bf16)?
+        }
+        dtype => {
+            return Err(Error::Other(format!(
+                "vision positional embedding does not support {dtype}"
+            )))
+        }
+    };
     b.to_device(&tensor)
 }
 

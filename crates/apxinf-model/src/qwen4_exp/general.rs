@@ -14,6 +14,8 @@ use super::config::{Qwen4ExpConfig, Qwen4ExpLayerType, Qwen4ExpTextConfig};
 use super::qsa::{apply_partial_rope, rms_norm_zero_centered_into, Qwen4ExpQsaSelector};
 use super::weights::{metadata_from_tensors, ple_vocab_layout, Qwen4ExpWeightSchema};
 use crate::llm_trait::LlmTrait;
+use crate::qwen3vl::config::{Qwen3VLConfig, Qwen3VLTextConfig, Qwen3VLVisionConfig};
+use crate::qwen3vl::Qwen3VLVisionWeights;
 
 pub struct GeneralQwen4Exp {
     config: Qwen4ExpConfig,
@@ -23,6 +25,29 @@ pub struct GeneralQwen4Exp {
     max_context: usize,
     weight_source: &'static str,
     checkpoint_payloads_mmap: bool,
+    vision: Option<Qwen4ExpVisionRuntime>,
+}
+
+struct Qwen4ExpVisionRuntime {
+    config: Qwen3VLConfig,
+    weights: Qwen3VLVisionWeights,
+}
+
+pub fn encode_qwen4_exp_vision(
+    config: &Qwen4ExpConfig,
+    tensors: HashMap<String, Tensor>,
+    pixel_values: &Tensor,
+    grid_thw: &[[u32; 3]],
+) -> Result<Tensor> {
+    let vision = build_vision_runtime(config, tensors)?;
+    Ok(crate::qwen3vl::vision::forward(
+        &vision.config,
+        &vision.weights,
+        &CpuBackend,
+        pixel_values,
+        grid_thw,
+    )?
+    .primary)
 }
 
 impl GeneralQwen4Exp {
@@ -71,6 +96,7 @@ impl GeneralQwen4Exp {
             max_context,
             weight_source: "checkpoint",
             checkpoint_payloads_mmap,
+            vision: None,
         })
     }
 
@@ -110,7 +136,28 @@ impl GeneralQwen4Exp {
             max_context,
             weight_source: "deterministic-synthetic",
             checkpoint_payloads_mmap: false,
+            vision: None,
         })
+    }
+
+    pub(crate) fn with_vision_tensors(mut self, tensors: HashMap<String, Tensor>) -> Result<Self> {
+        self.vision = Some(build_vision_runtime(&self.config, tensors)?);
+        Ok(self)
+    }
+
+    pub fn encode_image(&self, pixel_values: &Tensor, grid_thw: &[[u32; 3]]) -> Result<Tensor> {
+        let vision = self
+            .vision
+            .as_ref()
+            .ok_or_else(|| Error::Other("qwen4-exp vision weights are not loaded".into()))?;
+        Ok(crate::qwen3vl::vision::forward(
+            &vision.config,
+            &vision.weights,
+            &*self.backend,
+            pixel_values,
+            grid_thw,
+        )?
+        .primary)
     }
 
     fn forward_one(&mut self, token: u32, position: usize) -> Result<Vec<f32>> {
@@ -163,6 +210,20 @@ impl GeneralQwen4Exp {
         let hidden = run_gated_residual(text, &hyper, &self.weights.final_connection, false)?.mixed;
         self.weights.lm_head.apply(&hidden)
     }
+}
+
+fn build_vision_runtime(
+    config: &Qwen4ExpConfig,
+    mut tensors: HashMap<String, Tensor>,
+) -> Result<Qwen4ExpVisionRuntime> {
+    for tensor in tensors.values_mut() {
+        if tensor.dtype() != DType::F32 {
+            *tensor = Tensor::from_f32(tensor.shape().dims().to_vec(), &tensor.to_f32_vec()?)?;
+        }
+    }
+    let config = qwen3vl_vision_adapter(config);
+    let weights = Qwen3VLVisionWeights::from_map(&config, tensors)?;
+    Ok(Qwen4ExpVisionRuntime { config, weights })
 }
 
 impl LlmTrait for GeneralQwen4Exp {
@@ -223,6 +284,7 @@ impl LlmTrait for GeneralQwen4Exp {
             "routed_moe": true,
             "ple_layers": self.config.text.ple_layer_ids,
             "vision": false,
+            "vision_encoder_loaded": self.vision.is_some(),
             "mtp": false,
         }))
     }
@@ -1539,6 +1601,44 @@ fn silu(value: f32) -> f32 {
     value * sigmoid(value)
 }
 
+fn qwen3vl_vision_adapter(config: &Qwen4ExpConfig) -> Qwen3VLConfig {
+    Qwen3VLConfig {
+        text: Qwen3VLTextConfig {
+            hidden_size: config.text.hidden_size,
+            intermediate_size: config.text.moe_intermediate_size,
+            n_layers: config.text.n_layers,
+            n_heads: config.text.n_attention_heads,
+            n_kv_heads: config.text.n_kv_heads,
+            head_dim: config.text.head_dim,
+            vocab_size: config.text.vocab_size,
+            max_position_embeddings: config.text.max_position_embeddings,
+            rms_norm_eps: config.text.rms_norm_eps,
+            rope_theta: config.text.rope.theta,
+            mrope_section: config.text.rope.mrope_section,
+            mrope_interleaved: config.text.rope.mrope_interleaved,
+            tie_word_embeddings: config.text.tie_word_embeddings,
+        },
+        vision: Qwen3VLVisionConfig {
+            depth: config.vision.depth,
+            hidden_size: config.vision.hidden_size,
+            intermediate_size: config.vision.intermediate_size,
+            num_heads: config.vision.num_heads,
+            head_dim: config.vision.hidden_size / config.vision.num_heads,
+            patch_size: config.vision.patch_size,
+            temporal_patch_size: config.vision.temporal_patch_size,
+            in_channels: config.vision.in_channels,
+            spatial_merge_size: config.vision.spatial_merge_size,
+            num_position_embeddings: config.vision.num_position_embeddings,
+            out_hidden_size: config.vision.out_hidden_size,
+            deepstack_visual_indexes: config.vision.deepstack_visual_indexes.clone(),
+        },
+        image_token_id: config.image_token_id,
+        video_token_id: config.video_token_id,
+        vision_start_token_id: config.vision_start_token_id,
+        vision_end_token_id: config.vision_end_token_id,
+    }
+}
+
 fn validate_synthetic_size(config: &Qwen4ExpTextConfig) -> Result<()> {
     if config.hidden_size > 256
         || config.vocab_size > 65_536
@@ -1875,7 +1975,9 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&directory).unwrap();
-        std::fs::write(directory.join("config.json"), MINI_CONFIG).unwrap();
+        let mut text_only: serde_json::Value = serde_json::from_str(MINI_CONFIG).unwrap();
+        text_only["language_model_only"] = true.into();
+        std::fs::write(directory.join("config.json"), text_only.to_string()).unwrap();
         let options = LoadOptions {
             synthetic: Some(SyntheticWeights { seed: 38 }),
             max_context: Some(64),
@@ -1897,7 +1999,9 @@ mod tests {
             NEXT_REAL.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&directory).unwrap();
-        std::fs::write(directory.join("config.json"), MINI_CONFIG).unwrap();
+        let mut text_only: serde_json::Value = serde_json::from_str(MINI_CONFIG).unwrap();
+        text_only["language_model_only"] = true.into();
+        std::fs::write(directory.join("config.json"), text_only.to_string()).unwrap();
         write_safetensors(&directory.join("model.safetensors"), &tensors);
         let options = LoadOptions {
             max_context: Some(64),
