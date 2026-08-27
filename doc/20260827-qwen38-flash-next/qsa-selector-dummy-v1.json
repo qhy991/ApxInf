@@ -1,0 +1,59 @@
+{
+  "format": "apxinf-qwen4-exp-qsa-selector-dummy-evidence-v1",
+  "date": "2026-08-27",
+  "claim_scope": "checkpoint-free CPU QSA compressed-block selector only; not model quality or end-to-end throughput",
+  "source": {
+    "model_config_sha256": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b",
+    "transformers_commit": "19876312341f42cf49467bb24d67271cf28cb599"
+  },
+  "host": {
+    "model": "MacBookPro18,3",
+    "architecture": "arm64",
+    "memory_bytes": 17179869184,
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "contract": {
+    "query_heads": 4,
+    "head_dim": 128,
+    "compress_ratio": 4,
+    "token_budget": 2048,
+    "warmups": 2,
+    "samples_per_primary_point": 11,
+    "weights_loaded": false
+  },
+  "baseline_full_sort_per_block_allocation": [
+    {"context_tokens": 4096, "median_ms": 1.817041, "p95_ms": 2.702083, "checksum": 6194485137535477984},
+    {"context_tokens": 16384, "median_ms": 5.417708, "p95_ms": 6.89375, "checksum": 14168057349081131808},
+    {"context_tokens": 65536, "median_ms": 18.397583, "p95_ms": 18.886166, "checksum": 7841781343063133312}
+  ],
+  "candidate_reused_scratch_full_sort": [
+    {"context_tokens": 4096, "median_ms": 1.854292, "p95_ms": 2.589917, "checksum": 6194485137535477984},
+    {"context_tokens": 16384, "median_ms": 5.372708, "p95_ms": 7.256291, "checksum": 14168057349081131808},
+    {"context_tokens": 65536, "median_ms": 17.220958, "p95_ms": 18.021958, "checksum": 7841781343063133312}
+  ],
+  "candidate_reused_scratch_linear_partition": [
+    {"context_tokens": 4096, "median_ms": 1.408333, "p95_ms": 2.241125, "checksum": 6194485137535477984},
+    {"context_tokens": 16384, "median_ms": 5.223208, "p95_ms": 6.8525, "checksum": 14168057349081131808},
+    {
+      "context_tokens": 65536,
+      "median_ms": 17.516083,
+      "repeat_medians_ms": [17.516083, 17.583875, 17.443458],
+      "checksum": 7841781343063133312,
+      "samples_per_repeat": 21
+    }
+  ],
+  "post_build_confirmation": {
+    "date": "2026-08-28",
+    "context_tokens": 65536,
+    "samples": 21,
+    "median_ms": 17.090875,
+    "p95_ms": 17.412667,
+    "checksum": 7841781343063133312
+  },
+  "observations": [
+    "All variants produced the same selected-token checksum at every context length.",
+    "Scratch reuse is neutral at short context and preliminarily beneficial at 64K.",
+    "Linear top-k partition materially reduces 4K work; its isolated 64K effect is not distinguishable from run noise because score computation dominates there.",
+    "The combined candidate is 22.5%, 3.6%, and 4.8% below the original median at 4K, 16K, and 64K respectively."
+  ]
+}

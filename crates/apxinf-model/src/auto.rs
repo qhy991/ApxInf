@@ -45,6 +45,8 @@ pub struct LoadOptions {
     /// Optional text-model weight dtype. `None` preserves checkpoint dtype
     /// (except CPU backends, which currently require f32).
     pub text_weight_dtype: Option<DType>,
+    /// Optional maximum context for text-model runtimes.
+    pub max_context: Option<usize>,
     pub calibration_path: Option<PathBuf>,
     pub tuning_path: Option<PathBuf>,
     /// Enable online GEMM autotuning from real inference requests. When false,

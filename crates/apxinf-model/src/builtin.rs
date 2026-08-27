@@ -9,6 +9,7 @@ use apxinf_core::{Backend, DType, Device, Error, Result, Tensor};
 use crate::auto::{LoadOptions, LoadedModel};
 use crate::llama::{GeneralLlama, LlamaWeights};
 use crate::qwen3vl::{GeneralQwen3VL, Qwen3VLConfig};
+use crate::qwen4_exp::{GeneralQwen4Exp, Qwen4ExpConfig};
 use crate::registry;
 
 /// Register every implementation shipped in this crate. Re-registering is
@@ -17,12 +18,43 @@ pub fn register_builtin_models() {
     registry::register("llama", load_llama);
     registry::register("qwen3_vl", load_qwen3vl);
     registry::register("qwen3vl", load_qwen3vl);
+    registry::register("qwen4_exp", load_qwen4_exp);
 
     #[cfg(feature = "cuda")]
     crate::pi05::register_builtin();
     #[cfg(feature = "cuda")]
     crate::walloss::register_builtin();
 }
+
+fn load_qwen4_exp(
+    path: &Path,
+    device: Device,
+    backend: Arc<dyn Backend>,
+    options: &LoadOptions,
+) -> Result<LoadedModel> {
+    if device != Device::Cpu {
+        return Err(Error::Other(
+            "Qwen4-Exp currently supports the synthetic CPU reference path only".into(),
+        ));
+    }
+    let synthetic = options.synthetic.ok_or_else(|| {
+        Error::Other(
+            "Qwen4-Exp real-checkpoint loading is not yet qualified; request deterministic synthetic weights explicitly"
+                .into(),
+        )
+    })?;
+    let model_dir = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or_else(|| Path::new("."))
+    };
+    let config = Qwen4ExpConfig::from_json_file(&model_dir.join("config.json"))?;
+    let max_context = options.max_context.unwrap_or(4096);
+    let model =
+        GeneralQwen4Exp::from_synthetic_with_backend(config, synthetic.seed, max_context, backend)?;
+    Ok(LoadedModel::text(Box::new(model)))
+}
+
 fn load_llama(
     path: &Path,
     device: Device,

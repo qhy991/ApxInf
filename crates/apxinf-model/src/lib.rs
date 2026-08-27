@@ -11,6 +11,7 @@ pub mod auto;
 pub mod profiling;
 pub mod pi05;
 pub mod qwen3vl;
+pub mod qwen4_exp;
 pub mod vla;
 mod walloss;
 
@@ -33,3 +34,7 @@ pub use vla::{
 };
 #[cfg(feature = "cuda")]
 pub use llama::{DecodeGraph, DecodeGraphConfig, DecodeGraphWeights, DecodeLayerWeights};
+pub use qwen4_exp::{
+    GeneralQwen4Exp, Qwen4ExpConfig, Qwen4ExpLayerType, Qwen4ExpQsaSelector, Qwen4ExpRopeConfig,
+    Qwen4ExpTextConfig, Qwen4ExpVisionConfig, Qwen4ExpWeightIndexValidation, Qwen4ExpWeightSchema,
+};

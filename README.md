@@ -10,6 +10,34 @@ with an evolving agentic workflow that radically simplifies custom model develop
 - embodied AI is highest priority, VLA/WAM models on Jetson/DriveOS Thor/Orin
 - Agentically optimized CUDA Kernels
 
+## Qwen3.8-Flash-Next synthetic-first bring-up
+
+ApxInf recognizes the released Hugging Face `model_type=qwen4_exp` and has a
+native CPU/F32 text reference path for checkpoint-free architecture work. The
+path executes the four-stream gated residual, PLE n-gram embedding, hybrid
+Gated DeltaNet/QSA schedule, routed MoE, caches, and untied output head with
+deterministic downsized weights:
+
+```bash
+cargo run --release -p apxinf-model --example qwen4_exp_synthetic -- \
+  configs/qwen4-exp/synthetic-tiny.json
+```
+
+Inspect the official config and SafeTensors index without downloading any of
+the 131 weight shards:
+
+```bash
+cargo run -p apxinf-model --example qwen4_exp_contract -- \
+  /path/to/Qwen3.8-Flash-Next/config.json \
+  /path/to/Qwen3.8-Flash-Next/model.safetensors.index.json
+```
+
+The registered `AutoModel` path is deliberately synthetic-only today. A real
+checkpoint request, CUDA request, vision input, or MTP request fails closed;
+no code silently falls back to Qwen3.5. The exact contract, upstream hashes,
+current limitations, and checkpoint-free QSA measurements are recorded in
+[the Qwen3.8-Flash-Next bring-up](doc/20260827-qwen38-flash-next/README.md).
+
 The first version of ApxInf ships with highly optimized PI-0.5 VLA model on Jetson Thor &
 Orin devices, and supports BF16, FP8 and INT8 precisions.
 
