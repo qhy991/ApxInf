@@ -647,13 +647,16 @@ impl ResidentMatrix {
         }
     }
 
+    fn bf16_checkpoint_numel(&self) -> Option<usize> {
+        match self {
+            Self::Checkpoint(tensor) if tensor.dtype() == DType::BF16 => Some(tensor.numel()),
+            _ => None,
+        }
+    }
+
     fn is_large_bf16_checkpoint(&self) -> bool {
-        matches!(
-            self,
-            Self::Checkpoint(tensor)
-                if tensor.dtype() == DType::BF16
-                    && tensor.numel() >= BF16_GEMV_PAR_MIN_ELEMENTS
-        )
+        self.bf16_checkpoint_numel()
+            .is_some_and(|numel| numel >= BF16_GEMV_PAR_MIN_ELEMENTS)
     }
 }
 
@@ -1534,7 +1537,31 @@ fn run_qsa(
             config.rope.mrope_section,
         );
     }
-    let mut key = weights.k.apply(hidden)?;
+    let kvi_elements = weights
+        .k
+        .bf16_checkpoint_numel()
+        .zip(weights.v.bf16_checkpoint_numel())
+        .zip(weights.index_qk.bf16_checkpoint_numel())
+        .map(|((k, v), index)| k.saturating_add(v).saturating_add(index));
+    let (mut key, value, index_qk) =
+        if kvi_elements.is_some_and(|numel| numel >= BF16_GEMV_PAR_MIN_ELEMENTS) {
+            let (key, (value, index_qk)) = rayon::join(
+                || weights.k.apply(hidden),
+                || {
+                    rayon::join(
+                        || weights.v.apply(hidden),
+                        || weights.index_qk.apply(hidden),
+                    )
+                },
+            );
+            (key?, value?, index_qk?)
+        } else {
+            (
+                weights.k.apply(hidden)?,
+                weights.v.apply(hidden)?,
+                weights.index_qk.apply(hidden)?,
+            )
+        };
     for head in key.chunks_exact_mut(config.head_dim) {
         let source = head.to_vec();
         rms_norm_zero_centered_into(&source, &weights.k_norm, config.rms_norm_eps, head);
@@ -1546,8 +1573,6 @@ fn run_qsa(
             config.rope.mrope_section,
         );
     }
-    let value = weights.v.apply(hidden)?;
-    let index_qk = weights.index_qk.apply(hidden)?;
     let query_width = config.indexer_n_heads * config.indexer_head_dim;
     let index_query = &index_qk[..query_width];
     state.raw_keys.extend_from_slice(&index_qk[query_width..]);
@@ -2804,6 +2829,69 @@ mod tests {
         eprintln!(
             "qwen4_exp_bf16_gdn hidden={HIDDEN} key_heads={KEY_HEADS} value_heads={VALUE_HEADS} head_dim={HEAD_DIM} median_ms={:.6} checksum={checksum:.9}",
             samples[SAMPLES / 2]
+        );
+    }
+
+    #[test]
+    #[ignore = "manual performance benchmark"]
+    fn benchmark_checkpoint_bf16_qsa_kvi() {
+        const HIDDEN: usize = 2560;
+        const KV_WIDTH: usize = 512;
+        const INDEX_WIDTH: usize = 640;
+        const SAMPLES: usize = 21;
+
+        let checkpoint_matrix = |rows: usize, multiplier: usize| {
+            let values = (0..rows * HIDDEN)
+                .map(|index| {
+                    half::bf16::from_f32(
+                        ((index.wrapping_mul(multiplier) % 509) as f32 - 254.0) / 509.0,
+                    )
+                })
+                .collect::<Vec<_>>();
+            ResidentMatrix::Checkpoint(Tensor::from_bf16(vec![rows, HIDDEN], &values).unwrap())
+        };
+        let k = checkpoint_matrix(KV_WIDTH, 13);
+        let v = checkpoint_matrix(KV_WIDTH, 17);
+        let index_qk = checkpoint_matrix(INDEX_WIDTH, 19);
+        let hidden = (0..HIDDEN)
+            .map(|index| ((index % 251) as f32 - 125.0) / 251.0)
+            .collect::<Vec<_>>();
+        let mut sequential_samples = Vec::with_capacity(SAMPLES);
+        let mut parallel_samples = Vec::with_capacity(SAMPLES);
+        let mut sequential = (Vec::new(), Vec::new(), Vec::new());
+        let mut parallel = (Vec::new(), Vec::new(), Vec::new());
+        for sample in 0..=SAMPLES {
+            let start = std::time::Instant::now();
+            let sequential_k = k.apply(&hidden).unwrap();
+            let sequential_v = v.apply(&hidden).unwrap();
+            let sequential_index = index_qk.apply(&hidden).unwrap();
+            if sample > 0 {
+                sequential_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+
+            let start = std::time::Instant::now();
+            let (parallel_k, (parallel_v, parallel_index)) = rayon::join(
+                || k.apply(&hidden),
+                || rayon::join(|| v.apply(&hidden), || index_qk.apply(&hidden)),
+            );
+            if sample > 0 {
+                parallel_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+            sequential = (sequential_k, sequential_v, sequential_index);
+            parallel = (
+                parallel_k.unwrap(),
+                parallel_v.unwrap(),
+                parallel_index.unwrap(),
+            );
+        }
+        sequential_samples.sort_by(f64::total_cmp);
+        parallel_samples.sort_by(f64::total_cmp);
+        assert_eq!(sequential, parallel);
+        std::hint::black_box((sequential, parallel));
+        eprintln!(
+            "qwen4_exp_bf16_qsa_kvi hidden={HIDDEN} kv_width={KV_WIDTH} index_width={INDEX_WIDTH} sequential_median_ms={:.6} parallel_median_ms={:.6}",
+            sequential_samples[SAMPLES / 2],
+            parallel_samples[SAMPLES / 2]
         );
     }
 

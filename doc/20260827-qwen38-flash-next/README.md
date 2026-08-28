@@ -117,6 +117,9 @@ per-layer activations and greedy tokens.
   scheduling interval, reducing its repeated median from `0.956 ms` to
   `0.878 ms` (about `2.82 ms/token` across 36 GDN layers); the gate is active
   only for two large BF16 checkpoint matrices.
+  QSA similarly groups its three otherwise-serial key/value/indexer
+  projections, reducing their repeated median from `0.341 ms` to `0.214 ms`
+  (1.60x, about `1.53 ms/token` across 12 QSA layers) with identical outputs.
   All four text/vision/multimodal/video oracles remain within their frozen
   thresholds; see `bf16-gemv-dummy-v1.json`.
 
