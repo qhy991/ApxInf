@@ -92,6 +92,18 @@
     "estimated_48_layer_saving_ms": 0.2158,
     "selected_order_equal": true
   },
+  "gdn_input_projection_pair": {
+    "hidden_size": 2560,
+    "qkv_rows": 10240,
+    "z_rows": 6144,
+    "combined_weight_bytes": 83886080,
+    "sequential_repeat_medians_ms": [0.939000, 1.030666, 0.956209],
+    "parallel_repeat_medians_ms": [0.877791, 0.878041, 0.865250],
+    "speedup": 1.0893,
+    "median_saving_per_gdn_layer_ms": 0.0784,
+    "estimated_36_layer_saving_ms": 2.8230,
+    "output_equal": true
+  },
   "correctness": {
     "bf16_dot_regression": "passed for lengths 0,1,7,8,9,15,16,17,127,4096,4103",
     "text_oracle_max_abs": 1.4901161193847656e-08,
@@ -105,6 +117,7 @@
     "Top-10 routed experts run in parallel, with each expert's two GEMVs kept serial to avoid nested Rayon dispatch.",
     "The independent shared expert overlaps the routed-expert group only when the same measured BF16 work gate is active.",
     "Router top-10 selection uses linear partition followed by sorting only the retained experts; score and index tie-break order is unchanged.",
+    "The independent large BF16 GDN QKV and gate projections share one Rayon scheduling interval; small or non-BF16 projections keep their original order.",
     "This Apple M1 host has no BF16 arithmetic extension; the NEON path widens BF16 bits to F32 and accumulates with FMA.",
     "The final path keeps checkpoint matrices in their mmap-backed BF16 layout and creates no F32 weight copy."
   ]

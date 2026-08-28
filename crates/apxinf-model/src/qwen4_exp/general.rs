@@ -646,6 +646,15 @@ impl ResidentMatrix {
             }
         }
     }
+
+    fn is_large_bf16_checkpoint(&self) -> bool {
+        matches!(
+            self,
+            Self::Checkpoint(tensor)
+                if tensor.dtype() == DType::BF16
+                    && tensor.numel() >= BF16_GEMV_PAR_MIN_ELEMENTS
+        )
+    }
 }
 
 impl QueryGateWeights {
@@ -1430,7 +1439,17 @@ fn run_gdn(
     let key_width = config.linear_key_width();
     let value_width = config.linear_value_width();
     let qkv_width = 2 * key_width + value_width;
-    let qkv = Tensor::from_f32(vec![1, qkv_width], &weights.in_qkv.apply(hidden)?)?;
+    let (qkv, prefetched_z) =
+        if weights.in_qkv.is_large_bf16_checkpoint() && weights.in_z.is_large_bf16_checkpoint() {
+            let (qkv, z) = rayon::join(
+                || weights.in_qkv.apply(hidden),
+                || weights.in_z.apply(hidden),
+            );
+            (qkv?, Some(z?))
+        } else {
+            (weights.in_qkv.apply(hidden)?, None)
+        };
+    let qkv = Tensor::from_f32(vec![1, qkv_width], &qkv)?;
     let (qkv, next_conv) =
         backend.causal_depthwise_conv1d(&qkv, &weights.conv, None, state.conv.as_ref())?;
     let qkv = backend.silu(&qkv)?.to_f32_vec()?;
@@ -1478,12 +1497,13 @@ fn run_gdn(
     let core = backend
         .rms_norm(&core, &weights.norm, config.rms_norm_eps)?
         .to_f32_vec()?;
-    let z = weights.in_z.apply(hidden)?.into_iter().map(|value| {
-        match config.output_gate_type.as_str() {
+    let z = prefetched_z
+        .map_or_else(|| weights.in_z.apply(hidden), Ok)?
+        .into_iter()
+        .map(|value| match config.output_gate_type.as_str() {
             "sigmoid" => sigmoid(value),
             _ => silu(value),
-        }
-    });
+        });
     let gated = core
         .into_iter()
         .zip(z)
@@ -2683,6 +2703,107 @@ mod tests {
         assert_eq!(linear_partition, full_sort);
         eprintln!(
             "qwen4_exp_moe_router_topk experts={ROUTER_EXPERTS} topk={ROUTER_TOPK} iterations={ROUTER_ITERATIONS} full_sort_ms={full_sort_ms:.6} linear_partition_ms={linear_partition_ms:.6}"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual performance benchmark"]
+    fn benchmark_checkpoint_bf16_gdn() {
+        const HIDDEN: usize = 2560;
+        const KEY_HEADS: usize = 16;
+        const VALUE_HEADS: usize = 48;
+        const HEAD_DIM: usize = 128;
+        const CONV_KERNEL: usize = 4;
+        const SAMPLES: usize = 9;
+
+        let mut config = Qwen4ExpConfig::from_json_str(MINI_CONFIG).unwrap().text;
+        config.hidden_size = HIDDEN;
+        config.linear_num_key_heads = KEY_HEADS;
+        config.linear_key_head_dim = HEAD_DIM;
+        config.linear_num_value_heads = VALUE_HEADS;
+        config.linear_value_head_dim = HEAD_DIM;
+        config.linear_conv_kernel_dim = CONV_KERNEL;
+        config.output_gate_type = "sigmoid".into();
+        let key_width = config.linear_key_width();
+        let value_width = config.linear_value_width();
+        let qkv_width = 2 * key_width + value_width;
+        let checkpoint_matrix = |rows: usize, columns: usize, multiplier: usize| {
+            let values = (0..rows * columns)
+                .map(|index| {
+                    half::bf16::from_f32(
+                        ((index.wrapping_mul(multiplier) % 509) as f32 - 254.0) / 509.0,
+                    )
+                })
+                .collect::<Vec<_>>();
+            ResidentMatrix::Checkpoint(Tensor::from_bf16(vec![rows, columns], &values).unwrap())
+        };
+        let mut conv = vec![0.0f32; qkv_width * CONV_KERNEL];
+        for channel in 0..qkv_width {
+            conv[channel * CONV_KERNEL + CONV_KERNEL - 1] = 1.0;
+        }
+        let weights = GdnWeights {
+            in_qkv: checkpoint_matrix(qkv_width, HIDDEN, 13),
+            in_z: checkpoint_matrix(value_width, HIDDEN, 17),
+            in_a: checkpoint_matrix(VALUE_HEADS, HIDDEN, 19),
+            in_b: checkpoint_matrix(VALUE_HEADS, HIDDEN, 23),
+            conv: Tensor::from_f32(vec![qkv_width, CONV_KERNEL], &conv).unwrap(),
+            a_log: Tensor::from_f32(vec![VALUE_HEADS], &vec![-0.7; VALUE_HEADS]).unwrap(),
+            dt_bias: Tensor::from_f32(vec![VALUE_HEADS], &vec![0.0; VALUE_HEADS]).unwrap(),
+            norm: Tensor::from_f32(vec![HEAD_DIM], &vec![1.0; HEAD_DIM]).unwrap(),
+            out: checkpoint_matrix(HIDDEN, value_width, 29),
+        };
+        let hidden = (0..HIDDEN)
+            .map(|index| ((index % 251) as f32 - 125.0) / 251.0)
+            .collect::<Vec<_>>();
+        let backend = CpuBackend;
+        let mut sequential_projection_samples = Vec::with_capacity(SAMPLES);
+        let mut parallel_projection_samples = Vec::with_capacity(SAMPLES);
+        let mut sequential_projection = (Vec::new(), Vec::new());
+        let mut parallel_projection = (Vec::new(), Vec::new());
+        for sample in 0..=SAMPLES {
+            let start = std::time::Instant::now();
+            let sequential_qkv = weights.in_qkv.apply(&hidden).unwrap();
+            let sequential_z = weights.in_z.apply(&hidden).unwrap();
+            if sample > 0 {
+                sequential_projection_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+
+            let start = std::time::Instant::now();
+            let (parallel_qkv, parallel_z) = rayon::join(
+                || weights.in_qkv.apply(&hidden),
+                || weights.in_z.apply(&hidden),
+            );
+            if sample > 0 {
+                parallel_projection_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+            sequential_projection = (sequential_qkv, sequential_z);
+            parallel_projection = (parallel_qkv.unwrap(), parallel_z.unwrap());
+        }
+        sequential_projection_samples.sort_by(f64::total_cmp);
+        parallel_projection_samples.sort_by(f64::total_cmp);
+        assert_eq!(sequential_projection, parallel_projection);
+        std::hint::black_box((sequential_projection, parallel_projection));
+        eprintln!(
+            "qwen4_exp_bf16_gdn_input_projections sequential_median_ms={:.6} parallel_median_ms={:.6}",
+            sequential_projection_samples[SAMPLES / 2],
+            parallel_projection_samples[SAMPLES / 2]
+        );
+
+        let mut state = GdnState::default();
+        std::hint::black_box(run_gdn(&backend, &config, &hidden, &weights, &mut state).unwrap());
+        let mut samples = Vec::with_capacity(SAMPLES);
+        let mut checksum = 0.0f64;
+        for _ in 0..SAMPLES {
+            let start = std::time::Instant::now();
+            let output = run_gdn(&backend, &config, &hidden, &weights, &mut state).unwrap();
+            samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            checksum = output.iter().map(|value| *value as f64).sum();
+            std::hint::black_box(output);
+        }
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "qwen4_exp_bf16_gdn hidden={HIDDEN} key_heads={KEY_HEADS} value_heads={VALUE_HEADS} head_dim={HEAD_DIM} median_ms={:.6} checksum={checksum:.9}",
+            samples[SAMPLES / 2]
         );
     }
 

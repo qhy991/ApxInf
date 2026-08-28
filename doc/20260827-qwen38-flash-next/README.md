@@ -113,6 +113,10 @@ per-layer activations and greedy tokens.
   Router 512-to-10 selection replaces a full sort with linear partition plus a
   10-item sort, improving its repeated dummy median by 4.18x with identical
   expert order (about `0.216 ms/token` across 48 layers on this host).
+  GDN's independent 80 MiB QKV/gate projection pair shares one parallel
+  scheduling interval, reducing its repeated median from `0.956 ms` to
+  `0.878 ms` (about `2.82 ms/token` across 36 GDN layers); the gate is active
+  only for two large BF16 checkpoint matrices.
   All four text/vision/multimodal/video oracles remain within their frozen
   thresholds; see `bf16-gemv-dummy-v1.json`.
 
@@ -136,7 +140,7 @@ compile `qwen4_exp_checkpoint`, then run:
   scripts/qwen4_exp_toy_oracle.py
 
 cargo test --release -p apxinf-model \
-  benchmark_checkpoint_bf16_gemv -- --ignored --nocapture
+  benchmark_checkpoint_bf16 -- --ignored --nocapture --test-threads=1
 ```
 
 ## Frozen upstream evidence
