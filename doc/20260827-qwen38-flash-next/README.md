@@ -120,6 +120,12 @@ per-layer activations and greedy tokens.
   QSA similarly groups its three otherwise-serial key/value/indexer
   projections, reducing their repeated median from `0.341 ms` to `0.214 ms`
   (1.60x, about `1.53 ms/token` across 12 QSA layers) with identical outputs.
+- Generation prefill now advances every text/image/video prompt token through
+  the same state path but projects the untied LM head only for the final row.
+  Ordinary `forward` and `prefill` still return every requested logits row.
+  At the official 248,320x2,560 BF16 head, each skipped non-final prompt row
+  avoids reading 1.184 GiB of weights. Text state/logits are exact; independent
+  image and video generation-prefill gates retain 2/2 top-1 agreement.
   All four text/vision/multimodal/video oracles remain within their frozen
   thresholds; see `bf16-gemv-dummy-v1.json`.
 

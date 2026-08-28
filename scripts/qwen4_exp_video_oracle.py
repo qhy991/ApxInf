@@ -76,6 +76,9 @@ def main() -> int:
             use_cache=True,
         )
         expected = torch.cat([prefill.logits[0], decode.logits[0]], dim=0).float().cpu()
+        expected_generation = torch.cat(
+            [prefill.logits[0, -1:], decode.logits[0]], dim=0
+        ).float().cpu()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "config.json").write_text(json.dumps(root, sort_keys=True) + "\n", encoding="utf-8")
@@ -103,9 +106,15 @@ def main() -> int:
     actual_vision = torch.tensor(rust_vision["output"], dtype=torch.float32).reshape_as(expected_vision)
     vision_difference = (actual_vision - expected_vision).abs()
     actual = torch.tensor(rust["logits"], dtype=torch.float32).reshape_as(expected)
+    generation_actual = torch.tensor(
+        rust["generation_logits"], dtype=torch.float32
+    ).reshape_as(expected_generation)
     difference = (actual - expected).abs()
+    generation_difference = (generation_actual - expected_generation).abs()
     top1 = actual.argmax(-1).eq(expected.argmax(-1))
+    generation_top1 = generation_actual.argmax(-1).eq(expected_generation.argmax(-1))
     path = rust.get("generation_path", {})
+    generation_path = rust.get("generation_prefill_path", {})
     max_abs = difference.max().item()
     passed = (
         bool(torch.isfinite(actual).all())
@@ -113,6 +122,11 @@ def main() -> int:
         and bool(top1.all())
         and path.get("video") is True
         and path.get("rope_delta") == -4
+        and generation_difference.max().item() <= args.max_abs
+        and bool(generation_top1.all())
+        and rust.get("generation_logits_shape") == [2, expected.shape[-1]]
+        and generation_path.get("generation_prefill_logits_rows") == 1
+        and generation_path.get("rope_delta") == -4
     )
     report = {
         "format": "apxinf-qwen4-exp-video-oracle-v1",
@@ -131,6 +145,12 @@ def main() -> int:
         "vision_comparison": {
             "max_abs": vision_difference.max().item(),
             "mean_abs": vision_difference.mean().item(),
+        },
+        "generation_prefill_comparison": {
+            "max_abs": generation_difference.max().item(),
+            "mean_abs": generation_difference.mean().item(),
+            "top1_equal": generation_top1.tolist(),
+            "logits_rows": rust.get("generation_logits_shape", [None])[0],
         },
         "passed": passed,
     }

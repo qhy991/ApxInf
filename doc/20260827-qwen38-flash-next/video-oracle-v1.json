@@ -17,6 +17,12 @@
     "threshold": 1e-4,
     "top1_equal": [true, true, true, true, true, true, true, true, true, true, true, true]
   },
+  "generation_prefill_comparison": {
+    "rows": 2,
+    "max_abs": 1.2051314115524292e-6,
+    "mean_abs": 2.9616785468533635e-7,
+    "top1_equal": [true, true]
+  },
   "note": "The checked-in tiny config uses indexer_budget=8, which starts sparse top-k at token 10 and makes a near-tied block choice sensitive to the vision oracle's 1e-6 rounding. The release config uses budget=2048. This video semantics gate uses budget=16 so its 12-token prompt remains below the release sparse-selection boundary; sparse QSA remains covered by the separate long-context selector gate.",
   "not_covered": ["mtp", "cuda", "distributed_execution"],
   "passed": true

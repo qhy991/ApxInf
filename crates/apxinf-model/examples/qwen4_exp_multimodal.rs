@@ -33,6 +33,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let decode = model.forward(&[decode_token], tokens.len() as u32)?;
     let mut logits = prefill.to_f32_vec()?;
     logits.extend(decode.to_f32_vec()?);
+
+    let mut generation_model = AutoModel::load_model(Device::Cpu, &model_dir, &options)?;
+    let generation_prefill =
+        generation_model
+            .text_mut()?
+            .prefill_for_generation(LlmInput::with_image(
+                &tokens,
+                ImageInput::new(&pixels, &grid),
+            ))?;
+    let generation_decode = generation_model.forward(&[decode_token], tokens.len() as u32)?;
+    let mut generation_logits = generation_prefill.to_f32_vec()?;
+    generation_logits.extend(generation_decode.to_f32_vec()?);
     println!(
         "{}",
         serde_json::json!({
@@ -43,6 +55,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "logits_shape": [tokens.len() + 1, prefill.shape().dims()[1]],
             "logits": logits,
             "generation_path": model.generation_path_receipt()?,
+            "generation_logits_shape": [2, generation_prefill.shape().dims()[1]],
+            "generation_logits": generation_logits,
+            "generation_prefill_path": generation_model.generation_path_receipt()?,
         })
     );
     Ok(())

@@ -172,7 +172,7 @@ impl GeneralQwen4Exp {
         .primary)
     }
 
-    fn forward_one(
+    fn advance_one(
         &mut self,
         token: u32,
         position: [u32; 3],
@@ -234,7 +234,55 @@ impl GeneralQwen4Exp {
         }
 
         let hidden = run_gated_residual(text, &hyper, &self.weights.final_connection, false)?.mixed;
-        self.weights.lm_head.apply(&hidden)
+        Ok(hidden)
+    }
+
+    fn project_hidden(&self, hidden: &[f32]) -> Result<Vec<f32>> {
+        self.weights.lm_head.apply(hidden)
+    }
+
+    fn forward_rows(
+        &mut self,
+        token_ids: &[u32],
+        start_pos: u32,
+        project_all: bool,
+    ) -> Result<Tensor> {
+        if token_ids.is_empty() {
+            return Err(Error::Other("qwen4-exp forward requires tokens".into()));
+        }
+        let start_pos = usize::try_from(start_pos)
+            .map_err(|_| Error::Other("qwen4-exp start_pos exceeds usize".into()))?;
+        if start_pos != self.state.position {
+            return Err(Error::Other(format!(
+                "qwen4-exp start_pos {start_pos} does not match cached position {}",
+                self.state.position
+            )));
+        }
+        let end = start_pos
+            .checked_add(token_ids.len())
+            .ok_or_else(|| Error::Other("qwen4-exp context length overflow".into()))?;
+        if end > self.max_context {
+            return Err(Error::Other(format!(
+                "qwen4-exp context end {end} exceeds maximum {}",
+                self.max_context
+            )));
+        }
+        let output_rows = if project_all { token_ids.len() } else { 1 };
+        let mut logits = Vec::with_capacity(output_rows * self.config.text.vocab_size);
+        for (offset, &token) in token_ids.iter().enumerate() {
+            let position = (start_pos + offset) as i64 + self.rope_delta;
+            let position = u32::try_from(position).map_err(|_| {
+                Error::Other(format!(
+                    "qwen4-exp effective position {position} is outside u32"
+                ))
+            })?;
+            let hidden = self.advance_one(token, [position; 3], None)?;
+            if project_all || offset + 1 == token_ids.len() {
+                logits.extend(self.project_hidden(&hidden)?);
+            }
+            self.state.position += 1;
+        }
+        Tensor::from_f32(vec![output_rows, self.config.text.vocab_size], &logits)
     }
 }
 
@@ -321,67 +369,11 @@ fn multimodal_positions(
     Ok((positions, delta))
 }
 
-impl LlmTrait for GeneralQwen4Exp {
-    fn load(
-        _config: ModelConfig,
-        _weights: HashMap<String, Tensor>,
-        _device: Device,
-    ) -> Result<Self> {
-        Err(Error::Other(
-            "Qwen4-Exp uses a nested config; use AutoModel or from_synthetic".into(),
-        ))
-    }
-
-    fn forward(&mut self, token_ids: &[u32], start_pos: u32) -> Result<Tensor> {
-        if token_ids.is_empty() {
-            return Err(Error::Other("qwen4-exp forward requires tokens".into()));
-        }
-        let start_pos = usize::try_from(start_pos)
-            .map_err(|_| Error::Other("qwen4-exp start_pos exceeds usize".into()))?;
-        if start_pos != self.state.position {
-            return Err(Error::Other(format!(
-                "qwen4-exp start_pos {start_pos} does not match cached position {}",
-                self.state.position
-            )));
-        }
-        let end = start_pos
-            .checked_add(token_ids.len())
-            .ok_or_else(|| Error::Other("qwen4-exp context length overflow".into()))?;
-        if end > self.max_context {
-            return Err(Error::Other(format!(
-                "qwen4-exp context end {end} exceeds maximum {}",
-                self.max_context
-            )));
-        }
-        let mut logits = Vec::with_capacity(token_ids.len() * self.config.text.vocab_size);
-        for (offset, &token) in token_ids.iter().enumerate() {
-            let position = (start_pos + offset) as i64 + self.rope_delta;
-            let position = u32::try_from(position).map_err(|_| {
-                Error::Other(format!(
-                    "qwen4-exp effective position {position} is outside u32"
-                ))
-            })?;
-            logits.extend(self.forward_one(token, [position; 3], None)?);
-            self.state.position += 1;
-        }
-        Tensor::from_f32(vec![token_ids.len(), self.config.text.vocab_size], &logits)
-    }
-
-    fn backend(&self) -> &dyn Backend {
-        &*self.backend
-    }
-
-    fn capabilities(&self) -> LlmCapabilities {
-        LlmCapabilities {
-            image: self.vision.is_some(),
-            video: self.vision.is_some(),
-        }
-    }
-
-    fn prefill(&mut self, input: LlmInput<'_>) -> Result<Tensor> {
+impl GeneralQwen4Exp {
+    fn prefill_rows(&mut self, input: LlmInput<'_>, project_all: bool) -> Result<Tensor> {
         let (pixel_values, encoder_grids, placeholder_token, position_grids, media_label) =
             match (input.image, input.video) {
-                (None, None) => return self.forward(input.token_ids, 0),
+                (None, None) => return self.forward_rows(input.token_ids, 0, project_all),
                 (Some(_), Some(_)) => {
                     return Err(Error::Other(
                         "qwen4-exp accepts image or video in one request, not both".into(),
@@ -446,8 +438,13 @@ impl LlmTrait for GeneralQwen4Exp {
         self.rope_delta = rope_delta;
         let visual = visual.as_f32()?;
         let mut visual_row = 0usize;
-        let mut logits = Vec::with_capacity(input.token_ids.len() * self.config.text.vocab_size);
-        for (&token, position) in input.token_ids.iter().zip(positions) {
+        let output_rows = if project_all {
+            input.token_ids.len()
+        } else {
+            1
+        };
+        let mut logits = Vec::with_capacity(output_rows * self.config.text.vocab_size);
+        for (offset, (&token, position)) in input.token_ids.iter().zip(positions).enumerate() {
             let embedding = if token == placeholder_token {
                 let start = visual_row * self.config.text.hidden_size;
                 visual_row += 1;
@@ -455,13 +452,48 @@ impl LlmTrait for GeneralQwen4Exp {
             } else {
                 None
             };
-            logits.extend(self.forward_one(token, position, embedding)?);
+            let hidden = self.advance_one(token, position, embedding)?;
+            if project_all || offset + 1 == input.token_ids.len() {
+                logits.extend(self.project_hidden(&hidden)?);
+            }
             self.state.position += 1;
         }
-        Tensor::from_f32(
-            vec![input.token_ids.len(), self.config.text.vocab_size],
-            &logits,
-        )
+        Tensor::from_f32(vec![output_rows, self.config.text.vocab_size], &logits)
+    }
+}
+
+impl LlmTrait for GeneralQwen4Exp {
+    fn load(
+        _config: ModelConfig,
+        _weights: HashMap<String, Tensor>,
+        _device: Device,
+    ) -> Result<Self> {
+        Err(Error::Other(
+            "Qwen4-Exp uses a nested config; use AutoModel or from_synthetic".into(),
+        ))
+    }
+
+    fn forward(&mut self, token_ids: &[u32], start_pos: u32) -> Result<Tensor> {
+        self.forward_rows(token_ids, start_pos, true)
+    }
+
+    fn backend(&self) -> &dyn Backend {
+        &*self.backend
+    }
+
+    fn capabilities(&self) -> LlmCapabilities {
+        LlmCapabilities {
+            image: self.vision.is_some(),
+            video: self.vision.is_some(),
+        }
+    }
+
+    fn prefill(&mut self, input: LlmInput<'_>) -> Result<Tensor> {
+        self.prefill_rows(input, true)
+    }
+
+    fn prefill_for_generation(&mut self, input: LlmInput<'_>) -> Result<Tensor> {
+        self.prefill_rows(input, false)
     }
 
     fn reset(&mut self) {
@@ -486,6 +518,7 @@ impl LlmTrait for GeneralQwen4Exp {
             "video": self.vision.is_some(),
             "vision_encoder_loaded": self.vision.is_some(),
             "multimodal_prefill": self.vision.is_some(),
+            "generation_prefill_logits_rows": 1,
             "rope_delta": self.rope_delta,
             "mtp": false,
         }))
@@ -2300,6 +2333,34 @@ mod tests {
             .iter()
             .all(|value| value.is_finite()));
         assert_eq!(model.generation_path_receipt().unwrap()["position"], 5);
+    }
+
+    #[test]
+    fn generation_prefill_projects_only_the_final_row() {
+        let tokens = [1, 3, 5, 7, 9];
+        let mut full = model();
+        let full_logits = full.forward(&tokens, 0).unwrap();
+        let vocab = full.config.text.vocab_size;
+        let expected = &full_logits.as_f32().unwrap()[(tokens.len() - 1) * vocab..];
+
+        let mut optimized = model();
+        let actual = optimized
+            .prefill_for_generation(LlmInput::text(&tokens))
+            .unwrap();
+        assert_eq!(actual.shape().dims(), [1, vocab]);
+        assert_eq!(actual.as_f32().unwrap(), expected);
+        assert_eq!(optimized.state.position, tokens.len());
+        assert_eq!(
+            optimized.generation_path_receipt().unwrap()["generation_prefill_logits_rows"],
+            1
+        );
+
+        let expected_decode = full.forward(&[11], tokens.len() as u32).unwrap();
+        let actual_decode = optimized.forward(&[11], tokens.len() as u32).unwrap();
+        assert_eq!(
+            actual_decode.as_f32().unwrap(),
+            expected_decode.as_f32().unwrap()
+        );
     }
 
     #[test]

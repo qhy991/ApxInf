@@ -92,6 +92,9 @@ def main() -> int:
             use_cache=True,
         )
         expected = torch.cat([prefill.logits[0], decode.logits[0]], dim=0).float().cpu()
+        expected_generation = torch.cat(
+            [prefill.logits[0, -1:], decode.logits[0]], dim=0
+        ).float().cpu()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "config.json").write_text(json.dumps(root, sort_keys=True) + "\n", encoding="utf-8")
@@ -105,9 +108,15 @@ def main() -> int:
     )
     rust = json.loads(completed.stdout)
     actual = torch.tensor(rust["logits"], dtype=torch.float32).reshape_as(expected)
+    generation_actual = torch.tensor(
+        rust["generation_logits"], dtype=torch.float32
+    ).reshape_as(expected_generation)
     difference = (actual - expected).abs()
+    generation_difference = (generation_actual - expected_generation).abs()
     path = rust.get("generation_path", {})
+    generation_path = rust.get("generation_prefill_path", {})
     top1 = actual.argmax(-1).eq(expected.argmax(-1))
+    generation_top1 = generation_actual.argmax(-1).eq(expected_generation.argmax(-1))
     max_abs = difference.max().item()
     passed = (
         bool(torch.isfinite(actual).all())
@@ -116,6 +125,11 @@ def main() -> int:
         and path.get("multimodal_prefill") is True
         and path.get("checkpoint_payloads_mmap") is True
         and path.get("rope_delta") == -2
+        and generation_difference.max().item() <= args.max_abs
+        and bool(generation_top1.all())
+        and rust.get("generation_logits_shape") == [2, expected.shape[-1]]
+        and generation_path.get("generation_prefill_logits_rows") == 1
+        and generation_path.get("rope_delta") == -2
     )
     report = {
         "format": "apxinf-qwen4-exp-multimodal-oracle-v1",
@@ -130,6 +144,12 @@ def main() -> int:
             "top1_equal": top1.tolist(),
         },
         "rope_delta": path.get("rope_delta"),
+        "generation_prefill_comparison": {
+            "max_abs": generation_difference.max().item(),
+            "mean_abs": generation_difference.mean().item(),
+            "top1_equal": generation_top1.tolist(),
+            "logits_rows": rust.get("generation_logits_shape", [None])[0],
+        },
         "passed": passed,
     }
     (args.output_dir / "report.json").write_text(

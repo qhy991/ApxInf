@@ -16,13 +16,20 @@
     "threshold": 1e-4,
     "top1_equal": [true, true, true, true, true, true, true]
   },
+  "generation_prefill_comparison": {
+    "rows": 2,
+    "max_abs": 1.7406418919563293e-6,
+    "mean_abs": 4.277972038835287e-7,
+    "top1_equal": [true, true]
+  },
   "covered": [
     "vision_encoder",
     "image_placeholder_embedding_injection",
     "multimodal_position_ids",
     "qsa_indexer_mrope",
     "attention_mrope",
-    "rope_delta_decode_continuation"
+    "rope_delta_decode_continuation",
+    "generation_prefill_last_row_projection"
   ],
   "not_covered": ["video_timestamp_groups", "mtp", "cuda", "distributed_execution"],
   "passed": true

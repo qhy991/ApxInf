@@ -116,6 +116,21 @@
     "estimated_12_layer_saving_ms": 1.5280,
     "output_equal": true
   },
+  "generation_prefill_head_elision": {
+    "official_vocab_size": 248320,
+    "official_hidden_size": 2560,
+    "lm_head_weight_bytes": 1271398400,
+    "lm_head_weight_gib": 1.18408203125,
+    "head_calls_before": "prompt_tokens",
+    "head_calls_after": 1,
+    "avoided_weight_bytes": "(prompt_tokens - 1) * 1271398400",
+    "ordinary_forward_contract_changed": false,
+    "text_last_row_equal": true,
+    "text_decode_state_equal": true,
+    "image_generation_max_abs": 1.7406418919563293e-6,
+    "video_generation_max_abs": 1.2051314115524292e-6,
+    "generation_top1_equal": true
+  },
   "correctness": {
     "bf16_dot_regression": "passed for lengths 0,1,7,8,9,15,16,17,127,4096,4103",
     "text_oracle_max_abs": 1.4901161193847656e-08,
@@ -131,6 +146,7 @@
     "Router top-10 selection uses linear partition followed by sorting only the retained experts; score and index tie-break order is unchanged.",
     "The independent large BF16 GDN QKV and gate projections share one Rayon scheduling interval; small or non-BF16 projections keep their original order.",
     "QSA key, value, and indexer projections run as three outer tasks only when all three are BF16 checkpoints and their combined work crosses the same threshold.",
+    "Generation prefill advances every prompt token through the canonical model state path but evaluates the untied LM head only for the final prompt row.",
     "This Apple M1 host has no BF16 arithmetic extension; the NEON path widens BF16 bits to F32 and accumulates with FMA.",
     "The final path keeps checkpoint matrices in their mmap-backed BF16 layout and creates no F32 weight copy."
   ]
