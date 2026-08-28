@@ -14,8 +14,8 @@ fixture may reduce dimensions and checkpoint storage, but it must execute the
 same architecture implementation as a real checkpoint; there is no parallel
 dummy model.
 
-Current non-goals are vision input, MTP serving, distributed loading, and a
-real-checkpoint quality or throughput claim. The released checkpoint is about
+Current non-goals are MTP serving, distributed loading, and a real-checkpoint
+quality or end-to-end throughput claim. The released checkpoint is about
 360 GB before runtime state, while this host has less than 45 GiB free. No
 weight shard is downloaded for this bring-up.
 
@@ -82,8 +82,8 @@ per-layer activations and greedy tokens.
   mapped text weight size, within roughly 5 MiB of the all-BF16 floor. Small
   norm/conv weights and arithmetic remain F32. Shard files are an immutable
   runtime input for the lifetime of the mappings. The 180B checkpoint remains
-  unstaged and unexecuted on this host with about 21 GiB free; CUDA,
-  distributed execution, video generation, and MTP remain explicit errors or non-goals.
+  unstaged and unexecuted on this host because local storage is insufficient;
+  CUDA, distributed execution, and MTP remain explicit errors or non-goals.
 - The Qwen4 vision tower now reuses the generalized Qwen3-VL block/merger
   primitive with zero deepstack mergers. CPU reference implementations cover
   LayerNorm, GELU-tanh, bias, 2D RoPE, and non-causal SDPA. A frozen BF16 toy
@@ -101,6 +101,12 @@ per-layer activations and greedy tokens.
   cached decode matches to `3.19e-6` max absolute error with 12/12 top-1 and
   `rope_delta=-4`; see `video-oracle-v1.json`. MTP, CUDA, and distributed
   execution remain open.
+- The mmap-backed BF16 decode GEMV now uses dependency-free accumulation,
+  row-level parallelism above a fixed work threshold, and AArch64 NEON widening
+  plus FMA. A 4096x4096 checkpoint-free dummy projection improved from
+  `15.454 ms` to a repeat median of `0.365 ms` (42.35x, 85.63 GiB/s) without an
+  F32 weight copy. All four text/vision/multimodal/video oracles remain within
+  their frozen thresholds; see `bf16-gemv-dummy-v1.json`.
 
 ## Reproduce the no-weight gates
 
@@ -120,6 +126,9 @@ compile `qwen4_exp_checkpoint`, then run:
 ```bash
 .apxinf/toolchains/qwen4-oracle/bin/python \
   scripts/qwen4_exp_toy_oracle.py
+
+cargo test --release -p apxinf-model \
+  benchmark_checkpoint_bf16_gemv -- --ignored --nocapture
 ```
 
 ## Frozen upstream evidence

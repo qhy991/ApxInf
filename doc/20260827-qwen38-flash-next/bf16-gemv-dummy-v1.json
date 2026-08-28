@@ -1,0 +1,74 @@
+{
+  "format": "apxinf-qwen4-exp-bf16-gemv-dummy-evidence-v1",
+  "date": "2026-08-28",
+  "claim_scope": "checkpoint-free CPU decode GEMV microbenchmark; not end-to-end model throughput",
+  "host": {
+    "model": "MacBookPro18,3",
+    "architecture": "arm64",
+    "physical_cores": 8,
+    "logical_cores": 8,
+    "arm_bf16_instruction_support": false,
+    "rustc": "1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "contract": {
+    "rows": 4096,
+    "columns": 4096,
+    "weight_dtype": "BF16",
+    "activation_dtype": "F32",
+    "weight_bytes": 33554432,
+    "samples_per_median": 9,
+    "weights_loaded": false,
+    "parallel_min_elements": 2097152
+  },
+  "iterations": [
+    {
+      "implementation": "sequential iterator accumulation",
+      "median_ms": 15.454209,
+      "checksum": 288.404647946
+    },
+    {
+      "implementation": "eight independent scalar accumulators",
+      "median_ms": 12.214750,
+      "checksum": 288.401168942
+    },
+    {
+      "implementation": "eight accumulators plus row-parallel Rayon dispatch",
+      "median_ms": 1.497042,
+      "checksum": 288.401168942
+    },
+    {
+      "implementation": "AArch64 NEON BF16 widening/FMA plus row-parallel dispatch",
+      "median_ms": 0.364958,
+      "repeat_medians_ms": [0.365209, 0.364958, 0.360542],
+      "checksum": 288.400907993,
+      "reference_max_abs": 0.000228882
+    }
+  ],
+  "result": {
+    "baseline_to_final_speedup": 42.3452,
+    "final_weight_bandwidth_gib_per_second": 85.6263,
+    "checkpoint_payload_copies": 0,
+    "extra_weight_bytes": 0
+  },
+  "parallel_crossover": [
+    {"elements": 65536, "sequential_median_ms": 0.005334, "parallel_median_ms": 0.025875},
+    {"elements": 131072, "sequential_median_ms": 0.010542, "parallel_median_ms": 0.028667},
+    {"elements": 262144, "sequential_median_ms": 0.021000, "parallel_median_ms": 0.035167},
+    {"elements": 524288, "sequential_median_ms": 0.041583, "parallel_median_ms": 0.040292},
+    {"elements": 1048576, "sequential_median_ms": 0.083291, "parallel_median_ms": 0.088167},
+    {"elements": 2097152, "sequential_median_ms": 0.166959, "parallel_median_ms": 0.092833}
+  ],
+  "correctness": {
+    "bf16_dot_regression": "passed for lengths 0,1,7,8,9,15,16,17,127,4096,4103",
+    "text_oracle_max_abs": 1.4901161193847656e-08,
+    "image_text_oracle_max_abs": 2.987682819366455e-06,
+    "video_oracle_max_abs": 3.1962990760803223e-06,
+    "all_oracles_passed": true
+  },
+  "observations": [
+    "The original loop achieved only about 2 GiB/s because each dot product had one loop-carried accumulator dependency.",
+    "Parallelism is gated by matrix element count, so small toy projections retain the sequential path.",
+    "This Apple M1 host has no BF16 arithmetic extension; the NEON path widens BF16 bits to F32 and accumulates with FMA.",
+    "The final path keeps checkpoint matrices in their mmap-backed BF16 layout and creates no F32 weight copy."
+  ]
+}

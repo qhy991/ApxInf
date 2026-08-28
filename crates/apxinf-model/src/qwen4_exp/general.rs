@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use apxinf_core::{Backend, CpuBackend, DType, Device, Error, Result, Tensor};
 use apxinf_loader::ModelConfig;
+use rayon::prelude::*;
 
 use super::config::{Qwen4ExpConfig, Qwen4ExpLayerType, Qwen4ExpTextConfig};
 use super::qsa::{apply_partial_mrope, rms_norm_zero_centered_into, Qwen4ExpQsaSelector};
@@ -1717,13 +1718,17 @@ fn linear_checkpoint_matrix(
         }
         DType::BF16 => {
             let weights = tensor.as_bf16()?;
-            for (row, output) in output.iter_mut().enumerate() {
-                let start = offset + row * input_size;
-                *output = input
-                    .iter()
-                    .zip(&weights[start..start + input_size])
-                    .map(|(input, weight)| input * weight.to_f32())
-                    .sum();
+            let end = offset + output_size * input_size;
+            let matrix = &weights[offset..end];
+            if matrix.len() >= BF16_GEMV_PAR_MIN_ELEMENTS {
+                output
+                    .par_iter_mut()
+                    .zip(matrix.par_chunks_exact(input_size))
+                    .for_each(|(output, row)| *output = dot_bf16(input, row));
+            } else {
+                for (output, row) in output.iter_mut().zip(matrix.chunks_exact(input_size)) {
+                    *output = dot_bf16(input, row);
+                }
             }
         }
         DType::F16 => {
@@ -1745,6 +1750,8 @@ fn linear_checkpoint_matrix(
     }
     Ok(output)
 }
+
+const BF16_GEMV_PAR_MIN_ELEMENTS: usize = 1 << 21;
 
 fn grouped_rms_norm(
     input: &[f32],
@@ -1795,6 +1802,91 @@ fn dot(left: &[f32], right: &[f32]) -> f32 {
         .zip(right)
         .map(|(left, right)| left * right)
         .sum()
+}
+
+#[inline]
+fn dot_bf16(left: &[f32], right: &[half::bf16]) -> f32 {
+    debug_assert_eq!(left.len(), right.len());
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is mandatory in AArch64, and the helper bounds every
+        // vector load before reading it.
+        unsafe { dot_bf16_neon(left, right) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        dot_bf16_scalar(left, right)
+    }
+}
+
+#[cfg(any(not(target_arch = "aarch64"), test))]
+#[inline]
+fn dot_bf16_scalar(left: &[f32], right: &[half::bf16]) -> f32 {
+    let mut sums = [0.0f32; 8];
+    let mut index = 0usize;
+    while index + 8 <= left.len() {
+        sums[0] += left[index] * right[index].to_f32();
+        sums[1] += left[index + 1] * right[index + 1].to_f32();
+        sums[2] += left[index + 2] * right[index + 2].to_f32();
+        sums[3] += left[index + 3] * right[index + 3].to_f32();
+        sums[4] += left[index + 4] * right[index + 4].to_f32();
+        sums[5] += left[index + 5] * right[index + 5].to_f32();
+        sums[6] += left[index + 6] * right[index + 6].to_f32();
+        sums[7] += left[index + 7] * right[index + 7].to_f32();
+        index += 8;
+    }
+    let mut sum =
+        (sums[0] + sums[1]) + (sums[2] + sums[3]) + (sums[4] + sums[5]) + (sums[6] + sums[7]);
+    while index < left.len() {
+        sum += left[index] * right[index].to_f32();
+        index += 1;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn dot_bf16_neon(left: &[f32], right: &[half::bf16]) -> f32 {
+    use std::arch::aarch64::*;
+
+    #[inline]
+    unsafe fn load_bf16x4(pointer: *const half::bf16) -> float32x4_t {
+        let bits = unsafe { vld1_u16(pointer.cast::<u16>()) };
+        vreinterpretq_f32_u32(vshlq_n_u32::<16>(vmovl_u16(bits)))
+    }
+
+    let mut sums = [vdupq_n_f32(0.0); 4];
+    let mut index = 0usize;
+    while index + 16 <= left.len() {
+        let input = left.as_ptr();
+        let weights = right.as_ptr();
+        sums[0] = vfmaq_f32(sums[0], unsafe { vld1q_f32(input.add(index)) }, unsafe {
+            load_bf16x4(weights.add(index))
+        });
+        sums[1] = vfmaq_f32(
+            sums[1],
+            unsafe { vld1q_f32(input.add(index + 4)) },
+            unsafe { load_bf16x4(weights.add(index + 4)) },
+        );
+        sums[2] = vfmaq_f32(
+            sums[2],
+            unsafe { vld1q_f32(input.add(index + 8)) },
+            unsafe { load_bf16x4(weights.add(index + 8)) },
+        );
+        sums[3] = vfmaq_f32(
+            sums[3],
+            unsafe { vld1q_f32(input.add(index + 12)) },
+            unsafe { load_bf16x4(weights.add(index + 12)) },
+        );
+        index += 16;
+    }
+    let paired = vaddq_f32(vaddq_f32(sums[0], sums[1]), vaddq_f32(sums[2], sums[3]));
+    let mut sum = vaddvq_f32(paired);
+    while index < left.len() {
+        sum += left[index] * right[index].to_f32();
+        index += 1;
+    }
+    sum
 }
 
 fn add_assign(left: &mut [f32], right: &[f32]) {
@@ -2130,6 +2222,120 @@ mod tests {
             .unwrap()
             .iter()
             .all(|value| value.is_finite()));
+    }
+
+    #[test]
+    #[ignore = "manual performance benchmark"]
+    fn benchmark_checkpoint_bf16_gemv() {
+        const ROWS: usize = 4096;
+        const COLUMNS: usize = 4096;
+        const SAMPLES: usize = 9;
+
+        let input = (0..COLUMNS)
+            .map(|index| ((index % 251) as f32 - 125.0) / 251.0)
+            .collect::<Vec<_>>();
+        let weights = (0..ROWS * COLUMNS)
+            .map(|index| half::bf16::from_f32(((index % 509) as f32 - 254.0) / 509.0))
+            .collect::<Vec<_>>();
+        let tensor = Tensor::from_bf16(vec![ROWS, COLUMNS], &weights).unwrap();
+
+        let warmup = linear_checkpoint_matrix(&input, &tensor, 0, ROWS, COLUMNS).unwrap();
+        let reference = weights
+            .chunks_exact(COLUMNS)
+            .map(|row| {
+                input
+                    .iter()
+                    .zip(row)
+                    .map(|(input, weight)| input * weight.to_f32())
+                    .sum::<f32>()
+            })
+            .collect::<Vec<_>>();
+        let max_abs = warmup
+            .iter()
+            .zip(&reference)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        std::hint::black_box(&warmup);
+        let mut samples = Vec::with_capacity(SAMPLES);
+        let mut checksum = 0.0f64;
+        for _ in 0..SAMPLES {
+            let start = std::time::Instant::now();
+            let output = linear_checkpoint_matrix(&input, &tensor, 0, ROWS, COLUMNS).unwrap();
+            samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            checksum = output.iter().map(|value| *value as f64).sum();
+            std::hint::black_box(output);
+        }
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "qwen4_exp_bf16_gemv rows={ROWS} columns={COLUMNS} median_ms={:.6} checksum={checksum:.9} reference_max_abs={max_abs:.9}",
+            samples[SAMPLES / 2]
+        );
+
+        for rows in [16usize, 32, 64, 128, 256, 512] {
+            let matrix = &weights[..rows * COLUMNS];
+            let mut sequential_samples = Vec::with_capacity(SAMPLES);
+            let mut parallel_samples = Vec::with_capacity(SAMPLES);
+            for sample in 0..=SAMPLES {
+                let start = std::time::Instant::now();
+                let sequential = matrix
+                    .chunks_exact(COLUMNS)
+                    .map(|row| dot_bf16(&input, row))
+                    .collect::<Vec<_>>();
+                if sample > 0 {
+                    sequential_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+                }
+                std::hint::black_box(sequential);
+
+                let start = std::time::Instant::now();
+                let mut parallel = vec![0.0f32; rows];
+                parallel
+                    .par_iter_mut()
+                    .zip(matrix.par_chunks_exact(COLUMNS))
+                    .for_each(|(output, row)| *output = dot_bf16(&input, row));
+                if sample > 0 {
+                    parallel_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+                }
+                std::hint::black_box(parallel);
+            }
+            sequential_samples.sort_by(f64::total_cmp);
+            parallel_samples.sort_by(f64::total_cmp);
+            eprintln!(
+                "qwen4_exp_bf16_gemv_crossover rows={rows} columns={COLUMNS} elements={} sequential_median_ms={:.6} parallel_median_ms={:.6}",
+                rows * COLUMNS,
+                sequential_samples[SAMPLES / 2],
+                parallel_samples[SAMPLES / 2]
+            );
+        }
+    }
+
+    #[test]
+    fn bf16_dot_matches_sequential_reference() {
+        for length in [0usize, 1, 7, 8, 9, 15, 16, 17, 127, 4096, 4103] {
+            let left = (0..length)
+                .map(|index| ((index % 251) as f32 - 125.0) / 251.0)
+                .collect::<Vec<_>>();
+            let right = (0..length)
+                .map(|index| {
+                    half::bf16::from_f32(((index.wrapping_mul(17) % 509) as f32 - 254.0) / 509.0)
+                })
+                .collect::<Vec<_>>();
+            let expected = left
+                .iter()
+                .zip(&right)
+                .map(|(left, right)| left * right.to_f32())
+                .sum::<f32>();
+            let actual = dot_bf16(&left, &right);
+            let scalar = dot_bf16_scalar(&left, &right);
+            let tolerance = 5.0e-4 + 5.0e-5 * expected.abs();
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "length={length} actual={actual} expected={expected} tolerance={tolerance}"
+            );
+            assert!(
+                (scalar - expected).abs() <= tolerance,
+                "length={length} scalar={scalar} expected={expected} tolerance={tolerance}"
+            );
+        }
     }
 
     #[test]
