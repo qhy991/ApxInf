@@ -1593,7 +1593,26 @@ fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) ->
             *value /= sum;
         }
     }
-    let mut output = run_selected_experts(config, hidden, &weights.experts, &ranked)?;
+    let (mut output, shared) =
+        if should_parallelize_selected_experts(config, &weights.experts, ranked.len()) {
+            let (routed, shared) = rayon::join(
+                || run_selected_experts(config, hidden, &weights.experts, &ranked),
+                || run_shared_expert(hidden, weights),
+            );
+            (routed?, shared?)
+        } else {
+            (
+                run_selected_experts(config, hidden, &weights.experts, &ranked)?,
+                run_shared_expert(hidden, weights)?,
+            )
+        };
+    for (output, shared) in output.iter_mut().zip(shared) {
+        *output += shared;
+    }
+    Ok(output)
+}
+
+fn run_shared_expert(hidden: &[f32], weights: &MoeWeights) -> Result<Vec<f32>> {
     let shared_gate = weights.shared_gate.apply(hidden)?;
     let shared_up = weights.shared_up.apply(hidden)?;
     let shared = shared_gate
@@ -1601,12 +1620,12 @@ fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) ->
         .zip(shared_up)
         .map(|(gate, up)| silu(gate) * up)
         .collect::<Vec<_>>();
-    let shared = weights.shared_down.apply(&shared)?;
+    let mut shared = weights.shared_down.apply(&shared)?;
     let gate = sigmoid(weights.shared_expert_gate.apply(hidden)?[0]);
-    for (output, shared) in output.iter_mut().zip(shared) {
-        *output += gate * shared;
+    for value in &mut shared {
+        *value *= gate;
     }
-    Ok(output)
+    Ok(shared)
 }
 
 fn run_selected_experts(
@@ -1615,13 +1634,7 @@ fn run_selected_experts(
     experts: &ExpertWeights,
     ranked: &[(usize, f32)],
 ) -> Result<Vec<f32>> {
-    let per_expert_elements = config
-        .hidden_size
-        .saturating_mul(config.moe_intermediate_size)
-        .saturating_mul(3);
-    let parallel = ranked.len() > 1
-        && per_expert_elements >= BF16_GEMV_PAR_MIN_ELEMENTS
-        && experts.is_bf16_checkpoint();
+    let parallel = should_parallelize_selected_experts(config, experts, ranked.len());
     let expert_outputs = if parallel {
         // Indexed parallel collection preserves router rank order. Keeping the
         // inner GEMVs serial avoids nested Rayon dispatch while experts own the
@@ -1651,6 +1664,20 @@ fn run_selected_experts(
         }
     }
     Ok(output)
+}
+
+fn should_parallelize_selected_experts(
+    config: &Qwen4ExpTextConfig,
+    experts: &ExpertWeights,
+    selected: usize,
+) -> bool {
+    let per_expert_elements = config
+        .hidden_size
+        .saturating_mul(config.moe_intermediate_size)
+        .saturating_mul(3);
+    selected > 1
+        && per_expert_elements >= BF16_GEMV_PAR_MIN_ELEMENTS
+        && experts.is_bf16_checkpoint()
 }
 
 fn run_ple(
@@ -2541,6 +2568,72 @@ mod tests {
             parallel_samples[SAMPLES / 2],
             outer_only_samples[SAMPLES / 2]
         );
+
+        let checkpoint_matrix = |rows: usize, columns: usize, multiplier: usize| {
+            let values = (0..rows * columns)
+                .map(|index| {
+                    half::bf16::from_f32(
+                        ((index.wrapping_mul(multiplier) % 509) as f32 - 254.0) / 509.0,
+                    )
+                })
+                .collect::<Vec<_>>();
+            ResidentMatrix::Checkpoint(Tensor::from_bf16(vec![rows, columns], &values).unwrap())
+        };
+        let moe_weights = MoeWeights {
+            router: ResidentMatrix::synthetic(vec![0.0; OFFICIAL_HIDDEN], 1),
+            experts,
+            shared_gate: checkpoint_matrix(OFFICIAL_INTERMEDIATE, OFFICIAL_HIDDEN, 31),
+            shared_up: checkpoint_matrix(OFFICIAL_INTERMEDIATE, OFFICIAL_HIDDEN, 37),
+            shared_down: checkpoint_matrix(OFFICIAL_HIDDEN, OFFICIAL_INTERMEDIATE, 41),
+            shared_expert_gate: checkpoint_matrix(1, OFFICIAL_HIDDEN, 43),
+        };
+        let ranked = (0..TOPK)
+            .map(|expert| (expert, 1.0 / TOPK as f32))
+            .collect::<Vec<_>>();
+        let mut staged_samples = Vec::with_capacity(SAMPLES);
+        let mut overlapped_samples = Vec::with_capacity(SAMPLES);
+        let mut staged_output = Vec::new();
+        let mut overlapped_output = Vec::new();
+        for sample in 0..=SAMPLES {
+            let start = std::time::Instant::now();
+            let mut routed =
+                run_selected_experts(&moe_config, &hidden, &moe_weights.experts, &ranked).unwrap();
+            let shared = run_shared_expert(&hidden, &moe_weights).unwrap();
+            for (output, shared) in routed.iter_mut().zip(shared) {
+                *output += shared;
+            }
+            if sample > 0 {
+                staged_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+            staged_output = routed;
+
+            let start = std::time::Instant::now();
+            let (routed, shared) = rayon::join(
+                || run_selected_experts(&moe_config, &hidden, &moe_weights.experts, &ranked),
+                || run_shared_expert(&hidden, &moe_weights),
+            );
+            let mut routed = routed.unwrap();
+            for (output, shared) in routed.iter_mut().zip(shared.unwrap()) {
+                *output += shared;
+            }
+            if sample > 0 {
+                overlapped_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+            overlapped_output = routed;
+        }
+        staged_samples.sort_by(f64::total_cmp);
+        overlapped_samples.sort_by(f64::total_cmp);
+        let max_abs = staged_output
+            .iter()
+            .zip(&overlapped_output)
+            .map(|(expected, actual)| (expected - actual).abs())
+            .fold(0.0f32, f32::max);
+        std::hint::black_box((staged_output, overlapped_output));
+        eprintln!(
+            "qwen4_exp_bf16_moe_full staged_median_ms={:.6} overlapped_median_ms={:.6} max_abs={max_abs:.9}",
+            staged_samples[SAMPLES / 2],
+            overlapped_samples[SAMPLES / 2]
+        );
     }
 
     #[test]
@@ -2611,6 +2704,28 @@ mod tests {
             for (output, value) in expected.iter_mut().zip(expert_output) {
                 *output += probability * value;
             }
+        }
+        assert_eq!(actual, expected);
+
+        config.shared_expert_intermediate_size = INTERMEDIATE;
+        let zero_matrix = |input: usize, output: usize| {
+            ResidentMatrix::synthetic(vec![0.0; input * output], output)
+        };
+        let weights = MoeWeights {
+            router: zero_matrix(HIDDEN, EXPERTS),
+            experts,
+            shared_gate: zero_matrix(HIDDEN, INTERMEDIATE),
+            shared_up: zero_matrix(HIDDEN, INTERMEDIATE),
+            shared_down: zero_matrix(INTERMEDIATE, HIDDEN),
+            shared_expert_gate: zero_matrix(HIDDEN, 1),
+        };
+        let actual = run_moe(&config, &hidden, &weights).unwrap();
+        let uniform_ranked = [(0usize, 0.5f32), (1usize, 0.5f32)];
+        let mut expected =
+            run_selected_experts(&config, &hidden, &weights.experts, &uniform_ranked).unwrap();
+        let shared = run_shared_expert(&hidden, &weights).unwrap();
+        for (output, shared) in expected.iter_mut().zip(shared) {
+            *output += shared;
         }
         assert_eq!(actual, expected);
     }
