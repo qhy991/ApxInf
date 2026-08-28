@@ -676,6 +676,53 @@ impl QueryGateWeights {
 }
 
 impl ExpertWeights {
+    fn apply(
+        &self,
+        config: &Qwen4ExpTextConfig,
+        hidden: &[f32],
+        expert: usize,
+    ) -> Result<Vec<f32>> {
+        let gate_up = self.gate_up(config, hidden, expert)?;
+        let activated = activate_expert(&gate_up, config.moe_intermediate_size);
+        self.down(config, &activated, expert)
+    }
+
+    fn is_bf16_checkpoint(&self) -> bool {
+        matches!(
+            self,
+            Self::Checkpoint { gate_up, down }
+                if gate_up.dtype() == DType::BF16 && down.dtype() == DType::BF16
+        )
+    }
+
+    fn apply_bf16_serial(
+        &self,
+        config: &Qwen4ExpTextConfig,
+        hidden: &[f32],
+        expert: usize,
+    ) -> Result<Vec<f32>> {
+        let Self::Checkpoint { gate_up, down } = self else {
+            return Err(Error::Other(
+                "qwen4-exp serial BF16 expert requires checkpoint weights".into(),
+            ));
+        };
+        let gate_up = linear_checkpoint_bf16_serial(
+            hidden,
+            gate_up,
+            expert * 2 * config.moe_intermediate_size * config.hidden_size,
+            2 * config.moe_intermediate_size,
+            config.hidden_size,
+        )?;
+        let activated = activate_expert(&gate_up, config.moe_intermediate_size);
+        linear_checkpoint_bf16_serial(
+            &activated,
+            down,
+            expert * config.hidden_size * config.moe_intermediate_size,
+            config.hidden_size,
+            config.moe_intermediate_size,
+        )
+    }
+
     fn gate_up(
         &self,
         config: &Qwen4ExpTextConfig,
@@ -710,6 +757,12 @@ impl ExpertWeights {
             ),
         }
     }
+}
+
+fn activate_expert(gate_up: &[f32], intermediate_size: usize) -> Vec<f32> {
+    (0..intermediate_size)
+        .map(|index| silu(gate_up[index]) * gate_up[intermediate_size + index])
+        .collect()
 }
 
 impl PleEmbedding {
@@ -1540,17 +1593,7 @@ fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) ->
             *value /= sum;
         }
     }
-    let mut output = vec![0.0; config.hidden_size];
-    for (expert, probability) in ranked {
-        let gate_up = weights.experts.gate_up(config, hidden, expert)?;
-        let activated = (0..config.moe_intermediate_size)
-            .map(|index| silu(gate_up[index]) * gate_up[config.moe_intermediate_size + index])
-            .collect::<Vec<_>>();
-        let expert_output = weights.experts.down(config, &activated, expert)?;
-        for (output, value) in output.iter_mut().zip(expert_output) {
-            *output += probability * value;
-        }
-    }
+    let mut output = run_selected_experts(config, hidden, &weights.experts, &ranked)?;
     let shared_gate = weights.shared_gate.apply(hidden)?;
     let shared_up = weights.shared_up.apply(hidden)?;
     let shared = shared_gate
@@ -1562,6 +1605,50 @@ fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) ->
     let gate = sigmoid(weights.shared_expert_gate.apply(hidden)?[0]);
     for (output, shared) in output.iter_mut().zip(shared) {
         *output += gate * shared;
+    }
+    Ok(output)
+}
+
+fn run_selected_experts(
+    config: &Qwen4ExpTextConfig,
+    hidden: &[f32],
+    experts: &ExpertWeights,
+    ranked: &[(usize, f32)],
+) -> Result<Vec<f32>> {
+    let per_expert_elements = config
+        .hidden_size
+        .saturating_mul(config.moe_intermediate_size)
+        .saturating_mul(3);
+    let parallel = ranked.len() > 1
+        && per_expert_elements >= BF16_GEMV_PAR_MIN_ELEMENTS
+        && experts.is_bf16_checkpoint();
+    let expert_outputs = if parallel {
+        // Indexed parallel collection preserves router rank order. Keeping the
+        // inner GEMVs serial avoids nested Rayon dispatch while experts own the
+        // available row-level parallelism.
+        ranked
+            .par_iter()
+            .map(|(expert, probability)| {
+                experts
+                    .apply_bf16_serial(config, hidden, *expert)
+                    .map(|output| (*probability, output))
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        ranked
+            .iter()
+            .map(|(expert, probability)| {
+                experts
+                    .apply(config, hidden, *expert)
+                    .map(|output| (*probability, output))
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+    let mut output = vec![0.0; config.hidden_size];
+    for (probability, expert_output) in expert_outputs {
+        for (output, value) in output.iter_mut().zip(expert_output) {
+            *output += probability * value;
+        }
     }
     Ok(output)
 }
@@ -1749,6 +1836,22 @@ fn linear_checkpoint_matrix(
         }
     }
     Ok(output)
+}
+
+fn linear_checkpoint_bf16_serial(
+    input: &[f32],
+    tensor: &Tensor,
+    offset: usize,
+    output_size: usize,
+    input_size: usize,
+) -> Result<Vec<f32>> {
+    debug_assert_eq!(input.len(), input_size);
+    let weights = tensor.as_bf16()?;
+    let end = offset + output_size * input_size;
+    Ok(weights[offset..end]
+        .chunks_exact(input_size)
+        .map(|row| dot_bf16(input, row))
+        .collect())
 }
 
 const BF16_GEMV_PAR_MIN_ELEMENTS: usize = 1 << 21;
@@ -2023,6 +2126,47 @@ mod tests {
         GeneralQwen4Exp::from_synthetic(config, 38, 64).unwrap()
     }
 
+    fn benchmark_bf16_gemv_pair(
+        input: &[f32],
+        matrix: &[half::bf16],
+        rows: usize,
+        columns: usize,
+        samples: usize,
+    ) -> (f64, f64) {
+        debug_assert_eq!(input.len(), columns);
+        debug_assert_eq!(matrix.len(), rows * columns);
+        let mut sequential_samples = Vec::with_capacity(samples);
+        let mut parallel_samples = Vec::with_capacity(samples);
+        for sample in 0..=samples {
+            let start = std::time::Instant::now();
+            let sequential = matrix
+                .chunks_exact(columns)
+                .map(|row| dot_bf16(input, row))
+                .collect::<Vec<_>>();
+            if sample > 0 {
+                sequential_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+            std::hint::black_box(sequential);
+
+            let start = std::time::Instant::now();
+            let mut parallel = vec![0.0f32; rows];
+            parallel
+                .par_iter_mut()
+                .zip(matrix.par_chunks_exact(columns))
+                .for_each(|(output, row)| *output = dot_bf16(input, row));
+            if sample > 0 {
+                parallel_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+            std::hint::black_box(parallel);
+        }
+        sequential_samples.sort_by(f64::total_cmp);
+        parallel_samples.sort_by(f64::total_cmp);
+        (
+            sequential_samples[samples / 2],
+            parallel_samples[samples / 2],
+        )
+    }
+
     fn write_safetensors(path: &std::path::Path, tensors: &HashMap<String, Tensor>) {
         let mut entries = BTreeMap::new();
         let mut offset = 0usize;
@@ -2273,39 +2417,130 @@ mod tests {
 
         for rows in [16usize, 32, 64, 128, 256, 512] {
             let matrix = &weights[..rows * COLUMNS];
-            let mut sequential_samples = Vec::with_capacity(SAMPLES);
-            let mut parallel_samples = Vec::with_capacity(SAMPLES);
-            for sample in 0..=SAMPLES {
-                let start = std::time::Instant::now();
-                let sequential = matrix
-                    .chunks_exact(COLUMNS)
-                    .map(|row| dot_bf16(&input, row))
-                    .collect::<Vec<_>>();
-                if sample > 0 {
-                    sequential_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
-                }
-                std::hint::black_box(sequential);
-
-                let start = std::time::Instant::now();
-                let mut parallel = vec![0.0f32; rows];
-                parallel
-                    .par_iter_mut()
-                    .zip(matrix.par_chunks_exact(COLUMNS))
-                    .for_each(|(output, row)| *output = dot_bf16(&input, row));
-                if sample > 0 {
-                    parallel_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
-                }
-                std::hint::black_box(parallel);
-            }
-            sequential_samples.sort_by(f64::total_cmp);
-            parallel_samples.sort_by(f64::total_cmp);
+            let (sequential, parallel) =
+                benchmark_bf16_gemv_pair(&input, matrix, rows, COLUMNS, SAMPLES);
             eprintln!(
                 "qwen4_exp_bf16_gemv_crossover rows={rows} columns={COLUMNS} elements={} sequential_median_ms={:.6} parallel_median_ms={:.6}",
                 rows * COLUMNS,
-                sequential_samples[SAMPLES / 2],
-                parallel_samples[SAMPLES / 2]
+                sequential,
+                parallel
             );
         }
+
+        for (name, rows, columns) in [
+            ("router", 512usize, 2560usize),
+            ("moe_down", 2560, 640),
+            ("moe_gate_up", 1280, 2560),
+        ] {
+            let official_input = &input[..columns];
+            let matrix = &weights[..rows * columns];
+            let (sequential, parallel) =
+                benchmark_bf16_gemv_pair(official_input, matrix, rows, columns, SAMPLES);
+            eprintln!(
+                "qwen4_exp_bf16_gemv_official_shape name={name} rows={rows} columns={columns} elements={} sequential_median_ms={sequential:.6} parallel_median_ms={parallel:.6}",
+                rows * columns
+            );
+        }
+
+        drop(tensor);
+        drop(weights);
+
+        const TOPK: usize = 10;
+        const OFFICIAL_HIDDEN: usize = 2560;
+        const OFFICIAL_INTERMEDIATE: usize = 640;
+        let mut moe_config = Qwen4ExpConfig::from_json_str(MINI_CONFIG).unwrap().text;
+        moe_config.hidden_size = OFFICIAL_HIDDEN;
+        moe_config.moe_intermediate_size = OFFICIAL_INTERMEDIATE;
+        moe_config.num_experts = TOPK;
+        moe_config.num_experts_per_tok = TOPK;
+        let hidden = (0..OFFICIAL_HIDDEN)
+            .map(|index| ((index % 251) as f32 - 125.0) / 251.0)
+            .collect::<Vec<_>>();
+
+        let gate_up_numel = TOPK * 2 * OFFICIAL_INTERMEDIATE * OFFICIAL_HIDDEN;
+        let packed_gate_up = (0..gate_up_numel)
+            .map(|index| {
+                half::bf16::from_f32(((index.wrapping_mul(13) % 509) as f32 - 254.0) / 509.0)
+            })
+            .collect::<Vec<_>>();
+        let gate_up = Tensor::from_bf16(
+            vec![TOPK, 2 * OFFICIAL_INTERMEDIATE, OFFICIAL_HIDDEN],
+            &packed_gate_up,
+        )
+        .unwrap();
+        drop(packed_gate_up);
+        let down_numel = TOPK * OFFICIAL_HIDDEN * OFFICIAL_INTERMEDIATE;
+        let packed_down = (0..down_numel)
+            .map(|index| {
+                half::bf16::from_f32(((index.wrapping_mul(29) % 509) as f32 - 254.0) / 509.0)
+            })
+            .collect::<Vec<_>>();
+        let down = Tensor::from_bf16(
+            vec![TOPK, OFFICIAL_HIDDEN, OFFICIAL_INTERMEDIATE],
+            &packed_down,
+        )
+        .unwrap();
+        drop(packed_down);
+        let experts = ExpertWeights::Checkpoint { gate_up, down };
+
+        let apply_serial = |expert: usize| {
+            experts
+                .apply_bf16_serial(&moe_config, &hidden, expert)
+                .unwrap()
+        };
+
+        let mut sequential_samples = Vec::with_capacity(SAMPLES);
+        let mut parallel_samples = Vec::with_capacity(SAMPLES);
+        let mut outer_only_samples = Vec::with_capacity(SAMPLES);
+        let mut reference = Vec::new();
+        let mut candidate = Vec::new();
+        for sample in 0..=SAMPLES {
+            let start = std::time::Instant::now();
+            let sequential = (0..TOPK)
+                .map(|expert| experts.apply(&moe_config, &hidden, expert).unwrap())
+                .collect::<Vec<_>>();
+            if sample > 0 {
+                sequential_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+
+            let start = std::time::Instant::now();
+            let parallel = (0..TOPK)
+                .into_par_iter()
+                .map(|expert| experts.apply(&moe_config, &hidden, expert))
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
+            if sample > 0 {
+                parallel_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+
+            let start = std::time::Instant::now();
+            let outer_only = (0..TOPK)
+                .into_par_iter()
+                .map(&apply_serial)
+                .collect::<Vec<_>>();
+            if sample > 0 {
+                outer_only_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+            reference = sequential;
+            candidate = outer_only;
+            std::hint::black_box(parallel);
+        }
+        sequential_samples.sort_by(f64::total_cmp);
+        parallel_samples.sort_by(f64::total_cmp);
+        outer_only_samples.sort_by(f64::total_cmp);
+        let max_abs = reference
+            .iter()
+            .flatten()
+            .zip(candidate.iter().flatten())
+            .map(|(expected, actual)| (expected - actual).abs())
+            .fold(0.0f32, f32::max);
+        std::hint::black_box((reference, candidate));
+        eprintln!(
+            "qwen4_exp_bf16_moe_experts topk={TOPK} hidden={OFFICIAL_HIDDEN} intermediate={OFFICIAL_INTERMEDIATE} sequential_median_ms={:.6} nested_parallel_median_ms={:.6} outer_only_parallel_median_ms={:.6} max_abs={max_abs:.9}",
+            sequential_samples[SAMPLES / 2],
+            parallel_samples[SAMPLES / 2],
+            outer_only_samples[SAMPLES / 2]
+        );
     }
 
     #[test]
@@ -2336,6 +2571,48 @@ mod tests {
                 "length={length} scalar={scalar} expected={expected} tolerance={tolerance}"
             );
         }
+    }
+
+    #[test]
+    fn large_bf16_experts_parallelize_without_changing_router_order() {
+        const EXPERTS: usize = 2;
+        const HIDDEN: usize = 1024;
+        const INTERMEDIATE: usize = 704;
+
+        let mut config = Qwen4ExpConfig::from_json_str(MINI_CONFIG).unwrap().text;
+        config.hidden_size = HIDDEN;
+        config.moe_intermediate_size = INTERMEDIATE;
+        config.num_experts = EXPERTS;
+        config.num_experts_per_tok = EXPERTS;
+        let hidden = (0..HIDDEN)
+            .map(|index| ((index % 251) as f32 - 125.0) / 251.0)
+            .collect::<Vec<_>>();
+        let make_weights = |length: usize, multiplier: usize| {
+            (0..length)
+                .map(|index| {
+                    half::bf16::from_f32(
+                        ((index.wrapping_mul(multiplier) % 509) as f32 - 254.0) / 509.0,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let packed_gate_up = make_weights(EXPERTS * 2 * INTERMEDIATE * HIDDEN, 13);
+        let gate_up =
+            Tensor::from_bf16(vec![EXPERTS, 2 * INTERMEDIATE, HIDDEN], &packed_gate_up).unwrap();
+        let packed_down = make_weights(EXPERTS * HIDDEN * INTERMEDIATE, 29);
+        let down = Tensor::from_bf16(vec![EXPERTS, HIDDEN, INTERMEDIATE], &packed_down).unwrap();
+        let experts = ExpertWeights::Checkpoint { gate_up, down };
+        let ranked = [(1usize, 0.625f32), (0usize, 0.375f32)];
+
+        let actual = run_selected_experts(&config, &hidden, &experts, &ranked).unwrap();
+        let mut expected = vec![0.0f32; HIDDEN];
+        for (expert, probability) in ranked {
+            let expert_output = experts.apply_bf16_serial(&config, &hidden, expert).unwrap();
+            for (output, value) in expected.iter_mut().zip(expert_output) {
+                *output += probability * value;
+            }
+        }
+        assert_eq!(actual, expected);
     }
 
     #[test]

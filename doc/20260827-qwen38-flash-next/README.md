@@ -105,8 +105,11 @@ per-layer activations and greedy tokens.
   row-level parallelism above a fixed work threshold, and AArch64 NEON widening
   plus FMA. A 4096x4096 checkpoint-free dummy projection improved from
   `15.454 ms` to a repeat median of `0.365 ms` (42.35x, 85.63 GiB/s) without an
-  F32 weight copy. All four text/vision/multimodal/video oracles remain within
-  their frozen thresholds; see `bf16-gemv-dummy-v1.json`.
+  F32 weight copy. The official top-10 MoE active shape additionally improves
+  from a repeat median of `2.805 ms` to `1.058 ms` (2.65x) by parallelizing
+  experts while keeping their inner GEMVs serial; output is bit-identical.
+  All four text/vision/multimodal/video oracles remain within their frozen
+  thresholds; see `bf16-gemv-dummy-v1.json`.
 
 ## Reproduce the no-weight gates
 

@@ -58,6 +58,22 @@
     {"elements": 1048576, "sequential_median_ms": 0.083291, "parallel_median_ms": 0.088167},
     {"elements": 2097152, "sequential_median_ms": 0.166959, "parallel_median_ms": 0.092833}
   ],
+  "official_shape_crossover": [
+    {"name": "router", "rows": 512, "columns": 2560, "sequential_median_ms": 0.100875, "parallel_median_ms": 0.106542},
+    {"name": "moe_down", "rows": 2560, "columns": 640, "sequential_median_ms": 0.106166, "parallel_median_ms": 0.120833},
+    {"name": "moe_gate_up", "rows": 1280, "columns": 2560, "sequential_median_ms": 0.252208, "parallel_median_ms": 0.155583}
+  ],
+  "moe_expert_scheduling": {
+    "topk": 10,
+    "hidden_size": 2560,
+    "intermediate_size": 640,
+    "active_weight_bytes": 98304000,
+    "sequential_repeat_medians_ms": [2.726458, 2.891916, 2.805417],
+    "nested_parallel_repeat_medians_ms": [1.112792, 1.267792, 1.226625],
+    "outer_only_parallel_repeat_medians_ms": [1.048250, 1.057792, 1.096792],
+    "baseline_to_outer_only_speedup": 2.6521,
+    "max_abs": 0.0
+  },
   "correctness": {
     "bf16_dot_regression": "passed for lengths 0,1,7,8,9,15,16,17,127,4096,4103",
     "text_oracle_max_abs": 1.4901161193847656e-08,
@@ -67,7 +83,8 @@
   },
   "observations": [
     "The original loop achieved only about 2 GiB/s because each dot product had one loop-carried accumulator dependency.",
-    "Parallelism is gated by matrix element count, so small toy projections retain the sequential path.",
+    "Row parallelism starts at 2,097,152 matrix elements; official router and MoE-down shapes remain serial while MoE gate-up crosses the measured threshold.",
+    "Top-10 routed experts run in parallel, with each expert's two GEMVs kept serial to avoid nested Rayon dispatch.",
     "This Apple M1 host has no BF16 arithmetic extension; the NEON path widens BF16 bits to F32 and accumulates with FMA.",
     "The final path keeps checkpoint matrices in their mmap-backed BF16 layout and creates no F32 weight copy."
   ]
