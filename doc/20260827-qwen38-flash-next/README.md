@@ -126,6 +126,12 @@ per-layer activations and greedy tokens.
   At the official 248,320x2,560 BF16 head, each skipped non-final prompt row
   avoids reading 1.184 GiB of weights. Text state/logits are exact; independent
   image and video generation-prefill gates retain 2/2 top-1 agreement.
+- QSA's selected-token attention now uses AArch64 NEON F32 dot products and
+  query-head parallelism above a measured work threshold. At the official
+  2,048-token budget, the 24-head/256-dim dummy slice improves from `9.633 ms`
+  to a repeated median of `0.840 ms` (11.47x); across 12 QSA layers this is
+  about `105.5 ms/token` of isolated attention work. A 64-token context stays
+  sequential, and parallel/serial head outputs are bit-identical.
   All four text/vision/multimodal/video oracles remain within their frozen
   thresholds; see `bf16-gemv-dummy-v1.json`.
 

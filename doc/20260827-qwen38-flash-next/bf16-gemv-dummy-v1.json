@@ -128,14 +128,30 @@
     "text_last_row_equal": true,
     "text_decode_state_equal": true,
     "image_generation_max_abs": 1.7406418919563293e-6,
-    "video_generation_max_abs": 1.2051314115524292e-6,
+    "video_generation_max_abs": 1.2032687664031982e-6,
     "generation_top1_equal": true
+  },
+  "qsa_sparse_attention": {
+    "query_heads": 24,
+    "kv_heads": 2,
+    "head_dim": 256,
+    "parallel_min_work": 524288,
+    "scalar_baseline_median_ms": {"128": 0.554917, "512": 2.813250, "2048": 9.632708},
+    "neon_dot_median_ms": {"128": 0.186042, "512": 0.726667, "2048": 3.599875},
+    "parallel_head_repeat_medians_ms": {
+      "128": [0.129375, 0.136792, 0.107542],
+      "512": [0.286625, 0.245458, 0.250458],
+      "2048": [0.833125, 0.839833, 0.952709]
+    },
+    "baseline_to_final_speedup": {"128": 4.2892, "512": 11.2324, "2048": 11.4698},
+    "estimated_12_layer_saving_at_2048_ms": 105.5145,
+    "parallel_vs_sequential_head_max_abs": 0.0
   },
   "correctness": {
     "bf16_dot_regression": "passed for lengths 0,1,7,8,9,15,16,17,127,4096,4103",
     "text_oracle_max_abs": 1.4901161193847656e-08,
     "image_text_oracle_max_abs": 2.987682819366455e-06,
-    "video_oracle_max_abs": 3.1962990760803223e-06,
+    "video_oracle_max_abs": 3.1981617212295532e-06,
     "all_oracles_passed": true
   },
   "observations": [
@@ -147,6 +163,7 @@
     "The independent large BF16 GDN QKV and gate projections share one Rayon scheduling interval; small or non-BF16 projections keep their original order.",
     "QSA key, value, and indexer projections run as three outer tasks only when all three are BF16 checkpoints and their combined work crosses the same threshold.",
     "Generation prefill advances every prompt token through the canonical model state path but evaluates the untied LM head only for the final prompt row.",
+    "AArch64 NEON F32 dot products and query-head parallelism accelerate sparse attention; contexts below the measured work threshold remain sequential.",
     "This Apple M1 host has no BF16 arithmetic extension; the NEON path widens BF16 bits to F32 and accumulates with FMA.",
     "The final path keeps checkpoint matrices in their mmap-backed BF16 layout and creates no F32 weight copy."
   ]

@@ -12,15 +12,15 @@
   "vision_max_abs": 9.51811671257019e-7,
   "comparison": {
     "rows": 12,
-    "max_abs": 3.1944364309310913e-6,
-    "mean_abs": 6.732882980031718e-7,
+    "max_abs": 3.1981617212295532e-6,
+    "mean_abs": 6.727817094542843e-7,
     "threshold": 1e-4,
     "top1_equal": [true, true, true, true, true, true, true, true, true, true, true, true]
   },
   "generation_prefill_comparison": {
     "rows": 2,
-    "max_abs": 1.2051314115524292e-6,
-    "mean_abs": 2.9616785468533635e-7,
+    "max_abs": 1.2032687664031982e-6,
+    "mean_abs": 2.962879079859704e-7,
     "top1_equal": [true, true]
   },
   "note": "The checked-in tiny config uses indexer_budget=8, which starts sparse top-k at token 10 and makes a near-tied block choice sensitive to the vision oracle's 1e-6 rounding. The release config uses budget=2048. This video semantics gate uses budget=16 so its 12-token prompt remains below the release sparse-selection boundary; sparse QSA remains covered by the separate long-context selector gate.",

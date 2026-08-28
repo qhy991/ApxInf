@@ -1621,34 +1621,86 @@ fn run_qsa(
         &weights.index_k_norm,
     )?;
 
-    let mut attention = vec![0.0; config.full_query_width()];
-    let queries_per_kv = config.n_attention_heads / config.n_kv_heads;
-    let scale = 1.0 / (config.head_dim as f32).sqrt();
-    let mut scores = vec![0.0; selected.len()];
-    for query_head in 0..config.n_attention_heads {
-        let kv_head = query_head / queries_per_kv;
-        let query_row = &query[query_head * config.head_dim..(query_head + 1) * config.head_dim];
-        for (slot, &token) in selected.iter().enumerate() {
-            let key_start = (token * config.n_kv_heads + kv_head) * config.head_dim;
-            scores[slot] = dot(
-                query_row,
-                &state.keys[key_start..key_start + config.head_dim],
-            ) * scale;
-        }
-        softmax_in_place(&mut scores);
-        let output_start = query_head * config.head_dim;
-        for (slot, &token) in selected.iter().enumerate() {
-            let value_start = (token * config.n_kv_heads + kv_head) * config.head_dim;
-            for column in 0..config.head_dim {
-                attention[output_start + column] +=
-                    scores[slot] * state.values[value_start + column];
-            }
-        }
-    }
+    let mut attention = sparse_attention(
+        &query,
+        &state.keys,
+        &state.values,
+        &selected,
+        config.n_attention_heads,
+        config.n_kv_heads,
+        config.head_dim,
+    );
     for (attention, gate) in attention.iter_mut().zip(gate) {
         *attention *= gate;
     }
     weights.out.apply(&attention)
+}
+
+fn sparse_attention(
+    query: &[f32],
+    keys: &[f32],
+    values: &[f32],
+    selected: &[usize],
+    query_heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+) -> Vec<f32> {
+    debug_assert_eq!(query.len(), query_heads * head_dim);
+    let queries_per_kv = query_heads / kv_heads;
+    let scale = 1.0 / (head_dim as f32).sqrt();
+    let mut attention = vec![0.0f32; query.len()];
+    let work = query_heads
+        .saturating_mul(selected.len())
+        .saturating_mul(head_dim);
+    if work >= SPARSE_ATTENTION_PAR_MIN_WORK {
+        attention
+            .par_chunks_exact_mut(head_dim)
+            .enumerate()
+            .for_each(|(query_head, output)| {
+                let kv_head = query_head / queries_per_kv;
+                let query_row = &query[query_head * head_dim..(query_head + 1) * head_dim];
+                sparse_attention_head(
+                    query_row, keys, values, selected, kv_head, kv_heads, head_dim, scale, output,
+                );
+            });
+    } else {
+        for (query_head, output) in attention.chunks_exact_mut(head_dim).enumerate() {
+            let kv_head = query_head / queries_per_kv;
+            let query_row = &query[query_head * head_dim..(query_head + 1) * head_dim];
+            sparse_attention_head(
+                query_row, keys, values, selected, kv_head, kv_heads, head_dim, scale, output,
+            );
+        }
+    }
+    attention
+}
+
+const SPARSE_ATTENTION_PAR_MIN_WORK: usize = 1 << 19;
+
+#[allow(clippy::too_many_arguments)]
+fn sparse_attention_head(
+    query: &[f32],
+    keys: &[f32],
+    values: &[f32],
+    selected: &[usize],
+    kv_head: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    scale: f32,
+    output: &mut [f32],
+) {
+    let mut scores = vec![0.0f32; selected.len()];
+    for (slot, &token) in selected.iter().enumerate() {
+        let key_start = (token * kv_heads + kv_head) * head_dim;
+        scores[slot] = dot(query, &keys[key_start..key_start + head_dim]) * scale;
+    }
+    softmax_in_place(&mut scores);
+    for (slot, &token) in selected.iter().enumerate() {
+        let value_start = (token * kv_heads + kv_head) * head_dim;
+        for column in 0..head_dim {
+            output[column] += scores[slot] * values[value_start + column];
+        }
+    }
 }
 
 fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) -> Result<Vec<f32>> {
@@ -2015,11 +2067,66 @@ fn softmax_in_place(values: &mut [f32]) {
     }
 }
 
+#[inline]
 fn dot(left: &[f32], right: &[f32]) -> f32 {
-    left.iter()
-        .zip(right)
-        .map(|(left, right)| left * right)
-        .sum()
+    debug_assert_eq!(left.len(), right.len());
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is mandatory in AArch64, and the helper bounds every
+        // vector load before reading it.
+        unsafe { dot_f32_neon(left, right) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        dot_f32_scalar(left, right)
+    }
+}
+
+#[cfg(any(not(target_arch = "aarch64"), test))]
+#[inline]
+fn dot_f32_scalar(left: &[f32], right: &[f32]) -> f32 {
+    let mut sums = [0.0f32; 8];
+    let mut index = 0usize;
+    while index + 8 <= left.len() {
+        for lane in 0..8 {
+            sums[lane] += left[index + lane] * right[index + lane];
+        }
+        index += 8;
+    }
+    let mut sum =
+        (sums[0] + sums[1]) + (sums[2] + sums[3]) + (sums[4] + sums[5]) + (sums[6] + sums[7]);
+    while index < left.len() {
+        sum += left[index] * right[index];
+        index += 1;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn dot_f32_neon(left: &[f32], right: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+
+    let mut sums = [vdupq_n_f32(0.0); 4];
+    let mut index = 0usize;
+    while index + 16 <= left.len() {
+        for lane in 0..4 {
+            let offset = index + lane * 4;
+            sums[lane] = vfmaq_f32(
+                sums[lane],
+                unsafe { vld1q_f32(left.as_ptr().add(offset)) },
+                unsafe { vld1q_f32(right.as_ptr().add(offset)) },
+            );
+        }
+        index += 16;
+    }
+    let paired = vaddq_f32(vaddq_f32(sums[0], sums[1]), vaddq_f32(sums[2], sums[3]));
+    let mut sum = vaddvq_f32(paired);
+    while index < left.len() {
+        sum += left[index] * right[index];
+        index += 1;
+    }
+    sum
 }
 
 #[inline]
@@ -2280,6 +2387,35 @@ mod tests {
             sequential_samples[samples / 2],
             parallel_samples[samples / 2],
         )
+    }
+
+    fn sparse_attention_sequential_reference(
+        query: &[f32],
+        keys: &[f32],
+        values: &[f32],
+        selected: &[usize],
+        query_heads: usize,
+        kv_heads: usize,
+        head_dim: usize,
+    ) -> Vec<f32> {
+        let queries_per_kv = query_heads / kv_heads;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        let mut attention = vec![0.0f32; query.len()];
+        for (query_head, output) in attention.chunks_exact_mut(head_dim).enumerate() {
+            let query_row = &query[query_head * head_dim..(query_head + 1) * head_dim];
+            sparse_attention_head(
+                query_row,
+                keys,
+                values,
+                selected,
+                query_head / queries_per_kv,
+                kv_heads,
+                head_dim,
+                scale,
+                output,
+            );
+        }
+        attention
     }
 
     fn write_safetensors(path: &std::path::Path, tensors: &HashMap<String, Tensor>) {
@@ -2954,6 +3090,132 @@ mod tests {
             sequential_samples[SAMPLES / 2],
             parallel_samples[SAMPLES / 2]
         );
+    }
+
+    #[test]
+    #[ignore = "manual performance benchmark"]
+    fn benchmark_qsa_sparse_attention() {
+        const QUERY_HEADS: usize = 24;
+        const KV_HEADS: usize = 2;
+        const HEAD_DIM: usize = 256;
+        const MAX_SELECTED: usize = 2048;
+        const SAMPLES: usize = 9;
+
+        let values = |length: usize, multiplier: usize| {
+            (0..length)
+                .map(|index| ((index.wrapping_mul(multiplier) % 509) as f32 - 254.0) / 509.0)
+                .collect::<Vec<_>>()
+        };
+        let query = values(QUERY_HEADS * HEAD_DIM, 13);
+        let keys = values(MAX_SELECTED * KV_HEADS * HEAD_DIM, 17);
+        let values = values(MAX_SELECTED * KV_HEADS * HEAD_DIM, 19);
+        for selected_len in [1usize, 8, 32, 64, 128, 512, 2048] {
+            let selected = (0..selected_len).collect::<Vec<_>>();
+            let mut sequential_samples = Vec::with_capacity(SAMPLES);
+            let mut parallel_samples = Vec::with_capacity(SAMPLES);
+            let mut sequential = Vec::new();
+            let mut parallel = Vec::new();
+            for _ in 0..SAMPLES {
+                let start = std::time::Instant::now();
+                sequential = sparse_attention_sequential_reference(
+                    &query,
+                    &keys,
+                    &values,
+                    &selected,
+                    QUERY_HEADS,
+                    KV_HEADS,
+                    HEAD_DIM,
+                );
+                sequential_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+
+                let start = std::time::Instant::now();
+                parallel = sparse_attention(
+                    &query,
+                    &keys,
+                    &values,
+                    &selected,
+                    QUERY_HEADS,
+                    KV_HEADS,
+                    HEAD_DIM,
+                );
+                parallel_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            }
+            sequential_samples.sort_by(f64::total_cmp);
+            parallel_samples.sort_by(f64::total_cmp);
+            assert_eq!(sequential, parallel);
+            let checksum = parallel.iter().map(|value| *value as f64).sum::<f64>();
+            std::hint::black_box((sequential, parallel));
+            eprintln!(
+                "qwen4_exp_qsa_sparse_attention selected={selected_len} sequential_median_ms={:.6} parallel_median_ms={:.6} checksum={checksum:.9}",
+                sequential_samples[SAMPLES / 2],
+                parallel_samples[SAMPLES / 2]
+            );
+        }
+    }
+
+    #[test]
+    fn f32_dot_matches_sequential_reference() {
+        for length in [0usize, 1, 7, 8, 9, 15, 16, 17, 127, 256, 4096, 4103] {
+            let left = (0..length)
+                .map(|index| ((index % 251) as f32 - 125.0) / 251.0)
+                .collect::<Vec<_>>();
+            let right = (0..length)
+                .map(|index| ((index.wrapping_mul(17) % 509) as f32 - 254.0) / 509.0)
+                .collect::<Vec<_>>();
+            let expected = left
+                .iter()
+                .zip(&right)
+                .map(|(left, right)| left * right)
+                .sum::<f32>();
+            let actual = dot(&left, &right);
+            let scalar = dot_f32_scalar(&left, &right);
+            let tolerance = 5.0e-4 + 5.0e-5 * expected.abs();
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "length={length} actual={actual} expected={expected} tolerance={tolerance}"
+            );
+            assert!(
+                (scalar - expected).abs() <= tolerance,
+                "length={length} scalar={scalar} expected={expected} tolerance={tolerance}"
+            );
+        }
+    }
+
+    #[test]
+    fn qsa_sparse_attention_parallel_matches_sequential_heads() {
+        const QUERY_HEADS: usize = 4;
+        const KV_HEADS: usize = 2;
+        const HEAD_DIM: usize = 256;
+        const SELECTED: usize = 512;
+
+        let values = |length: usize, multiplier: usize| {
+            (0..length)
+                .map(|index| ((index.wrapping_mul(multiplier) % 509) as f32 - 254.0) / 509.0)
+                .collect::<Vec<_>>()
+        };
+        let query = values(QUERY_HEADS * HEAD_DIM, 13);
+        let keys = values(SELECTED * KV_HEADS * HEAD_DIM, 17);
+        let values = values(SELECTED * KV_HEADS * HEAD_DIM, 19);
+        let selected = (0..SELECTED).collect::<Vec<_>>();
+        let expected = sparse_attention_sequential_reference(
+            &query,
+            &keys,
+            &values,
+            &selected,
+            QUERY_HEADS,
+            KV_HEADS,
+            HEAD_DIM,
+        );
+        let actual = sparse_attention(
+            &query,
+            &keys,
+            &values,
+            &selected,
+            QUERY_HEADS,
+            KV_HEADS,
+            HEAD_DIM,
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]

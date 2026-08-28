@@ -12,14 +12,14 @@
   "comparison": {
     "rows": 7,
     "max_abs": 2.987682819366455e-6,
-    "mean_abs": 6.738950446560921e-7,
+    "mean_abs": 6.726414767399547e-7,
     "threshold": 1e-4,
     "top1_equal": [true, true, true, true, true, true, true]
   },
   "generation_prefill_comparison": {
     "rows": 2,
     "max_abs": 1.7406418919563293e-6,
-    "mean_abs": 4.277972038835287e-7,
+    "mean_abs": 4.280664143152535e-7,
     "top1_equal": [true, true]
   },
   "covered": [
