@@ -1576,17 +1576,7 @@ fn run_qsa(
 fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) -> Result<Vec<f32>> {
     let mut probabilities = weights.router.apply(hidden)?;
     softmax_in_place(&mut probabilities);
-    let mut ranked = probabilities
-        .iter()
-        .copied()
-        .enumerate()
-        .collect::<Vec<_>>();
-    ranked.sort_unstable_by(|(left_index, left), (right_index, right)| {
-        right
-            .total_cmp(left)
-            .then_with(|| left_index.cmp(right_index))
-    });
-    ranked.truncate(config.num_experts_per_tok);
+    let mut ranked = rank_top_experts(&probabilities, config.num_experts_per_tok);
     if config.norm_topk_prob {
         let sum = ranked.iter().map(|(_, value)| value).sum::<f32>();
         for (_, value) in &mut ranked {
@@ -1610,6 +1600,26 @@ fn run_moe(config: &Qwen4ExpTextConfig, hidden: &[f32], weights: &MoeWeights) ->
         *output += shared;
     }
     Ok(output)
+}
+
+fn rank_top_experts(probabilities: &[f32], topk: usize) -> Vec<(usize, f32)> {
+    let mut ranked = probabilities
+        .iter()
+        .copied()
+        .enumerate()
+        .collect::<Vec<_>>();
+    let compare = |(left_index, left): &(usize, f32), (right_index, right): &(usize, f32)| {
+        right
+            .total_cmp(left)
+            .then_with(|| left_index.cmp(right_index))
+    };
+    let keep = topk.min(ranked.len());
+    if keep < ranked.len() {
+        ranked.select_nth_unstable_by(keep, &compare);
+    }
+    ranked.truncate(keep);
+    ranked.sort_unstable_by(compare);
+    ranked
 }
 
 fn run_shared_expert(hidden: &[f32], weights: &MoeWeights) -> Result<Vec<f32>> {
@@ -2634,6 +2644,46 @@ mod tests {
             staged_samples[SAMPLES / 2],
             overlapped_samples[SAMPLES / 2]
         );
+
+        const ROUTER_EXPERTS: usize = 512;
+        const ROUTER_TOPK: usize = 10;
+        const ROUTER_ITERATIONS: usize = 20_000;
+        let probabilities = (0..ROUTER_EXPERTS)
+            .map(|index| {
+                let mixed = index.wrapping_mul(73) % 997;
+                (mixed as f32 - 498.0) / 997.0
+            })
+            .collect::<Vec<_>>();
+        let compare = |(left_index, left): &(usize, f32), (right_index, right): &(usize, f32)| {
+            right
+                .total_cmp(left)
+                .then_with(|| left_index.cmp(right_index))
+        };
+        let start = std::time::Instant::now();
+        let mut full_sort = Vec::new();
+        for _ in 0..ROUTER_ITERATIONS {
+            let mut ranked = probabilities
+                .iter()
+                .copied()
+                .enumerate()
+                .collect::<Vec<_>>();
+            ranked.sort_unstable_by(&compare);
+            ranked.truncate(ROUTER_TOPK);
+            full_sort = ranked;
+            std::hint::black_box(&full_sort);
+        }
+        let full_sort_ms = start.elapsed().as_secs_f64() * 1_000.0;
+        let start = std::time::Instant::now();
+        let mut linear_partition = Vec::new();
+        for _ in 0..ROUTER_ITERATIONS {
+            linear_partition = rank_top_experts(&probabilities, ROUTER_TOPK);
+            std::hint::black_box(&linear_partition);
+        }
+        let linear_partition_ms = start.elapsed().as_secs_f64() * 1_000.0;
+        assert_eq!(linear_partition, full_sort);
+        eprintln!(
+            "qwen4_exp_moe_router_topk experts={ROUTER_EXPERTS} topk={ROUTER_TOPK} iterations={ROUTER_ITERATIONS} full_sort_ms={full_sort_ms:.6} linear_partition_ms={linear_partition_ms:.6}"
+        );
     }
 
     #[test]
@@ -2663,6 +2713,27 @@ mod tests {
                 (scalar - expected).abs() <= tolerance,
                 "length={length} scalar={scalar} expected={expected} tolerance={tolerance}"
             );
+        }
+    }
+
+    #[test]
+    fn moe_router_partition_matches_full_ranking_and_tie_breaks() {
+        let probabilities = (0usize..512)
+            .map(|index| ((index.wrapping_mul(73) % 97) as f32 - 48.0) / 97.0)
+            .collect::<Vec<_>>();
+        for topk in [0usize, 1, 10, 511, 512, 600] {
+            let mut expected = probabilities
+                .iter()
+                .copied()
+                .enumerate()
+                .collect::<Vec<_>>();
+            expected.sort_unstable_by(|(left_index, left), (right_index, right)| {
+                right
+                    .total_cmp(left)
+                    .then_with(|| left_index.cmp(right_index))
+            });
+            expected.truncate(topk.min(expected.len()));
+            assert_eq!(rank_top_experts(&probabilities, topk), expected);
         }
     }
 

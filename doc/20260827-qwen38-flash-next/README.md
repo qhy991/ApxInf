@@ -110,6 +110,9 @@ per-layer activations and greedy tokens.
   experts while keeping their inner GEMVs serial. Overlapping the independent
   shared expert then reduces the complete MoE slice from `1.425 ms` to
   `1.130 ms` (1.26x); both changes preserve bit-identical output.
+  Router 512-to-10 selection replaces a full sort with linear partition plus a
+  10-item sort, improving its repeated dummy median by 4.18x with identical
+  expert order (about `0.216 ms/token` across 48 layers on this host).
   All four text/vision/multimodal/video oracles remain within their frozen
   thresholds; see `bf16-gemv-dummy-v1.json`.
 

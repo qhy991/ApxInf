@@ -81,6 +81,17 @@
     "latency_reduction_fraction": 0.2067,
     "max_abs": 0.0
   },
+  "router_topk": {
+    "experts": 512,
+    "topk": 10,
+    "iterations": 20000,
+    "full_sort_repeat_ms": [115.870917, 118.126500, 118.958375],
+    "linear_partition_repeat_ms": [28.227875, 28.680458, 28.197625],
+    "speedup": 4.1847,
+    "median_microseconds_per_layer": 1.4114,
+    "estimated_48_layer_saving_ms": 0.2158,
+    "selected_order_equal": true
+  },
   "correctness": {
     "bf16_dot_regression": "passed for lengths 0,1,7,8,9,15,16,17,127,4096,4103",
     "text_oracle_max_abs": 1.4901161193847656e-08,
@@ -93,6 +104,7 @@
     "Row parallelism starts at 2,097,152 matrix elements; official router and MoE-down shapes remain serial while MoE gate-up crosses the measured threshold.",
     "Top-10 routed experts run in parallel, with each expert's two GEMVs kept serial to avoid nested Rayon dispatch.",
     "The independent shared expert overlaps the routed-expert group only when the same measured BF16 work gate is active.",
+    "Router top-10 selection uses linear partition followed by sorting only the retained experts; score and index tie-break order is unchanged.",
     "This Apple M1 host has no BF16 arithmetic extension; the NEON path widens BF16 bits to F32 and accumulates with FMA.",
     "The final path keeps checkpoint matrices in their mmap-backed BF16 layout and creates no F32 weight copy."
   ]
