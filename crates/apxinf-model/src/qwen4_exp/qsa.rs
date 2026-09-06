@@ -1,6 +1,7 @@
 //! CPU reference selector for Qwen Sparse Attention compressed blocks.
 
 use apxinf_core::{Error, Result};
+use rayon::prelude::*;
 
 #[derive(Clone, Debug)]
 pub struct Qwen4ExpQsaSelector {
@@ -161,10 +162,7 @@ impl Qwen4ExpQsaSelector {
         }
 
         let complete_blocks = visible_tokens / self.compress_ratio;
-        let mut ranked_blocks = Vec::with_capacity(complete_blocks);
-        let mut pooled_key = vec![0.0f32; self.head_dim];
-        let mut normalized_key = vec![0.0f32; self.head_dim];
-        for block in 0..complete_blocks {
+        let score_block = |block: usize, pooled_key: &mut [f32], normalized_key: &mut [f32]| {
             pooled_key.fill(0.0);
             let block_start = block * self.compress_ratio;
             for token in block_start..block_start + self.compress_ratio {
@@ -174,17 +172,17 @@ impl Qwen4ExpQsaSelector {
                 }
             }
             let reciprocal = 1.0 / self.compress_ratio as f32;
-            for pooled in &mut pooled_key {
+            for pooled in pooled_key.iter_mut() {
                 *pooled *= reciprocal;
             }
             rms_norm_zero_centered_into(
-                &pooled_key,
+                pooled_key,
                 key_norm_weight,
                 self.rms_norm_eps,
-                &mut normalized_key,
+                normalized_key,
             );
             apply_partial_mrope(
-                &mut normalized_key,
+                normalized_key,
                 self.rotary_dim,
                 self.theta,
                 positions[block_start],
@@ -193,15 +191,29 @@ impl Qwen4ExpQsaSelector {
 
             let mut score = 0.0f32;
             for query_head in normalized_query.chunks_exact(self.head_dim) {
-                let dot = query_head
-                    .iter()
-                    .zip(&normalized_key)
-                    .fold(0.0f32, |sum, (query, key)| sum + query * key);
+                let dot = dot_f32(query_head, &normalized_key);
                 score += dot.max(0.0);
             }
             score /= (self.head_dim as f32).sqrt();
-            ranked_blocks.push((block, score));
-        }
+            (block, score)
+        };
+        let mut ranked_blocks = if complete_blocks >= QSA_SELECTOR_PAR_MIN_BLOCKS {
+            (0..complete_blocks)
+                .into_par_iter()
+                .map_init(
+                    || (vec![0.0f32; self.head_dim], vec![0.0f32; self.head_dim]),
+                    |(pooled_key, normalized_key), block| {
+                        score_block(block, pooled_key, normalized_key)
+                    },
+                )
+                .collect::<Vec<_>>()
+        } else {
+            let mut pooled_key = vec![0.0f32; self.head_dim];
+            let mut normalized_key = vec![0.0f32; self.head_dim];
+            (0..complete_blocks)
+                .map(|block| score_block(block, &mut pooled_key, &mut normalized_key))
+                .collect::<Vec<_>>()
+        };
         let selected_block_count = (self.token_budget / self.compress_ratio).min(complete_blocks);
         let rank = |(left_block, left_score): &(usize, f32),
                     (right_block, right_score): &(usize, f32)| {
@@ -225,6 +237,70 @@ impl Qwen4ExpQsaSelector {
         selected.sort_unstable();
         Ok(selected)
     }
+}
+
+const QSA_SELECTOR_PAR_MIN_BLOCKS: usize = 256;
+
+#[inline]
+pub(super) fn dot_f32(left: &[f32], right: &[f32]) -> f32 {
+    debug_assert_eq!(left.len(), right.len());
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: NEON is mandatory in AArch64, and the helper bounds every
+        // vector load before reading it.
+        unsafe { dot_f32_neon(left, right) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        dot_f32_scalar(left, right)
+    }
+}
+
+#[cfg(any(not(target_arch = "aarch64"), test))]
+#[inline]
+pub(super) fn dot_f32_scalar(left: &[f32], right: &[f32]) -> f32 {
+    let mut sums = [0.0f32; 8];
+    let mut index = 0usize;
+    while index + 8 <= left.len() {
+        for lane in 0..8 {
+            sums[lane] += left[index + lane] * right[index + lane];
+        }
+        index += 8;
+    }
+    let mut sum =
+        (sums[0] + sums[1]) + (sums[2] + sums[3]) + (sums[4] + sums[5]) + (sums[6] + sums[7]);
+    while index < left.len() {
+        sum += left[index] * right[index];
+        index += 1;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn dot_f32_neon(left: &[f32], right: &[f32]) -> f32 {
+    use std::arch::aarch64::*;
+
+    let mut sums = [vdupq_n_f32(0.0); 4];
+    let mut index = 0usize;
+    while index + 16 <= left.len() {
+        for lane in 0..4 {
+            let offset = index + lane * 4;
+            sums[lane] = vfmaq_f32(
+                sums[lane],
+                unsafe { vld1q_f32(left.as_ptr().add(offset)) },
+                unsafe { vld1q_f32(right.as_ptr().add(offset)) },
+            );
+        }
+        index += 16;
+    }
+    let paired = vaddq_f32(vaddq_f32(sums[0], sums[1]), vaddq_f32(sums[2], sums[3]));
+    let mut sum = vaddvq_f32(paired);
+    while index < left.len() {
+        sum += left[index] * right[index];
+        index += 1;
+    }
+    sum
 }
 
 fn rms_norm_zero_centered(input: &[f32], weight: &[f32], eps: f32) -> Vec<f32> {

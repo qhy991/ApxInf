@@ -12,7 +12,7 @@ use apxinf_loader::ModelConfig;
 use rayon::prelude::*;
 
 use super::config::{Qwen4ExpConfig, Qwen4ExpLayerType, Qwen4ExpTextConfig};
-use super::qsa::{apply_partial_mrope, rms_norm_zero_centered_into, Qwen4ExpQsaSelector};
+use super::qsa::{apply_partial_mrope, dot_f32, rms_norm_zero_centered_into, Qwen4ExpQsaSelector};
 use super::weights::{metadata_from_tensors, ple_vocab_layout, Qwen4ExpWeightSchema};
 use crate::llm_trait::{LlmCapabilities, LlmInput, LlmTrait};
 use crate::qwen3vl::config::{Qwen3VLConfig, Qwen3VLTextConfig, Qwen3VLVisionConfig};
@@ -1692,7 +1692,7 @@ fn sparse_attention_head(
     let mut scores = vec![0.0f32; selected.len()];
     for (slot, &token) in selected.iter().enumerate() {
         let key_start = (token * kv_heads + kv_head) * head_dim;
-        scores[slot] = dot(query, &keys[key_start..key_start + head_dim]) * scale;
+        scores[slot] = dot_f32(query, &keys[key_start..key_start + head_dim]) * scale;
     }
     softmax_in_place(&mut scores);
     for (slot, &token) in selected.iter().enumerate() {
@@ -1865,7 +1865,7 @@ fn run_ple(
     let mut gated = vec![0.0; config.hc_count * config.hidden_size];
     for stream in 0..config.hc_count {
         let start = stream * config.hidden_size;
-        let raw_gate = dot(
+        let raw_gate = dot_f32(
             &key[start..start + config.hidden_size],
             &query[start..start + config.hidden_size],
         ) / (config.hidden_size as f32).sqrt();
@@ -1967,7 +1967,7 @@ fn linear_checkpoint_matrix(
             let weights = tensor.as_f32()?;
             for (row, output) in output.iter_mut().enumerate() {
                 let start = offset + row * input_size;
-                *output = dot(input, &weights[start..start + input_size]);
+                *output = dot_f32(input, &weights[start..start + input_size]);
             }
         }
         DType::BF16 => {
@@ -2065,68 +2065,6 @@ fn softmax_in_place(values: &mut [f32]) {
     for value in values {
         *value /= sum;
     }
-}
-
-#[inline]
-fn dot(left: &[f32], right: &[f32]) -> f32 {
-    debug_assert_eq!(left.len(), right.len());
-    #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: NEON is mandatory in AArch64, and the helper bounds every
-        // vector load before reading it.
-        unsafe { dot_f32_neon(left, right) }
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        dot_f32_scalar(left, right)
-    }
-}
-
-#[cfg(any(not(target_arch = "aarch64"), test))]
-#[inline]
-fn dot_f32_scalar(left: &[f32], right: &[f32]) -> f32 {
-    let mut sums = [0.0f32; 8];
-    let mut index = 0usize;
-    while index + 8 <= left.len() {
-        for lane in 0..8 {
-            sums[lane] += left[index + lane] * right[index + lane];
-        }
-        index += 8;
-    }
-    let mut sum =
-        (sums[0] + sums[1]) + (sums[2] + sums[3]) + (sums[4] + sums[5]) + (sums[6] + sums[7]);
-    while index < left.len() {
-        sum += left[index] * right[index];
-        index += 1;
-    }
-    sum
-}
-
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn dot_f32_neon(left: &[f32], right: &[f32]) -> f32 {
-    use std::arch::aarch64::*;
-
-    let mut sums = [vdupq_n_f32(0.0); 4];
-    let mut index = 0usize;
-    while index + 16 <= left.len() {
-        for lane in 0..4 {
-            let offset = index + lane * 4;
-            sums[lane] = vfmaq_f32(
-                sums[lane],
-                unsafe { vld1q_f32(left.as_ptr().add(offset)) },
-                unsafe { vld1q_f32(right.as_ptr().add(offset)) },
-            );
-        }
-        index += 16;
-    }
-    let paired = vaddq_f32(vaddq_f32(sums[0], sums[1]), vaddq_f32(sums[2], sums[3]));
-    let mut sum = vaddvq_f32(paired);
-    while index < left.len() {
-        sum += left[index] * right[index];
-        index += 1;
-    }
-    sum
 }
 
 #[inline]
@@ -2341,6 +2279,7 @@ mod tests {
 
     use super::*;
     use crate::qwen4_exp::config::tests::MINI_CONFIG;
+    use crate::qwen4_exp::qsa::dot_f32_scalar;
     use crate::{AutoModel, LoadOptions, SyntheticWeights};
 
     fn model() -> GeneralQwen4Exp {
@@ -3167,7 +3106,7 @@ mod tests {
                 .zip(&right)
                 .map(|(left, right)| left * right)
                 .sum::<f32>();
-            let actual = dot(&left, &right);
+            let actual = dot_f32(&left, &right);
             let scalar = dot_f32_scalar(&left, &right);
             let tolerance = 5.0e-4 + 5.0e-5 * expected.abs();
             assert!(

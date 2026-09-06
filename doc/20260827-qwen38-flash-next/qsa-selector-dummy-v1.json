@@ -50,10 +50,34 @@
     "p95_ms": 17.412667,
     "checksum": 7841781343063133312
   },
+  "neon_score_confirmation": {
+    "context_tokens": 65536,
+    "samples_per_repeat": 21,
+    "repeat_medians_ms": [15.969375, 16.106750, 16.054791],
+    "speedup_over_post_build": 1.0645,
+    "checksum": 7841781343063133312
+  },
+  "parallel_block_confirmation": {
+    "parallel_min_complete_blocks": 256,
+    "samples": 21,
+    "points": [
+      {"context_tokens": 1024, "median_ms": 0.227000, "checksum": 10712571734931628032},
+      {"context_tokens": 4096, "median_ms": 0.555708, "checksum": 6194485137535477984},
+      {"context_tokens": 16384, "median_ms": 1.857500, "checksum": 14168057349081131808},
+      {
+        "context_tokens": 65536,
+        "repeat_medians_ms": [5.897625, 5.846750, 5.938042],
+        "median_ms": 5.897625,
+        "checksum": 7841781343063133312
+      }
+    ],
+    "speedup_over_post_build_at_64k": 2.8979
+  },
   "observations": [
     "All variants produced the same selected-token checksum at every context length.",
     "Scratch reuse is neutral at short context and preliminarily beneficial at 64K.",
     "Linear top-k partition materially reduces 4K work; its isolated 64K effect is not distinguishable from run noise because score computation dominates there.",
-    "The combined candidate is 22.5%, 3.6%, and 4.8% below the original median at 4K, 16K, and 64K respectively."
+    "The combined candidate is 22.5%, 3.6%, and 4.8% below the original median at 4K, 16K, and 64K respectively.",
+    "NEON scoring plus per-worker scratch in parallel block scoring reduces the stable 64K selector median from 17.091 ms to 5.898 ms without changing selection."
   ]
 }

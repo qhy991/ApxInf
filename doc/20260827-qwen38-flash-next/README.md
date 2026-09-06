@@ -56,9 +56,11 @@ per-layer activations and greedy tokens.
   tensors, while three deterministic PLE integer buffers are reconstructed.
 - The CPU QSA selector now implements compressed-block pooling, zero-centred
   RMSNorm, partial RoPE, top-k block selection, and mandatory incomplete-tail
-  retention. Its initial dummy optimization reuses per-block scratch and uses
-  linear top-k partitioning. See `qsa-selector-dummy-v1.json`; the result is
-  selector-only synthetic evidence, not an end-to-end performance claim.
+  retention. It reuses scratch per worker, uses linear top-k partitioning,
+  shares the NEON F32 dot primitive, and scores independent compressed blocks
+  in parallel above 256 blocks. The stable 64K dummy median falls from
+  `17.091 ms` to `5.898 ms` (2.90x) with the same checksum. See
+  `qsa-selector-dummy-v1.json`; this remains selector-only synthetic evidence.
 - The registered `AutoModel` `qwen4_exp` route now runs a downsized native
   CPU/F32 text model with deterministic synthetic weights. Its one-shot and
   cached tokenwise paths agree within `1e-6`; reset reproduces logits exactly.
