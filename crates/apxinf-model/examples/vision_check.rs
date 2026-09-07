@@ -46,7 +46,7 @@ fn main() {
     // Run vision tower with debug dumps.
     let grid_thw = vec![[grid[0], grid[1], grid[2]]];
     let vis = vision::forward_debug(
-        &model.config_ref(), &model.vision_weights_ref(),
+        &model.config_ref().vision, &model.vision_weights_ref(),
         model.backend(), &pixel_values, &grid_thw, "/tmp/apxinf",
     ).expect("vision forward");
     eprintln!("primary shape: {:?}", vis.primary.shape().dims());
