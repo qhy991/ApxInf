@@ -12,6 +12,7 @@ pub mod profiling;
 pub mod pi05;
 pub mod qwen3vl;
 pub mod qwen4_exp;
+pub mod qwen_vl_vision;
 pub mod vla;
 mod walloss;
 

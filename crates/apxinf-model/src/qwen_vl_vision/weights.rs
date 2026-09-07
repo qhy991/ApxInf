@@ -10,21 +10,21 @@ use std::collections::HashMap;
 
 use apxinf_core::{Error, Result, Tensor};
 
-use super::config::Qwen3VLConfig;
+use super::VisionConfig;
 
-pub struct Qwen3VLVisionWeights {
+pub struct VisionWeights {
     /// `[embed_dim, in_channels*t_p*p*p]` = `[1024, 1536]` transposed for
     /// matmul (HF stores `[1024, 3, 2, 16, 16]`; we flatten to `[1024, 1536]`).
     pub patch_embed_weight: Tensor,
     pub patch_embed_bias: Tensor,
     /// `[num_position_embeddings, hidden_size]` = `[2304, 1024]`.
     pub pos_embed: Tensor,
-    pub blocks: Vec<Qwen3VLVisionBlock>,
-    pub merger: Qwen3VLMerger,
-    pub deepstack_mergers: Vec<Qwen3VLMerger>,
+    pub blocks: Vec<VisionBlock>,
+    pub merger: VisionMerger,
+    pub deepstack_mergers: Vec<VisionMerger>,
 }
 
-pub struct Qwen3VLVisionBlock {
+pub struct VisionBlock {
     pub norm1_w: Tensor, pub norm1_b: Tensor,
     /// `[hidden, 3*hidden]` = `[1024, 3072]` transposed qkv.
     pub qkv_w: Tensor, pub qkv_b: Tensor,
@@ -37,7 +37,7 @@ pub struct Qwen3VLVisionBlock {
     pub fc2_w: Tensor, pub fc2_b: Tensor,
 }
 
-pub struct Qwen3VLMerger {
+pub struct VisionMerger {
     /// LayerNorm weight. For primary merger: `[1024]`. For deepstack: `[4096]`.
     pub norm_w: Tensor,
     pub norm_b: Tensor,
@@ -47,9 +47,9 @@ pub struct Qwen3VLMerger {
     pub fc2_w: Tensor, pub fc2_b: Tensor,
 }
 
-impl Qwen3VLVisionWeights {
-    pub fn from_map(cfg: &Qwen3VLConfig, mut tensors: HashMap<String, Tensor>) -> Result<Self> {
-        let vc = &cfg.vision;
+impl VisionWeights {
+    pub fn from_map(cfg: &VisionConfig, mut tensors: HashMap<String, Tensor>) -> Result<Self> {
+        let vc = cfg;
         let depth = vc.depth;
         let mut blocks = Vec::with_capacity(depth);
         for i in 0..depth {
@@ -57,7 +57,7 @@ impl Qwen3VLVisionWeights {
             let take = |name: &str, m: &mut HashMap<String, Tensor>| -> Result<Tensor> {
                 m.remove(name).ok_or_else(|| Error::Other(format!("missing {name}")))
             };
-            blocks.push(Qwen3VLVisionBlock {
+            blocks.push(VisionBlock {
                 norm1_w: take(&format!("{p}.norm1.weight"), &mut tensors)?,
                 norm1_b: take(&format!("{p}.norm1.bias"),   &mut tensors)?,
                 qkv_w:   reshape_linear_weight(&take(&format!("{p}.attn.qkv.weight"), &mut tensors)?)?,
@@ -101,11 +101,11 @@ impl Qwen3VLVisionWeights {
     }
 }
 
-fn load_merger(prefix: &str, m: &mut HashMap<String, Tensor>, _deepstack: bool) -> Result<Qwen3VLMerger> {
+fn load_merger(prefix: &str, m: &mut HashMap<String, Tensor>, _deepstack: bool) -> Result<VisionMerger> {
     let take = |name: &str, m: &mut HashMap<String, Tensor>| -> Result<Tensor> {
         m.remove(name).ok_or_else(|| Error::Other(format!("missing {name}")))
     };
-    Ok(Qwen3VLMerger {
+    Ok(VisionMerger {
         norm_w: take(&format!("{prefix}.norm.weight"), m)?,
         norm_b: take(&format!("{prefix}.norm.bias"), m)?,
         fc1_w: reshape_linear_weight(&take(&format!("{prefix}.linear_fc1.weight"), m)?)?,
@@ -172,9 +172,9 @@ fn transpose_2d(tensor: &Tensor) -> Result<Tensor> {
 }
 
 /// Transfer all vision weights to the backend's device.
-pub fn transfer_vision_weights(w: &Qwen3VLVisionWeights, backend: &dyn apxinf_core::Backend) -> Result<Qwen3VLVisionWeights> {
-    let transfer_block = |b: &Qwen3VLVisionBlock| -> Result<Qwen3VLVisionBlock> {
-        Ok(Qwen3VLVisionBlock {
+pub fn transfer_vision_weights(w: &VisionWeights, backend: &dyn apxinf_core::Backend) -> Result<VisionWeights> {
+    let transfer_block = |b: &VisionBlock| -> Result<VisionBlock> {
+        Ok(VisionBlock {
             norm1_w: backend.to_device(&b.norm1_w)?, norm1_b: backend.to_device(&b.norm1_b)?,
             qkv_w:   backend.to_device(&b.qkv_w)?,   qkv_b:   backend.to_device(&b.qkv_b)?,
             proj_w:  backend.to_device(&b.proj_w)?,  proj_b:  backend.to_device(&b.proj_b)?,
@@ -183,8 +183,8 @@ pub fn transfer_vision_weights(w: &Qwen3VLVisionWeights, backend: &dyn apxinf_co
             fc2_w:   backend.to_device(&b.fc2_w)?,   fc2_b:   backend.to_device(&b.fc2_b)?,
         })
     };
-    let transfer_merger = |m: &Qwen3VLMerger| -> Result<Qwen3VLMerger> {
-        Ok(Qwen3VLMerger {
+    let transfer_merger = |m: &VisionMerger| -> Result<VisionMerger> {
+        Ok(VisionMerger {
             norm_w: backend.to_device(&m.norm_w)?, norm_b: backend.to_device(&m.norm_b)?,
             fc1_w:  backend.to_device(&m.fc1_w)?,  fc1_b:  backend.to_device(&m.fc1_b)?,
             fc2_w:  backend.to_device(&m.fc2_w)?,  fc2_b:  backend.to_device(&m.fc2_b)?,
@@ -192,7 +192,7 @@ pub fn transfer_vision_weights(w: &Qwen3VLVisionWeights, backend: &dyn apxinf_co
     };
     let blocks = w.blocks.iter().map(transfer_block).collect::<Result<Vec<_>>>()?;
     let deepstack_mergers = w.deepstack_mergers.iter().map(transfer_merger).collect::<Result<Vec<_>>>()?;
-    Ok(Qwen3VLVisionWeights {
+    Ok(VisionWeights {
         patch_embed_weight: backend.to_device(&w.patch_embed_weight)?,
         patch_embed_bias:   backend.to_device(&w.patch_embed_bias)?,
         pos_embed:          backend.to_device(&w.pos_embed)?,

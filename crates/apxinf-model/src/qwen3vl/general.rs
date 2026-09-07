@@ -19,8 +19,10 @@ use crate::accelerator::cuda::downcast as cuda_backend;
 use crate::accelerator::create_backend;
 use super::config::Qwen3VLConfig;
 use super::weights::Qwen3VLTextWeights;
-use super::vision_weights::{Qwen3VLVisionWeights, transfer_vision_weights};
-use super::vision::{self, VisionOutput};
+use crate::qwen_vl_vision::{
+    self as vision, transfer_vision_weights, VisionOutput,
+    VisionWeights as Qwen3VLVisionWeights,
+};
 
 pub struct GeneralQwen3VL {
     config: Qwen3VLConfig,
@@ -73,7 +75,7 @@ impl GeneralQwen3VL {
         backend: Arc<dyn Backend>,
     ) -> Result<Self> {
         let weights = Qwen3VLTextWeights::from_map(&config, tensors.clone())?;
-        let vision_weights = Qwen3VLVisionWeights::from_map(&config, tensors)?;
+        let vision_weights = Qwen3VLVisionWeights::from_map(&config.vision, tensors)?;
         // Transfer text weights to backend's device.
         let mut weights = transfer_weights(&weights, &*backend)?;
         let vision_weights = transfer_vision_weights(&vision_weights, &*backend)?;
@@ -149,7 +151,13 @@ impl GeneralQwen3VL {
     /// Run the vision tower. `pixel_values` is `[N, 1536]` bf16 on device;
     /// `grid_thw` is `[[T, H, W]]`. Returns primary + 3 deepstack embeddings.
     pub fn forward_vision(&self, pixel_values: &Tensor, grid_thw: &[[u32; 3]]) -> Result<VisionOutput> {
-        vision::forward(&self.config, &self.vision_weights, &*self.backend, pixel_values, grid_thw)
+        vision::forward(
+            &self.config.vision,
+            &self.vision_weights,
+            &*self.backend,
+            pixel_values,
+            grid_thw,
+        )
     }
 
     /// Compute 3D mRoPE position IDs for a text+image prompt.

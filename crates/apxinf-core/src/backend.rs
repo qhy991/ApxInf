@@ -20,6 +20,68 @@ pub trait Backend: SamplingBackend {
     /// SiLU activation: output = input / (1 + exp(-input))
     fn silu(&self, input: &Tensor) -> Result<Tensor>;
 
+    fn sigmoid(&self, _input: &Tensor) -> Result<Tensor> {
+        Err(crate::Error::Other(
+            "sigmoid: not supported on this backend".into(),
+        ))
+    }
+
+    fn softplus(&self, _input: &Tensor) -> Result<Tensor> {
+        Err(crate::Error::Other(
+            "softplus: not supported on this backend".into(),
+        ))
+    }
+
+    /// L2-normalize along an arbitrary axis.
+    fn l2_normalize(&self, _input: &Tensor, _dim: isize, _eps: f32) -> Result<Tensor> {
+        Err(crate::Error::Other(
+            "l2_normalize: not supported on this backend".into(),
+        ))
+    }
+
+    fn rms_norm_offset(
+        &self,
+        _input: &Tensor,
+        _weight: &Tensor,
+        _eps: f32,
+        _weight_offset: f32,
+    ) -> Result<Tensor> {
+        Err(crate::Error::Other(
+            "rms_norm_offset: not supported on this backend".into(),
+        ))
+    }
+
+    /// Causal depthwise 1D convolution with an optional recurrent state.
+    fn causal_depthwise_conv1d(
+        &self,
+        _input: &Tensor,
+        _weight: &Tensor,
+        _bias: Option<&Tensor>,
+        _state: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor)> {
+        Err(crate::Error::Other(
+            "causal_depthwise_conv1d: not supported on this backend".into(),
+        ))
+    }
+
+    /// Qwen Gated DeltaNet recurrent update.
+    #[allow(clippy::too_many_arguments)]
+    fn gated_delta_recurrent(
+        &self,
+        _q: &Tensor,
+        _k: &Tensor,
+        _v: &Tensor,
+        _a: &Tensor,
+        _b: &Tensor,
+        _a_log: &Tensor,
+        _dt_bias: &Tensor,
+        _state: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor)> {
+        Err(crate::Error::Other(
+            "gated_delta_recurrent: not supported on this backend".into(),
+        ))
+    }
+
     /// Element-wise add.
     fn add(&self, a: &Tensor, b: &Tensor) -> Result<Tensor>;
 
@@ -32,6 +94,45 @@ pub trait Backend: SamplingBackend {
     /// Matrix multiplication: output = a @ b
     /// a: [m, k], b: [k, n] -> output: [m, n]
     fn matmul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor>;
+
+    /// `a[m,k] @ b[n,k]^T` without materializing a transposed weight matrix.
+    fn matmul_rhs_transposed(&self, _a: &Tensor, _b: &Tensor) -> Result<Tensor> {
+        Err(crate::Error::Other(
+            "matmul_rhs_transposed: not supported on this backend".into(),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn rope_partial(
+        &self,
+        _input: &Tensor,
+        _n_heads: usize,
+        _head_dim: usize,
+        _rotary_dim: usize,
+        _theta: f32,
+        _position: u32,
+        _interleaved: bool,
+    ) -> Result<Tensor> {
+        Err(crate::Error::Other(
+            "rope_partial: not supported on this backend".into(),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn rope_mrope_partial(
+        &self,
+        _input: &Tensor,
+        _n_heads: usize,
+        _head_dim: usize,
+        _rotary_dim: usize,
+        _theta: f32,
+        _sections: [usize; 3],
+        _positions: &[u32],
+    ) -> Result<Tensor> {
+        Err(crate::Error::Other(
+            "rope_mrope_partial: not supported on this backend".into(),
+        ))
+    }
 
     /// Rotary Position Embedding (half-split / Llama-style).
     /// input shape: [seq_len, n_heads, head_dim]

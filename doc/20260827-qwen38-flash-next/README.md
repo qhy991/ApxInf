@@ -136,6 +136,12 @@ per-layer activations and greedy tokens.
   sequential, and parallel/serial head outputs are bit-identical.
   All four text/vision/multimodal/video oracles remain within their frozen
   thresholds; see `bf16-gemv-dummy-v1.json`.
+- On 2026-09-07 the 18-commit Qwen stack was rebased onto
+  `infinigence/apxinf@d8f19ce`. The common Qwen ViT now lives in the reviewed
+  `qwen_vl_vision` shared module, preserving the upstream model-family
+  boundary. Post-rebase evidence is 184 portable tests passed, 4 manual
+  benchmarks ignored, all four frozen oracles passed, and a successful
+  workspace check.
 
 ## Reproduce the no-weight gates
 

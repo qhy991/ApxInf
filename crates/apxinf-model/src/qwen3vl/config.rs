@@ -9,6 +9,8 @@ use std::path::Path;
 
 use apxinf_core::{Error, Result};
 
+pub use crate::qwen_vl_vision::VisionConfig as Qwen3VLVisionConfig;
+
 /// Text-stack config for Qwen3-VL. Vision fields live under
 /// `Qwen3VLVisionConfig` (added when the vision tower lands in Phase 4).
 #[derive(Clone, Debug)]
@@ -27,31 +29,6 @@ pub struct Qwen3VLTextConfig {
     pub mrope_section: [usize; 3],
     pub mrope_interleaved: bool,
     pub tie_word_embeddings: bool,
-}
-
-/// Vision-tower config for Qwen3-VL.
-#[derive(Clone, Debug)]
-pub struct Qwen3VLVisionConfig {
-    pub depth: usize,
-    pub hidden_size: usize,
-    pub intermediate_size: usize,
-    pub num_heads: usize,
-    pub head_dim: usize,
-    pub patch_size: usize,
-    pub temporal_patch_size: usize,
-    pub in_channels: usize,
-    pub spatial_merge_size: usize,
-    pub num_position_embeddings: usize,
-    pub out_hidden_size: usize,
-    /// Which 3 of the `depth` vision blocks feed the deepstack mergers.
-    pub deepstack_visual_indexes: Vec<usize>,
-}
-
-impl Qwen3VLVisionConfig {
-    pub fn head_dim(&self) -> usize {
-        // HF: head_dim = hidden_size // num_heads (= 64 for Qwen3-VL-2B).
-        if self.head_dim != 0 { self.head_dim } else { self.hidden_size / self.num_heads }
-    }
 }
 
 /// Full Qwen3-VL config. `vision` is `None` until Phase 4.

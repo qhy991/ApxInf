@@ -1,6 +1,7 @@
 # apxinf-model Organization
 
 Date: 2026-07-04
+Updated: 2026-09-07
 Status: Design doc for the per-model folder structure.
 
 ## The principle
@@ -19,6 +20,7 @@ apxinf-model/src/
   profiling.rs        GenerationProfile (TTFT/TPOT tracking)
   debug.rs            DebugCapture / DebugConfig (activation capture)
   nvtx.rs             NVTX no-op stub / re-export
+  qwen_vl_vision/     shared Qwen ViT config, weights, and forward path
 
   ── Per-model folders ──
   llama/              Llama model structure
@@ -32,9 +34,13 @@ apxinf-model/src/
     mod.rs
     config.rs         Qwen3VLConfig
     weights.rs        Qwen3VLTextWeights
-    vision_weights.rs Qwen3VLVisionWeights
-    vision.rs         vision tower forward
     general.rs        GeneralQwen3VL (unified text/image prefill + decode)
+
+  qwen4_exp/          Qwen3.8-Flash-Next model structure
+    config.rs         strict released nested config
+    weights.rs        published checkpoint schema and validation
+    qsa.rs            sparse selector and shared Qwen4 math
+    general.rs        text/image/video prefill + cached decode
 ```
 
 ## What's shared vs model-specific
@@ -54,6 +60,9 @@ apxinf-model/src/
 - **`GenerationProfile`** — timing instrumentation (TTFT, TPOT, tok/s).
 - **`DebugCapture`** — activation capture for debugging.
 - **`nvtx`** — profiling markers (no-op on non-CUDA).
+- **`qwen_vl_vision`** — the one Qwen ViT implementation shared by Qwen3-VL
+  and Qwen3.8-Flash-Next. Model folders adapt their own config and checkpoint
+  namespaces at this boundary; neither family imports the other.
 
 ### Model-specific (per-folder)
 

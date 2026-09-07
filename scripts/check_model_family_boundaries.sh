@@ -6,7 +6,7 @@ model_root="$repo_root/crates/apxinf-model/src"
 
 # These directories are documented top-level infrastructure rather than model
 # families. Add a directory only after its shared ownership is reviewed.
-shared_dirs=(profiling vla)
+shared_dirs=(profiling qwen_vl_vision vla)
 
 is_shared_dir() {
     local candidate="$1"

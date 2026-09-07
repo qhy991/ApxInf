@@ -15,8 +15,7 @@ use super::config::{Qwen4ExpConfig, Qwen4ExpLayerType, Qwen4ExpTextConfig};
 use super::qsa::{apply_partial_mrope, dot_f32, rms_norm_zero_centered_into, Qwen4ExpQsaSelector};
 use super::weights::{metadata_from_tensors, ple_vocab_layout, Qwen4ExpWeightSchema};
 use crate::llm_trait::{LlmCapabilities, LlmInput, LlmTrait};
-use crate::qwen3vl::config::{Qwen3VLConfig, Qwen3VLTextConfig, Qwen3VLVisionConfig};
-use crate::qwen3vl::Qwen3VLVisionWeights;
+use crate::qwen_vl_vision::{self, VisionConfig, VisionWeights};
 
 pub struct GeneralQwen4Exp {
     config: Qwen4ExpConfig,
@@ -31,8 +30,8 @@ pub struct GeneralQwen4Exp {
 }
 
 struct Qwen4ExpVisionRuntime {
-    config: Qwen3VLConfig,
-    weights: Qwen3VLVisionWeights,
+    config: VisionConfig,
+    weights: VisionWeights,
 }
 
 pub fn encode_qwen4_exp_vision(
@@ -42,7 +41,7 @@ pub fn encode_qwen4_exp_vision(
     grid_thw: &[[u32; 3]],
 ) -> Result<Tensor> {
     let vision = build_vision_runtime(config, tensors)?;
-    Ok(crate::qwen3vl::vision::forward(
+    Ok(qwen_vl_vision::forward(
         &vision.config,
         &vision.weights,
         &CpuBackend,
@@ -162,7 +161,7 @@ impl GeneralQwen4Exp {
                 &pixel_values.to_f32_vec()?,
             )?
         };
-        Ok(crate::qwen3vl::vision::forward(
+        Ok(qwen_vl_vision::forward(
             &vision.config,
             &vision.weights,
             &*self.backend,
@@ -295,8 +294,8 @@ fn build_vision_runtime(
             *tensor = Tensor::from_f32(tensor.shape().dims().to_vec(), &tensor.to_f32_vec()?)?;
         }
     }
-    let config = qwen3vl_vision_adapter(config);
-    let weights = Qwen3VLVisionWeights::from_map(&config, tensors)?;
+    let config = qwen_vision_adapter(config);
+    let weights = VisionWeights::from_map(&config, tensors)?;
     Ok(Qwen4ExpVisionRuntime { config, weights })
 }
 
@@ -2171,41 +2170,20 @@ fn silu(value: f32) -> f32 {
     value * sigmoid(value)
 }
 
-fn qwen3vl_vision_adapter(config: &Qwen4ExpConfig) -> Qwen3VLConfig {
-    Qwen3VLConfig {
-        text: Qwen3VLTextConfig {
-            hidden_size: config.text.hidden_size,
-            intermediate_size: config.text.moe_intermediate_size,
-            n_layers: config.text.n_layers,
-            n_heads: config.text.n_attention_heads,
-            n_kv_heads: config.text.n_kv_heads,
-            head_dim: config.text.head_dim,
-            vocab_size: config.text.vocab_size,
-            max_position_embeddings: config.text.max_position_embeddings,
-            rms_norm_eps: config.text.rms_norm_eps,
-            rope_theta: config.text.rope.theta,
-            mrope_section: config.text.rope.mrope_section,
-            mrope_interleaved: config.text.rope.mrope_interleaved,
-            tie_word_embeddings: config.text.tie_word_embeddings,
-        },
-        vision: Qwen3VLVisionConfig {
-            depth: config.vision.depth,
-            hidden_size: config.vision.hidden_size,
-            intermediate_size: config.vision.intermediate_size,
-            num_heads: config.vision.num_heads,
-            head_dim: config.vision.hidden_size / config.vision.num_heads,
-            patch_size: config.vision.patch_size,
-            temporal_patch_size: config.vision.temporal_patch_size,
-            in_channels: config.vision.in_channels,
-            spatial_merge_size: config.vision.spatial_merge_size,
-            num_position_embeddings: config.vision.num_position_embeddings,
-            out_hidden_size: config.vision.out_hidden_size,
-            deepstack_visual_indexes: config.vision.deepstack_visual_indexes.clone(),
-        },
-        image_token_id: config.image_token_id,
-        video_token_id: config.video_token_id,
-        vision_start_token_id: config.vision_start_token_id,
-        vision_end_token_id: config.vision_end_token_id,
+fn qwen_vision_adapter(config: &Qwen4ExpConfig) -> VisionConfig {
+    VisionConfig {
+        depth: config.vision.depth,
+        hidden_size: config.vision.hidden_size,
+        intermediate_size: config.vision.intermediate_size,
+        num_heads: config.vision.num_heads,
+        head_dim: config.vision.hidden_size / config.vision.num_heads,
+        patch_size: config.vision.patch_size,
+        temporal_patch_size: config.vision.temporal_patch_size,
+        in_channels: config.vision.in_channels,
+        spatial_merge_size: config.vision.spatial_merge_size,
+        num_position_embeddings: config.vision.num_position_embeddings,
+        out_hidden_size: config.vision.out_hidden_size,
+        deepstack_visual_indexes: config.vision.deepstack_visual_indexes.clone(),
     }
 }
 

@@ -10,8 +10,7 @@
 
 use apxinf_core::{Backend, Error, Result, Tensor};
 
-use super::config::Qwen3VLConfig;
-use super::vision_weights::Qwen3VLVisionWeights;
+use super::{VisionConfig, VisionMerger, VisionWeights};
 pub struct VisionOutput {
     /// Primary embedding `[N/4, out_hidden]` injected at the image_pad
     /// positions in the LLM input embedding stream.
@@ -24,8 +23,8 @@ pub struct VisionOutput {
 /// Run the vision tower. `pixel_values` is `[N, 1536]` bf16 on device;
 /// `grid_thw` is `[[T, H, W]]` (one image assumed for now).
 pub fn forward(
-    cfg: &Qwen3VLConfig,
-    w: &Qwen3VLVisionWeights,
+    cfg: &VisionConfig,
+    w: &VisionWeights,
     b: &dyn Backend,
     pixel_values: &Tensor,
     grid_thw: &[[u32; 3]],
@@ -35,8 +34,8 @@ pub fn forward(
 
 /// Debug variant that dumps intermediate states to the given directory.
 pub fn forward_debug(
-    cfg: &Qwen3VLConfig,
-    w: &Qwen3VLVisionWeights,
+    cfg: &VisionConfig,
+    w: &VisionWeights,
     b: &dyn Backend,
     pixel_values: &Tensor,
     grid_thw: &[[u32; 3]],
@@ -46,15 +45,15 @@ pub fn forward_debug(
 }
 
 fn forward_impl(
-    cfg: &Qwen3VLConfig,
-    w: &Qwen3VLVisionWeights,
+    cfg: &VisionConfig,
+    w: &VisionWeights,
     b: &dyn Backend,
     pixel_values: &Tensor,
     grid_thw: &[[u32; 3]],
     dump: Option<&str>,
 ) -> Result<VisionOutput> {
     let _vision_range = crate::profiling::trace::range("vision_encoder");
-    let vc = &cfg.vision;
+    let vc = cfg;
     let hidden = vc.hidden_size;       // 1024
     let n_heads = vc.num_heads;        // 16
     let head_dim = vc.head_dim();      // 64
@@ -200,7 +199,7 @@ fn vision_sdpa_by_frame(
 
 /// Primary merger: LayerNorm(1024) → reshape [N,1024]→[N/4,4096] → fc1 → GELU → fc2.
 fn merge_primary(
-    b: &dyn Backend, m: &super::vision_weights::Qwen3VLMerger,
+    b: &dyn Backend, m: &VisionMerger,
     x: &Tensor, n_patches: usize, hidden: usize, merge: usize, eps: f32,
 ) -> Result<Tensor> {
     let normed = b.layer_norm(x, &m.norm_w, &m.norm_b, eps)?;
@@ -215,7 +214,7 @@ fn merge_primary(
 
 /// Deepstack merger: reshape [N,1024]→[N/4,4096] → LayerNorm(4096) → fc1 → GELU → fc2.
 fn merge_deepstack(
-    b: &dyn Backend, m: &super::vision_weights::Qwen3VLMerger,
+    b: &dyn Backend, m: &VisionMerger,
     x: &Tensor, n_patches: usize, hidden: usize, merge: usize, eps: f32,
 ) -> Result<Tensor> {
     let merged = reshape_merge(b, x, n_patches, hidden, merge)?;
@@ -308,10 +307,10 @@ fn slice_and_reshape(
 /// table, bilinearly interpolate to (H, W), then permute to the
 /// spatial-merge layout where 2×2 patches are consecutive.
 fn compute_pos_embeds(
-    cfg: &Qwen3VLConfig, b: &dyn Backend, pos_embed_table: &Tensor,
+    cfg: &VisionConfig, b: &dyn Backend, pos_embed_table: &Tensor,
     t: usize, h: usize, width: usize, merge: usize, hidden: usize,
 ) -> Result<Tensor> {
-    let vc = &cfg.vision;
+    let vc = cfg;
     let num_pos = vc.num_position_embeddings;  // 2304
     let grid_side = (num_pos as f64).sqrt().round() as usize;  // 48
 

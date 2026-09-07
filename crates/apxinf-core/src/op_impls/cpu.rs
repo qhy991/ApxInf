@@ -10,6 +10,80 @@ use crate::sampling::{CpuNormalGenerator, CpuTokenSampler};
 /// CPU backend — all ops execute synchronously on the host.
 pub struct CpuBackend;
 
+#[cfg(test)]
+const GQA_BLAS_MIN_KV_LEN: usize = 128;
+
+#[inline]
+fn sigmoid_scalar(x: f32) -> f32 {
+    if x >= 0.0 {
+        1.0 / (1.0 + (-x).exp())
+    } else {
+        let exp_x = x.exp();
+        exp_x / (1.0 + exp_x)
+    }
+}
+
+#[inline]
+fn softplus_scalar(x: f32) -> f32 {
+    if x > 20.0 {
+        x
+    } else if x < -20.0 {
+        x.exp()
+    } else {
+        x.exp().ln_1p()
+    }
+}
+
+fn resolve_axis(ndim: usize, dim: isize, op: &str) -> Result<usize> {
+    let axis = if dim < 0 { ndim as isize + dim } else { dim };
+    if axis < 0 || axis as usize >= ndim {
+        return Err(Error::Other(format!(
+            "{op}: invalid dim {dim} for {ndim}D tensor"
+        )));
+    }
+    Ok(axis as usize)
+}
+
+fn rope_seq_len(input: &Tensor, n_heads: usize, head_dim: usize, op: &str) -> Result<usize> {
+    let dims = input.shape().dims();
+    match dims {
+        [heads, dim] if *heads == n_heads && *dim == head_dim => Ok(1),
+        [seq, heads, dim] if *heads == n_heads && *dim == head_dim => Ok(*seq),
+        _ => Err(Error::ShapeMismatch {
+            expected: format!("[{n_heads}, {head_dim}] or [seq, {n_heads}, {head_dim}]"),
+            got: format!("{op} input {}", input.shape()),
+        }),
+    }
+}
+
+fn validate_partial_rope(
+    input: &Tensor,
+    n_heads: usize,
+    head_dim: usize,
+    rotary_dim: usize,
+    theta: f32,
+    op: &str,
+) -> Result<usize> {
+    let seq_len = rope_seq_len(input, n_heads, head_dim, op)?;
+    if rotary_dim == 0 || rotary_dim > head_dim || !rotary_dim.is_multiple_of(2) {
+        return Err(Error::Other(format!(
+            "{op}: rotary_dim must be non-zero, even, and <= head_dim; got {rotary_dim} and {head_dim}"
+        )));
+    }
+    if !theta.is_finite() || theta <= 0.0 {
+        return Err(Error::Other(format!(
+            "{op}: theta must be finite and positive, got {theta}"
+        )));
+    }
+    Ok(seq_len)
+}
+
+fn partial_rope_inv_freq(rotary_dim: usize, theta: f32) -> Vec<f32> {
+    (0..rotary_dim / 2)
+        .map(|pair| theta.powf(-2.0 * pair as f32 / rotary_dim as f32))
+        .collect()
+}
+
 impl SamplingBackend for CpuBackend {
     fn create_token_sampler(&self, spec: TokenSamplingSpec) -> Result<Box<dyn TokenSampler>> {
         Ok(Box::new(CpuTokenSampler::new(spec)?))
@@ -47,6 +121,336 @@ impl Backend for CpuBackend {
         Tensor::from_f32(x.shape().dims().to_vec(), &out)
     }
 
+    fn sigmoid(&self, input: &Tensor) -> Result<Tensor> {
+        let output = input
+            .as_f32()?
+            .iter()
+            .copied()
+            .map(sigmoid_scalar)
+            .collect();
+        Tensor::from_f32_vec(input.shape().dims().to_vec(), output)
+    }
+
+    fn softplus(&self, input: &Tensor) -> Result<Tensor> {
+        let output = input
+            .as_f32()?
+            .iter()
+            .copied()
+            .map(softplus_scalar)
+            .collect();
+        Tensor::from_f32_vec(input.shape().dims().to_vec(), output)
+    }
+
+    fn l2_normalize(&self, input: &Tensor, dim: isize, eps: f32) -> Result<Tensor> {
+        let dims = input.shape().dims();
+        let axis = resolve_axis(dims.len(), dim, "l2_normalize")?;
+        if !eps.is_finite() || eps < 0.0 {
+            return Err(Error::Other(format!(
+                "l2_normalize: eps must be finite and non-negative, got {eps}"
+            )));
+        }
+        let axis_len = dims[axis];
+        if axis_len == 0 {
+            return Tensor::from_f32(dims.to_vec(), &[]);
+        }
+        let outer: usize = dims[..axis].iter().product();
+        let inner: usize = dims[axis + 1..].iter().product();
+        let data = input.as_f32()?;
+        let mut output = vec![0.0f32; data.len()];
+        for outer_idx in 0..outer {
+            for inner_idx in 0..inner {
+                let mut sum_sq = 0.0f32;
+                for axis_idx in 0..axis_len {
+                    let index = (outer_idx * axis_len + axis_idx) * inner + inner_idx;
+                    sum_sq += data[index] * data[index];
+                }
+                let inv_norm = (sum_sq + eps).sqrt().recip();
+                for axis_idx in 0..axis_len {
+                    let index = (outer_idx * axis_len + axis_idx) * inner + inner_idx;
+                    output[index] = data[index] * inv_norm;
+                }
+            }
+        }
+        Tensor::from_f32_vec(dims.to_vec(), output)
+    }
+
+    fn rms_norm_offset(
+        &self,
+        input: &Tensor,
+        weight: &Tensor,
+        eps: f32,
+        weight_offset: f32,
+    ) -> Result<Tensor> {
+        let dims = input.shape().dims();
+        let hidden = dims.last().copied().ok_or_else(|| {
+            Error::Other("rms_norm_offset: input must have at least one dimension".into())
+        })?;
+        if hidden == 0 || weight.shape().dims() != [hidden] {
+            return Err(Error::ShapeMismatch {
+                expected: format!("input [..., {hidden}], weight [{hidden}]"),
+                got: format!("input {}, weight {}", input.shape(), weight.shape()),
+            });
+        }
+        if !eps.is_finite() || eps < 0.0 {
+            return Err(Error::Other(format!(
+                "rms_norm_offset: eps must be finite and non-negative, got {eps}"
+            )));
+        }
+        let data = input.as_f32()?;
+        let scales = weight.as_f32()?;
+        let mut output = vec![0.0f32; data.len()];
+        for (row, out_row) in data.chunks_exact(hidden).zip(output.chunks_exact_mut(hidden)) {
+            let mean_sq = row.iter().map(|value| value * value).sum::<f32>() / hidden as f32;
+            let inv_rms = (mean_sq + eps).sqrt().recip();
+            for column in 0..hidden {
+                out_row[column] =
+                    row[column] * inv_rms * (scales[column] + weight_offset);
+            }
+        }
+        Tensor::from_f32_vec(dims.to_vec(), output)
+    }
+
+    fn causal_depthwise_conv1d(
+        &self,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        state: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor)> {
+        let input_dims = input.shape().dims();
+        if input_dims.len() < 2 {
+            return Err(Error::Other(format!(
+                "causal_depthwise_conv1d: input must be [..., seq, channels], got {}",
+                input.shape()
+            )));
+        }
+        let seq_len = input_dims[input_dims.len() - 2];
+        let channels = input_dims[input_dims.len() - 1];
+        if channels == 0 {
+            return Err(Error::Other(
+                "causal_depthwise_conv1d: channels must be non-zero".into(),
+            ));
+        }
+        let batch = input_dims[..input_dims.len() - 2]
+            .iter()
+            .product::<usize>()
+            .max(1);
+        let kernel_size = match weight.shape().dims() {
+            [weight_channels, kernel] if *weight_channels == channels => *kernel,
+            [weight_channels, one, kernel] if *weight_channels == channels && *one == 1 => *kernel,
+            _ => {
+                return Err(Error::ShapeMismatch {
+                    expected: format!("[{channels}, kernel] or [{channels}, 1, kernel]"),
+                    got: weight.shape().to_string(),
+                })
+            }
+        };
+        if kernel_size == 0 {
+            return Err(Error::Other(
+                "causal_depthwise_conv1d: kernel_size must be non-zero".into(),
+            ));
+        }
+        let bias_data = match bias {
+            Some(bias) => {
+                if bias.shape().dims() != [channels] {
+                    return Err(Error::ShapeMismatch {
+                        expected: format!("[{channels}]"),
+                        got: bias.shape().to_string(),
+                    });
+                }
+                Some(bias.as_f32()?)
+            }
+            None => None,
+        };
+        let state_len = kernel_size;
+        let mut state_dims = input_dims[..input_dims.len() - 2].to_vec();
+        state_dims.extend([state_len, channels]);
+        let state_data = match state {
+            Some(state) => {
+                if state.shape().dims() != state_dims.as_slice() {
+                    return Err(Error::ShapeMismatch {
+                        expected: crate::Shape::new(state_dims.clone()).to_string(),
+                        got: state.shape().to_string(),
+                    });
+                }
+                state.as_f32()?.to_vec()
+            }
+            None => vec![0.0f32; batch * state_len * channels],
+        };
+        let input_data = input.as_f32()?;
+        let weight_data = weight.as_f32()?;
+        let mut output = vec![0.0f32; input_data.len()];
+        for batch_idx in 0..batch {
+            for time_idx in 0..seq_len {
+                for channel_idx in 0..channels {
+                    let mut value = bias_data.map_or(0.0, |values| values[channel_idx]);
+                    for kernel_idx in 0..kernel_size {
+                        let extended_idx = time_idx + kernel_idx + 1;
+                        let sample = if extended_idx < state_len {
+                            state_data
+                                [(batch_idx * state_len + extended_idx) * channels + channel_idx]
+                        } else {
+                            let input_time = extended_idx - state_len;
+                            input_data[(batch_idx * seq_len + input_time) * channels + channel_idx]
+                        };
+                        value += sample * weight_data[channel_idx * kernel_size + kernel_idx];
+                    }
+                    output[(batch_idx * seq_len + time_idx) * channels + channel_idx] = value;
+                }
+            }
+        }
+        let mut next_state = vec![0.0f32; batch * state_len * channels];
+        for batch_idx in 0..batch {
+            for state_idx in 0..state_len {
+                let extended_idx = seq_len + state_idx;
+                for channel_idx in 0..channels {
+                    next_state[(batch_idx * state_len + state_idx) * channels + channel_idx] =
+                        if extended_idx < state_len {
+                            state_data
+                                [(batch_idx * state_len + extended_idx) * channels + channel_idx]
+                        } else {
+                            let input_time = extended_idx - state_len;
+                            input_data[(batch_idx * seq_len + input_time) * channels + channel_idx]
+                        };
+                }
+            }
+        }
+        Ok((
+            Tensor::from_f32_vec(input_dims.to_vec(), output)?,
+            Tensor::from_f32_vec(state_dims, next_state)?,
+        ))
+    }
+
+    fn gated_delta_recurrent(
+        &self,
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        a: &Tensor,
+        b: &Tensor,
+        a_log: &Tensor,
+        dt_bias: &Tensor,
+        state: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor)> {
+        let q_dims = q.shape().dims();
+        let k_dims = k.shape().dims();
+        let v_dims = v.shape().dims();
+        if q_dims.len() != 3 || k_dims.len() != 3 || v_dims.len() != 3 {
+            return Err(Error::Other(format!(
+                "gated_delta_recurrent: q/k/v must be 3D, got {}, {}, {}",
+                q.shape(),
+                k.shape(),
+                v.shape()
+            )));
+        }
+        let (seq_len, key_heads, key_dim) = (q_dims[0], q_dims[1], q_dims[2]);
+        if k_dims != q_dims {
+            return Err(Error::ShapeMismatch {
+                expected: q.shape().to_string(),
+                got: k.shape().to_string(),
+            });
+        }
+        let (value_seq_len, value_heads, value_dim) = (v_dims[0], v_dims[1], v_dims[2]);
+        if key_heads == 0 || key_dim == 0 || value_heads == 0 || value_dim == 0 {
+            return Err(Error::Other(
+                "gated_delta_recurrent: head counts and dimensions must be non-zero".into(),
+            ));
+        }
+        if value_seq_len != seq_len {
+            return Err(Error::ShapeMismatch {
+                expected: format!("[{seq_len}, Hv, Dv]"),
+                got: v.shape().to_string(),
+            });
+        }
+        if value_heads % key_heads != 0 {
+            return Err(Error::Other(format!(
+                "gated_delta_recurrent: Hv ({value_heads}) must be divisible by Hk ({key_heads})"
+            )));
+        }
+        let gate_shape = [seq_len, value_heads];
+        for (name, tensor) in [("a", a), ("b", b)] {
+            if tensor.shape().dims() != gate_shape {
+                return Err(Error::ShapeMismatch {
+                    expected: format!("[{seq_len}, {value_heads}] for {name}"),
+                    got: tensor.shape().to_string(),
+                });
+            }
+        }
+        for (name, tensor) in [("A_log", a_log), ("dt_bias", dt_bias)] {
+            if tensor.shape().dims() != [value_heads] {
+                return Err(Error::ShapeMismatch {
+                    expected: format!("[{value_heads}] for {name}"),
+                    got: tensor.shape().to_string(),
+                });
+            }
+        }
+        let state_dims = vec![value_heads, key_dim, value_dim];
+        let mut state_data = match state {
+            Some(state) => {
+                if state.shape().dims() != state_dims.as_slice() {
+                    return Err(Error::ShapeMismatch {
+                        expected: crate::Shape::new(state_dims.clone()).to_string(),
+                        got: state.shape().to_string(),
+                    });
+                }
+                state.as_f32()?.to_vec()
+            }
+            None => vec![0.0f32; value_heads * key_dim * value_dim],
+        };
+        let q_data = q.as_f32()?;
+        let k_data = k.as_f32()?;
+        let v_data = v.as_f32()?;
+        let a_data = a.as_f32()?;
+        let b_data = b.as_f32()?;
+        let a_log_data = a_log.as_f32()?;
+        let dt_bias_data = dt_bias.as_f32()?;
+        let repeat_factor = value_heads / key_heads;
+        let mut output = vec![0.0f32; seq_len * value_heads * value_dim];
+        let mut delta = vec![0.0f32; value_dim];
+        for time_idx in 0..seq_len {
+            for value_head in 0..value_heads {
+                let key_head = value_head / repeat_factor;
+                let gate_idx = time_idx * value_heads + value_head;
+                let beta = sigmoid_scalar(b_data[gate_idx]);
+                let decay = (-a_log_data[value_head].exp()
+                    * softplus_scalar(a_data[gate_idx] + dt_bias_data[value_head]))
+                .exp();
+                let q_offset = (time_idx * key_heads + key_head) * key_dim;
+                let state_offset = value_head * key_dim * value_dim;
+                let value_offset = (time_idx * value_heads + value_head) * value_dim;
+                for state_value in &mut state_data[state_offset..state_offset + key_dim * value_dim]
+                {
+                    *state_value *= decay;
+                }
+                delta.fill(0.0);
+                for key_idx in 0..key_dim {
+                    let state_row = state_offset + key_idx * value_dim;
+                    let key_value = k_data[q_offset + key_idx];
+                    for value_idx in 0..value_dim {
+                        delta[value_idx] += state_data[state_row + value_idx] * key_value;
+                    }
+                }
+                for value_idx in 0..value_dim {
+                    delta[value_idx] = (v_data[value_offset + value_idx] - delta[value_idx]) * beta;
+                }
+                for key_idx in 0..key_dim {
+                    let state_row = state_offset + key_idx * value_dim;
+                    let key_value = k_data[q_offset + key_idx];
+                    let query_value = q_data[q_offset + key_idx];
+                    for value_idx in 0..value_dim {
+                        let state_idx = state_row + value_idx;
+                        state_data[state_idx] += key_value * delta[value_idx];
+                        output[value_offset + value_idx] += state_data[state_idx] * query_value;
+                    }
+                }
+            }
+        }
+        Ok((
+            Tensor::from_f32_vec(vec![seq_len, value_heads, value_dim], output)?,
+            Tensor::from_f32_vec(state_dims, state_data)?,
+        ))
+    }
+
     fn add(&self, a: &Tensor, b: &Tensor) -> Result<Tensor> {
         let a_data = a.as_f32()?;
         let b_data = b.as_f32()?;
@@ -69,6 +473,31 @@ impl Backend for CpuBackend {
 
     fn matmul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor> {
         a.matmul_cpu(b)
+    }
+
+    fn matmul_rhs_transposed(&self, a: &Tensor, b: &Tensor) -> Result<Tensor> {
+        let a_dims = a.shape().dims();
+        let b_dims = b.shape().dims();
+        if a_dims.len() != 2 || b_dims.len() != 2 || a_dims[1] != b_dims[1] {
+            return Err(Error::ShapeMismatch {
+                expected: "a=[m, k], b=[n, k] with matching k".into(),
+                got: format!("a={}, b={}", a.shape(), b.shape()),
+            });
+        }
+        let (m, k, n) = (a_dims[0], a_dims[1], b_dims[0]);
+        let a_data = a.as_f32()?;
+        let b_data = b.as_f32()?;
+        let mut output = vec![0.0f32; m * n];
+        for row in 0..m {
+            for column in 0..n {
+                output[row * n + column] = a_data[row * k..(row + 1) * k]
+                    .iter()
+                    .zip(&b_data[column * k..(column + 1) * k])
+                    .map(|(left, right)| left * right)
+                    .sum();
+            }
+        }
+        Tensor::from_f32_vec(vec![m, n], output)
     }
 
     fn rope(&self, input: &Tensor, n_heads: usize, head_dim: usize,
@@ -99,6 +528,108 @@ impl Backend for CpuBackend {
             }
         }
         Tensor::from_f32(dims.to_vec(), &out)
+    }
+
+    fn rope_partial(
+        &self,
+        input: &Tensor,
+        n_heads: usize,
+        head_dim: usize,
+        rotary_dim: usize,
+        theta: f32,
+        pos_offset: u32,
+        interleaved: bool,
+    ) -> Result<Tensor> {
+        let seq_len =
+            validate_partial_rope(input, n_heads, head_dim, rotary_dim, theta, "rope_partial")?;
+        let data = input.as_f32()?;
+        let pair_count = rotary_dim / 2;
+        let inv_freq = partial_rope_inv_freq(rotary_dim, theta);
+        let mut trig_table = vec![(0.0f32, 0.0f32); seq_len * pair_count];
+        for seq_idx in 0..seq_len {
+            let position = (pos_offset as u64 + seq_idx as u64) as f32;
+            for pair_idx in 0..pair_count {
+                trig_table[seq_idx * pair_count + pair_idx] =
+                    (position * inv_freq[pair_idx]).sin_cos();
+            }
+        }
+        let mut output = data.to_vec();
+        for seq_idx in 0..seq_len {
+            for head_idx in 0..n_heads {
+                let base = (seq_idx * n_heads + head_idx) * head_dim;
+                for pair_idx in 0..pair_count {
+                    let (sin, cos) = trig_table[seq_idx * pair_count + pair_idx];
+                    let (first_idx, second_idx) = if interleaved {
+                        (base + 2 * pair_idx, base + 2 * pair_idx + 1)
+                    } else {
+                        (base + pair_idx, base + pair_count + pair_idx)
+                    };
+                    let first = data[first_idx];
+                    let second = data[second_idx];
+                    output[first_idx] = first * cos - second * sin;
+                    output[second_idx] = first * sin + second * cos;
+                }
+            }
+        }
+        Tensor::from_f32_vec(input.shape().dims().to_vec(), output)
+    }
+
+    fn rope_mrope_partial(
+        &self,
+        input: &Tensor,
+        n_heads: usize,
+        head_dim: usize,
+        rotary_dim: usize,
+        theta: f32,
+        sections: [usize; 3],
+        pos_ids: &[u32],
+    ) -> Result<Tensor> {
+        let seq_len = validate_partial_rope(
+            input,
+            n_heads,
+            head_dim,
+            rotary_dim,
+            theta,
+            "rope_mrope_partial",
+        )?;
+        let pair_count = rotary_dim / 2;
+        if sections.iter().sum::<usize>() != pair_count || pos_ids.len() != seq_len * 3 {
+            return Err(Error::Other(format!(
+                "rope_mrope_partial: sections/positions do not match {pair_count} pairs and {seq_len} tokens"
+            )));
+        }
+        let data = input.as_f32()?;
+        let inv_freq = partial_rope_inv_freq(rotary_dim, theta);
+        let mut trig_table = vec![(0.0f32, 0.0f32); seq_len * pair_count];
+        for seq_idx in 0..seq_len {
+            for pair_idx in 0..pair_count {
+                let axis = if pair_idx % 3 == 1 && pair_idx < sections[1] * 3 {
+                    1
+                } else if pair_idx % 3 == 2 && pair_idx < sections[2] * 3 {
+                    2
+                } else {
+                    0
+                };
+                trig_table[seq_idx * pair_count + pair_idx] =
+                    (pos_ids[seq_idx * 3 + axis] as f32 * inv_freq[pair_idx]).sin_cos();
+            }
+        }
+        let mut output = data.to_vec();
+        for seq_idx in 0..seq_len {
+            for head_idx in 0..n_heads {
+                let base = (seq_idx * n_heads + head_idx) * head_dim;
+                for pair_idx in 0..pair_count {
+                    let (sin, cos) = trig_table[seq_idx * pair_count + pair_idx];
+                    let first_idx = base + pair_idx;
+                    let second_idx = base + pair_count + pair_idx;
+                    let first = data[first_idx];
+                    let second = data[second_idx];
+                    output[first_idx] = first * cos - second * sin;
+                    output[second_idx] = first * sin + second * cos;
+                }
+            }
+        }
+        Tensor::from_f32_vec(input.shape().dims().to_vec(), output)
     }
 
     fn layer_norm(

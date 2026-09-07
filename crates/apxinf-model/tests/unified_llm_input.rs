@@ -130,7 +130,10 @@ impl LlmTrait for VisionModel {
     }
 
     fn capabilities(&self) -> LlmCapabilities {
-        LlmCapabilities { image: true }
+        LlmCapabilities {
+            image: true,
+            video: false,
+        }
     }
 
     fn prefill(&mut self, input: LlmInput<'_>) -> Result<Tensor> {
