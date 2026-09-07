@@ -14,6 +14,17 @@ pub struct Qwen4ExpQsaSelector {
     rms_norm_eps: f32,
 }
 
+/// Request-owned index keys. Completed blocks are immutable; only the raw
+/// incomplete tail remains until enough appended tokens complete it. This
+/// private cache is always used with one runtime's fixed selector and weights.
+#[derive(Default)]
+pub(super) struct QsaKeyCache {
+    keys: Vec<f32>,
+    tail: Vec<f32>,
+    tail_position: [u32; 3],
+    visible_tokens: usize,
+}
+
 impl Qwen4ExpQsaSelector {
     pub fn new(
         query_heads: usize,
@@ -96,6 +107,121 @@ impl Qwen4ExpQsaSelector {
         query_norm_weight: &[f32],
         key_norm_weight: &[f32],
     ) -> Result<Vec<usize>> {
+        self.validate_inputs(
+            query,
+            raw_keys,
+            positions,
+            mrope_sections,
+            query_norm_weight,
+            key_norm_weight,
+        )?;
+        let visible_tokens = positions.len();
+        let complete_blocks = visible_tokens / self.compress_ratio;
+        if complete_blocks <= self.token_budget / self.compress_ratio {
+            return Ok((0..visible_tokens).collect());
+        }
+        let mut keys = vec![0.0; complete_blocks * self.head_dim];
+        let compress = |block: usize, output: &mut [f32], pooled: &mut [f32]| {
+            let start = block * self.compress_ratio;
+            self.compress_key(
+                &raw_keys[start * self.head_dim..(start + self.compress_ratio) * self.head_dim],
+                positions[start],
+                mrope_sections,
+                key_norm_weight,
+                pooled,
+                output,
+            );
+        };
+        if complete_blocks >= QSA_SELECTOR_PAR_MIN_BLOCKS {
+            keys.par_chunks_exact_mut(self.head_dim)
+                .enumerate()
+                .for_each_init(
+                    || vec![0.0; self.head_dim],
+                    |pooled, (block, output)| compress(block, output, pooled),
+                );
+        } else {
+            let mut pooled = vec![0.0; self.head_dim];
+            for (block, output) in keys.chunks_exact_mut(self.head_dim).enumerate() {
+                compress(block, output, &mut pooled);
+            }
+        }
+        self.select_compressed(
+            query,
+            &keys,
+            visible_tokens,
+            positions[visible_tokens - 1],
+            mrope_sections,
+            query_norm_weight,
+        )
+    }
+
+    /// Append new contiguous visible tokens and select for the final query.
+    /// The runtime resets this cache together with its attention KV state.
+    pub(super) fn append_and_select(
+        &self,
+        query: &[f32],
+        raw_keys: &[f32],
+        positions: &[[u32; 3]],
+        mrope_sections: [usize; 3],
+        query_norm_weight: &[f32],
+        key_norm_weight: &[f32],
+        cache: &mut QsaKeyCache,
+    ) -> Result<Vec<usize>> {
+        // Validate only new keys: prior keys were validated on append and are
+        // owned by this cache, so decode never rereads the full raw prefix.
+        self.validate_inputs(
+            query,
+            raw_keys,
+            positions,
+            mrope_sections,
+            query_norm_weight,
+            key_norm_weight,
+        )?;
+        let visible_tokens = cache
+            .visible_tokens
+            .checked_add(positions.len())
+            .ok_or_else(|| Error::Other("QSA cached context length overflow".into()))?;
+        let mut pooled = Vec::new();
+        for (key, &position) in raw_keys.chunks_exact(self.head_dim).zip(positions) {
+            if cache.tail.is_empty() {
+                cache.tail_position = position;
+            }
+            cache.tail.extend_from_slice(key);
+            if cache.tail.len() / self.head_dim == self.compress_ratio {
+                pooled.resize(self.head_dim, 0.0);
+                let start = cache.keys.len();
+                cache.keys.resize(start + self.head_dim, 0.0);
+                self.compress_key(
+                    &cache.tail,
+                    cache.tail_position,
+                    mrope_sections,
+                    key_norm_weight,
+                    &mut pooled,
+                    &mut cache.keys[start..],
+                );
+                cache.tail.clear();
+            }
+        }
+        cache.visible_tokens = visible_tokens;
+        self.select_compressed(
+            query,
+            &cache.keys,
+            visible_tokens,
+            positions[positions.len() - 1],
+            mrope_sections,
+            query_norm_weight,
+        )
+    }
+
+    fn validate_inputs(
+        &self,
+        query: &[f32],
+        raw_keys: &[f32],
+        positions: &[[u32; 3]],
+        mrope_sections: [usize; 3],
+        query_norm_weight: &[f32],
+        key_norm_weight: &[f32],
+    ) -> Result<()> {
         let visible_tokens = positions.len();
         let query_len = self
             .query_heads
@@ -142,8 +268,54 @@ impl Qwen4ExpQsaSelector {
             return Err(Error::Other("QSA inputs must be finite".into()));
         }
 
-        let query_position = positions[visible_tokens - 1];
-        let mut normalized_query = Vec::with_capacity(query_len);
+        Ok(())
+    }
+
+    fn compress_key(
+        &self,
+        raw_keys: &[f32],
+        position: [u32; 3],
+        mrope_sections: [usize; 3],
+        key_norm_weight: &[f32],
+        pooled: &mut [f32],
+        output: &mut [f32],
+    ) {
+        pooled.fill(0.0);
+        for key in raw_keys.chunks_exact(self.head_dim) {
+            for (pooled, value) in pooled.iter_mut().zip(key) {
+                *pooled += *value;
+            }
+        }
+        let reciprocal = 1.0 / self.compress_ratio as f32;
+        for pooled in pooled.iter_mut() {
+            *pooled *= reciprocal;
+        }
+        rms_norm_zero_centered_into(pooled, key_norm_weight, self.rms_norm_eps, output);
+        apply_partial_mrope(
+            output,
+            self.rotary_dim,
+            self.theta,
+            position,
+            mrope_sections,
+        );
+    }
+
+    fn select_compressed(
+        &self,
+        query: &[f32],
+        keys: &[f32],
+        visible_tokens: usize,
+        query_position: [u32; 3],
+        mrope_sections: [usize; 3],
+        query_norm_weight: &[f32],
+    ) -> Result<Vec<usize>> {
+        let complete_blocks = visible_tokens / self.compress_ratio;
+        if complete_blocks <= self.token_budget / self.compress_ratio {
+            // Every completed block and the unfinished tail are selected,
+            // independently of query scores (including ties).
+            return Ok((0..visible_tokens).collect());
+        }
+        let mut normalized_query = Vec::with_capacity(query.len());
         for head in 0..self.query_heads {
             let start = head * self.head_dim;
             let mut values = rms_norm_zero_centered(
@@ -161,57 +333,24 @@ impl Qwen4ExpQsaSelector {
             normalized_query.extend(values);
         }
 
-        let complete_blocks = visible_tokens / self.compress_ratio;
-        let score_block = |block: usize, pooled_key: &mut [f32], normalized_key: &mut [f32]| {
-            pooled_key.fill(0.0);
-            let block_start = block * self.compress_ratio;
-            for token in block_start..block_start + self.compress_ratio {
-                let key = &raw_keys[token * self.head_dim..(token + 1) * self.head_dim];
-                for (pooled, value) in pooled_key.iter_mut().zip(key) {
-                    *pooled += *value;
-                }
-            }
-            let reciprocal = 1.0 / self.compress_ratio as f32;
-            for pooled in pooled_key.iter_mut() {
-                *pooled *= reciprocal;
-            }
-            rms_norm_zero_centered_into(
-                pooled_key,
-                key_norm_weight,
-                self.rms_norm_eps,
-                normalized_key,
-            );
-            apply_partial_mrope(
-                normalized_key,
-                self.rotary_dim,
-                self.theta,
-                positions[block_start],
-                mrope_sections,
-            );
-
+        let score_block = |(block, normalized_key): (usize, &[f32])| {
             let mut score = 0.0f32;
             for query_head in normalized_query.chunks_exact(self.head_dim) {
-                let dot = dot_f32(query_head, &normalized_key);
+                let dot = dot_f32(query_head, normalized_key);
                 score += dot.max(0.0);
             }
             score /= (self.head_dim as f32).sqrt();
             (block, score)
         };
         let mut ranked_blocks = if complete_blocks >= QSA_SELECTOR_PAR_MIN_BLOCKS {
-            (0..complete_blocks)
-                .into_par_iter()
-                .map_init(
-                    || (vec![0.0f32; self.head_dim], vec![0.0f32; self.head_dim]),
-                    |(pooled_key, normalized_key), block| {
-                        score_block(block, pooled_key, normalized_key)
-                    },
-                )
+            keys.par_chunks_exact(self.head_dim)
+                .enumerate()
+                .map(score_block)
                 .collect::<Vec<_>>()
         } else {
-            let mut pooled_key = vec![0.0f32; self.head_dim];
-            let mut normalized_key = vec![0.0f32; self.head_dim];
-            (0..complete_blocks)
-                .map(|block| score_block(block, &mut pooled_key, &mut normalized_key))
+            keys.chunks_exact(self.head_dim)
+                .enumerate()
+                .map(score_block)
                 .collect::<Vec<_>>()
         };
         let selected_block_count = (self.token_budget / self.compress_ratio).min(complete_blocks);
@@ -405,5 +544,122 @@ mod tests {
         let selected = selector.select_unit_norm(&query, &raw_keys, 6).unwrap();
         assert_eq!(selected.len(), 4);
         assert!(selected.iter().all(|index| *index < 6));
+    }
+
+    #[test]
+    fn cached_append_matches_stateless_across_chunks_and_mrope_positions() {
+        let selector = Qwen4ExpQsaSelector::new(3, 12, 8, 4, 8, 10_000.0, 1.0e-6).unwrap();
+        let keys = (0..1033 * 12)
+            .map(|i| (i as f32 * 0.173).sin())
+            .collect::<Vec<_>>();
+        // Repeated and nonmonotonic spatial positions cannot be inferred from
+        // the cache length. Chunks intentionally split compressed blocks.
+        let positions = (0..1033)
+            .map(|i| [i / 7, (i % 11) + 2, (i % 3) + 5])
+            .collect::<Vec<_>>();
+        let q_weight = (0..12).map(|i| i as f32 * 0.013).collect::<Vec<_>>();
+        let k_weight = (0..12).map(|i| i as f32 * -0.021).collect::<Vec<_>>();
+        for chunk_size in [1, 3, 17, 257] {
+            let mut cache = QsaKeyCache::default();
+            let mut start = 0;
+            while start < positions.len() {
+                let end = (start + chunk_size).min(positions.len());
+                let query = (0..36)
+                    .map(|i| ((i + end) as f32 * 0.31).cos())
+                    .collect::<Vec<_>>();
+                let expected = selector
+                    .select_with_positions(
+                        &query,
+                        &keys[..end * 12],
+                        &positions[..end],
+                        [2, 1, 1],
+                        &q_weight,
+                        &k_weight,
+                    )
+                    .unwrap();
+                let completed_before = cache.keys.clone();
+                let actual = selector
+                    .append_and_select(
+                        &query,
+                        &keys[start * 12..end * 12],
+                        &positions[start..end],
+                        [2, 1, 1],
+                        &q_weight,
+                        &k_weight,
+                        &mut cache,
+                    )
+                    .unwrap();
+                assert_eq!(actual, expected, "chunk={chunk_size}, end={end}");
+                assert_eq!(&cache.keys[..completed_before.len()], completed_before);
+                assert_eq!(cache.keys.len(), end / 4 * 12);
+                assert_eq!(cache.tail, keys[end / 4 * 4 * 12..end * 12]);
+                start = end;
+            }
+        }
+    }
+
+    #[test]
+    fn cached_topk_keeps_canonical_ties_and_recomputes_query_scores() {
+        let selector = Qwen4ExpQsaSelector::new(1, 2, 4, 2, 0, 10_000.0, 1.0e-6).unwrap();
+        let keys = [
+            1.0, 0.0, 1.0, 0.0, // tied aligned blocks
+            1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, -1.0,
+        ];
+        let positions = (0..10).map(|p| [p; 3]).collect::<Vec<_>>();
+        let mut cache = QsaKeyCache::default();
+        for end in 1..=10 {
+            let query = if end < 9 { [1.0, 0.0] } else { [0.0, 1.0] };
+            let actual = selector
+                .append_and_select(
+                    &query,
+                    &keys[(end - 1) * 2..end * 2],
+                    &positions[end - 1..end],
+                    [0; 3],
+                    &[0.0; 2],
+                    &[0.0; 2],
+                    &mut cache,
+                )
+                .unwrap();
+            assert_eq!(
+                actual,
+                selector
+                    .select_unit_norm(&query, &keys[..end * 2], end)
+                    .unwrap()
+            );
+            match end {
+                5 => assert_eq!(actual, vec![0, 1, 2, 3, 4]), // all blocks + tail
+                6 => assert_eq!(actual, vec![0, 1, 2, 3]),    // top-k tie boundary
+                9 => assert_eq!(actual, vec![0, 1, 6, 7, 8]), // changed query + tail
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_append_leaves_cache_unchanged_even_when_all_blocks_are_selected() {
+        let selector = selector();
+        let mut cache = QsaKeyCache::default();
+        for (keys, positions) in [
+            (vec![f32::NAN, 0.0], vec![[0; 3]]),
+            (vec![0.0], vec![[0; 3]]),
+            (vec![], vec![]),
+        ] {
+            assert!(selector
+                .append_and_select(
+                    &[1.0, 0.0],
+                    &keys,
+                    &positions,
+                    [0; 3],
+                    &[0.0; 2],
+                    &[0.0; 2],
+                    &mut cache,
+                )
+                .is_err());
+            assert_eq!(cache.visible_tokens, 0);
+            assert!(cache.keys.is_empty() && cache.tail.is_empty());
+        }
+        assert!(selector
+            .select_unit_norm(&[f32::NAN, 0.0], &[0.0; 2], 1)
+            .is_err());
     }
 }

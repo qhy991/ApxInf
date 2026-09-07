@@ -12,7 +12,9 @@ use apxinf_loader::ModelConfig;
 use rayon::prelude::*;
 
 use super::config::{Qwen4ExpConfig, Qwen4ExpLayerType, Qwen4ExpTextConfig};
-use super::qsa::{apply_partial_mrope, dot_f32, rms_norm_zero_centered_into, Qwen4ExpQsaSelector};
+use super::qsa::{
+    apply_partial_mrope, dot_f32, rms_norm_zero_centered_into, QsaKeyCache, Qwen4ExpQsaSelector,
+};
 use super::weights::{metadata_from_tensors, ple_vocab_layout, Qwen4ExpWeightSchema};
 use crate::llm_trait::{LlmCapabilities, LlmInput, LlmTrait};
 use crate::qwen_vl_vision::{self, VisionConfig, VisionWeights};
@@ -859,10 +861,9 @@ struct GdnState {
 
 #[derive(Default)]
 struct QsaState {
-    raw_keys: Vec<f32>,
+    index_keys: QsaKeyCache,
     keys: Vec<f32>,
     values: Vec<f32>,
-    positions: Vec<[u32; 3]>,
 }
 
 struct PleState {
@@ -1607,17 +1608,16 @@ fn run_qsa(
     }
     let query_width = config.indexer_n_heads * config.indexer_head_dim;
     let index_query = &index_qk[..query_width];
-    state.raw_keys.extend_from_slice(&index_qk[query_width..]);
     state.keys.extend_from_slice(&key);
     state.values.extend_from_slice(&value);
-    state.positions.push(position);
-    let selected = weights.selector.select_with_positions(
+    let selected = weights.selector.append_and_select(
         index_query,
-        &state.raw_keys,
-        &state.positions,
+        &index_qk[query_width..],
+        &[position],
         config.rope.mrope_section,
         &weights.index_q_norm,
         &weights.index_k_norm,
+        &mut state.index_keys,
     )?;
 
     let mut attention = sparse_attention(
@@ -2390,7 +2390,7 @@ mod tests {
 
     #[test]
     fn generation_prefill_projects_only_the_final_row() {
-        let tokens = [1, 3, 5, 7, 9];
+        let tokens = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25];
         let mut full = model();
         let full_logits = full.forward(&tokens, 0).unwrap();
         let vocab = full.config.text.vocab_size;
@@ -2439,10 +2439,38 @@ mod tests {
     #[test]
     fn reset_replays_the_same_logits() {
         let mut model = model();
-        let first = model.forward(&[2, 4, 6], 0).unwrap().to_f32_vec().unwrap();
+        // Cross the sparse-selection boundary and finish on a partial block.
+        let tokens = (0..17).map(|i| (2 * i + 1) % 32).collect::<Vec<_>>();
+        let first = model.forward(&tokens, 0).unwrap().to_f32_vec().unwrap();
         model.reset();
-        let second = model.forward(&[2, 4, 6], 0).unwrap().to_f32_vec().unwrap();
+        let mut second = Vec::new();
+        for (chunk, tokens) in tokens.chunks(3).enumerate() {
+            second.extend(
+                model
+                    .forward(tokens, (chunk * 3) as u32)
+                    .unwrap()
+                    .to_f32_vec()
+                    .unwrap(),
+            );
+        }
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn generation_resets_qsa_blocks_and_tail_between_requests() {
+        let first_prompt = (0..17).map(|i| (2 * i + 1) % 32).collect::<Vec<_>>();
+        let second_prompt = [2, 4, 6, 8, 10];
+        let mut reused = model();
+        for prompt in [first_prompt.as_slice(), &second_prompt, &first_prompt] {
+            let (expected, _) = model()
+                .generate_streaming(LlmInput::text(prompt), 7, |_| {}, None)
+                .unwrap();
+            let (actual, _) = reused
+                .generate_streaming(LlmInput::text(prompt), 7, |_| {}, None)
+                .unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(reused.state.position, prompt.len() + 6);
+        }
     }
 
     #[test]
