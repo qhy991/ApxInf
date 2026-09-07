@@ -78,10 +78,13 @@ fn gated_delta_eager_matches_cpu_and_keeps_initial_state_immutable() {
     let backend = CudaBackend::new(0).expect("CUDA device required");
     for (t, hk, hv, kd, vd) in [
         (0, 1, 2, 3, 5),
+        (0, 2, 4, 128, 129),
         (1, 1, 1, 1, 1),
+        (1, 1, 1, 128, 1),
         (7, 2, 6, 7, 11),
         (17, 2, 4, 33, 65),
         (32, 4, 8, 128, 128),
+        (3, 2, 6, 128, 65),
         (3, 1, 2, 257, 129),
     ] {
         let host = fixture(t, hk, hv, kd, vd);
@@ -255,15 +258,15 @@ fn gated_delta_rejects_shape_dtype_device_and_storage_errors() {
 #[test]
 fn gated_delta_prepare_capture_replay_and_input_updates_match_eager() {
     let backend = CudaBackend::new(0).expect("CUDA device required");
-    for t in [0, 1, 7] {
+    for (t, kd) in [(0, 7), (1, 7), (7, 7), (0, 128), (1, 128), (7, 128)] {
         for use_state in [false, true] {
-            let host = fixture(t, 2, 4, 7, 11);
+            let host = fixture(t, 2, 4, kd, 11);
             let gpu = upload(&backend, &host);
-            let initial = initial_state(4, 7, 11);
+            let initial = initial_state(4, kd, 11);
             let gpu_initial = backend.to_device(&initial).unwrap();
             let execute = || run(&backend, &gpu, use_state.then_some(&gpu_initial));
             let output_bytes = t * 4 * 11 * 4;
-            let capacity = (output_bytes + 255) / 256 * 256 + 4 * 7 * 11 * 4;
+            let capacity = (output_bytes + 255) / 256 * 256 + 4 * kd * 11 * 4;
             let workspace = GraphWorkspace::new(capacity, 0).unwrap();
             let expected = run(&CpuBackend, &host, use_state.then_some(&initial)).unwrap();
             let prepared = prepare_with_workspace(&workspace, execute).unwrap();
@@ -282,7 +285,7 @@ fn gated_delta_prepare_capture_replay_and_input_updates_match_eager() {
             changed[2] = Tensor::from_f32_vec(vec![t, 4, 11], replacement).unwrap();
             copy_cpu_to_cuda(&changed[2], &gpu[2]).unwrap();
             let changed_state =
-                Tensor::from_f32_vec(vec![4, 7, 11], values(4 * 7 * 11, 5, 0.9)).unwrap();
+                Tensor::from_f32_vec(vec![4, kd, 11], values(4 * kd * 11, 5, 0.9)).unwrap();
             copy_cpu_to_cuda(&changed_state, &gpu_initial).unwrap();
             let expected_changed =
                 run(&CpuBackend, &changed, use_state.then_some(&changed_state)).unwrap();

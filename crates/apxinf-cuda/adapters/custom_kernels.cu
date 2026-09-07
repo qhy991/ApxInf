@@ -69,6 +69,12 @@ extern "C" cudaError_t apxinf_gated_delta_recurrent_f32(
   }
   const size_t needed_blocks = (columns + threads - 1) / threads;
   const int blocks = static_cast<int>(needed_blocks > 65535 ? 65535 : needed_blocks);
+  if (key_dim == 128) {
+    gated_delta_recurrent_fixed_f32_kernel<128><<<blocks, threads, 0, stream>>>(
+        q, k, v, a, b, a_log, dt_bias, initial_state, output, next_state,
+        seq_len, key_heads, value_heads, value_dim);
+    return cudaGetLastError();
+  }
   gated_delta_recurrent_f32_kernel<<<blocks, threads, 0, stream>>>(
       q, k, v, a, b, a_log, dt_bias, initial_state, output, next_state,
       seq_len, key_heads, value_heads, key_dim, value_dim);
