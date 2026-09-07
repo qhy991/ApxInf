@@ -5,6 +5,26 @@ use std::ffi::c_void;
 use super::cuda::{cudaError_t, cudaStream_t};
 
 extern "C" {
+    #[cfg(apxinf_custom_kernels)]
+    pub fn apxinf_gated_delta_recurrent_f32(
+        q: *const f32,
+        k: *const f32,
+        v: *const f32,
+        a: *const f32,
+        b: *const f32,
+        a_log: *const f32,
+        dt_bias: *const f32,
+        initial_state: *const f32,
+        output: *mut f32,
+        next_state: *mut f32,
+        seq_len: u32,
+        key_heads: u32,
+        value_heads: u32,
+        key_dim: u32,
+        value_dim: u32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+
     pub fn apxinf_static_evict_l2(
         buffer: *mut c_void,
         bytes: usize,

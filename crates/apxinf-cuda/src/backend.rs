@@ -76,6 +76,20 @@ impl Backend for CudaBackend {
         kernels::activation::silu(&self.ctx, x)
     }
 
+    fn gated_delta_recurrent(
+        &self,
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        a: &Tensor,
+        b: &Tensor,
+        a_log: &Tensor,
+        dt_bias: &Tensor,
+        state: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor)> {
+        kernels::attention::gated_delta_recurrent(&self.ctx, q, k, v, a, b, a_log, dt_bias, state)
+    }
+
     fn add(&self, a: &Tensor, b: &Tensor) -> Result<Tensor> {
         kernels::elementwise::add(&self.ctx, a, b)
     }

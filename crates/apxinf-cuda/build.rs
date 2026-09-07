@@ -107,6 +107,7 @@ fn is_cutlass_sm89_family(arch: &str) -> bool {
 }
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(apxinf_custom_kernels)");
     println!("cargo:rustc-check-cfg=cfg(nvtx_v2)");
     println!("cargo:rustc-check-cfg=cfg(nvtx_v3)");
     println!("cargo:rustc-check-cfg=cfg(apxinf_cutlass_fmha)");
@@ -590,6 +591,7 @@ fn main() {
 
                 println!("cargo:rustc-link-search=native={out_dir}");
                 println!("cargo:rustc-link-lib=static=apxinf_kernels");
+                println!("cargo:rustc-cfg=apxinf_custom_kernels");
                 // Keep CUDA math DSOs after the static archive. GNU ld's
                 // --as-needed otherwise discards cublasLt before it sees the
                 // static inference archive's references.

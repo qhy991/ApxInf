@@ -64,7 +64,13 @@ pub trait Backend: SamplingBackend {
         ))
     }
 
-    /// Qwen Gated DeltaNet recurrent update.
+    /// Gated delta recurrent attention with optional immutable initial state.
+    ///
+    /// Q/K: `[T,Hk,K]`; V: `[T,Hv,V]`; a/b: `[T,Hv]`; a_log/dt_bias:
+    /// `[Hv]`; state: `[Hv,K,V]`. Hv must be divisible by Hk. Q/K are
+    /// already normalized/scaled as required by the caller. Returns output
+    /// `[T,Hv,V]` and next state `[Hv,K,V]`; the current contract is FP32.
+    /// Empty T returns empty output and a copy of the initial state (or zeros).
     #[allow(clippy::too_many_arguments)]
     fn gated_delta_recurrent(
         &self,

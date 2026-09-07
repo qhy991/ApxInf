@@ -20,6 +20,168 @@ pub struct QkvTensors {
     pub v: Tensor,
 }
 
+/// FP32 gated delta recurrence over contiguous CUDA tensors.
+///
+/// `q/k` are `[T,Hk,K]`, `v` is `[T,Hv,V]`, `a/b` are `[T,Hv]`,
+/// and `a_log/dt_bias` are `[Hv]`. `Hv` must be a multiple of `Hk`;
+/// value head `h` uses key head `h / (Hv/Hk)`. Queries and keys are consumed
+/// as supplied: normalization and query scaling belong to the caller.
+/// For each time/head: `S *= exp(-exp(a_log) * softplus(a + dt_bias))`,
+/// `delta = (v - k^T S) * sigmoid(b)`, `S += k delta^T`, `out = q^T S`.
+///
+/// Returns `[T,Hv,V]` output and `[Hv,K,V]` FP32 state without mutating
+/// the optional initial state. With `T == 0`, the returned state is a copy
+/// of the initial state or zeros. Output and state use the active graph
+/// workspace (two allocations, each aligned by the workspace); no scratch
+/// or native preparation is required. Keep persistent input state outside
+/// that resetting arena: overlapping input/output storage is rejected.
+#[allow(clippy::too_many_arguments)]
+pub fn gated_delta_recurrent(
+    ctx: &CudaContext,
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    a: &Tensor,
+    b: &Tensor,
+    a_log: &Tensor,
+    dt_bias: &Tensor,
+    state: Option<&Tensor>,
+) -> Result<(Tensor, Tensor)> {
+    #[cfg(not(apxinf_custom_kernels))]
+    {
+        let _ = (ctx, q, k, v, a, b, a_log, dt_bias, state);
+        Err(Error::Other(
+            "CUDA gated_delta_recurrent requires compiled custom CUDA kernels".into(),
+        ))
+    }
+    #[cfg(apxinf_custom_kernels)]
+    {
+        const OP: &str = "gated_delta_recurrent";
+        let q_dims = q.shape().dims();
+        let v_dims = v.shape().dims();
+        if q_dims.len() != 3 || v_dims.len() != 3 {
+            return Err(Error::Other(format!("{OP}: q/v must be 3D")));
+        }
+        let (t, hk, kd) = (q_dims[0], q_dims[1], q_dims[2]);
+        let (hv, vd) = (v_dims[1], v_dims[2]);
+        if hk == 0 || kd == 0 || hv == 0 || vd == 0 || hv % hk != 0 {
+            return Err(Error::Other(format!(
+                "{OP}: non-zero head counts/dimensions and Hv divisible by Hk are required"
+            )));
+        }
+        let mut dimensions = [0u32; 5];
+        for (converted, dimension) in dimensions.iter_mut().zip([t, hk, hv, kd, vd]) {
+            *converted = u32::try_from(dimension)
+                .map_err(|_| Error::Other(format!("{OP}: dimension exceeds u32")))?;
+        }
+        // Unlike checked_bytes, this contract permits an empty time axis.
+        let bytes = |dims: &[usize]| -> Result<usize> {
+            dims.iter().try_fold(4usize, |size, dim| {
+                size.checked_mul(*dim)
+                    .ok_or_else(|| Error::Other(format!("{OP}: byte size overflow")))
+            })
+        };
+        let input = |name: &str, tensor: &Tensor, shape: &[usize]| -> Result<CudaBuffer> {
+            if tensor.shape().dims() != shape {
+                return Err(Error::ShapeMismatch {
+                    expected: format!("{shape:?} for {OP} {name}"),
+                    got: tensor.shape().to_string(),
+                });
+            }
+            if tensor.dtype() != DType::F32 {
+                return unsupported_dtype(OP, tensor.dtype());
+            }
+            if tensor.device() != Device::Cuda(ctx.device_id()) {
+                return Err(Error::DeviceMismatch {
+                    expected: Device::Cuda(ctx.device_id()),
+                    got: tensor.device(),
+                });
+            }
+            let required = bytes(shape)?;
+            let buffer = CudaBuffer::from_tensor(tensor).map_err(Error::Cuda)?;
+            require_buffers(ctx, OP, &[(name, &buffer, required)])?;
+            if required != 0 && (buffer.ptr().is_null() || buffer.ptr() as usize % 4 != 0) {
+                return Err(Error::Other(format!(
+                    "{OP}: {name} requires aligned FP32 storage"
+                )));
+            }
+            // Restrict overlap checks to the tensor's logical byte range.
+            buffer.view(0, required).map_err(Error::Cuda)
+        };
+        let q_buffer = input("q", q, &[t, hk, kd])?;
+        let k_buffer = input("k", k, &[t, hk, kd])?;
+        let v_buffer = input("v", v, &[t, hv, vd])?;
+        let a_buffer = input("a", a, &[t, hv])?;
+        let b_buffer = input("b", b, &[t, hv])?;
+        let a_log_buffer = input("a_log", a_log, &[hv])?;
+        let dt_bias_buffer = input("dt_bias", dt_bias, &[hv])?;
+        let state_buffer = state
+            .map(|s| input("state", s, &[hv, kd, vd]))
+            .transpose()?;
+        let output = output_buffer(ctx, bytes(&[t, hv, vd])?)?;
+        let next_state = output_buffer(ctx, bytes(&[hv, kd, vd])?)?;
+
+        // Workspace reset can reuse a prior result's address. Failing before
+        // launch preserves both the immutable input contract and graph safety.
+        for source in [
+            &q_buffer,
+            &k_buffer,
+            &v_buffer,
+            &a_buffer,
+            &b_buffer,
+            &a_log_buffer,
+            &dt_bias_buffer,
+        ]
+        .into_iter()
+        .chain(state_buffer.iter())
+        {
+            for destination in [&output, &next_state] {
+                let source_start = source.ptr() as usize;
+                let destination_start = destination.ptr() as usize;
+                if source.len() != 0
+                    && destination.len() != 0
+                    && source_start.abs_diff(destination_start)
+                        < if source_start <= destination_start {
+                            source.len()
+                        } else {
+                            destination.len()
+                        }
+                {
+                    return Err(Error::Other(format!(
+                        "{OP}: workspace output overlaps input; keep recurrent state outside the resetting workspace"
+                    )));
+                }
+            }
+        }
+        unsafe {
+            check_cuda(ffi::apxinf_gated_delta_recurrent_f32(
+                q_buffer.ptr().cast(),
+                k_buffer.ptr().cast(),
+                v_buffer.ptr().cast(),
+                a_buffer.ptr().cast(),
+                b_buffer.ptr().cast(),
+                a_log_buffer.ptr().cast(),
+                dt_bias_buffer.ptr().cast(),
+                state_buffer
+                    .as_ref()
+                    .map_or(std::ptr::null(), |s| s.ptr().cast()),
+                output.ptr().cast(),
+                next_state.ptr().cast(),
+                dimensions[0],
+                dimensions[1],
+                dimensions[2],
+                dimensions[3],
+                dimensions[4],
+                ctx.stream().handle(),
+            ))?;
+        }
+        Ok((
+            output.into_tensor(Shape::new(vec![t, hv, vd]), DType::F32),
+            next_state.into_tensor(Shape::new(vec![hv, kd, vd]), DType::F32),
+        ))
+    }
+}
+
 fn tensor_slice(
     tensor: &Tensor,
     byte_offset: usize,

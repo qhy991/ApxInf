@@ -3,6 +3,60 @@
 // Copyright 2026 apxinf contributors.
 // Pure CUDA operators grouped by physical operation; launch policy lives under adapters/.
 
+// Each thread owns one value column of a head's key-major FP32 state.
+// Columns are independent, so the complete time recurrence needs no block or
+// grid synchronization. The input state is immutable, including for T == 0.
+__global__ void gated_delta_recurrent_f32_kernel(
+    const float* q, const float* k, const float* v,
+    const float* a, const float* b, const float* a_log,
+    const float* dt_bias, const float* initial_state,
+    float* output, float* next_state,
+    uint32_t seq_len, uint32_t key_heads, uint32_t value_heads,
+    uint32_t key_dim, uint32_t value_dim)
+{
+    const size_t columns = static_cast<size_t>(value_heads) * value_dim;
+    for (size_t column = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         column < columns; column += static_cast<size_t>(gridDim.x) * blockDim.x) {
+        const size_t head = column / value_dim;
+        const size_t value_index = column % value_dim;
+        const size_t key_head = head / (value_heads / key_heads);
+        const size_t state_base = head * key_dim * value_dim + value_index;
+        for (uint32_t i = 0; i < key_dim; ++i) {
+            const size_t index = state_base + static_cast<size_t>(i) * value_dim;
+            next_state[index] = initial_state == nullptr ? 0.0f : initial_state[index];
+        }
+        for (uint32_t t = 0; t < seq_len; ++t) {
+            const size_t gate_index = static_cast<size_t>(t) * value_heads + head;
+            const float gate = b[gate_index];
+            const float exp_gate = expf(gate >= 0.0f ? -gate : gate);
+            const float beta = gate >= 0.0f
+                ? 1.0f / (1.0f + exp_gate) : exp_gate / (1.0f + exp_gate);
+            const float dt = a[gate_index] + dt_bias[head];
+            const float softplus = dt > 20.0f ? dt
+                : (dt < -20.0f ? expf(dt) : log1pf(expf(dt)));
+            const float decay = expf(-expf(a_log[head]) * softplus);
+            const size_t key_base = (static_cast<size_t>(t) * key_heads + key_head) * key_dim;
+            const size_t value_offset = static_cast<size_t>(t) * columns + column;
+            float prediction = 0.0f;
+            for (uint32_t i = 0; i < key_dim; ++i) {
+                const size_t index = state_base + static_cast<size_t>(i) * value_dim;
+                const float decayed = next_state[index] * decay;
+                next_state[index] = decayed;
+                prediction += decayed * k[key_base + i];
+            }
+            const float delta = (v[value_offset] - prediction) * beta;
+            float result = 0.0f;
+            for (uint32_t i = 0; i < key_dim; ++i) {
+                const size_t index = state_base + static_cast<size_t>(i) * value_dim;
+                const float updated = next_state[index] + k[key_base + i] * delta;
+                next_state[index] = updated;
+                result += updated * q[key_base + i];
+            }
+            output[value_offset] = result;
+        }
+    }
+}
+
 // ── Softmax ───────────────────────────────────────────────────────────────
 
 __global__ void softmax_f32_kernel(
@@ -934,5 +988,4 @@ __global__ void segmented_mha_bf16_kernel(
         __float2bfloat16(accumulator);
   }
 }
-
 

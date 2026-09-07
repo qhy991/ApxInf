@@ -44,6 +44,37 @@ const int kActionAdaPacked8Mode = [] {
 
 }  // namespace
 
+extern "C" cudaError_t apxinf_gated_delta_recurrent_f32(
+    const float* q, const float* k, const float* v,
+    const float* a, const float* b, const float* a_log,
+    const float* dt_bias, const float* initial_state,
+    float* output, float* next_state,
+    uint32_t seq_len, uint32_t key_heads, uint32_t value_heads,
+    uint32_t key_dim, uint32_t value_dim, cudaStream_t stream) {
+  if (key_heads == 0 || value_heads == 0 || key_dim == 0 || value_dim == 0 ||
+      value_heads % key_heads != 0 || next_state == nullptr ||
+      a_log == nullptr || dt_bias == nullptr ||
+      (seq_len > 0 && (q == nullptr || k == nullptr || v == nullptr ||
+                       a == nullptr || b == nullptr || output == nullptr))) {
+    return cudaErrorInvalidValue;
+  }
+  constexpr int threads = 32;
+  const size_t columns = static_cast<size_t>(value_heads) * value_dim;
+  const size_t key_columns = static_cast<size_t>(key_heads) * key_dim;
+  const size_t max_elements = SIZE_MAX / sizeof(float);
+  if (columns > max_elements / key_dim ||
+      (seq_len > 0 && (columns > max_elements / seq_len ||
+                      key_columns > max_elements / seq_len))) {
+    return cudaErrorInvalidValue;
+  }
+  const size_t needed_blocks = (columns + threads - 1) / threads;
+  const int blocks = static_cast<int>(needed_blocks > 65535 ? 65535 : needed_blocks);
+  gated_delta_recurrent_f32_kernel<<<blocks, threads, 0, stream>>>(
+      q, k, v, a, b, a_log, dt_bias, initial_state, output, next_state,
+      seq_len, key_heads, value_heads, key_dim, value_dim);
+  return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_static_evict_l2(
     void* buffer, size_t bytes, uint32_t seed, cudaStream_t stream) {
   if (buffer == nullptr || bytes < sizeof(uint32_t) ||

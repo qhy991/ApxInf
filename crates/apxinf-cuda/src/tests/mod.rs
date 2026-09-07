@@ -1,5 +1,7 @@
 mod bf16;
 mod fp8;
+#[cfg(apxinf_custom_kernels)]
+mod gated_delta;
 mod operators;
 mod sampling;
 mod w8a8;
