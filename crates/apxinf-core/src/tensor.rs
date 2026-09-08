@@ -188,6 +188,10 @@ impl Tensor {
         self.ensure_cpu()?;
         self.ensure_dtype(DType::F32)?;
         let bytes = self.storage.as_cpu().unwrap();
+        // Empty byte allocations need not satisfy the target type's alignment.
+        if bytes.is_empty() {
+            return Ok(&[]);
+        }
         Ok(bytemuck::cast_slice(bytes))
     }
 
@@ -199,6 +203,9 @@ impl Tensor {
             .storage
             .as_cpu_mut()
             .ok_or_else(|| Error::Other("tensor storage is read-only and memory-mapped".into()))?;
+        if bytes.is_empty() {
+            return Ok(&mut []);
+        }
         Ok(bytemuck::cast_slice_mut(bytes))
     }
 
@@ -207,13 +214,20 @@ impl Tensor {
         self.ensure_cpu()?;
         self.ensure_dtype(DType::BF16)?;
         let bytes = self.storage.as_cpu().unwrap();
+        if bytes.is_empty() {
+            return Ok(&[]);
+        }
         Ok(bytemuck::cast_slice(bytes))
     }
 
     pub fn as_f16(&self) -> Result<&[f16]> {
         self.ensure_cpu()?;
         self.ensure_dtype(DType::F16)?;
-        Ok(bytemuck::cast_slice(self.storage.as_cpu().unwrap()))
+        let bytes = self.storage.as_cpu().unwrap();
+        if bytes.is_empty() {
+            return Ok(&[]);
+        }
+        Ok(bytemuck::cast_slice(bytes))
     }
 
     pub fn as_f8_e4m3(&self) -> Result<&[u8]> {
@@ -421,6 +435,126 @@ mod tests {
         let t = Tensor::from_f32(vec![2, 3], &data).unwrap();
         assert_eq!(t.shape(), &Shape::new(vec![2, 3]));
         assert_eq!(t.as_f32().unwrap(), &data);
+    }
+
+    #[test]
+    fn empty_raw_f32_supports_typed_read() {
+        let tensor = Tensor::from_raw(
+            Shape::new(vec![0, 2, 3]),
+            DType::F32,
+            Device::Cpu,
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(tensor.as_f32().unwrap().is_empty());
+        assert!(tensor.to_f32_vec().unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_raw_f32_supports_typed_write() {
+        let tensor =
+            Tensor::from_raw(Shape::new(vec![2, 0]), DType::F32, Device::Cpu, Vec::new()).unwrap();
+        let mut clone = tensor.clone();
+        assert!(clone.as_f32_mut().unwrap().is_empty());
+        assert!(tensor.as_f32().unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_raw_bf16_supports_typed_read_and_conversion() {
+        let tensor =
+            Tensor::from_raw(Shape::new(vec![2, 0]), DType::BF16, Device::Cpu, Vec::new()).unwrap();
+        assert!(tensor.as_bf16().unwrap().is_empty());
+        assert!(tensor.to_f32_vec().unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_raw_f16_supports_typed_read_and_conversion() {
+        let tensor =
+            Tensor::from_raw(Shape::new(vec![2, 0]), DType::F16, Device::Cpu, Vec::new()).unwrap();
+        assert!(tensor.as_f16().unwrap().is_empty());
+        assert!(tensor.to_f32_vec().unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_typed_views_preserve_dtype_and_device_guards() {
+        for dtype in [DType::F32, DType::BF16, DType::F16, DType::F8E4M3] {
+            let mut tensor =
+                Tensor::from_raw(Shape::new(vec![0]), dtype, Device::Cpu, Vec::new()).unwrap();
+            if dtype != DType::F32 {
+                assert!(matches!(tensor.as_f32(), Err(Error::DTypeMismatch { .. })));
+                assert!(matches!(
+                    tensor.as_f32_mut(),
+                    Err(Error::DTypeMismatch { .. })
+                ));
+            }
+            if dtype != DType::BF16 {
+                assert!(matches!(tensor.as_bf16(), Err(Error::DTypeMismatch { .. })));
+            }
+            if dtype != DType::F16 {
+                assert!(matches!(tensor.as_f16(), Err(Error::DTypeMismatch { .. })));
+            }
+            tensor.set_device_and_storage(Device::Cuda(0), tensor.storage().clone());
+            assert!(matches!(
+                tensor.as_f32(),
+                Err(Error::UnsupportedDevice(Device::Cuda(0)))
+            ));
+            assert!(matches!(
+                tensor.as_f32_mut(),
+                Err(Error::UnsupportedDevice(Device::Cuda(0)))
+            ));
+            assert!(matches!(
+                tensor.as_bf16(),
+                Err(Error::UnsupportedDevice(Device::Cuda(0)))
+            ));
+            assert!(matches!(
+                tensor.as_f16(),
+                Err(Error::UnsupportedDevice(Device::Cuda(0)))
+            ));
+            assert!(matches!(
+                tensor.to_f32_vec(),
+                Err(Error::UnsupportedDevice(Device::Cuda(0)))
+            ));
+        }
+    }
+
+    #[test]
+    fn empty_mapped_tensor_preserves_read_only_storage() {
+        let mapping = Arc::new(
+            memmap2::MmapOptions::new()
+                .len(8)
+                .map_anon()
+                .unwrap()
+                .make_read_only()
+                .unwrap(),
+        );
+        for dtype in [DType::F32, DType::BF16, DType::F16] {
+            let mut tensor =
+                Tensor::from_mmap(Shape::new(vec![0]), dtype, Arc::clone(&mapping), 0).unwrap();
+            assert!(tensor.to_f32_vec().unwrap().is_empty());
+            assert!(tensor.storage_mut().as_cpu_mut().is_none());
+            if dtype == DType::F32 {
+                assert!(tensor
+                    .as_f32_mut()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("read-only"));
+            }
+        }
+    }
+
+    #[test]
+    fn empty_shape_does_not_hide_nonempty_storage() {
+        let original = Tensor::from_f32(vec![1], &[3.5]).unwrap();
+        let mut tensor = Tensor::from_raw_parts(
+            Shape::new(vec![0]),
+            DType::F32,
+            Device::Cpu,
+            original.storage().clone(),
+        );
+        assert_eq!(tensor.as_f32().unwrap(), &[3.5]);
+        tensor.as_f32_mut().unwrap()[0] = 7.0;
+        assert_eq!(tensor.as_f32().unwrap(), &[7.0]);
+        assert_eq!(original.as_f32().unwrap(), &[3.5]);
     }
 
     #[test]
