@@ -342,7 +342,7 @@ impl Qwen4ExpQsaSelector {
             score /= (self.head_dim as f32).sqrt();
             (block, score)
         };
-        let mut ranked_blocks = if complete_blocks >= QSA_SELECTOR_PAR_MIN_BLOCKS {
+        let mut ranked_blocks = if self.parallelize_scores(complete_blocks) {
             keys.par_chunks_exact(self.head_dim)
                 .enumerate()
                 .map(score_block)
@@ -376,9 +376,18 @@ impl Qwen4ExpQsaSelector {
         selected.sort_unstable();
         Ok(selected)
     }
+
+    fn parallelize_scores(&self, complete_blocks: usize) -> bool {
+        let scoring_work = complete_blocks
+            .saturating_mul(self.head_dim)
+            .saturating_mul(self.query_heads);
+        complete_blocks >= QSA_SELECTOR_PAR_MIN_BLOCKS && scoring_work >= QSA_SCORE_PAR_MIN_WORK
+    }
 }
 
 const QSA_SELECTOR_PAR_MIN_BLOCKS: usize = 256;
+// Small-head scores need enough arithmetic to amortize shared-pool scheduling.
+const QSA_SCORE_PAR_MIN_WORK: usize = 1 << 17;
 
 #[inline]
 pub(super) fn dot_f32(left: &[f32], right: &[f32]) -> f32 {
@@ -661,5 +670,72 @@ mod tests {
         assert!(selector
             .select_unit_norm(&[f32::NAN, 0.0], &[0.0; 2], 1)
             .is_err());
+    }
+
+    #[test]
+    fn scoring_dispatch_boundaries_preserve_known_topk_and_tail() {
+        // The first shape crosses the arithmetic threshold; the second has
+        // enough arithmetic throughout and crosses the independent block floor.
+        for (heads, dim, block_counts) in [(2, 128, [511, 512, 513]), (4, 256, [255, 256, 257])] {
+            let selector = Qwen4ExpQsaSelector::new(heads, dim, 8, 4, 0, 1e7, 1e-6).unwrap();
+            let tokens = block_counts[2] * 4 + 1;
+            let mut keys = vec![0.0; tokens * dim];
+            for (token, key) in keys.chunks_exact_mut(dim).enumerate() {
+                match (token / 4) % 3 {
+                    0 => key[0] = 1.0,
+                    1 => key[1] = 1.0,
+                    _ => key[0] = -1.0,
+                }
+            }
+            let positions = (0..tokens).map(|p| [p as u32; 3]).collect::<Vec<_>>();
+            let weights = vec![0.0; dim];
+            let mut cache = QsaKeyCache::default();
+            let mut start = 0;
+            for (case, blocks) in block_counts.into_iter().enumerate() {
+                assert_eq!(selector.parallelize_scores(blocks), case != 0);
+                let end = blocks * 4 + 1;
+                let direction = case % 2;
+                let mut query = vec![0.0; heads * dim];
+                for head in query.chunks_exact_mut(dim) {
+                    head[direction] = 1.0;
+                }
+                // Equal positive scores occur only in one group. Canonical
+                // tie-breaking keeps its first two blocks; the tail is causal.
+                let mut expected = Vec::new();
+                for block in [direction, direction + 3] {
+                    expected.extend(block * 4..(block + 1) * 4);
+                }
+                expected.push(end - 1);
+                assert_eq!(
+                    selector
+                        .select_with_positions(
+                            &query,
+                            &keys[..end * dim],
+                            &positions[..end],
+                            [0; 3],
+                            &weights,
+                            &weights,
+                        )
+                        .unwrap(),
+                    expected
+                );
+                assert_eq!(
+                    selector
+                        .append_and_select(
+                            &query,
+                            &keys[start * dim..end * dim],
+                            &positions[start..end],
+                            [0; 3],
+                            &weights,
+                            &weights,
+                            &mut cache,
+                        )
+                        .unwrap(),
+                    expected
+                );
+                start = end;
+            }
+            assert!(selector.parallelize_scores(usize::MAX));
+        }
     }
 }
