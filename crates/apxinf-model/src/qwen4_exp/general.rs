@@ -1,8 +1,9 @@
-//! Correctness-first single-request Qwen4-Exp text runtime.
+//! Single-request CPU runtime for Qwen4-Exp.
 //!
-//! This first slice accepts deterministic downsized synthetic weights only.
-//! It executes the released architecture and cache semantics; it is not a
-//! production checkpoint loader or performance path.
+//! Accepts schema-validated F32/BF16 checkpoint tensors or deterministic
+//! downsized synthetic weights. Attention, recurrent, and multimodal position
+//! state belong to the current request and are cleared by reset.
+//! Full-model CUDA execution is not enabled.
 
 use std::collections::HashMap;
 use std::sync::Arc;
