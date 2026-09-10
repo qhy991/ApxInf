@@ -217,6 +217,26 @@ pub fn swiglu_bf16(ctx: &CudaContext, gate_up: &Tensor) -> Result<Tensor> {
     Ok(matrix_tensor(ctx, rows, inner, output))
 }
 
+/// BF16 SwiGLU preserving the BF16 rounding boundary after SiLU.
+pub fn swiglu_bf16_rounded(ctx: &CudaContext, gate_up: &Tensor) -> Result<Tensor> {
+    let (rows, cols) = matrix_shape(gate_up, "rounded SwiGLU")?;
+    if gate_up.dtype() != DType::BF16 || cols == 0 || cols % 2 != 0 || rows == 0 {
+        return Err(Error::Other("rounded SwiGLU expects nonempty BF16 [rows,2*inner]".into()));
+    }
+    if gate_up.device() != apxinf_core::Device::Cuda(ctx.device_id()) {
+        return Err(Error::Other("rounded SwiGLU input is on the wrong device".into()));
+    }
+    let inner = cols / 2;
+    let r = i32::try_from(rows).map_err(|_| Error::Other("SwiGLU rows overflow".into()))?;
+    let n = i32::try_from(inner).map_err(|_| Error::Other("SwiGLU inner overflow".into()))?;
+    let output = bf16_output(ctx, rows, inner)?;
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_swiglu_bf16_rounded(gpu_ptr(gate_up)?, output.ptr(), r, n, ctx.stream().handle()))
+            .map_err(Error::Cuda)?;
+    }
+    Ok(matrix_tensor(ctx, rows, inner, output))
+}
+
 /// Fuse optional bias, SwiGLU, and dynamic per-row E4M3 quantization.
 pub fn swiglu_quantize_rows_bf16_e4m3(
     ctx: &CudaContext,
