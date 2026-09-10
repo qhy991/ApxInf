@@ -27,18 +27,120 @@ fn silu_ref(x: f32) -> f32 {
 }
 
 #[test]
+fn bf16_linear_bias_rounds_after_accumulation() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    // The product is 1.015686..., which rounds to 1.015625 in BF16.
+    // Adding the bias before rounding preserves the nonzero residual.
+    let mut x = vec![0.0; 4 * 8];
+    let mut w = vec![0.0; 8 * 8];
+    for row in 0..4 {
+        x[row * 8] = 1.0078125;
+    }
+    for col in 0..8 {
+        w[col] = 1.0078125;
+    }
+    let xt = upload_fp32_as_bf16(&ctx, &x, vec![4, 8]).unwrap();
+    let wt = upload_fp32_as_bf16(&ctx, &w, vec![8, 8]).unwrap();
+    let bt = upload_fp32_as_bf16(&ctx, &[-1.015625; 8], vec![8]).unwrap();
+    let out = crate::kernels::gemm::bf16_bias(&ctx, &xt, &wt, &bt).unwrap();
+    let actual = download_bf16_as_fp32(&out).unwrap();
+    assert_eq!(actual, vec![1.0 / 16384.0; 32]);
+}
+
+#[test]
+#[ignore = "requires cuDNN v9 on the dynamic-loader path and a CUDA GPU"]
+fn cudnn_convolution_matches_scalar_cross_correlation() {
+    use crate::kernels::convolution::{conv2d, conv_transpose2d, Conv2dSpec};
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    for transpose in [false, true] {
+        let (channels, outputs, height, width, kernel) = (8, 16, 3, 5, 2);
+        let stride = if transpose { 2 } else { 1 };
+        let oh = if transpose { height * 2 } else { height - 1 };
+        let ow = if transpose { width * 2 } else { width - 1 };
+        let x: Vec<f32> = (0..channels * height * width)
+            .map(|i| ((i % 11) as f32 - 5.0) / 8.0)
+            .collect();
+        let w: Vec<f32> = (0..channels * outputs * kernel * kernel)
+            .map(|i| ((i % 7) as f32 - 3.0) / 8.0)
+            .collect();
+        let bias: Vec<f32> = (0..outputs).map(|i| i as f32 / 16.0).collect();
+        let mut expected = vec![0.0f32; outputs * oh * ow];
+        for co in 0..outputs {
+            for ci in 0..channels {
+                for iy in 0..height {
+                    for ix in 0..width {
+                        for ky in 0..kernel {
+                            for kx in 0..kernel {
+                                let (oy, ox, wi) = if transpose {
+                                    (
+                                        iy * stride + ky,
+                                        ix * stride + kx,
+                                        ((ci * outputs + co) * kernel + ky) * kernel + kx,
+                                    )
+                                } else {
+                                    if iy < ky || ix < kx {
+                                        continue;
+                                    }
+                                    (
+                                        iy - ky,
+                                        ix - kx,
+                                        ((co * channels + ci) * kernel + ky) * kernel + kx,
+                                    )
+                                };
+                                if oy < oh && ox < ow {
+                                    expected[(co * oh + oy) * ow + ox] +=
+                                        x[(ci * height + iy) * width + ix] * w[wi];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (i, value) in expected.iter_mut().enumerate() {
+            *value =
+                half::bf16::from_f32(half::bf16::from_f32(*value).to_f32() + bias[i / (oh * ow)])
+                    .to_f32();
+        }
+        let xt = upload_fp32_as_bf16(&ctx, &x, vec![1, channels, height, width]).unwrap();
+        let filter_shape = if transpose {
+            vec![channels, outputs, kernel, kernel]
+        } else {
+            vec![outputs, channels, kernel, kernel]
+        };
+        let wt = upload_fp32_as_bf16(&ctx, &w, filter_shape).unwrap();
+        let bt = upload_fp32_as_bf16(&ctx, &bias, vec![outputs]).unwrap();
+        let spec = Conv2dSpec {
+            stride: [stride, stride],
+            ..Default::default()
+        };
+        let y = if transpose {
+            conv_transpose2d(&ctx, &xt, &wt, Some(&bt), spec)
+        } else {
+            conv2d(&ctx, &xt, &wt, Some(&bt), spec)
+        }
+        .unwrap();
+        assert_eq!(y.shape().dims(), [1, outputs, oh, ow]);
+        assert_eq!(download_bf16_as_fp32(&y).unwrap(), expected);
+    }
+}
+
+#[test]
 fn rounded_swiglu_preserves_bf16_activation_boundary() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     let (rows, inner) = (3, 129);
     let input: Vec<f32> = (0..rows * inner * 2)
-        .map(|i| half::bf16::from_f32((i % 101) as f32 / 8.0 - 6.0).to_f32()).collect();
-    let expected: Vec<f32> = (0..rows * inner).map(|i| {
-        let row = i / inner;
-        let col = i % inner;
-        let gate = input[row * 2 * inner + col];
-        let up = input[row * 2 * inner + inner + col];
-        half::bf16::from_f32(half::bf16::from_f32(silu_ref(gate)).to_f32() * up).to_f32()
-    }).collect();
+        .map(|i| half::bf16::from_f32((i % 101) as f32 / 8.0 - 6.0).to_f32())
+        .collect();
+    let expected: Vec<f32> = (0..rows * inner)
+        .map(|i| {
+            let row = i / inner;
+            let col = i % inner;
+            let gate = input[row * 2 * inner + col];
+            let up = input[row * 2 * inner + inner + col];
+            half::bf16::from_f32(half::bf16::from_f32(silu_ref(gate)).to_f32() * up).to_f32()
+        })
+        .collect();
     let x = upload_fp32_as_bf16(&ctx, &input, vec![rows, 2 * inner]).unwrap();
     let y = crate::kernels::activation::swiglu_bf16_rounded(&ctx, &x).unwrap();
     assert_bf16_close_elementwise(&download_bf16_as_fp32(&y).unwrap(), &expected);
@@ -49,10 +151,14 @@ fn composed_joint_gqa_is_unmasked_and_respects_head_groups() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     // Include more queries than keys and a query tile boundary. Noncausal
     // attention must attend all keys in both cases without offset underflow.
-    for (queries, keys, heads, kv_heads, dim) in [(3, 5, 4, 2, 256), (5, 3, 4, 2, 256), (1025, 3, 2, 1, 16)] {
-        let values = |n, shift| (0..n).map(|i| {
-            half::bf16::from_f32((((i + shift) % 37) as f32 - 18.0) / 32.0).to_f32()
-        }).collect::<Vec<f32>>();
+    for (queries, keys, heads, kv_heads, dim) in
+        [(3, 5, 4, 2, 256), (5, 3, 4, 2, 256), (1025, 3, 2, 1, 16)]
+    {
+        let values = |n, shift| {
+            (0..n)
+                .map(|i| half::bf16::from_f32((((i + shift) % 37) as f32 - 18.0) / 32.0).to_f32())
+                .collect::<Vec<f32>>()
+        };
         let q = values(queries * heads * dim, 0);
         let k = values(keys * kv_heads * dim, 7);
         let v = values(keys * kv_heads * dim, 19);
@@ -62,20 +168,31 @@ fn composed_joint_gqa_is_unmasked_and_respects_head_groups() {
                 let group = head / (heads / kv_heads);
                 let mut scores = vec![0.0f32; keys];
                 for token in 0..keys {
-                    scores[token] = (0..dim).map(|d| q[(row * heads + head) * dim + d] * k[(token * kv_heads + group) * dim + d]).sum::<f32>() / (dim as f32).sqrt();
+                    scores[token] = (0..dim)
+                        .map(|d| {
+                            q[(row * heads + head) * dim + d]
+                                * k[(token * kv_heads + group) * dim + d]
+                        })
+                        .sum::<f32>()
+                        / (dim as f32).sqrt();
                 }
                 let max = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                let total: f32 = scores.iter().map(|s| (s-max).exp()).sum();
+                let total: f32 = scores.iter().map(|s| (s - max).exp()).sum();
                 for d in 0..dim {
-                    expected[(row * heads + head) * dim + d] = (0..keys).map(|t| (scores[t]-max).exp()/total * v[(t*kv_heads+group)*dim+d]).sum();
+                    expected[(row * heads + head) * dim + d] = (0..keys)
+                        .map(|t| {
+                            (scores[t] - max).exp() / total * v[(t * kv_heads + group) * dim + d]
+                        })
+                        .sum();
                 }
             }
         }
-        let qt = upload_fp32_as_bf16(&ctx, &q, vec![queries,heads,dim]).unwrap();
-        let kt = upload_fp32_as_bf16(&ctx, &k, vec![keys,kv_heads,dim]).unwrap();
-        let vt = upload_fp32_as_bf16(&ctx, &v, vec![keys,kv_heads,dim]).unwrap();
-        let actual = crate::kernels::attention::composed_gqa_bf16(&ctx,&qt,&kt,&vt,keys,false).unwrap();
-        assert_bf16_close_reduction(&download_bf16_as_fp32(&actual).unwrap(),&expected);
+        let qt = upload_fp32_as_bf16(&ctx, &q, vec![queries, heads, dim]).unwrap();
+        let kt = upload_fp32_as_bf16(&ctx, &k, vec![keys, kv_heads, dim]).unwrap();
+        let vt = upload_fp32_as_bf16(&ctx, &v, vec![keys, kv_heads, dim]).unwrap();
+        let actual =
+            crate::kernels::attention::composed_gqa_bf16(&ctx, &qt, &kt, &vt, keys, false).unwrap();
+        assert_bf16_close_reduction(&download_bf16_as_fp32(&actual).unwrap(), &expected);
     }
 }
 

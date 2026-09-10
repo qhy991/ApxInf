@@ -8,6 +8,7 @@
 mod cublas;
 mod cublaslt;
 mod cuda;
+pub(crate) mod cudnn;
 mod custom;
 mod cutlass;
 mod driver;

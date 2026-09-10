@@ -35,12 +35,14 @@ pub mod expert;
 #[cfg(feature = "cuda")]
 pub mod general;
 #[cfg(feature = "cuda")]
+pub mod perception_fpn;
+#[cfg(feature = "cuda")]
 pub mod vision;
 
 pub use config::{
     PlanningExpertConfig, QwenDriveConfig, QwenDriveTextConfig, QwenDriveVisionConfig,
 };
-pub use planner::{ExpertConditioning, PlanningExpertModel, SceneCache};
-pub use weights::{QwenDriveExpertWeights, QwenDriveVlmWeights};
 #[cfg(feature = "cuda")]
 pub use general::QwenDriveModel;
+pub use planner::{ExpertConditioning, PlanningExpertModel, SceneCache};
+pub use weights::{QwenDriveExpertWeights, QwenDriveVlmWeights};

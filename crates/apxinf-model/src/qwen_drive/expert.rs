@@ -27,7 +27,10 @@ fn bf16_round(value: f32) -> f32 {
 }
 
 fn upload_u32(ctx: &Context, values: &[u32]) -> Result<DeviceBuffer> {
-    let bytes: Vec<u8> = values.iter().flat_map(|value| value.to_ne_bytes()).collect();
+    let bytes: Vec<u8> = values
+        .iter()
+        .flat_map(|value| value.to_ne_bytes())
+        .collect();
     let buffer = DeviceBuffer::alloc(bytes.len().max(1), ctx.device_id()).map_err(Error::Cuda)?;
     buffer.copy_from_host(&bytes).map_err(Error::Cuda)?;
     Ok(buffer)
@@ -54,7 +57,10 @@ fn bf16_tensor(ctx: &Context, values: &[f32], shape: Vec<usize>) -> Result<Tenso
 fn row_col_slice(tensor: &Tensor, col: usize, cols: usize) -> Result<Tensor> {
     let buffer = DeviceBuffer::from_tensor(tensor).map_err(Error::Cuda)?;
     let view = buffer
-        .view(col * DType::BF16.size_in_bytes(), cols * DType::BF16.size_in_bytes())
+        .view(
+            col * DType::BF16.size_in_bytes(),
+            cols * DType::BF16.size_in_bytes(),
+        )
         .map_err(Error::Cuda)?;
     view.as_tensor(Shape::new(vec![cols]), DType::BF16)
         .map_err(Error::Cuda)
@@ -62,7 +68,8 @@ fn row_col_slice(tensor: &Tensor, col: usize, cols: usize) -> Result<Tensor> {
 
 fn mlp(ctx: &Context, mlp: &DeviceMlp, x: &Tensor) -> Result<Tensor> {
     let h = gemm::matmul(ctx, x, &mlp.fc1_w)?;
-    let h = activation::bias_silu_bf16(ctx, &h, Some(&mlp.fc1_b))?;
+    let h = elementwise::bias_bf16(ctx, &h, Some(&mlp.fc1_b))?;
+    let h = activation::silu(ctx, &h)?;
     let h = gemm::matmul(ctx, &h, &mlp.fc2_w)?;
     elementwise::bias_bf16(ctx, &h, Some(&mlp.fc2_b))
 }
@@ -193,9 +200,21 @@ pub fn plan(
     let mut history_in = input.cond.history.clone();
     history_in.extend_from_slice(&nav);
     let history_t = bf16_tensor(ctx, &history_in, vec![1, history_in.len()])?;
-    let velocity_t = bf16_tensor(ctx, &input.cond.history_velocity, vec![1, input.cond.history_velocity.len()])?;
-    let acceleration_t = bf16_tensor(ctx, &input.cond.history_acceleration, vec![1, input.cond.history_acceleration.len()])?;
-    let ego_t = bf16_tensor(ctx, &input.cond.ego_status, vec![1, input.cond.ego_status.len()])?;
+    let velocity_t = bf16_tensor(
+        ctx,
+        &input.cond.history_velocity,
+        vec![1, input.cond.history_velocity.len()],
+    )?;
+    let acceleration_t = bf16_tensor(
+        ctx,
+        &input.cond.history_acceleration,
+        vec![1, input.cond.history_acceleration.len()],
+    )?;
+    let ego_t = bf16_tensor(
+        ctx,
+        &input.cond.ego_status,
+        vec![1, input.cond.ego_status.len()],
+    )?;
     let nav_t = bf16_tensor(ctx, &nav, vec![1, nav.len()])?;
     let pose_q = mlp(ctx, &weights.history_encoder, &history_t)?;
     let velocity_q = mlp(ctx, &weights.history_velocity_encoder, &velocity_t)?;
@@ -264,7 +283,14 @@ pub fn plan(
             let scale_ffn = row_col_slice(&modulation, 4 * hidden_size, hidden_size)?;
             let gate_ffn = row_col_slice(&modulation, 5 * hidden_size, hidden_size)?;
 
-            let x = la::adaln_rms_norm(ctx, &hidden, &layer.input_norm, &scale_attn, &shift_attn, eps)?;
+            let x = la::adaln_rms_norm(
+                ctx,
+                &hidden,
+                &layer.input_norm,
+                &scale_attn,
+                &shift_attn,
+                eps,
+            )?;
             let qkv = gemm::matmul(ctx, &x, &layer.qkv_w)?;
             let q_out = device_tensor(ctx, &[length, heads, head_dim], DType::BF16)?;
             let gate_out = device_tensor(ctx, &[length, heads, head_dim], DType::BF16)?;
@@ -305,9 +331,10 @@ pub fn plan(
             let proj = gemm::matmul(ctx, &attn, &layer.o_w)?;
             hidden = la::adaln_gate_residual(ctx, &proj, &hidden, &gate_attn)?;
 
-            let x2 = la::adaln_rms_norm(ctx, &hidden, &layer.post_norm, &scale_ffn, &shift_ffn, eps)?;
+            let x2 =
+                la::adaln_rms_norm(ctx, &hidden, &layer.post_norm, &scale_ffn, &shift_ffn, eps)?;
             let gu = gemm::matmul(ctx, &x2, &layer.gate_up_w)?;
-            let act = activation::swiglu_bf16(ctx, &gu)?;
+            let act = activation::swiglu_bf16_rounded(ctx, &gu)?;
             let down = gemm::matmul(ctx, &act, &layer.down_w)?;
             hidden = la::adaln_gate_residual(ctx, &down, &hidden, &gate_ffn)?;
         }

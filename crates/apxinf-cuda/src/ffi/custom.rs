@@ -5,6 +5,25 @@ use std::ffi::c_void;
 use super::cuda::{cudaError_t, cudaStream_t};
 
 extern "C" {
+    pub fn apxinf_channel_layer_norm_bf16_rounded(
+        x: *const c_void,
+        weight: *const c_void,
+        bias: *const c_void,
+        out: *mut c_void,
+        batches: i32,
+        channels: i32,
+        spatial: i32,
+        eps: f32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+    pub fn apxinf_max_pool2x2_bf16(
+        x: *const c_void,
+        out: *mut c_void,
+        height: i32,
+        width: i32,
+        count: i64,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
     pub fn apxinf_static_evict_l2(
         buffer: *mut c_void,
         bytes: usize,

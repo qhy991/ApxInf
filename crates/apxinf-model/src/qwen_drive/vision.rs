@@ -39,7 +39,10 @@ pub fn take_vision_diag_lines() -> Vec<String> {
 }
 
 fn upload_u32(ctx: &Context, values: &[u32]) -> Result<DeviceBuffer> {
-    let bytes: Vec<u8> = values.iter().flat_map(|value| value.to_ne_bytes()).collect();
+    let bytes: Vec<u8> = values
+        .iter()
+        .flat_map(|value| value.to_ne_bytes())
+        .collect();
     let buffer = DeviceBuffer::alloc(bytes.len().max(1), ctx.device_id()).map_err(Error::Cuda)?;
     buffer.copy_from_host(&bytes).map_err(Error::Cuda)?;
     Ok(buffer)
@@ -110,13 +113,25 @@ pub fn forward(
 
     for (block_idx, block) in weights.blocks.iter().enumerate() {
         // TEMP-DIAG (implement_r2, ungated in implement_r3): vision-block heartbeat every block; revert in the acceptance-bound revision.
-        eprintln!("[qwen_drive] vision_block k={} n={} ms={}", block_idx, weights.blocks.len(), vis_t0.elapsed().as_millis());
+        eprintln!(
+            "[qwen_drive] vision_block k={} n={} ms={}",
+            block_idx,
+            weights.blocks.len(),
+            vis_t0.elapsed().as_millis()
+        );
         let normed = norm::layer_bf16(ctx, &x, &block.norm1_w, &block.norm1_b, eps)?;
-        let qkv = gemm::matmul(ctx, &normed, &block.qkv_w)?;
+        if block_idx == 0 {
+            super::general::trace_rows("model_visual_blocks_0_norm1", &normed)?;
+        }
+        // nn.Linear adds bias before its final BF16 rounding.
+        let qkv = gemm::bf16_bias(ctx, &normed, &block.qkv_w, &block.qkv_b)?;
+        if block_idx == 0 {
+            super::general::trace_rows("model_visual_blocks_0_attn_qkv", &qkv)?;
+        }
         let qkv = attention::split_vision_qkv_rope_bf16(
             ctx,
             &qkv,
-            Some(&block.qkv_b),
+            None,
             &pos_ids_dev,
             heads,
             head_dim,
@@ -133,15 +148,25 @@ pub fn forward(
             max_tokens,
         )?;
         let attn = attn.reshape(vec![total_patches, hidden])?;
-        let proj = gemm::matmul(ctx, &attn, &block.proj_w)?;
-        let proj = elementwise::bias_bf16(ctx, &proj, Some(&block.proj_b))?;
+        let proj = gemm::bf16_bias(ctx, &attn, &block.proj_w, &block.proj_b)?;
+        if block_idx == 0 {
+            super::general::trace_rows("model_visual_blocks_0_attn", &proj)?;
+        }
         x = elementwise::add(ctx, &x, &proj)?;
 
         let normed = norm::layer_bf16(ctx, &x, &block.norm2_w, &block.norm2_b, eps)?;
-        let h = gemm::matmul(ctx, &normed, &block.fc1_w)?;
-        let h = activation::bias_gelu_bf16(ctx, &h, Some(&block.fc1_b))?;
-        let h2 = gemm::matmul(ctx, &h, &block.fc2_w)?;
-        let h2 = elementwise::bias_bf16(ctx, &h2, Some(&block.fc2_b))?;
+        if block_idx == 0 {
+            super::general::trace_rows("model_visual_blocks_0_norm2", &normed)?;
+        }
+        let h = gemm::bf16_bias(ctx, &normed, &block.fc1_w, &block.fc1_b)?;
+        if block_idx == 0 {
+            super::general::trace_rows("model_visual_blocks_0_mlp_linear_fc1", &h)?;
+        }
+        let h = activation::gelu_tanh(ctx, &h)?;
+        let h2 = gemm::bf16_bias(ctx, &h, &block.fc2_w, &block.fc2_b)?;
+        if block_idx == 0 {
+            super::general::trace_rows("model_visual_blocks_0_mlp", &h2)?;
+        }
         x = elementwise::add(ctx, &x, &h2)?;
         super::general::trace_rows(&format!("model_visual_blocks_{block_idx}"), &x)?;
     }
@@ -149,12 +174,13 @@ pub fn forward(
     // Merger: LayerNorm(1024) -> merge 4 rows -> fc1 -> exact erf GELU -> fc2.
     let normed = norm::layer_bf16(ctx, &x, &weights.merger_norm_w, &weights.merger_norm_b, eps)?;
     let merged = la::merge_rows(ctx, &normed, merge * merge)?;
-    let h = gemm::matmul(ctx, &merged, &weights.merger_fc1_w)?;
-    let h = elementwise::bias_bf16(ctx, &h, Some(&weights.merger_fc1_b))?;
+    let h = gemm::bf16_bias(ctx, &merged, &weights.merger_fc1_w, &weights.merger_fc1_b)?;
     let h = la::gelu_exact(ctx, &h)?;
-    let out = gemm::matmul(ctx, &h, &weights.merger_fc2_w)?;
-    let primary = elementwise::bias_bf16(ctx, &out, Some(&weights.merger_fc2_b))?;
-    Ok(VisionOutput { primary, pre_merger: x })
+    let primary = gemm::bf16_bias(ctx, &h, &weights.merger_fc2_w, &weights.merger_fc2_b)?;
+    Ok(VisionOutput {
+        primary,
+        pre_merger: x,
+    })
 }
 
 /// Bilinear-interpolate the learned 48x48 position table to each image's
@@ -176,7 +202,9 @@ fn compute_pos_embeds(
         .to_f32_vec()
         .map_err(|e| Error::Other(format!("qwen_drive vision pos_embed table: {e}")))?;
     if table.len() != grid_side * grid_side * hidden {
-        return Err(Error::Other("qwen_drive vision: pos_embed table shape mismatch".into()));
+        return Err(Error::Other(
+            "qwen_drive vision: pos_embed table shape mismatch".into(),
+        ));
     }
     let total: usize = grid_thw
         .iter()

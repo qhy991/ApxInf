@@ -26,6 +26,7 @@ namespace {
 #include "../kernels/custom/fused.cuh"
 #include "../kernels/custom/cache.cuh"
 #include "../kernels/custom/linear_attention.cuh"
+#include "../kernels/custom/pooling.cuh"
 }  // namespace
 
 extern "C" cudaError_t apxinf_swiglu_bf16_rounded(
@@ -35,6 +36,23 @@ extern "C" cudaError_t apxinf_swiglu_bf16_rounded(
   const int blocks = static_cast<int>((count + 255) / 256 > 65535 ? 65535 : (count + 255) / 256);
   swiglu_bf16_kernel<true><<<blocks, 256, 0, stream>>>(
       static_cast<const __nv_bfloat16*>(gate_up), static_cast<__nv_bfloat16*>(output), rows, inner);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_channel_layer_norm_bf16_rounded(const void* x,
+    const void* weight, const void* bias, void* out, int batches, int channels,
+    int spatial, float eps, cudaStream_t stream) {
+  if(!x||!weight||!bias||!out||batches<=0||channels<=0||spatial<=0||!std::isfinite(eps)||eps<=0
+      ||static_cast<int64_t>(batches)*spatial>2147483647) return cudaErrorInvalidValue;
+  channel_layer_norm_bf16_rounded_kernel<<<batches*spatial,256,0,stream>>>(
+      (const __nv_bfloat16*)x,(const __nv_bfloat16*)weight,(const __nv_bfloat16*)bias,(__nv_bfloat16*)out,channels,spatial,eps);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_max_pool2x2_bf16(const void* x,void* out,int height,int width,int64_t count,cudaStream_t stream) {
+  if(!x||!out||height<2||width<2||count<=0) return cudaErrorInvalidValue;
+  int blocks=static_cast<int>((count+255)/256>65535?65535:(count+255)/256);
+  max_pool2x2_bf16_kernel<<<blocks,256,0,stream>>>((const __nv_bfloat16*)x,(__nv_bfloat16*)out,height,width,count);
   return cudaGetLastError();
 }
 

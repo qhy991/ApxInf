@@ -15,6 +15,61 @@ use crate::context::CudaContext;
 use crate::cublas::CublasTranspose;
 use crate::tuning::{TacticStore, TuningDb, TuningMode, TuningPaths, TuningSession};
 
+/// BF16 linear projection with bias added before the final BF16 output rounding.
+/// Uses the bias epilogue's default legal cuBLASLt heuristic, separate from
+/// plain-GEMM tactics whose epilogue contract does not include a bias.
+pub fn bf16_bias(ctx: &CudaContext, x: &Tensor, weight: &Tensor, bias: &Tensor) -> Result<Tensor> {
+    let a = x.shape().dims();
+    let b = weight.shape().dims();
+    if a.len() != 2 || b.len() != 2 || a[1] != b[0] || bias.shape().dims() != [b[1]] {
+        return Err(Error::Other(
+            "BF16 biased GEMM expects [M,K] @ [K,N] + [N]".into(),
+        ));
+    }
+    for t in [x, weight, bias] {
+        if t.dtype() != DType::BF16 || t.device() != Device::Cuda(ctx.device_id()) {
+            return Err(Error::Other(
+                "biased GEMM requires BF16 inputs on the context device".into(),
+            ));
+        }
+        checked_bytes(DType::BF16, t.shape().dims(), "biased GEMM")?;
+    }
+    let int = |v: usize| {
+        i32::try_from(v).map_err(|_| Error::Other("biased GEMM dimension overflow".into()))
+    };
+    let (m, k, n) = (int(a[0])?, int(a[1])?, int(b[1])?);
+    let out = crate::workspace::output_buffer(
+        ctx,
+        checked_bytes(DType::BF16, &[a[0], b[1]], "biased GEMM output")?,
+    )?;
+    let xp = CudaBuffer::from_tensor(x).map_err(Error::Cuda)?;
+    let wp = CudaBuffer::from_tensor(weight).map_err(Error::Cuda)?;
+    let bp = CudaBuffer::from_tensor(bias).map_err(Error::Cuda)?;
+    unsafe {
+        if crate::workspace::may_prepare_native_resources() {
+            crate::ffi::check_cublas(crate::ffi::apxinf_static_prepare_bf16_gemm_bias(
+                m,
+                n,
+                k,
+                bp.ptr(),
+            ))
+            .map_err(Error::Cuda)?;
+        }
+        crate::ffi::check_cublas(crate::ffi::apxinf_static_bf16_gemm_bias(
+            xp.ptr(),
+            wp.ptr(),
+            bp.ptr(),
+            out.ptr(),
+            m,
+            n,
+            k,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+    Ok(out.into_tensor(apxinf_core::Shape::new(vec![a[0], b[1]]), DType::BF16))
+}
+
 pub(crate) use fp8::resolve_fused_plan as resolve_fused_fp8_plan;
 pub(crate) use plan::GemmPlanCache;
 pub use plan::{PlanSource, PreparedGemmPlan};
@@ -84,7 +139,9 @@ pub fn install_bf16_observer(
     BF16_OBSERVER.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.is_some() {
-            return Err(Error::Other("a BF16 activation observer is already installed".into()));
+            return Err(Error::Other(
+                "a BF16 activation observer is already installed".into(),
+            ));
         }
         *slot = Some(observer);
         Ok(Bf16ObserverGuard)
