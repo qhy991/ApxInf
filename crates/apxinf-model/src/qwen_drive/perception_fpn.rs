@@ -39,7 +39,7 @@ pub struct PerceptionFpn {
     stages: Vec<Stage>,
 }
 
-fn take(
+pub(super) fn take(
     ctx: &Context,
     map: &mut HashMap<String, Tensor>,
     name: &str,

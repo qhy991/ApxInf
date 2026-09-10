@@ -1,6 +1,6 @@
 //! Elementwise operator contracts.
 
-use apxinf_core::{DType, Error, Result, Shape, Tensor};
+use apxinf_core::{DType, Device, Error, Result, Shape, Tensor};
 
 use super::contracts::{
     bf16_output, check_cuda, checked_bytes, f16_output, gpu_ptr, make_gpu_tensor, matrix_shape,
@@ -314,6 +314,106 @@ pub fn scale(ctx: &CudaContext, input: &Tensor, scale_factor: f32) -> Result<Ten
 }
 pub fn bias_bf16(ctx: &CudaContext, input: &Tensor, value: Option<&Tensor>) -> Result<Tensor> {
     super::activation::bias_activation(ctx, input, value, 0)
+}
+
+/// Broadcast [N,C,1,1] into a contiguous NCHW feature map.
+pub fn expand_spatial_bf16(
+    ctx: &CudaContext,
+    x: &Tensor,
+    height: usize,
+    width: usize,
+) -> Result<Tensor> {
+    let d = x.shape().dims();
+    if d.len() != 4
+        || d[2..] != [1, 1]
+        || x.dtype() != DType::BF16
+        || x.device() != Device::Cuda(ctx.device_id())
+    {
+        return Err(Error::Other(
+            "spatial expansion requires CUDA BF16 [N,C,1,1]".into(),
+        ));
+    }
+    let shape = vec![d[0], d[1], height, width];
+    let bytes = checked_bytes(DType::BF16, &shape, "spatial expansion")?;
+    let spatial = i32::try_from(
+        height
+            .checked_mul(width)
+            .ok_or_else(|| Error::Other("spatial overflow".into()))?,
+    )
+    .map_err(|_| Error::Other("spatial dimension overflow".into()))?;
+    let count =
+        i64::try_from(bytes / 2).map_err(|_| Error::Other("spatial output overflow".into()))?;
+    let out = output_buffer(ctx, bytes)?;
+    unsafe {
+        ffi::check_cuda(ffi::apxinf_expand_spatial_bf16(
+            gpu_ptr(x)?,
+            out.ptr(),
+            spatial,
+            count,
+            ctx.stream().handle(),
+        ))
+        .map_err(Error::Cuda)?;
+    }
+    Ok(make_gpu_tensor(
+        Shape::new(shape),
+        DType::BF16,
+        ctx.device_id(),
+        out,
+    ))
+}
+
+/// Concatenate NCHW feature maps along channels using device-to-device copies.
+pub fn concat_channels_bf16(ctx: &CudaContext, inputs: &[&Tensor]) -> Result<Tensor> {
+    let first = inputs
+        .first()
+        .ok_or_else(|| Error::Other("empty channel concatenation".into()))?;
+    let d = first.shape().dims();
+    if d.len() != 4 {
+        return Err(Error::Other("channel concatenation requires NCHW".into()));
+    }
+    let mut channels = 0usize;
+    for t in inputs {
+        let s = t.shape().dims();
+        if s.len() != 4
+            || s[0] != d[0]
+            || s[2..] != d[2..]
+            || t.dtype() != DType::BF16
+            || t.device() != Device::Cuda(ctx.device_id())
+        {
+            return Err(Error::Other(
+                "channel concatenation shape/device mismatch".into(),
+            ));
+        }
+        checked_bytes(DType::BF16, s, "channel concatenation input")?;
+        channels = channels
+            .checked_add(s[1])
+            .ok_or_else(|| Error::Other("channel overflow".into()))?;
+    }
+    let shape = vec![d[0], channels, d[2], d[3]];
+    let bytes = checked_bytes(DType::BF16, &shape, "channel concatenation output")?;
+    let out = output_buffer(ctx, bytes)?;
+    let pitch = bytes / d[0];
+    let mut offset = 0;
+    for t in inputs {
+        let source_pitch = t.size_in_bytes() / d[0];
+        crate::transfers::copy_tensor_2d_to_buffer(
+            ctx,
+            t,
+            &out,
+            offset,
+            pitch,
+            source_pitch,
+            source_pitch,
+            d[0],
+        )?;
+        offset += source_pitch;
+    }
+    Ok(make_gpu_tensor(
+        Shape::new(shape),
+        DType::BF16,
+        ctx.device_id(),
+        out,
+    ))
 }
 
 pub fn concat_rows_bf16(ctx: &CudaContext, first: &Tensor, second: &Tensor) -> Result<Tensor> {

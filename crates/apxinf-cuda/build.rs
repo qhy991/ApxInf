@@ -421,6 +421,10 @@ fn main() {
                     fa2_root.display()
                 );
                 fa2_sources.push(fa2_split_hdim256);
+                if fa2_sm80 {
+                    fa2_sources
+                        .push(std::path::Path::new(&adapters_dir).join("fa2_head64_adapter.cu"));
+                }
                 if fa2_f16_sm100 {
                     println!("cargo:rustc-cfg=apxinf_fa2_f16_sm100");
                     let direct_operator = cutlass_root.join("fa2_f16_e4m3_sm100.cu");

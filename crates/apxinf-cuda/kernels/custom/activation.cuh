@@ -1,4 +1,11 @@
 #pragma once
+__global__ void relu_bf16_kernel(const __nv_bfloat16* x, __nv_bfloat16* y, int64_t count) {
+  for(int64_t i=static_cast<int64_t>(blockIdx.x)*blockDim.x+threadIdx.x;i<count;i+=static_cast<int64_t>(blockDim.x)*gridDim.x) {
+    const float v=__bfloat162float(x[i]);
+    y[i]=v<0 ? __float2bfloat16(0) : x[i];
+  }
+}
+
 
 struct alignas(8) Bf16x4 {
   __nv_bfloat162 low;

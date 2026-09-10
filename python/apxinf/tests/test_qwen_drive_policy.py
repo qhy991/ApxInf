@@ -19,7 +19,36 @@ class Tokenizer:
 class Model:
     def generate_tokens(self, ids, pixels, grids, max_new, min_new, eos):
         self.observed = (ids, pixels, grids, max_new)
+        self.observed_eos = list(eos)
         return [7, 8]
+
+
+@pytest.mark.parametrize('override,expected', [(None, [8]), ([10002], [10002])])
+def test_vqa_uses_nested_vlm_stop_ids_unless_explicitly_overridden(tmp_path, monkeypatch, override, expected):
+    import json
+    import sys
+    from types import SimpleNamespace
+    import apxinf.policies.impls.qwen_drive as module
+
+    model = Model()
+    monkeypatch.setitem(sys.modules, 'apxinf_py', SimpleNamespace(
+        QwenDriveModel=SimpleNamespace(load=lambda *a, **kw: model)))
+    monkeypatch.setattr(module, '_Tokenizer', lambda path: Tokenizer())
+    config = {
+        'vlm_config': {'image_token_id': 10003, 'vision_start_token_id': 10004,
+                       'vision_end_token_id': 10005, 'text_config': {'eos_token_id': 8}},
+        'image_patch_size': 16, 'image_spatial_merge_size': 2,
+        'image_temporal_patch_size': 2, 'history_image_pixels': 1024,
+        'current_image_pixels': 1024, 'trajectory_scale': [1, 1, 1],
+        'num_future_points': 2, 'trajectory_point_dim': 3,
+    }
+    (tmp_path / 'config.json').write_text(json.dumps(config))
+    # Outer Drive configuration ends at im_end; its nested VLM does not.
+    (tmp_path / 'generation_config.json').write_text(json.dumps({'eos_token_id': [10002, 8]}))
+    policy = QwenDrivePolicy.from_pretrained(tmp_path, mode='vqa', eos_token_ids=override)
+    frame = {'image': np.zeros((64, 96, 3), dtype=np.uint8), 'target_size': [128, 64]}
+    policy.infer({'images': [frame], 'question': 'What is here?'})
+    assert model.observed_eos == expected
 
 
 @pytest.mark.parametrize('surface', ['views', 'images'])

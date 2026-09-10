@@ -221,18 +221,13 @@ class QwenDrivePolicy:
         if eos_token_ids is not None:
             eos = list(eos_token_ids)
         else:
-            # Exactly what the reference's generate() consumed: the checkpoint's
-            # own generation_config eos list (fall back to the text config eos).
-            eos = []
-            gen_cfg = model_dir / "generation_config.json"
-            if gen_cfg.is_file():
-                value = json.loads(gen_cfg.read_text()).get("eos_token_id")
-                if isinstance(value, list):
-                    eos = [int(v) for v in value]
-                elif value is not None:
-                    eos = [int(value)]
-            if not eos:
-                eos = [int(config["vlm_config"]["text_config"]["eos_token_id"])]
+            # The reference calls the VLM created from its nested config.
+            # The outer Drive generation_config.json is not applied to it.
+            vlm_config = config["vlm_config"]
+            value = vlm_config.get("eos_token_id")
+            if value is None:
+                value = vlm_config["text_config"]["eos_token_id"]
+            eos = [int(v) for v in value] if isinstance(value, list) else [int(value)]
 
         return cls(
             model,

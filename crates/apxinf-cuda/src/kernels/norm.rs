@@ -11,6 +11,68 @@ use crate::context::CudaContext;
 use crate::ffi;
 use crate::workspace::output_buffer;
 
+/// NCHW GroupNorm with BF16 mean/rstd/epsilon and FP32 affine arithmetic.
+pub fn group_bf16_rounded(
+    ctx: &CudaContext,
+    x: &Tensor,
+    weight: &Tensor,
+    bias: &Tensor,
+    groups: usize,
+    eps: f32,
+) -> Result<Tensor> {
+    let d = x.shape().dims();
+    if d.len() != 4
+        || groups == 0
+        || d[1] % groups != 0
+        || weight.shape().dims() != [d[1]]
+        || bias.shape() != weight.shape()
+        || !eps.is_finite()
+        || eps <= 0.0
+    {
+        return Err(Error::Other(
+            "invalid NCHW GroupNorm geometry or epsilon".into(),
+        ));
+    }
+    for t in [x, weight, bias] {
+        if t.dtype() != DType::BF16 || t.device() != apxinf_core::Device::Cuda(ctx.device_id()) {
+            return Err(Error::Other(
+                "GroupNorm requires BF16 tensors on the context device".into(),
+            ));
+        }
+        checked_bytes(DType::BF16, t.shape().dims(), "GroupNorm")?;
+    }
+    let int = |v: usize| {
+        i32::try_from(v).map_err(|_| Error::Other("GroupNorm dimension overflow".into()))
+    };
+    int(d[0]
+        .checked_mul(groups)
+        .ok_or_else(|| Error::Other("GroupNorm grid overflow".into()))?)?;
+    let spatial = d[2]
+        .checked_mul(d[3])
+        .ok_or_else(|| Error::Other("GroupNorm spatial overflow".into()))?;
+    let out = output_buffer(ctx, checked_bytes(DType::BF16, d, "GroupNorm output")?)?;
+    unsafe {
+        check_cuda(ffi::apxinf_group_norm_bf16_rounded(
+            gpu_ptr(x)?,
+            gpu_ptr(weight)?,
+            gpu_ptr(bias)?,
+            out.ptr(),
+            int(d[0])?,
+            int(d[1])?,
+            int(spatial)?,
+            int(groups)?,
+            eps,
+            ctx.stream().handle(),
+        ))?;
+    }
+    Ok(make_gpu_tensor(
+        x.shape().clone(),
+        DType::BF16,
+        ctx.device_id(),
+        out,
+    ))
+}
+
 /// NCHW channel LayerNorm with BF16 arithmetic boundaries, including the affine step.
 pub fn channel_layer_bf16_rounded(
     ctx: &CudaContext,

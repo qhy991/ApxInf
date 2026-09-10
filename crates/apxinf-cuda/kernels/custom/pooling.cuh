@@ -1,4 +1,18 @@
 #pragma once
+// Adaptive average pooling to one spatial cell, with FP32 accumulation.
+__global__ void global_mean_bf16_kernel(const __nv_bfloat16* x, __nv_bfloat16* y, int spatial) {
+  const int64_t base=static_cast<int64_t>(blockIdx.x)*spatial;
+  float sum=0;
+  for(int i=threadIdx.x;i<spatial;i+=blockDim.x) sum+=__bfloat162float(x[base+i]);
+  __shared__ float sums[256];
+  sums[threadIdx.x]=sum;__syncthreads();
+  for(int offset=128;offset>0;offset>>=1) {
+    if(threadIdx.x<offset) sums[threadIdx.x]+=sums[threadIdx.x+offset];
+    __syncthreads();
+  }
+  if(threadIdx.x==0) y[blockIdx.x]=__float2bfloat16(sums[0]/spatial);
+}
+
 // NCHW 2x2 max pooling, stride 2, no padding, floor output dimensions.
 __global__ void max_pool2x2_bf16_kernel(const __nv_bfloat16* x, __nv_bfloat16* y,
     int height, int width, int64_t count) {

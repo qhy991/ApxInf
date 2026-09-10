@@ -200,17 +200,18 @@ pub(crate) fn composed_gqa_bf16(
     let group = heads / kv_heads;
     let base = if causal { key_tokens - q_shape[0] } else { 0 };
     let alpha = (head_dim as f32).sqrt().recip(); // FIX (implement_r9): softmax scale bound to the true head dim 256
-    // TEMP-DIAG (implement_r5, successor synthesis_r4 bundle 2): value-level attn_mix probe
-    // for the composed-causal path, absorbing the r3 P-invariant lines. Fires on prefill
-    // full-attention calls only (q_rows>1; Rust && short-circuits so single-row decode calls
-    // never increment the counter): fetch counts 0..7 are the 8 prefill full layers; fire at
-    // count 0 (text layer 3) and count 7 (text layer 31). Probe rows {3, 5000, q_rows-16,
-    // q_rows-13, q_rows-1} = {3, 5000, 10441, 10444, 10456} at the measured 10457-row prefill,
-    // head 0 (+ head 1 at q_rows-13 for the GQA pairing leg, layer 3 only). Host math on the
-    // already-resident fp32 buffers (qf32/kf32/vf32/out_f32), no new kernels; one-time ~86MB
-    // K/V readbacks per fired layer; revert in the acceptance-bound revision.
+                                                  // TEMP-DIAG (implement_r5, successor synthesis_r4 bundle 2): value-level attn_mix probe
+                                                  // for the composed-causal path, absorbing the r3 P-invariant lines. Fires on prefill
+                                                  // full-attention calls only (q_rows>1; Rust && short-circuits so single-row decode calls
+                                                  // never increment the counter): fetch counts 0..7 are the 8 prefill full layers; fire at
+                                                  // count 0 (text layer 3) and count 7 (text layer 31). Probe rows {3, 5000, q_rows-16,
+                                                  // q_rows-13, q_rows-1} = {3, 5000, 10441, 10444, 10456} at the measured 10457-row prefill,
+                                                  // head 0 (+ head 1 at q_rows-13 for the GQA pairing leg, layer 3 only). Host math on the
+                                                  // already-resident fp32 buffers (qf32/kf32/vf32/out_f32), no new kernels; one-time ~86MB
+                                                  // K/V readbacks per fired layer; revert in the acceptance-bound revision.
     static ATTN_PROBE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let attn_probe = causal && q_shape[0] > 1
+    let attn_probe = causal
+        && q_shape[0] > 1
         && matches!(
             ATTN_PROBE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             0 | 7
@@ -228,24 +229,39 @@ pub(crate) fn composed_gqa_bf16(
     const C_Q: usize = 1024; // FIX (implement_r9): query-chunk rows; bounds the fp32 scores transient
     let qf32_buf = CudaBuffer::alloc(q_shape[0] * heads * head_dim * 4, ctx.device_id())
         .map_err(Error::Cuda)?; // FIX (implement_r9)
-    let qf32_t = qf32_buf.as_tensor(q.shape().clone(), DType::F32).map_err(Error::Cuda)?; // FIX (implement_r9)
+    let qf32_t = qf32_buf
+        .as_tensor(q.shape().clone(), DType::F32)
+        .map_err(Error::Cuda)?; // FIX (implement_r9)
     super::linear_attention::cast_bf16_to_f32(ctx, q, &qf32_t)?; // FIX (implement_r9)
     let kf32_buf = CudaBuffer::alloc(k_shape[0] * kv_heads * head_dim * 4, ctx.device_id())
         .map_err(Error::Cuda)?; // FIX (implement_r9)
-    let kf32_t = kf32_buf.as_tensor(k.shape().clone(), DType::F32).map_err(Error::Cuda)?; // FIX (implement_r9)
+    let kf32_t = kf32_buf
+        .as_tensor(k.shape().clone(), DType::F32)
+        .map_err(Error::Cuda)?; // FIX (implement_r9)
     super::linear_attention::cast_bf16_to_f32(ctx, k, &kf32_t)?; // FIX (implement_r9)
     let vf32_buf = CudaBuffer::alloc(k_shape[0] * kv_heads * head_dim * 4, ctx.device_id())
         .map_err(Error::Cuda)?; // FIX (implement_r9)
-    let vf32_t = vf32_buf.as_tensor(v.shape().clone(), DType::F32).map_err(Error::Cuda)?; // FIX (implement_r9)
+    let vf32_t = vf32_buf
+        .as_tensor(v.shape().clone(), DType::F32)
+        .map_err(Error::Cuda)?; // FIX (implement_r9)
     super::linear_attention::cast_bf16_to_f32(ctx, v, &vf32_t)?; // FIX (implement_r9)
     let out_f32_buf = CudaBuffer::alloc(q_shape[0] * heads * head_dim * 4, ctx.device_id())
         .map_err(Error::Cuda)?; // FIX (implement_r9)
-    let out_f32_t = out_f32_buf.as_tensor(q.shape().clone(), DType::F32).map_err(Error::Cuda)?; // FIX (implement_r9)
-    let scores = CudaBuffer::alloc(heads * C_Q.min(q_shape[0]) * key_tokens * 4, ctx.device_id())
-        .map_err(Error::Cuda)?; // FIX (implement_r10): fp32 [C,heads,kend] token-major slab reused per chunk; min() is byte-identical at the r9 prefill geometry (q=10457>C_Q=1024) and shrinks the decode Q=1 slab from ~685MB to heads*kv*4 (~669KB); beta=0 GEMMs write every read cell
+    let out_f32_t = out_f32_buf
+        .as_tensor(q.shape().clone(), DType::F32)
+        .map_err(Error::Cuda)?; // FIX (implement_r9)
+    let scores = CudaBuffer::alloc(
+        heads * C_Q.min(q_shape[0]) * key_tokens * 4,
+        ctx.device_id(),
+    )
+    .map_err(Error::Cuda)?; // FIX (implement_r10): fp32 [C,heads,kend] token-major slab reused per chunk; min() is byte-identical at the r9 prefill geometry (q=10457>C_Q=1024) and shrinks the decode Q=1 slab from ~685MB to heads*kv*4 (~669KB); beta=0 GEMMs write every read cell
     for t0 in (0..q_shape[0]).step_by(C_Q) {
         let c_len = C_Q.min(q_shape[0] - t0);
-        let kend = if causal { base + t0 + c_len } else { key_tokens };
+        let kend = if causal {
+            base + t0 + c_len
+        } else {
+            key_tokens
+        };
         // An offset beyond all keys makes the same softmax kernel unmasked.
         let kv_offset = if causal { base + t0 } else { key_tokens } as u32;
         for h in 0..heads {
@@ -410,7 +426,11 @@ pub(crate) fn composed_gqa_bf16(
     // on the captured rows plus the already-resident fp32 K/V buffers (~86MB one-time readbacks
     // per fired layer); emits 8 lines at layer 3 (5 per-row + gqa + kv + tail) and 7 at layer 31.
     if attn_probe {
-        let layer_tag = if ATTN_PROBE.load(std::sync::atomic::Ordering::Relaxed) == 1 { 3 } else { 31 };
+        let layer_tag = if ATTN_PROBE.load(std::sync::atomic::Ordering::Relaxed) == 1 {
+            3
+        } else {
+            31
+        };
         let kv_len = k_shape[0];
         let read_kv = |buf: &CudaBuffer| -> Result<Vec<f32>> {
             let bytes = crate::transfers::copy_device_to_host(
@@ -432,9 +452,8 @@ pub(crate) fn composed_gqa_bf16(
             .unwrap_or_default();
         let seg_of = |j: usize| -> u8 { seg_map.get(j).copied().unwrap_or(0) };
         // Row j of kv head g in the packed [kv_len, kv_heads, head_dim] fp32 host copies.
-        let k_slice = |j: usize, g: usize| -> (usize, usize) {
-            ((j * kv_heads + g) * head_dim, head_dim)
-        };
+        let k_slice =
+            |j: usize, g: usize| -> (usize, usize) { ((j * kv_heads + g) * head_dim, head_dim) };
         if let Ok(mut lines) = ATTN_DIAG_LINES.lock() {
             for (row, kend_r, p_row, q_row, out_row) in &probe_store {
                 let valid = (*row + 1).min(*kend_r);
@@ -461,7 +480,11 @@ pub(crate) fn composed_gqa_bf16(
                     }
                 }
                 let keff = entropy.exp();
-                let out_l2: f64 = out_row.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>().sqrt();
+                let out_l2: f64 = out_row
+                    .iter()
+                    .map(|&v| (v as f64) * (v as f64))
+                    .sum::<f64>()
+                    .sqrt();
                 // M5: affine score reconstruction s = ln(p/p_max) vs alpha*(q.K_j) at kv head 0.
                 let mut s_pred: Vec<f32> = Vec::with_capacity(valid);
                 let mut s_pred_max = f32::NEG_INFINITY;
@@ -490,10 +513,18 @@ pub(crate) fn composed_gqa_bf16(
                     }
                 }
                 let mut p_top: Vec<usize> = (0..valid).collect();
-                p_top.sort_by(|&a, &b| p_row[b].partial_cmp(&p_row[a]).unwrap_or(std::cmp::Ordering::Equal));
+                p_top.sort_by(|&a, &b| {
+                    p_row[b]
+                        .partial_cmp(&p_row[a])
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
                 p_top.truncate(8);
                 let mut s_top: Vec<usize> = (0..valid).collect();
-                s_top.sort_by(|&a, &b| s_pred[b].partial_cmp(&s_pred[a]).unwrap_or(std::cmp::Ordering::Equal));
+                s_top.sort_by(|&a, &b| {
+                    s_pred[b]
+                        .partial_cmp(&s_pred[a])
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
                 s_top.truncate(8);
                 let m5agr = p_top == s_top;
                 // M6: PV reconstruction and uniform-mean distance at kv head 0.
@@ -653,7 +684,9 @@ pub(crate) fn composed_gqa_bf16(
         }
     }
     let out_bf16 = output_buffer(ctx, q.size_in_bytes())?; // FIX (implement_r9)
-    let out_bf16_t = out_bf16.as_tensor(q.shape().clone(), DType::BF16).map_err(Error::Cuda)?; // FIX (implement_r9)
+    let out_bf16_t = out_bf16
+        .as_tensor(q.shape().clone(), DType::BF16)
+        .map_err(Error::Cuda)?; // FIX (implement_r9)
     super::linear_attention::cast_f32_to_bf16(ctx, &out_f32_t, &out_bf16_t)?; // FIX (implement_r9)
     Ok(out_bf16_t)
 }
@@ -1764,7 +1797,8 @@ pub fn segmented_mha_bf16(
     #[cfg(any(apxinf_fa2_sm80, apxinf_fa2_f16_sm100))]
     {
         // TEMP-DIAG (implement_r4): per-call gate + clock; revert in the acceptance-bound revision.
-        static MHA_DIAG_CALL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static MHA_DIAG_CALL: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
         let mha_diag_call = MHA_DIAG_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mha_diag = mha_diag_call < 2; // blocks 0 and 1 are the receipt-implicated calls
         let mha_t0 = std::time::Instant::now();
@@ -1776,30 +1810,102 @@ pub fn segmented_mha_bf16(
         // stay fp32 end-to-end and P is rounded to bf16 for the PV MMA exactly as FA2 does.
         // Revert/replace in the acceptance-bound revision per the prevailing marker policy.
         let orig_head_dim = shape[2]; // FIX (implement_r6)
-        if orig_head_dim == 64 { // FIX (implement_r8): composed per-segment attention at the true dim
-            let qf32_buf = CudaBuffer::alloc(shape[0] * shape[1] * orig_head_dim * 4, ctx.device_id())
+        #[cfg(apxinf_fa2_sm80)]
+        if orig_head_dim == 64 {
+            if host_offsets.first() != Some(&0)
+                || host_offsets.last().map(|&v| v as usize) != Some(shape[0])
+                || host_offsets
+                    .windows(2)
+                    .any(|v| v[1] < v[0] || (v[1] - v[0]) as usize > max_tokens)
+                || [q, k, v]
+                    .iter()
+                    .any(|t| t.device() != Device::Cuda(ctx.device_id()))
+            {
+                return Err(Error::Other("segmented MHA offsets/device mismatch".into()));
+            }
+            let bytes = checked_bytes(DType::BF16, shape, "segmented head64 MHA")?;
+            let output = output_buffer(ctx, bytes)?;
+            let row_bytes = checked_bytes(DType::BF16, &[shape[1], 64], "head64 row")?;
+            for bounds in host_offsets.windows(2) {
+                let start = bounds[0] as usize;
+                let tokens = (bounds[1] - bounds[0]) as usize;
+                if tokens == 0 {
+                    continue;
+                }
+                let piece = |tensor: &Tensor| -> Result<Tensor> {
+                    CudaBuffer::from_tensor(tensor)
+                        .map_err(Error::Cuda)?
+                        .view(start * row_bytes, tokens * row_bytes)
+                        .map_err(Error::Cuda)?
+                        .as_tensor(Shape::new(vec![tokens, shape[1], 64]), DType::BF16)
+                        .map_err(Error::Cuda)
+                };
+                let (sq, sk, sv) = (piece(q)?, piece(k)?, piece(v)?);
+                let segment = fa2_attention_splitkv(
+                    ctx, &sq, &sk, &sv, 1, tokens, tokens, shape[1], shape[1], 64, false,
+                )?;
+                crate::transfers::copy_tensor_2d_to_buffer(
+                    ctx,
+                    &segment,
+                    &output,
+                    start * row_bytes,
+                    row_bytes,
+                    row_bytes,
+                    row_bytes,
+                    tokens,
+                )?;
+            }
+            return Ok(make_gpu_tensor(
+                q.shape().clone(),
+                DType::BF16,
+                ctx.device_id(),
+                output,
+            ));
+        }
+        #[cfg(not(apxinf_fa2_sm80))]
+        if orig_head_dim == 64 {
+            // FIX (implement_r8): composed per-segment attention at the true dim
+            let qf32_buf =
+                CudaBuffer::alloc(shape[0] * shape[1] * orig_head_dim * 4, ctx.device_id())
+                    .map_err(Error::Cuda)?; // FIX (implement_r8)
+            let qf32_t = qf32_buf
+                .as_tensor(q.shape().clone(), DType::F32)
                 .map_err(Error::Cuda)?; // FIX (implement_r8)
-            let qf32_t = qf32_buf.as_tensor(q.shape().clone(), DType::F32).map_err(Error::Cuda)?; // FIX (implement_r8)
             super::linear_attention::cast_bf16_to_f32(ctx, q, &qf32_t)?; // FIX (implement_r8)
-            let kf32_buf = CudaBuffer::alloc(shape[0] * shape[1] * orig_head_dim * 4, ctx.device_id())
+            let kf32_buf =
+                CudaBuffer::alloc(shape[0] * shape[1] * orig_head_dim * 4, ctx.device_id())
+                    .map_err(Error::Cuda)?; // FIX (implement_r8)
+            let kf32_t = kf32_buf
+                .as_tensor(k.shape().clone(), DType::F32)
                 .map_err(Error::Cuda)?; // FIX (implement_r8)
-            let kf32_t = kf32_buf.as_tensor(k.shape().clone(), DType::F32).map_err(Error::Cuda)?; // FIX (implement_r8)
             super::linear_attention::cast_bf16_to_f32(ctx, k, &kf32_t)?; // FIX (implement_r8)
             let output = output_buffer(ctx, q.size_in_bytes())?; // FIX (implement_r8): packed [T,16,64]; out_bytes=85,327,872 signs the composed route
-            // TEMP-DIAG (implement_r4): entry-alloc bracket; revert in the acceptance-bound revision.
+                                                                 // TEMP-DIAG (implement_r4): entry-alloc bracket; revert in the acceptance-bound revision.
             if mha_diag {
-                eprintln!("[qwen_drive] mha_alloc_ok call={} out_bytes={} lse_bytes={} ms={}",
-                          mha_diag_call, q.size_in_bytes(),
-                          0, mha_t0.elapsed().as_millis());
+                eprintln!(
+                    "[qwen_drive] mha_alloc_ok call={} out_bytes={} lse_bytes={} ms={}",
+                    mha_diag_call,
+                    q.size_in_bytes(),
+                    0,
+                    mha_t0.elapsed().as_millis()
+                );
             }
             for (seg_idx, bounds) in host_offsets.windows(2).enumerate() {
                 let start = bounds[0] as usize;
                 let tokens = (bounds[1] - bounds[0]) as usize;
-                if tokens == 0 { continue; } // FIX (implement_r8): degenerate-segment guard
-                // TEMP-DIAG (implement_r4): pre-launch segment marker; revert in the acceptance-bound revision.
+                if tokens == 0 {
+                    continue;
+                } // FIX (implement_r8): degenerate-segment guard
+                  // TEMP-DIAG (implement_r4): pre-launch segment marker; revert in the acceptance-bound revision.
                 if mha_diag {
-                    eprintln!("[qwen_drive] mha_seg call={} i={} start={} tokens={} ms={}",
-                              mha_diag_call, seg_idx, start, tokens, mha_t0.elapsed().as_millis());
+                    eprintln!(
+                        "[qwen_drive] mha_seg call={} i={} start={} tokens={} ms={}",
+                        mha_diag_call,
+                        seg_idx,
+                        start,
+                        tokens,
+                        mha_t0.elapsed().as_millis()
+                    );
                 }
                 let scores = CudaBuffer::alloc(shape[1] * tokens * tokens * 4, ctx.device_id())
                     .map_err(Error::Cuda)?; // FIX (implement_r8): fp32 [heads,tokens,tokens]
@@ -1816,7 +1922,8 @@ pub fn segmented_mha_bf16(
                         (start * shape[1] * orig_head_dim + head * orig_head_dim) * 4,
                         ((tokens - 1) * shape[1] * orig_head_dim + orig_head_dim) * 4,
                     )?; // FIX (implement_r8)
-                    let scores_head = buffer_slice(&scores, head * tokens * tokens * 4, tokens * tokens * 4)?; // FIX (implement_r8)
+                    let scores_head =
+                        buffer_slice(&scores, head * tokens * tokens * 4, tokens * tokens * 4)?; // FIX (implement_r8)
                     ctx.cublas()
                         .gemm_ex(
                             DType::F32,
@@ -1847,7 +1954,8 @@ pub fn segmented_mha_bf16(
                     .map_err(Error::Cuda)?; // FIX (implement_r8): tiled block-per-row softmax, fp32 in / bf16 out
                 }
                 for head in 0..shape[1] {
-                    let probs_head = buffer_slice(&probs, head * tokens * tokens * 2, tokens * tokens * 2)?; // FIX (implement_r8)
+                    let probs_head =
+                        buffer_slice(&probs, head * tokens * tokens * 2, tokens * tokens * 2)?; // FIX (implement_r8)
                     let v_head = tensor_slice(
                         v,
                         (start * shape[1] * orig_head_dim + head * orig_head_dim) * 2,
@@ -1881,29 +1989,36 @@ pub fn segmented_mha_bf16(
                 // TEMP-DIAG (implement_r4): post-launch retirement probe; converts an async fault into a loud Err; revert in the acceptance-bound revision.
                 if mha_diag {
                     ctx.synchronize().map_err(Error::Cuda)?;
-                    eprintln!("[qwen_drive] mha_seg_ok call={} i={} ms={}",
-                              mha_diag_call, seg_idx, mha_t0.elapsed().as_millis());
+                    eprintln!(
+                        "[qwen_drive] mha_seg_ok call={} i={} ms={}",
+                        mha_diag_call,
+                        seg_idx,
+                        mha_t0.elapsed().as_millis()
+                    );
                 }
             }
             // TEMP-DIAG (implement_r4): separates "12 launches retired" from "epilogue cudaFree wedged"; revert in the acceptance-bound revision.
             if mha_diag {
-                eprintln!("[qwen_drive] mha_loop_done call={} ms={}", mha_diag_call, mha_t0.elapsed().as_millis());
+                eprintln!(
+                    "[qwen_drive] mha_loop_done call={} ms={}",
+                    mha_diag_call,
+                    mha_t0.elapsed().as_millis()
+                );
             }
-            let result = make_gpu_tensor(
-                q.shape().clone(),
-                DType::BF16,
-                ctx.device_id(),
-                output,
-            );
+            let result = make_gpu_tensor(q.shape().clone(), DType::BF16, ctx.device_id(), output);
             return Ok(result);
         }
         let output = output_buffer(ctx, q.size_in_bytes())?;
         let softmax_lse = output_buffer(ctx, shape[0] * shape[1] * std::mem::size_of::<f32>())?;
         // TEMP-DIAG (implement_r4): entry-alloc bracket; revert in the acceptance-bound revision.
         if mha_diag {
-            eprintln!("[qwen_drive] mha_alloc_ok call={} out_bytes={} lse_bytes={} ms={}",
-                      mha_diag_call, q.size_in_bytes(),
-                      shape[0] * shape[1] * std::mem::size_of::<f32>(), mha_t0.elapsed().as_millis());
+            eprintln!(
+                "[qwen_drive] mha_alloc_ok call={} out_bytes={} lse_bytes={} ms={}",
+                mha_diag_call,
+                q.size_in_bytes(),
+                shape[0] * shape[1] * std::mem::size_of::<f32>(),
+                mha_t0.elapsed().as_millis()
+            );
         }
         let row_bytes = shape[1] * shape[2] * DType::BF16.size_in_bytes();
         let lse_row_bytes = shape[1] * std::mem::size_of::<f32>();
@@ -1912,8 +2027,14 @@ pub fn segmented_mha_bf16(
             let tokens = (bounds[1] - bounds[0]) as usize;
             // TEMP-DIAG (implement_r4): pre-launch segment marker; revert in the acceptance-bound revision.
             if mha_diag {
-                eprintln!("[qwen_drive] mha_seg call={} i={} start={} tokens={} ms={}",
-                          mha_diag_call, seg_idx, start, tokens, mha_t0.elapsed().as_millis());
+                eprintln!(
+                    "[qwen_drive] mha_seg call={} i={} start={} tokens={} ms={}",
+                    mha_diag_call,
+                    seg_idx,
+                    start,
+                    tokens,
+                    mha_t0.elapsed().as_millis()
+                );
             }
             unsafe {
                 ffi::check_cuda(ffi::apxinf_static_fa2_bf16(
@@ -1940,20 +2061,23 @@ pub fn segmented_mha_bf16(
             // TEMP-DIAG (implement_r4): post-launch retirement probe; converts an async fault into a loud Err; revert in the acceptance-bound revision.
             if mha_diag {
                 ctx.synchronize().map_err(Error::Cuda)?;
-                eprintln!("[qwen_drive] mha_seg_ok call={} i={} ms={}",
-                          mha_diag_call, seg_idx, mha_t0.elapsed().as_millis());
+                eprintln!(
+                    "[qwen_drive] mha_seg_ok call={} i={} ms={}",
+                    mha_diag_call,
+                    seg_idx,
+                    mha_t0.elapsed().as_millis()
+                );
             }
         }
         // TEMP-DIAG (implement_r4): separates "12 launches retired" from "epilogue cudaFree wedged"; revert in the acceptance-bound revision.
         if mha_diag {
-            eprintln!("[qwen_drive] mha_loop_done call={} ms={}", mha_diag_call, mha_t0.elapsed().as_millis());
+            eprintln!(
+                "[qwen_drive] mha_loop_done call={} ms={}",
+                mha_diag_call,
+                mha_t0.elapsed().as_millis()
+            );
         }
-        let result = make_gpu_tensor(
-            q.shape().clone(),
-            DType::BF16,
-            ctx.device_id(),
-            output,
-        );
+        let result = make_gpu_tensor(q.shape().clone(), DType::BF16, ctx.device_id(), output);
         return Ok(result);
     }
     #[cfg(not(any(apxinf_fa2_sm80, apxinf_fa2_f16_sm100)))]

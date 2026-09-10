@@ -66,6 +66,7 @@ extern "C" {
         head_k_dim: i32,
         scale: f32,
         eps: f32,
+        recurrent: i32,
         stream: cudaStream_t,
     ) -> cudaError_t;
     #[allow(clippy::too_many_arguments)]

@@ -20,6 +20,7 @@ namespace {
 #include "../kernels/custom/preprocess.cuh"
 #include "../kernels/custom/attention.cuh"
 #include "../kernels/custom/normalization.cuh"
+#include "../kernels/custom/group_normalization.cuh"
 #include "../kernels/custom/activation.cuh"
 #include "../kernels/custom/embedding.cuh"
 #include "../kernels/custom/elementwise.cuh"
@@ -28,6 +29,32 @@ namespace {
 #include "../kernels/custom/linear_attention.cuh"
 #include "../kernels/custom/pooling.cuh"
 }  // namespace
+
+extern "C" cudaError_t apxinf_group_norm_bf16_rounded(const void* x,const void* w,const void* b,void* y,
+    int n,int c,int spatial,int groups,float eps,cudaStream_t stream) {
+  if(!x||!w||!b||!y||n<=0||c<=0||spatial<=0||groups<=0||c%groups) return cudaErrorInvalidValue;
+  group_norm_bf16_rounded_kernel<<<n*groups,256,0,stream>>>(
+      (const __nv_bfloat16*)x,(const __nv_bfloat16*)w,(const __nv_bfloat16*)b,(__nv_bfloat16*)y,c,spatial,groups,eps);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_global_mean_bf16(const void* x,void* y,int rows,int spatial,cudaStream_t stream) {
+  if(!x||!y||rows<=0||spatial<=0) return cudaErrorInvalidValue;
+  global_mean_bf16_kernel<<<rows,256,0,stream>>>((const __nv_bfloat16*)x,(__nv_bfloat16*)y,spatial);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_relu_bf16(const void* x,void* y,int64_t count,cudaStream_t stream) {
+  if(!x||!y||count<=0) return cudaErrorInvalidValue;
+  relu_bf16_kernel<<<256,256,0,stream>>>((const __nv_bfloat16*)x,(__nv_bfloat16*)y,count);
+  return cudaGetLastError();
+}
+
+extern "C" cudaError_t apxinf_expand_spatial_bf16(const void* x,void* y,int spatial,int64_t count,cudaStream_t stream) {
+  if(!x||!y||spatial<=0||count<=0)return cudaErrorInvalidValue;
+  expand_spatial_bf16_kernel<<<256,256,0,stream>>>((const __nv_bfloat16*)x,(__nv_bfloat16*)y,spatial,count);
+  return cudaGetLastError();
+}
 
 extern "C" cudaError_t apxinf_swiglu_bf16_rounded(
     const void* gate_up, void* output, int rows, int inner, cudaStream_t stream) {
@@ -809,7 +836,7 @@ extern "C" cudaError_t apxinf_static_causal_conv1d_silu_bf16(
 extern "C" cudaError_t apxinf_static_gdn_qk_prep_bf16(
     const void* conv_out, void* q_out, void* k_out,
     int seq, int seq_pad, int conv_dim, int key_dim,
-    int num_v_heads, int head_k_dim, float scale, float eps,
+    int num_v_heads, int head_k_dim, float scale, float eps, int recurrent,
     cudaStream_t stream) {
   if (conv_out == nullptr || q_out == nullptr || k_out == nullptr ||
       seq <= 0 || seq_pad < seq || conv_dim < 2 * key_dim || key_dim <= 0 ||
@@ -824,7 +851,7 @@ extern "C" cudaError_t apxinf_static_gdn_qk_prep_bf16(
   gdn_qk_prep_kernel<<<dim3(seq, num_k_heads), head_k_dim, smem, stream>>>(
       static_cast<const __nv_bfloat16*>(conv_out),
       static_cast<float*>(q_out), static_cast<float*>(k_out),
-      seq, seq_pad, conv_dim, key_dim, num_v_heads, head_k_dim, scale, eps);
+      seq, seq_pad, conv_dim, key_dim, num_v_heads, head_k_dim, scale, eps, recurrent != 0);
   return cudaGetLastError();
 }
 
@@ -940,7 +967,7 @@ extern "C" cudaError_t apxinf_static_gdn_chunk_state_f32(
       static_cast<const float*>(vt_in), static_cast<const float*>(kcd_in),
       static_cast<float*>(state), static_cast<__nv_bfloat16*>(out),
       seq, seq_pad, head_k_dim, head_v_dim, chunk_size, total_chunks,
-      out_row_width);
+      out_row_width, static_cast<float>(1.0 / std::sqrt(static_cast<double>(head_k_dim))));
   return cudaGetLastError();
 }
 

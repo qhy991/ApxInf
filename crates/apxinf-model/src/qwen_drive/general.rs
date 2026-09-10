@@ -484,13 +484,19 @@ impl QwenDriveModel {
             k_tag, kind, cells[2], cells[1], cells[0], l2s[2], l2s[1], l2s[0]))
     }
 
-    fn forward_mlp(&self, x: Tensor, post_norm: &Tensor, gate_up_w: &Tensor, down_w: &Tensor) -> Result<Tensor> {
+    fn forward_mlp(&self, x: Tensor, post_norm: &Tensor, gate_up_w: &Tensor, down_w: &Tensor, trace: bool) -> Result<Tensor> {
         let ctx = self.ctx();
         let eps = self.config.text.rms_norm_eps;
         let normed = la::rms_norm_plus1(ctx, &x, post_norm, eps)?;
         let gu = gemm::matmul(ctx, &normed, gate_up_w)?;
         let act = activation::swiglu_bf16_rounded(ctx, &gu)?;
         let down = gemm::matmul(ctx, &act, down_w)?;
+        if trace {
+            trace_rows("text0_post_norm", &normed)?;
+            trace_rows("text0_gate_up", &gu)?;
+            trace_rows("text0_swiglu", &act)?;
+            trace_rows("text0_down", &down)?;
+        }
         elementwise::add(ctx, &x, &down)
     }
 
@@ -546,7 +552,7 @@ impl QwenDriveModel {
         la::sigmoid_gate_mul(ctx, &attn, &fused, heads, head_dim)?;
         let proj = gemm::matmul(ctx, &attn, &w.o_w)?;
         let hidden = elementwise::add(ctx, &x, &proj)?;
-        self.forward_mlp(hidden, &w.post_norm, &w.gate_up_w, &w.down_w)
+        self.forward_mlp(hidden, &w.post_norm, &w.gate_up_w, &w.down_w, false)
     }
 
     fn forward_gdn(
@@ -577,7 +583,28 @@ impl QwenDriveModel {
         let has_state = self.cache_len > 0;
 
         let normed = la::rms_norm_plus1(ctx, &x, &w.input_norm, eps)?;
-        let zba = gemm::matmul(ctx, &normed, &w.qkvzba_w)?;
+        // Preserve all four reference GEMM geometries. Transposing or fusing
+        // these weights selects different BF16 reductions in cuBLAS.
+        let project = |weight: &Tensor, columns: usize| -> Result<Tensor> {
+            let projected = device_tensor(ctx, &[seq, columns], DType::BF16)?;
+            gemm::write_ex(ctx, DType::BF16, CublasTranspose::None,
+                CublasTranspose::Transpose, seq, columns, text.hidden_size,
+                1.0, &DeviceBuffer::from_tensor(&normed).map_err(Error::Cuda)?, text.hidden_size as i32,
+                &DeviceBuffer::from_tensor(weight).map_err(Error::Cuda)?, text.hidden_size as i32,
+                0.0, &DeviceBuffer::from_tensor(&projected).map_err(Error::Cuda)?, columns as i32)?;
+            projected.reshape(vec![seq, columns, 1, 1])
+        };
+        let qkv = project(&w.qkv_w, conv_dim)?;
+        let z = project(&w.z_w, value_dim)?;
+        let b = project(&w.b_w, num_v_heads)?;
+        let a = project(&w.a_w, num_v_heads)?;
+        let zba = elementwise::concat_channels_bf16(ctx, &[&qkv, &z, &b, &a])?
+            .reshape(vec![seq, conv_dim + value_dim + 2 * num_v_heads])?;
+        if layer_idx == 0 && seq > 1 {
+            trace_rows("text0_input", &x)?;
+            trace_rows("text0_input_norm", &normed)?;
+            trace_rows("text0_zba", &zba)?;
+        }
         let conv_out = device_tensor(ctx, &[seq, conv_dim], DType::BF16)?;
         let (state_current, state_next) = match &self.caches[layer_idx] {
             LayerCache::Gdn { conv_state_a, conv_state_b, flip, .. } => {
@@ -601,6 +628,7 @@ impl QwenDriveModel {
         if let LayerCache::Gdn { flip, .. } = &mut self.caches[layer_idx] {
             *flip = !*flip;
         }
+        if layer_idx == 0 && seq > 1 { trace_rows("text0_conv_silu", &conv_out)?; }
 
         let recurrent_decode = has_state && seq == 1;
         let seq_pad = if recurrent_decode { 1 } else { seq.div_ceil(GDN_CHUNK) * GDN_CHUNK };
@@ -609,7 +637,7 @@ impl QwenDriveModel {
         let v_buf = alloc_zeros(ctx, num_v_heads * seq_pad * head_v * DType::F32.size_in_bytes())?;
         let beta_buf = alloc_zeros(ctx, num_v_heads * seq_pad * DType::F32.size_in_bytes())?;
         let g_buf = alloc_zeros(ctx, num_v_heads * seq_pad * DType::F32.size_in_bytes())?;
-        la::gdn_qk_prep(ctx, &conv_out, &q_buf, &k_buf, seq_pad, num_k_heads, num_v_heads, head_k, key_dim, 1e-6)?;
+        la::gdn_qk_prep(ctx, &conv_out, &q_buf, &k_buf, seq_pad, num_k_heads, num_v_heads, head_k, key_dim, recurrent_decode, 1e-6)?;
         la::gdn_vb_prep(
             ctx,
             &conv_out,
@@ -674,6 +702,7 @@ impl QwenDriveModel {
                 GDN_CHUNK,
             )?;
         }
+        if layer_idx == 0 && seq > 1 { trace_rows("text0_core", &gdn_out)?; }
         // TEMP-DIAG (implement_r16): GDN layer-0 zero-history fingerprint (shift_gdn_r15 P2) --
         // row 0 is the unique zero-history row: correct math yields a finite normal-magnitude
         // row, while ANY one-position-lag mechanism (conv window, T-diagonal exclusion, lagged
@@ -714,7 +743,12 @@ impl QwenDriveModel {
         let gated = gated.reshape(vec![seq, value_dim])?;
         let proj = gemm::matmul(ctx, &gated, &w.out_w)?;
         let hidden = elementwise::add(ctx, &x, &proj)?;
-        self.forward_mlp(hidden, &w.post_norm, &w.gate_up_w, &w.down_w)
+        if layer_idx == 0 && seq > 1 {
+            trace_rows("text0_gated_norm", &gated)?;
+            trace_rows("text0_out_proj", &proj)?;
+            trace_rows("text0_residual", &hidden)?;
+        }
+        self.forward_mlp(hidden, &w.post_norm, &w.gate_up_w, &w.down_w, layer_idx == 0 && seq > 1)
     }
 
     /// Run the text transformer over one token span, appending to the hybrid

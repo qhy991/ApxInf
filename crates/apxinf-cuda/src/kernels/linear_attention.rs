@@ -10,8 +10,7 @@
 use apxinf_core::{DType, Error, Result, Shape, Tensor};
 
 use super::contracts::{
-    bf16_output, check_cuda, gpu_ptr, make_gpu_tensor, matrix_shape, optional_ptr,
-    require_buffers,
+    bf16_output, check_cuda, gpu_ptr, make_gpu_tensor, matrix_shape, optional_ptr, require_buffers,
 };
 use crate::buffer::CudaBuffer;
 use crate::context::CudaContext;
@@ -20,7 +19,9 @@ use crate::workspace::output_buffer;
 
 fn expect_bf16(tensor: &Tensor, name: &str) -> Result<()> {
     if tensor.dtype() != DType::BF16 {
-        return Err(Error::Other(format!("linear-attention {name} expects BF16")));
+        return Err(Error::Other(format!(
+            "linear-attention {name} expects BF16"
+        )));
     }
     Ok(())
 }
@@ -33,7 +34,10 @@ fn f32_bytes(elements: usize) -> Result<usize> {
 
 /// Cast an F32 tensor to BF16 (round-to-nearest-even).
 pub fn cast_f32_to_bf16(ctx: &CudaContext, input: &Tensor, output: &Tensor) -> Result<()> {
-    if input.dtype() != DType::F32 || output.dtype() != DType::BF16 || input.numel() != output.numel() {
+    if input.dtype() != DType::F32
+        || output.dtype() != DType::BF16
+        || input.numel() != output.numel()
+    {
         return Err(Error::Other("cast f32->bf16 shape/dtype mismatch".into()));
     }
     unsafe {
@@ -48,7 +52,10 @@ pub fn cast_f32_to_bf16(ctx: &CudaContext, input: &Tensor, output: &Tensor) -> R
 
 /// Cast a BF16 tensor to F32 (exact widening).
 pub fn cast_bf16_to_f32(ctx: &CudaContext, input: &Tensor, output: &Tensor) -> Result<()> {
-    if input.dtype() != DType::BF16 || output.dtype() != DType::F32 || input.numel() != output.numel() {
+    if input.dtype() != DType::BF16
+        || output.dtype() != DType::F32
+        || input.numel() != output.numel()
+    {
         return Err(Error::Other("cast bf16->f32 shape/dtype mismatch".into()));
     }
     unsafe {
@@ -113,8 +120,9 @@ pub fn causal_conv1d_silu_bf16(
 }
 
 /// Gated-delta-rule q/k preparation: L2-normalize q/k rows of the post-conv
-/// stream (fp32, eps), scale q by 1/sqrt(head_k_dim), scatter key heads to the
-/// value-head layout. Outputs are caller-owned fp32 buffers
+/// stream and scatter key heads to the value-head layout. Prefill materializes
+/// BF16-normalized values; decode retains FP32 and applies the query scale.
+/// Outputs are caller-owned fp32 buffers
 /// `[num_v_heads, seq_pad, head_k_dim]` (zero-filled tail by the caller).
 pub fn gdn_qk_prep(
     ctx: &CudaContext,
@@ -126,6 +134,7 @@ pub fn gdn_qk_prep(
     num_v_heads: usize,
     head_k_dim: usize,
     key_dim: usize,
+    recurrent: bool,
     eps: f32,
 ) -> Result<()> {
     let (seq, conv_dim) = matrix_shape(conv_out, "GDN qk prep")?;
@@ -151,7 +160,7 @@ pub fn gdn_qk_prep(
             ("k", k, f32_bytes(num_v_heads * seq_pad * head_k_dim)?),
         ],
     )?;
-    let scale = 1.0f32 / (head_k_dim as f32).sqrt();
+    let scale = (1.0f64 / (head_k_dim as f64).sqrt()) as f32;
     unsafe {
         check_cuda(ffi::apxinf_static_gdn_qk_prep_bf16(
             gpu_ptr(conv_out)?,
@@ -165,6 +174,7 @@ pub fn gdn_qk_prep(
             head_k_dim as i32,
             scale,
             eps,
+            i32::from(recurrent),
             ctx.stream().handle(),
         ))
     }
@@ -219,8 +229,14 @@ pub fn gdn_vb_prep(
         ],
     )?;
     let element = DType::BF16.size_in_bytes();
-    let b_ptr = gpu_ptr(zba)?.cast::<u8>().wrapping_add(b_col * element).cast();
-    let a_ptr = gpu_ptr(zba)?.cast::<u8>().wrapping_add(a_col * element).cast();
+    let b_ptr = gpu_ptr(zba)?
+        .cast::<u8>()
+        .wrapping_add(b_col * element)
+        .cast();
+    let a_ptr = gpu_ptr(zba)?
+        .cast::<u8>()
+        .wrapping_add(a_col * element)
+        .cast();
     unsafe {
         check_cuda(ffi::apxinf_static_gdn_vb_prep_bf16(
             gpu_ptr(conv_out)?,
@@ -327,7 +343,12 @@ pub fn gdn_attn_raw(
 
 /// In-place forward substitution + identity on each chunk matrix, producing
 /// (I - A)^-1. `matrices` is the total chunk-matrix count (heads * chunks).
-pub fn gdn_tri_solve(ctx: &CudaContext, a: &CudaBuffer, matrices: usize, chunk_size: usize) -> Result<()> {
+pub fn gdn_tri_solve(
+    ctx: &CudaContext,
+    a: &CudaBuffer,
+    matrices: usize,
+    chunk_size: usize,
+) -> Result<()> {
     if matrices == 0 || chunk_size == 0 || chunk_size > 128 {
         return Err(Error::Other("GDN triangular solve shape mismatch".into()));
     }
@@ -370,13 +391,25 @@ pub fn gdn_chunk_gemm(
         ctx,
         "GDN chunk gemm",
         &[
-            ("a", a, f32_bytes(num_v_heads * chunks * chunk_size * chunk_size)?),
+            (
+                "a",
+                a,
+                f32_bytes(num_v_heads * chunks * chunk_size * chunk_size)?,
+            ),
             ("v", v, f32_bytes(num_v_heads * seq_pad * head_v_dim)?),
             ("k", k, f32_bytes(num_v_heads * seq_pad * head_k_dim)?),
             ("beta", beta, f32_bytes(num_v_heads * seq_pad)?),
             ("g_cum", g_cum, f32_bytes(num_v_heads * seq_pad)?),
-            ("vt", vt, f32_bytes(num_v_heads * chunks * chunk_size * head_v_dim)?),
-            ("kcd", kcd, f32_bytes(num_v_heads * chunks * chunk_size * head_k_dim)?),
+            (
+                "vt",
+                vt,
+                f32_bytes(num_v_heads * chunks * chunk_size * head_v_dim)?,
+            ),
+            (
+                "kcd",
+                kcd,
+                f32_bytes(num_v_heads * chunks * chunk_size * head_k_dim)?,
+            ),
         ],
     )?;
     unsafe {
@@ -436,10 +469,26 @@ pub fn gdn_chunk_state(
             ("q", q, f32_bytes(num_v_heads * seq_pad * head_k_dim)?),
             ("k", k, f32_bytes(num_v_heads * seq_pad * head_k_dim)?),
             ("g_cum", g_cum, f32_bytes(num_v_heads * seq_pad)?),
-            ("t", t, f32_bytes(num_v_heads * chunks * chunk_size * chunk_size)?),
-            ("vt", vt, f32_bytes(num_v_heads * chunks * chunk_size * head_v_dim)?),
-            ("kcd", kcd, f32_bytes(num_v_heads * chunks * chunk_size * head_k_dim)?),
-            ("state", state, f32_bytes(num_v_heads * head_k_dim * head_v_dim)?),
+            (
+                "t",
+                t,
+                f32_bytes(num_v_heads * chunks * chunk_size * chunk_size)?,
+            ),
+            (
+                "vt",
+                vt,
+                f32_bytes(num_v_heads * chunks * chunk_size * head_v_dim)?,
+            ),
+            (
+                "kcd",
+                kcd,
+                f32_bytes(num_v_heads * chunks * chunk_size * head_k_dim)?,
+            ),
+            (
+                "state",
+                state,
+                f32_bytes(num_v_heads * head_k_dim * head_v_dim)?,
+            ),
         ],
     )?;
     unsafe {
@@ -495,7 +544,11 @@ pub fn gdn_recurrent(
             ("v", v, f32_bytes(num_v_heads * head_v_dim)?),
             ("beta", beta, f32_bytes(num_v_heads)?),
             ("g", g, f32_bytes(num_v_heads)?),
-            ("state", state, f32_bytes(num_v_heads * head_k_dim * head_v_dim)?),
+            (
+                "state",
+                state,
+                f32_bytes(num_v_heads * head_k_dim * head_v_dim)?,
+            ),
         ],
     )?;
     unsafe {
@@ -569,7 +622,12 @@ pub fn gated_rms_silu(
 }
 
 /// RMSNorm with zero-init (1 + weight) semantics, fp32 compute, BF16 storage.
-pub fn rms_norm_plus1(ctx: &CudaContext, input: &Tensor, weight: &Tensor, eps: f32) -> Result<Tensor> {
+pub fn rms_norm_plus1(
+    ctx: &CudaContext,
+    input: &Tensor,
+    weight: &Tensor,
+    eps: f32,
+) -> Result<Tensor> {
     let (rows, cols) = matrix_shape(input, "rms norm plus1")?;
     if rows == 0 || cols == 0 || weight.shape().dims() != [cols] || !eps.is_finite() || eps <= 0.0 {
         return Err(Error::Other("rms norm plus1 shape mismatch".into()));
@@ -718,7 +776,13 @@ pub fn full_attn_prepare(
 
 /// In-place post-attention sigmoid gate: `attn *= sigmoid(gate)` where the
 /// gate is read from the (q|gate) fused projection rows.
-pub fn sigmoid_gate_mul(ctx: &CudaContext, attn: &Tensor, fused: &Tensor, heads: usize, head_dim: usize) -> Result<()> {
+pub fn sigmoid_gate_mul(
+    ctx: &CudaContext,
+    attn: &Tensor,
+    fused: &Tensor,
+    heads: usize,
+    head_dim: usize,
+) -> Result<()> {
     let (rows, width) = matrix_shape(attn, "sigmoid gate")?;
     let (fused_rows, fused_width) = matrix_shape(fused, "sigmoid gate")?;
     if rows == 0
@@ -795,10 +859,7 @@ pub fn adaln_gate_residual(
     gate: &Tensor,
 ) -> Result<Tensor> {
     let (rows, cols) = matrix_shape(proj, "adaln gate residual")?;
-    if rows == 0
-        || residual.shape().dims() != [rows, cols]
-        || gate.shape().dims() != [cols]
-    {
+    if rows == 0 || residual.shape().dims() != [rows, cols] || gate.shape().dims() != [cols] {
         return Err(Error::Other("adaln gate residual shape mismatch".into()));
     }
     for tensor in [proj, residual, gate] {
@@ -865,7 +926,9 @@ pub fn expert_qkv_prepare(
     {
         return Err(Error::Other("expert qkv prepare shape mismatch".into()));
     }
-    for tensor in [fused, q_norm_w, k_norm_w, cos, sin, q_out, gate_out, k_out, v_out] {
+    for tensor in [
+        fused, q_norm_w, k_norm_w, cos, sin, q_out, gate_out, k_out, v_out,
+    ] {
         expect_bf16(tensor, "expert qkv prepare")?;
     }
     unsafe {
@@ -958,7 +1021,11 @@ pub fn concat7_cols(ctx: &CudaContext, srcs: [&Tensor; 7], broadcast_mask: u32) 
     }
     for (index, src) in srcs.iter().enumerate() {
         let (rows, width) = matrix_shape(src, "concat7")?;
-        let expect_rows = if (broadcast_mask >> index) & 1 == 1 { 1 } else { first_rows };
+        let expect_rows = if (broadcast_mask >> index) & 1 == 1 {
+            1
+        } else {
+            first_rows
+        };
         if rows != expect_rows || width != cols {
             return Err(Error::Other("concat7 shape mismatch".into()));
         }
@@ -1021,7 +1088,12 @@ pub fn flow_update(
 }
 
 /// Set the listed columns of one logits row to -inf (EOS suppression).
-pub fn suppress_logits(ctx: &CudaContext, logits: &Tensor, row: usize, ids: &CudaBuffer) -> Result<()> {
+pub fn suppress_logits(
+    ctx: &CudaContext,
+    logits: &Tensor,
+    row: usize,
+    ids: &CudaBuffer,
+) -> Result<()> {
     let (rows, cols) = matrix_shape(logits, "logits suppression")?;
     if row >= rows {
         return Err(Error::Other("logits suppression row out of range".into()));
@@ -1031,7 +1103,10 @@ pub fn suppress_logits(ctx: &CudaContext, logits: &Tensor, row: usize, ids: &Cud
     if count == 0 {
         return Ok(());
     }
-    let row_ptr = gpu_ptr(logits)?.cast::<u8>().wrapping_add(row * cols * DType::BF16.size_in_bytes()).cast();
+    let row_ptr = gpu_ptr(logits)?
+        .cast::<u8>()
+        .wrapping_add(row * cols * DType::BF16.size_in_bytes())
+        .cast();
     unsafe {
         check_cuda(ffi::apxinf_static_suppress_logits_bf16(
             row_ptr,
@@ -1106,7 +1181,9 @@ pub fn gqa_bf16(
 ) -> Result<Tensor> {
     let q_shape = q.shape().dims();
     let k_shape = k.shape().dims();
-    if [q, k, v].into_iter().any(|tensor| tensor.dtype() != DType::BF16)
+    if [q, k, v]
+        .into_iter()
+        .any(|tensor| tensor.dtype() != DType::BF16)
         || q_shape.len() != 3
         || k_shape.len() != 3
         || v.shape() != k.shape()
@@ -1121,7 +1198,9 @@ pub fn gqa_bf16(
         ));
     }
     if q_shape[0] == 0 || q_shape[1] == 0 || q_shape[2] == 0 {
-        return Err(Error::Other("non-causal GQA requires nonempty queries".into()));
+        return Err(Error::Other(
+            "non-causal GQA requires nonempty queries".into(),
+        ));
     }
     if ctx.caps().compute_major == 8 && ctx.caps().compute_minor == 9 && q_shape[2] == 256 {
         return super::attention::composed_gqa_bf16(ctx, q, k, v, key_tokens, false);

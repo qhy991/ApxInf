@@ -27,6 +27,140 @@ fn silu_ref(x: f32) -> f32 {
 }
 
 #[test]
+fn gdn_preparation_separates_prefill_and_decode_precision() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let mut values = (1..=8).map(|v| v as f32).collect::<Vec<_>>();
+    values.extend((1..=8).rev().map(|v| v as f32));
+    values.extend([0.0; 8]);
+    let input = upload_fp32_as_bf16(&ctx, &values, vec![1, 24]).unwrap();
+    let q = CudaBuffer::alloc(32, 0).unwrap();
+    let k = CudaBuffer::alloc(32, 0).unwrap();
+    for recurrent in [false, true] {
+        crate::kernels::linear_attention::gdn_qk_prep(
+            &ctx, &input, &q, &k, 1, 1, 1, 8, 8, recurrent, 1e-6,
+        )
+        .unwrap();
+        let read = |b: &CudaBuffer| {
+            crate::transfers::to_cpu(&b.as_tensor(Shape::new(vec![1, 8]), DType::F32).unwrap())
+                .unwrap()
+                .to_f32_vec()
+                .unwrap()
+        };
+        let (actual_q, actual_k) = (read(&q), read(&k));
+        for i in 0..8 {
+            let qn = (values[i] as f64 / (204.0f64 + 1e-6).sqrt()) as f32;
+            let kn = (values[8 + i] as f64 / (204.0f64 + 1e-6).sqrt()) as f32;
+            if recurrent {
+                assert!((actual_q[i] - qn * (1.0f64 / 8.0f64.sqrt()) as f32).abs() < 1e-6);
+                assert!((actual_k[i] - kn).abs() < 1e-6);
+            } else {
+                assert_eq!(actual_q[i], half::bf16::from_f32(qn).to_f32());
+                assert_eq!(actual_k[i], half::bf16::from_f32(kn).to_f32());
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires cuDNN v9 on the loader path and a CUDA GPU"]
+fn cudnn_3d_convolution_matches_scalar_volume() {
+    use crate::kernels::convolution::{conv3d, Conv3dSpec};
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (ci, co, d, h, w) = (8, 16, 3, 4, 5);
+    let x = (0..ci * d * h * w)
+        .map(|i| ((i % 11) as f32 - 5.0) / 8.0)
+        .collect::<Vec<_>>();
+    let weight = (0..co * ci * 8)
+        .map(|i| ((i % 7) as f32 - 3.0) / 8.0)
+        .collect::<Vec<_>>();
+    let bias = (0..co).map(|i| i as f32 / 16.0).collect::<Vec<_>>();
+    let mut expected = Vec::new();
+    for oc in 0..co {
+        for z in 0..d - 1 {
+            for y in 0..h - 1 {
+                for xx in 0..w - 1 {
+                    let mut sum = 0.0f32;
+                    for ic in 0..ci {
+                        for kz in 0..2 {
+                            for ky in 0..2 {
+                                for kx in 0..2 {
+                                    let xi = ((ic * d + z + kz) * h + y + ky) * w + xx + kx;
+                                    let wi = (((oc * ci + ic) * 2 + kz) * 2 + ky) * 2 + kx;
+                                    sum += x[xi] * weight[wi];
+                                }
+                            }
+                        }
+                    }
+                    expected.push(
+                        half::bf16::from_f32(half::bf16::from_f32(sum).to_f32() + bias[oc])
+                            .to_f32(),
+                    );
+                }
+            }
+        }
+    }
+    let xt = upload_fp32_as_bf16(&ctx, &x, vec![1, ci, d, h, w]).unwrap();
+    let wt = upload_fp32_as_bf16(&ctx, &weight, vec![co, ci, 2, 2, 2]).unwrap();
+    let bt = upload_fp32_as_bf16(&ctx, &bias, vec![co]).unwrap();
+    let output = conv3d(&ctx, &xt, &wt, Some(&bt), Conv3dSpec::default()).unwrap();
+    assert_eq!(output.shape().dims(), [1, co, d - 1, h - 1, w - 1]);
+    assert_eq!(download_bf16_as_fp32(&output).unwrap(), expected);
+}
+
+#[test]
+fn perception_feature_layout_preserves_batches() {
+    use crate::kernels::{activation, elementwise, pooling};
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let a = [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0];
+    let b = [10.0, 11.0, -10.0, -11.0];
+    let a = upload_fp32_as_bf16(&ctx, &a, vec![2, 3, 1, 1]).unwrap();
+    let b = upload_fp32_as_bf16(&ctx, &b, vec![2, 2, 1, 1]).unwrap();
+    let a = elementwise::expand_spatial_bf16(&ctx, &a, 2, 3).unwrap();
+    let b = elementwise::expand_spatial_bf16(&ctx, &b, 2, 3).unwrap();
+    let joined = elementwise::concat_channels_bf16(&ctx, &[&a, &b]).unwrap();
+    let channels = [-3.0, -2.0, -1.0, 10.0, 11.0, 0.0, 1.0, 2.0, -10.0, -11.0];
+    let expected = channels
+        .iter()
+        .flat_map(|&v| std::iter::repeat(v).take(6))
+        .collect::<Vec<_>>();
+    assert_eq!(download_bf16_as_fp32(&joined).unwrap(), expected);
+    let pooled = pooling::global_mean_bf16(&ctx, &joined).unwrap();
+    assert_eq!(download_bf16_as_fp32(&pooled).unwrap(), channels);
+    let relu = activation::relu_bf16(&ctx, &joined).unwrap();
+    assert_eq!(
+        download_bf16_as_fp32(&relu).unwrap(),
+        expected.iter().map(|&v| v.max(0.0)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn group_norm_materializes_bf16_statistics() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let x = [
+        1.0, 2.0, 4.0, 1.0, 2.0, 4.0, -1.0, -2.0, -4.0, -1.0, -2.0, -4.0,
+    ];
+    let gamma = [0.5, 1.0, 1.5, 2.0];
+    let beta = [0.0, 1.0, -1.0, 0.0];
+    let xt = upload_fp32_as_bf16(&ctx, &x, vec![1, 4, 1, 3]).unwrap();
+    let wt = upload_fp32_as_bf16(&ctx, &gamma, vec![4]).unwrap();
+    let bt = upload_fp32_as_bf16(&ctx, &beta, vec![4]).unwrap();
+    let output = crate::kernels::norm::group_bf16_rounded(&ctx, &xt, &wt, &bt, 2, 1e-5).unwrap();
+    let bf = |v: f32| half::bf16::from_f32(v).to_f32();
+    let inv = bf((14.0f32 / 9.0 + bf(1e-5)).sqrt().recip());
+    let expected = x
+        .iter()
+        .enumerate()
+        .map(|(i, &value)| {
+            let c = i / 3;
+            let mean = bf(if c < 2 { 7.0 / 3.0 } else { -7.0 / 3.0 });
+            let scale = inv * gamma[c];
+            bf(scale.mul_add(value, (-mean).mul_add(scale, beta[c])))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(download_bf16_as_fp32(&output).unwrap(), expected);
+}
+
+#[test]
 fn bf16_linear_bias_rounds_after_accumulation() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     // The product is 1.015686..., which rounds to 1.015625 in BF16.

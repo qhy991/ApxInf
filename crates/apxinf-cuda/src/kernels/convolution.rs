@@ -1,4 +1,4 @@
-//! Model-neutral NCHW BF16 convolutions through the cuDNN v9 provider.
+//! Model-neutral channels-first BF16 convolutions through the cuDNN v9 provider.
 use super::contracts::{checked_bytes, gpu_ptr};
 use crate::context::CudaContext;
 use crate::cudnn::{api, check, Descriptor};
@@ -6,18 +6,21 @@ use crate::workspace::output_buffer;
 use apxinf_core::{DType, Device, Error, Result, Shape, Tensor};
 
 #[derive(Clone, Copy, Debug)]
-pub struct Conv2dSpec {
-    pub stride: [usize; 2],
-    pub padding: [usize; 2],
-    pub dilation: [usize; 2],
+pub struct ConvSpec<const D: usize> {
+    pub stride: [usize; D],
+    pub padding: [usize; D],
+    pub dilation: [usize; D],
     pub groups: usize,
 }
-impl Default for Conv2dSpec {
+pub type Conv2dSpec = ConvSpec<2>;
+pub type Conv3dSpec = ConvSpec<3>;
+
+impl<const D: usize> Default for ConvSpec<D> {
     fn default() -> Self {
         Self {
-            stride: [1, 1],
-            padding: [0, 0],
-            dilation: [1, 1],
+            stride: [1; D],
+            padding: [0; D],
+            dilation: [1; D],
             groups: 1,
         }
     }
@@ -30,6 +33,17 @@ pub fn conv2d(
     weight: &Tensor,
     bias: Option<&Tensor>,
     spec: Conv2dSpec,
+) -> Result<Tensor> {
+    convolve(ctx, input, weight, bias, spec, false)
+}
+
+/// NCDHW input and [out,in/groups,kD,kH,kW] filter, optional channel bias.
+pub fn conv3d(
+    ctx: &CudaContext,
+    input: &Tensor,
+    weight: &Tensor,
+    bias: Option<&Tensor>,
+    spec: Conv3dSpec,
 ) -> Result<Tensor> {
     convolve(ctx, input, weight, bias, spec, false)
 }
@@ -52,18 +66,18 @@ fn integer(value: usize) -> Result<i32> {
     i32::try_from(value).map_err(|_| shape_error())
 }
 
-fn convolve(
+fn convolve<const D: usize>(
     ctx: &CudaContext,
     input: &Tensor,
     weight: &Tensor,
     bias: Option<&Tensor>,
-    spec: Conv2dSpec,
+    spec: ConvSpec<D>,
     transpose: bool,
 ) -> Result<Tensor> {
     let x = input.shape().dims();
     let w = weight.shape().dims();
-    if x.len() != 4
-        || w.len() != 4
+    if x.len() != D + 2
+        || w.len() != D + 2
         || spec.groups == 0
         || spec.stride.contains(&0)
         || spec.dilation.contains(&0)
@@ -99,8 +113,10 @@ fn convolve(
     {
         return Err(shape_error());
     }
-    let mut y = vec![x[0], output_channels, 0, 0];
-    for axis in 0..2 {
+    let mut y = vec![0; D + 2];
+    y[0] = x[0];
+    y[1] = output_channels;
+    for axis in 0..D {
         let effective = spec.dilation[axis]
             .checked_mul(w[axis + 2] - 1)
             .and_then(|v| v.checked_add(1))
@@ -140,36 +156,84 @@ fn convolve(
     let output = output_buffer(ctx, bytes)?;
     unsafe {
         check(api, (api.set_stream)(handle.raw, ctx.stream().handle())).map_err(Error::Cuda)?;
-        check(
-            api,
-            (api.set_tensor)(xd.raw, 0, 9, xi[0], xi[1], xi[2], xi[3]),
-        )
-        .map_err(Error::Cuda)?;
-        check(
-            api,
-            (api.set_tensor)(yd.raw, 0, 9, yi[0], yi[1], yi[2], yi[3]),
-        )
-        .map_err(Error::Cuda)?;
-        check(
-            api,
-            (api.set_filter)(wd.raw, 9, 0, wi[0], wi[1], wi[2], wi[3]),
-        )
-        .map_err(Error::Cuda)?;
-        check(
-            api,
-            (api.set_conv)(
-                cd.raw,
-                integer(spec.padding[0])?,
-                integer(spec.padding[1])?,
-                integer(spec.stride[0])?,
-                integer(spec.stride[1])?,
-                integer(spec.dilation[0])?,
-                integer(spec.dilation[1])?,
-                1,
-                0,
-            ),
-        )
-        .map_err(Error::Cuda)?;
+        if D == 2 {
+            check(
+                api,
+                (api.set_tensor)(xd.raw, 0, 9, xi[0], xi[1], xi[2], xi[3]),
+            )
+            .map_err(Error::Cuda)?;
+            check(
+                api,
+                (api.set_tensor)(yd.raw, 0, 9, yi[0], yi[1], yi[2], yi[3]),
+            )
+            .map_err(Error::Cuda)?;
+            check(
+                api,
+                (api.set_filter)(wd.raw, 9, 0, wi[0], wi[1], wi[2], wi[3]),
+            )
+            .map_err(Error::Cuda)?;
+            check(
+                api,
+                (api.set_conv)(
+                    cd.raw,
+                    integer(spec.padding[0])?,
+                    integer(spec.padding[1])?,
+                    integer(spec.stride[0])?,
+                    integer(spec.stride[1])?,
+                    integer(spec.dilation[0])?,
+                    integer(spec.dilation[1])?,
+                    1,
+                    0,
+                ),
+            )
+            .map_err(Error::Cuda)?;
+        } else {
+            let xs = contiguous_strides(&xi)?;
+            let ys = contiguous_strides(&yi)?;
+            check(
+                api,
+                (api.set_tensor_nd)(xd.raw, 9, integer(D + 2)?, xi.as_ptr(), xs.as_ptr()),
+            )
+            .map_err(Error::Cuda)?;
+            check(
+                api,
+                (api.set_tensor_nd)(yd.raw, 9, integer(D + 2)?, yi.as_ptr(), ys.as_ptr()),
+            )
+            .map_err(Error::Cuda)?;
+            check(
+                api,
+                (api.set_filter_nd)(wd.raw, 9, 0, integer(D + 2)?, wi.as_ptr()),
+            )
+            .map_err(Error::Cuda)?;
+            let pad = spec
+                .padding
+                .iter()
+                .map(|&v| integer(v))
+                .collect::<Result<Vec<_>>>()?;
+            let stride = spec
+                .stride
+                .iter()
+                .map(|&v| integer(v))
+                .collect::<Result<Vec<_>>>()?;
+            let dilation = spec
+                .dilation
+                .iter()
+                .map(|&v| integer(v))
+                .collect::<Result<Vec<_>>>()?;
+            check(
+                api,
+                (api.set_conv_nd)(
+                    cd.raw,
+                    integer(D)?,
+                    pad.as_ptr(),
+                    stride.as_ptr(),
+                    dilation.as_ptr(),
+                    1,
+                    0,
+                ),
+            )
+            .map_err(Error::Cuda)?;
+        }
         check(api, (api.set_math)(cd.raw, 1)).map_err(Error::Cuda)?;
         check(api, (api.set_groups)(cd.raw, integer(spec.groups)?)).map_err(Error::Cuda)?;
         let algorithm = 1; // forward implicit-precomp GEMM / backward-data algorithm 1.
@@ -238,7 +302,24 @@ fn convolve(
         if let Some(bias) = bias {
             let bd =
                 Descriptor::new(api, api.create_tensor, api.destroy_tensor).map_err(Error::Cuda)?;
-            check(api, (api.set_tensor)(bd.raw, 0, 9, 1, yi[1], 1, 1)).map_err(Error::Cuda)?;
+            if D == 2 {
+                check(api, (api.set_tensor)(bd.raw, 0, 9, 1, yi[1], 1, 1)).map_err(Error::Cuda)?;
+            } else {
+                let mut dims = vec![1; D + 2];
+                dims[1] = yi[1];
+                let strides = contiguous_strides(&dims)?;
+                check(
+                    api,
+                    (api.set_tensor_nd)(
+                        bd.raw,
+                        9,
+                        integer(D + 2)?,
+                        dims.as_ptr(),
+                        strides.as_ptr(),
+                    ),
+                )
+                .map_err(Error::Cuda)?;
+            }
             check(
                 api,
                 (api.add)(
@@ -255,4 +336,14 @@ fn convolve(
         }
     }
     Ok(output.into_tensor(Shape::new(y), DType::BF16))
+}
+
+fn contiguous_strides(dims: &[i32]) -> Result<Vec<i32>> {
+    let mut strides = vec![1i32; dims.len()];
+    for i in (0..dims.len() - 1).rev() {
+        strides[i] = strides[i + 1]
+            .checked_mul(dims[i + 1])
+            .ok_or_else(shape_error)?;
+    }
+    Ok(strides)
 }

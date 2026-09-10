@@ -17,10 +17,10 @@
 //! * `planner` is the retained CPU f32 correctness scaffold from the saved K3
 //!   base; it is the replay oracle for the device executor, not a deployment
 //!   path.
-//! * Perception (BEV stack) is a declared pending gap: it needs the conv2d /
-//!   conv3d / GroupNorm / grid_sample / deformable-attention / voxel-pool
-//!   kernel families, which are not in this revision (see the execution
-//!   ledger in the implementation artifact).
+//! * `perception_fpn` and `perception_depth` are native feature-pyramid and
+//!   depth-network components. The public perception path remains pending
+//!   until camera projection, voxel pooling, BEV processing and output heads
+//!   are connected and verified together.
 
 pub mod config;
 pub mod planner;
@@ -34,6 +34,8 @@ pub mod device_weights;
 pub mod expert;
 #[cfg(feature = "cuda")]
 pub mod general;
+#[cfg(feature = "cuda")]
+pub mod perception_depth;
 #[cfg(feature = "cuda")]
 pub mod perception_fpn;
 #[cfg(feature = "cuda")]

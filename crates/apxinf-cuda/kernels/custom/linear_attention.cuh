@@ -98,8 +98,9 @@ __global__ void causal_conv1d_silu_bf16_kernel(
 
 // gated delta rule: prefill preparation
 //
-// q/k rows are L2-normalized (fp32, eps) from the post-conv bf16 stream,
-// scaled by 1/sqrt(head_k_dim) for q, and scattered to the value-head layout
+// Prefill stores normalized BF16 Q/K before chunk products. Recurrent decode
+// retains FP32 normalized Q/K and scales Q before the recurrent dot products.
+// Values are scattered to the value-head layout
 // (each key head repeats to num_v_heads/num_k_heads consecutive value heads).
 // Outputs are fp32 head-major [num_v_heads, seq_pad, head_k_dim]; the padded
 // tail keeps the caller's zero fill. One block per (token, key head) with
@@ -108,7 +109,7 @@ __global__ void causal_conv1d_silu_bf16_kernel(
 __global__ void gdn_qk_prep_kernel(
     const __nv_bfloat16* conv_out, float* q_out, float* k_out,
     int seq, int seq_pad, int conv_dim, int key_dim,
-    int num_v_heads, int head_k_dim, float scale, float eps) {
+    int num_v_heads, int head_k_dim, float scale, float eps, bool recurrent) {
   const int token = blockIdx.x;
   const int k_head = blockIdx.y;
   const int reps = num_v_heads / gridDim.y;
@@ -130,9 +131,10 @@ __global__ void gdn_qk_prep_kernel(
   }
   const float q_inv = rsqrtf(la_reduce[0] + eps);
   const float k_inv = rsqrtf(la_reduce[blockDim.x] + eps);
-  // FLA materializes l2norm in the input dtype before scaling/recurrence.
-  const float q_normed = __bfloat162float(__float2bfloat16(q_value * q_inv)) * scale;
-  const float k_normed = __bfloat162float(__float2bfloat16(k_value * k_inv));
+  const float q_normed = recurrent ? q_value * q_inv * scale
+      : __bfloat162float(__float2bfloat16(q_value * q_inv));
+  const float k_normed = recurrent ? k_value * k_inv
+      : __bfloat162float(__float2bfloat16(k_value * k_inv));
   for (int r = 0; r < reps; ++r) {
     const int head = k_head * reps + r;
     const int64_t dst = (static_cast<int64_t>(head) * seq_pad + token) * head_k_dim + d;
@@ -168,7 +170,7 @@ __global__ void gdn_vb_prep_kernel(
   }
 }
 
-// Chunk-local inclusive cumsum of g: g_cum[h, c*chunk + i] = sum_{j<=i} g.
+// Chunk-local inclusive sum in log2 units, matching FLA's exp2 gate arithmetic.
 __global__ void gdn_cumsum_kernel(
     const float* g, float* g_cum, int seq_pad, int chunk_size) {
   const int head = blockIdx.y;
@@ -178,13 +180,13 @@ __global__ void gdn_cumsum_kernel(
   float running = 0.0f;
   for (int i = 0; i < chunk_size; ++i) {
     running += g[base + i];
-    g_cum[base + i] = running;
+    g_cum[base + i] = running * 1.4426950408889634f;
   }
 }
 
-// A1[i,j] = -(k_beta_i . k_j) * exp(g_i - g_j) for j < i else 0
-// T[i,j]  =  (q_i . k_j)       * exp(g_i - g_j) for j <= i else 0
-// with k_beta_i = k_i * beta_i folded on the fly. One block per (head, chunk).
+// A1[i,j] = -beta_i * (k_i . k_j) * exp2(g_i-g_j), strictly lower triangular.
+// T[i,j] = bf16((q_i . k_j) * exp2(g_i-g_j)), including the diagonal.
+// Q remains unscaled until the final attention output. One block per chunk/head.
 __global__ void gdn_attn_raw_kernel(
     const float* q, const float* k, const float* beta, const float* g_cum,
     float* a_out, float* t_out,
@@ -203,17 +205,17 @@ __global__ void gdn_attn_raw_kernel(
     const float beta_i = beta[token_base + i];
     for (int d = 0; d < head_k_dim; ++d) {
       const float k_j = k[row_j + d];
-      a1 += k[row_i + d] * beta_i * k_j;
+      a1 += k[row_i + d] * k_j;
       a2 += q[row_i + d] * k_j;
     }
-    const float decay = expf(g_cum[token_base + i] - g_cum[token_base + j]);
-    a_out[matrix_base + cell] = (j < i) ? -a1 * decay : 0.0f;
-    t_out[matrix_base + cell] = (j <= i) ? a2 * decay : 0.0f;
+    const float decay = exp2f(g_cum[token_base + i] - g_cum[token_base + j]);
+    a_out[matrix_base + cell] = (j < i) ? -a1 * beta_i * decay : 0.0f;
+    t_out[matrix_base + cell] = (j <= i) ? __bfloat162float(__float2bfloat16(a2 * decay)) : 0.0f;
   }
 }
 
 // In-place forward substitution over strictly-lower A, then A += I:
-// computes (I - A)^{-1} exactly like the reference's sequential loop.
+// solves (I - A)^{-1}, then materializes BF16 coefficients for the WY products.
 __global__ void gdn_tri_solve_kernel(float* a, int chunk_size) {
   extern __shared__ float la_solve[];
   float* matrix = la_solve;
@@ -237,12 +239,11 @@ __global__ void gdn_tri_solve_kernel(float* a, int chunk_size) {
   for (int cell = threadIdx.x; cell < chunk_size * chunk_size; cell += blockDim.x) {
     const int i = cell / chunk_size;
     const int j = cell - i * chunk_size;
-    a[matrix_base + cell] = matrix[cell] + (i == j ? 1.0f : 0.0f);
+    a[matrix_base + cell] = __bfloat162float(__float2bfloat16(matrix[cell] + (i == j ? 1.0f : 0.0f)));
   }
 }
 
-// VT[i,j]  = sum_m A[i,m] * (v[m,j] * beta[m])          over head_v_dim columns
-// KCD[i,j] = sum_m A[i,m] * (k[m,j] * beta[m] * exp(g_cum[m])) over head_k_dim
+// VT/U = bf16(A @ bf16(V * beta)); KCD/W = bf16(A @ bf16(K * beta * exp2(g))).
 __global__ void gdn_chunk_gemm_kernel(
     const float* a, const float* v, const float* k, const float* beta,
     const float* g_cum, float* vt_out, float* kcd_out,
@@ -258,26 +259,27 @@ __global__ void gdn_chunk_gemm_kernel(
     const int j = cell - i * head_v_dim;
     float vt = 0.0f;
     for (int m = 0; m < chunk_size; ++m) {
-      vt += a[a_base + i * chunk_size + m] * (v[(token_base + m) * head_v_dim + j] * beta[token_base + m]);
+      const float vb = __bfloat162float(__float2bfloat16(v[(token_base + m) * head_v_dim + j] * beta[token_base + m]));
+      vt += a[a_base + i * chunk_size + m] * vb;
     }
-    vt_out[vt_base + cell] = vt;
+    vt_out[vt_base + cell] = __bfloat162float(__float2bfloat16(vt));
   }
   for (int cell = threadIdx.x; cell < chunk_size * head_k_dim; cell += blockDim.x) {
     const int i = cell / head_k_dim;
     const int j = cell - i * head_k_dim;
     float kcd = 0.0f;
     for (int m = 0; m < chunk_size; ++m) {
-      kcd += a[a_base + i * chunk_size + m] *
-             (k[(token_base + m) * head_k_dim + j] * beta[token_base + m] * expf(g_cum[token_base + m]));
+      const float kb = __bfloat162float(__float2bfloat16(k[(token_base + m) * head_k_dim + j] * beta[token_base + m] * exp2f(g_cum[token_base + m])));
+      kcd += a[a_base + i * chunk_size + m] * kb;
     }
-    kcd_out[kcd_base + cell] = kcd;
+    kcd_out[kcd_base + cell] = __bfloat162float(__float2bfloat16(kcd));
   }
 }
 
 // Sequential chunk recurrence per head (state lives in global scratch):
-//   v_prime = KCD @ S;  v_new = VT - v_prime
-//   out = (q * exp(g_cum)) @ S + T @ v_new           (bf16, token-major)
-//   S = S * exp(g_last) + (k * exp(g_last - g_cum))^T @ v_new
+//   v_new = VT - KCD @ bf16(S)
+//   out = bf16(((q @ bf16(S)) * exp2(g_cum))*scale + (T @ bf16(v_new))*scale)
+//   S = S * exp2(g_last) + k^T @ bf16(v_new * exp2(g_last-g_cum))
 // state is [head_k_dim, head_v_dim] fp32 in global memory, read at the first
 // chunk and rewritten per chunk, so the buffer carries the initial state in
 // and the final state out. Grid is (num_v_heads); each block loops chunks.
@@ -286,7 +288,7 @@ __global__ void gdn_chunk_state_kernel(
     const float* g_cum, const float* t_in, const float* vt_in, const float* kcd_in,
     float* state, __nv_bfloat16* out,
     int seq, int seq_pad, int head_k_dim, int head_v_dim, int chunk_size,
-    int total_chunks, int out_row_width) {
+    int total_chunks, int out_row_width, float scale) {
   const int head = blockIdx.x;
   extern __shared__ float v_new[];
   const int64_t head_token_base = static_cast<int64_t>(head) * seq_pad;
@@ -303,23 +305,24 @@ __global__ void gdn_chunk_state_kernel(
       const int j = cell - i * head_v_dim;
       float vp = 0.0f;
       float ai = 0.0f;
-      const float qg = expf(g_cum[token_base + i]);
+      const float qg = exp2f(g_cum[token_base + i]);
       for (int m = 0; m < head_k_dim; ++m) {
-        const float s = state_head[m * head_v_dim + j];
+        const float s = __bfloat162float(__float2bfloat16(state_head[m * head_v_dim + j]));
         vp += kcd_in[kcd_base + i * head_k_dim + m] * s;
-        ai += q[(token_base + i) * head_k_dim + m] * qg * s;
+        ai += q[(token_base + i) * head_k_dim + m] * s;
       }
       v_new[cell] = vt_in[vt_base + cell] - vp;
-      attn_inter[it] = ai;
+      attn_inter[it] = ai * qg;
     }
     __syncthreads();
     for (int cell = threadIdx.x, it = 0; cell < cells; cell += blockDim.x, ++it) {
       const int i = cell / head_v_dim;
       const int j = cell - i * head_v_dim;
-      float acc = attn_inter[it];
+      float intra = 0.0f;
       for (int m = 0; m < chunk_size; ++m) {
-        acc += t_in[a_base + i * chunk_size + m] * v_new[m * head_v_dim + j];
+        intra += t_in[a_base + i * chunk_size + m] * __bfloat162float(__float2bfloat16(v_new[m * head_v_dim + j]));
       }
+      const float acc = attn_inter[it] * scale + intra * scale;
       const int token = c * chunk_size + i;
       if (token < seq) {
         out[static_cast<int64_t>(token) * out_row_width + head * head_v_dim + j] =
@@ -328,15 +331,15 @@ __global__ void gdn_chunk_state_kernel(
     }
     __syncthreads();
     const float g_last = g_cum[token_base + chunk_size - 1];
-    const float decay = expf(g_last);
+    const float decay = exp2f(g_last);
     const int state_cells = head_k_dim * head_v_dim;
     for (int cell = threadIdx.x; cell < state_cells; cell += blockDim.x) {
       const int m = cell / head_v_dim;
       const int j = cell - m * head_v_dim;
       float acc = 0.0f;
       for (int i = 0; i < chunk_size; ++i) {
-        const float ksd = k[(token_base + i) * head_k_dim + m] * expf(g_last - g_cum[token_base + i]);
-        acc += ksd * v_new[i * head_v_dim + j];
+        const float value = __bfloat162float(__float2bfloat16(v_new[i * head_v_dim + j] * exp2f(g_last - g_cum[token_base + i])));
+        acc += k[(token_base + i) * head_k_dim + m] * value;
       }
       state_head[cell] = state_head[cell] * decay + acc;
     }

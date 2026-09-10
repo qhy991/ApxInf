@@ -67,11 +67,9 @@ fn row_col_slice(tensor: &Tensor, col: usize, cols: usize) -> Result<Tensor> {
 }
 
 fn mlp(ctx: &Context, mlp: &DeviceMlp, x: &Tensor) -> Result<Tensor> {
-    let h = gemm::matmul(ctx, x, &mlp.fc1_w)?;
-    let h = elementwise::bias_bf16(ctx, &h, Some(&mlp.fc1_b))?;
+    let h = gemm::bf16_bias(ctx, x, &mlp.fc1_w, &mlp.fc1_b)?;
     let h = activation::silu(ctx, &h)?;
-    let h = gemm::matmul(ctx, &h, &mlp.fc2_w)?;
-    elementwise::bias_bf16(ctx, &h, Some(&mlp.fc2_b))
+    gemm::bf16_bias(ctx, &h, &mlp.fc2_w, &mlp.fc2_b)
 }
 
 fn one_hot(classes: usize, index: i64) -> Vec<f32> {
@@ -246,8 +244,12 @@ pub fn plan(
 
         let wp_bf16 = device_tensor(ctx, &[length, point_dim], DType::BF16)?;
         la::cast_f32_to_bf16(ctx, &waypoints, &wp_bf16)?;
-        let traj = gemm::matmul(ctx, &wp_bf16, &weights.trajectory_proj_w)?;
-        let traj = elementwise::bias_bf16(ctx, &traj, Some(&weights.trajectory_proj_b))?;
+        let traj = gemm::bf16_bias(
+            ctx,
+            &wp_bf16,
+            &weights.trajectory_proj_w,
+            &weights.trajectory_proj_b,
+        )?;
         let fourier_feat = la::fourier_features(
             ctx,
             &wp_bf16,
@@ -274,8 +276,12 @@ pub fn plan(
 
         for (layer_index, layer) in weights.layers.iter().enumerate() {
             let (scene_k, scene_v) = &input.scene[layer_index / ec.layers_per_kv];
-            let modulation = gemm::matmul(ctx, &condition_silu, &layer.modulation_w)?;
-            let modulation = elementwise::bias_bf16(ctx, &modulation, Some(&layer.modulation_b))?;
+            let modulation = gemm::bf16_bias(
+                ctx,
+                &condition_silu,
+                &layer.modulation_w,
+                &layer.modulation_b,
+            )?;
             let shift_attn = row_col_slice(&modulation, 0, hidden_size)?;
             let scale_attn = row_col_slice(&modulation, hidden_size, hidden_size)?;
             let gate_attn = row_col_slice(&modulation, 2 * hidden_size, hidden_size)?;
@@ -340,8 +346,8 @@ pub fn plan(
         }
 
         let final_normed = norm::rms_bf16(ctx, &hidden, &weights.final_norm, eps)?;
-        let endpoint = gemm::matmul(ctx, &final_normed, &weights.out_proj_w)?;
-        let endpoint = elementwise::bias_bf16(ctx, &endpoint, Some(&weights.out_proj_b))?;
+        let endpoint =
+            gemm::bf16_bias(ctx, &final_normed, &weights.out_proj_w, &weights.out_proj_b)?;
         let endpoint_f32 = device_tensor(ctx, &[length, point_dim], DType::F32)?;
         la::cast_bf16_to_f32(ctx, &endpoint, &endpoint_f32)?;
         let remaining = (1.0f64 - t_f64).max(config.min_one_minus_t as f64) as f32;

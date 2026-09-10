@@ -1,11 +1,11 @@
 //! Device-resident BF16 weights for the Qwen-Drive native executor.
 //!
-//! Built once at load from the checkpoint maps: HF `[out, in]` projections
+//! Built once at load from the checkpoint maps: most HF `[out, in]` projections
 //! are transposed to `[in, out]` for the row-major GEMM path (the scaffold's
 //! transpose), per-layer Q/K/V and gate/up projections are concatenated into
-//! fused weights (a canonical rewrite: identical dot products, one GEMM), and
-//! the GDN in_proj_qkv/z/b/a projections are fused into one GEMM whose column
-//! slices the preparation kernels read strided. Every transformation runs
+//! fused weights. GDN input projections retain their original [out,in] layout
+//! and separate GEMMs: their BF16 reductions depend on physical geometry.
+//! Every checkpoint transformation runs
 //! once at load, never on the hot path.
 
 use std::collections::HashMap;
@@ -123,9 +123,11 @@ pub struct FullAttentionLayerWeights {
 
 pub struct GdnLayerWeights {
     pub input_norm: Tensor,
-    /// Fused `[hidden, conv_dim + value_dim + 2*num_v_heads]`
-    /// (in_proj_qkv | in_proj_z | in_proj_b | in_proj_a).
-    pub qkvzba_w: Tensor,
+    /// Input projections preserve reference `[out, hidden]` storage and GEMM shape.
+    pub qkv_w: Tensor,
+    pub z_w: Tensor,
+    pub b_w: Tensor,
+    pub a_w: Tensor,
     /// `[conv_dim, kernel_size]` (squeezed depthwise conv weight).
     pub conv_w: Tensor,
     /// `[num_v_heads]` fp32.
@@ -285,10 +287,10 @@ impl QwenDriveDeviceWeights {
                     down_w,
                 }));
             } else {
-                let in_qkv = take_transposed(&mut language, &format!("{p}.linear_attn.in_proj_qkv.weight"))?;
-                let in_z = take_transposed(&mut language, &format!("{p}.linear_attn.in_proj_z.weight"))?;
-                let in_b = take_transposed(&mut language, &format!("{p}.linear_attn.in_proj_b.weight"))?;
-                let in_a = take_transposed(&mut language, &format!("{p}.linear_attn.in_proj_a.weight"))?;
+                let in_qkv = take(&mut language, &format!("{p}.linear_attn.in_proj_qkv.weight"))?;
+                let in_z = take(&mut language, &format!("{p}.linear_attn.in_proj_z.weight"))?;
+                let in_b = take(&mut language, &format!("{p}.linear_attn.in_proj_b.weight"))?;
+                let in_a = take(&mut language, &format!("{p}.linear_attn.in_proj_a.weight"))?;
                 let conv = take(&mut language, &format!("{p}.linear_attn.conv1d.weight"))?;
                 let conv_dims = conv.shape().dims().to_vec();
                 let conv_dim = 2 * text.linear_num_key_heads * text.linear_key_head_dim
@@ -311,7 +313,10 @@ impl QwenDriveDeviceWeights {
                 }
                 layers.push(MixerWeights::Gdn(GdnLayerWeights {
                     input_norm,
-                    qkvzba_w: up(backend, &concat_columns(&[&in_qkv, &in_z, &in_b, &in_a])?)?,
+                    qkv_w: up(backend, &in_qkv)?,
+                    z_w: up(backend, &in_z)?,
+                    b_w: up(backend, &in_b)?,
+                    a_w: up(backend, &in_a)?,
                     conv_w: up(backend, &conv.reshape(vec![conv_dim, kernel])?)?,
                     dt_bias: up(backend, &widen_to_f32(&take(&mut language, &format!("{p}.linear_attn.dt_bias"))?)?)?,
                     a_log: up(backend, &bf16_grid_round_f32(&a_log_raw)?)?,

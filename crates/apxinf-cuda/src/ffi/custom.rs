@@ -5,6 +5,38 @@ use std::ffi::c_void;
 use super::cuda::{cudaError_t, cudaStream_t};
 
 extern "C" {
+    pub fn apxinf_expand_spatial_bf16(
+        x: *const c_void,
+        out: *mut c_void,
+        spatial: i32,
+        count: i64,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+    pub fn apxinf_group_norm_bf16_rounded(
+        x: *const c_void,
+        weight: *const c_void,
+        bias: *const c_void,
+        out: *mut c_void,
+        batches: i32,
+        channels: i32,
+        spatial: i32,
+        groups: i32,
+        eps: f32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+    pub fn apxinf_global_mean_bf16(
+        x: *const c_void,
+        out: *mut c_void,
+        rows: i32,
+        spatial: i32,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
+    pub fn apxinf_relu_bf16(
+        x: *const c_void,
+        out: *mut c_void,
+        count: i64,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
     pub fn apxinf_channel_layer_norm_bf16_rounded(
         x: *const c_void,
         weight: *const c_void,
