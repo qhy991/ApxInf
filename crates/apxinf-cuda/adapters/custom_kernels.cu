@@ -928,6 +928,10 @@ extern "C" cudaError_t apxinf_static_gdn_tri_solve_f32(
   if (a == nullptr || matrices <= 0 || chunk_size <= 0 || chunk_size > 128) {
     return cudaErrorInvalidValue;
   }
+  if (chunk_size == 64) {
+    gdn_block_inverse64_kernel<<<matrices, 256, 0, stream>>>(static_cast<float*>(a));
+    return cudaGetLastError();
+  }
   const size_t smem =
       (static_cast<size_t>(chunk_size) * chunk_size + chunk_size) * sizeof(float);
   gdn_tri_solve_kernel<<<matrices, 64, smem, stream>>>(

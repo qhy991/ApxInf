@@ -214,19 +214,47 @@ pub struct ExpertDeviceWeights {
 /// torch.logspace(0, log10(max_frequency), steps, dtype=bf16) rebuilt in the
 /// compute dtype exactly like the reference encoder.
 fn fourier_freq_table(num_features: usize, max_frequency: f32) -> Result<Tensor> {
-    if num_features == 0 {
-        return Err(Error::Other("qwen_drive: empty Fourier table".into()));
+    if num_features == 0 || !max_frequency.is_finite() || max_frequency <= 0.0 {
+        return Err(Error::Other("qwen_drive: invalid Fourier table geometry".into()));
     }
-    let log_max = (max_frequency as f64).log10() as f32;
+    // Torch CUDA BF16 logspace rounds the endpoint, step and each arithmetic
+    // operation to BF16, and constructs the second half backwards from the end.
+    // Computing a float logspace and casting only its output changes frequencies.
+    let round = |value: f32| half::bf16::from_f32(value).to_f32();
+    let log_max = round((max_frequency as f64).log10() as f32);
     let step = if num_features > 1 {
-        log_max / (num_features - 1) as f32
+        round(log_max / round((num_features - 1) as f32))
     } else {
         0.0
     };
     let values: Vec<half::bf16> = (0..num_features)
-        .map(|i| half::bf16::from_f32(10f32.powf(step * i as f32)))
+        .map(|i| {
+            let exponent = if num_features == 1 {
+                0.0
+            } else if i < num_features / 2 {
+                round(step * round(i as f32))
+            } else {
+                round(log_max - round(step * round((num_features - i - 1) as f32)))
+            };
+            half::bf16::from_f32(10f32.powf(exponent))
+        })
         .collect();
     Tensor::from_bf16(vec![num_features], &values)
+}
+
+#[cfg(test)]
+mod frequency_tests {
+    use super::fourier_freq_table;
+
+    #[test]
+    fn bf16_logspace_matches_frozen_cuda_reference() {
+        let expected = [1.0,1.203125,1.4453125,1.7421875,2.09375,2.515625,3.015625,
+            3.65625,4.375,5.28125,6.375,7.625,9.125,11.125,13.3125,15.9375];
+        assert_eq!(fourier_freq_table(16,16.0).unwrap().to_f32_vec().unwrap(),expected);
+        assert_eq!(fourier_freq_table(1,16.0).unwrap().to_f32_vec().unwrap(),[1.0]);
+        assert!(fourier_freq_table(0,16.0).is_err());
+        assert!(fourier_freq_table(16,0.0).is_err());
+    }
 }
 
 pub struct QwenDriveDeviceWeights {

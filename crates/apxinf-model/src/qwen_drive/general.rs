@@ -42,10 +42,10 @@ pub(super) fn trace_rows(name: &str, tensor: &Tensor) -> Result<()> {
     let Some(root) = std::env::var_os("APXINF_QWEN_TRACE_DIR") else { return Ok(()); };
     let width = *tensor.shape().dims().last().unwrap();
     let count = tensor.numel() / width;
-    if count < 4 { return Ok(()); }
+    let rows = if count < 4 { (0..count).collect::<Vec<_>>() } else { vec![0,1,2,count-1] };
     let buffer = DeviceBuffer::from_tensor(tensor).map_err(Error::Cuda)?;
     let mut bytes = Vec::new();
-    for row in [0, 1, 2, count - 1] {
+    for row in rows {
         let view = buffer.view(row * width * tensor.dtype().size_in_bytes(), width * tensor.dtype().size_in_bytes()).map_err(Error::Cuda)?;
         let t = view.as_tensor(Shape::new(vec![1, width]), tensor.dtype()).map_err(Error::Cuda)?;
         let values = transfers::to_cpu(&t)?.to_f32_vec().map_err(|e| Error::Other(e.to_string()))?;

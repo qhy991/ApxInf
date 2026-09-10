@@ -268,7 +268,7 @@ pub fn gdn_cumsum(
     num_v_heads: usize,
     chunk_size: usize,
 ) -> Result<()> {
-    if seq_pad == 0 || seq_pad % chunk_size != 0 || chunk_size == 0 || num_v_heads == 0 {
+    if seq_pad == 0 || chunk_size == 0 || seq_pad % chunk_size != 0 || num_v_heads == 0 {
         return Err(Error::Other("GDN cumsum shape mismatch".into()));
     }
     require_buffers(

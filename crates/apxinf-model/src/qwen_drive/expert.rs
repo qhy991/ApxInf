@@ -19,6 +19,7 @@ use kernels::{activation, elementwise, embedding, gemm, linear_attention as la, 
 use super::config::{PlanningExpertConfig, QwenDriveConfig};
 use super::device_weights::{DeviceMlp, ExpertDeviceWeights};
 use super::planner::ExpertConditioning;
+use super::general::trace_rows;
 
 /// bf16 rounding of one f32 value, returned as f32 (the value a bf16 tensor
 /// would hold). Mirrors the scaffold's semantic-rounding helper.
@@ -219,6 +220,10 @@ pub fn plan(
     let acceleration_q = mlp(ctx, &weights.history_acceleration_encoder, &acceleration_t)?;
     let nav_out = mlp(ctx, &weights.nav_mlp, &nav_t)?;
     let ego_out = mlp(ctx, &weights.ego_mlp, &ego_t)?;
+    for (name,value) in [("history_encoder",&pose_q),("history_velocity_encoder",&velocity_q),
+        ("history_acceleration_encoder",&acceleration_q),("nav_mlp",&nav_out),("ego_mlp",&ego_out)] {
+        trace_rows(&format!("expert_{name}"),value)?;
+    }
 
     let ids: Vec<u32> = (0..length as u32).collect();
     let ids_dev = upload_u32(ctx, &ids)?;
@@ -241,6 +246,8 @@ pub fn plan(
         let condition = elementwise::add(ctx, &time_condition, &nav_out)?;
         let condition = elementwise::add(ctx, &condition, &ego_out)?;
         let condition_silu = activation::silu(ctx, &condition)?;
+        trace_rows(&format!("expert_time_embed_{index}"),&t_emb_t)?;
+        trace_rows(&format!("expert_time_condition_{index}"),&time_condition)?;
 
         let wp_bf16 = device_tensor(ctx, &[length, point_dim], DType::BF16)?;
         la::cast_f32_to_bf16(ctx, &waypoints, &wp_bf16)?;
@@ -258,6 +265,10 @@ pub fn plan(
             ec.fourier_num_features,
         )?;
         let fourier = mlp(ctx, &weights.fourier, &fourier_feat)?;
+        if index == 0 {
+            trace_rows("expert_trajectory_proj",&traj)?;
+            trace_rows("expert_fourier_encoder",&fourier)?;
+        }
         // broadcast bits: time(2), pose(3), velocity(5), acceleration(6).
         let fused = la::concat7_cols(
             ctx,
@@ -273,6 +284,7 @@ pub fn plan(
             (1 << 2) | (1 << 3) | (1 << 5) | (1 << 6),
         )?;
         let mut hidden = mlp(ctx, &weights.query_fusion, &fused)?;
+        if index == 0 { trace_rows("expert_query_fusion",&hidden)?; }
 
         for (layer_index, layer) in weights.layers.iter().enumerate() {
             let (scene_k, scene_v) = &input.scene[layer_index / ec.layers_per_kv];
@@ -298,6 +310,11 @@ pub fn plan(
                 eps,
             )?;
             let qkv = gemm::matmul(ctx, &x, &layer.qkv_w)?;
+            if index == 0 && layer_index == 0 {
+                trace_rows("expert_modulation",&modulation)?;
+                trace_rows("expert_adaln_input",&x)?;
+                trace_rows("expert_qkv",&qkv)?;
+            }
             let q_out = device_tensor(ctx, &[length, heads, head_dim], DType::BF16)?;
             let gate_out = device_tensor(ctx, &[length, heads, head_dim], DType::BF16)?;
             let k_out = device_tensor(ctx, &[length, kv_heads, head_dim], DType::BF16)?;
@@ -332,9 +349,14 @@ pub fn plan(
             let k_cat = k_cat.reshape(vec![input.scene_len + length, kv_heads, head_dim])?;
             let v_cat = v_cat.reshape(vec![input.scene_len + length, kv_heads, head_dim])?;
             let attn = la::gqa_bf16(ctx, &q_out, &k_cat, &v_cat, input.scene_len + length)?;
+            if index == 0 && layer_index == 0 {
+                trace_rows("expert_q",&q_out.reshape(vec![length,heads*head_dim])?)?;
+                trace_rows("expert_attention",&attn.reshape(vec![length,heads*head_dim])?)?;
+            }
             la::expert_sigmoid_gate_mul(ctx, &attn, &gate_out)?;
             let attn = attn.reshape(vec![length, heads * head_dim])?;
             let proj = gemm::matmul(ctx, &attn, &layer.o_w)?;
+            if index == 0 && layer_index == 0 { trace_rows("expert_o_proj",&proj)?; }
             hidden = la::adaln_gate_residual(ctx, &proj, &hidden, &gate_attn)?;
 
             let x2 =
@@ -342,6 +364,11 @@ pub fn plan(
             let gu = gemm::matmul(ctx, &x2, &layer.gate_up_w)?;
             let act = activation::swiglu_bf16_rounded(ctx, &gu)?;
             let down = gemm::matmul(ctx, &act, &layer.down_w)?;
+            if index == 0 && layer_index == 0 {
+                trace_rows("expert_adaln_ffn",&x2)?;
+                trace_rows("expert_gate_up",&gu)?;
+                trace_rows("expert_down",&down)?;
+            }
             hidden = la::adaln_gate_residual(ctx, &down, &hidden, &gate_ffn)?;
         }
 
@@ -349,9 +376,11 @@ pub fn plan(
         let endpoint =
             gemm::bf16_bias(ctx, &final_normed, &weights.out_proj_w, &weights.out_proj_b)?;
         let endpoint_f32 = device_tensor(ctx, &[length, point_dim], DType::F32)?;
+        trace_rows(&format!("expert_endpoint_{index}"),&endpoint.reshape(vec![1,length*point_dim])?)?;
         la::cast_bf16_to_f32(ctx, &endpoint, &endpoint_f32)?;
         let remaining = (1.0f64 - t_f64).max(config.min_one_minus_t as f64) as f32;
         la::flow_update(ctx, &waypoints, &endpoint_f32, remaining, step_f64 as f32)?;
+        trace_rows(&format!("expert_waypoints_{index}"),&waypoints.reshape(vec![1,length*point_dim])?)?;
     }
 
     let cpu = transfers::to_cpu(&waypoints)?;

@@ -452,7 +452,7 @@ mod tests {
         let history_dim = (config.num_history_points - 1) * config.trajectory_point_dim
             + config.expert.nav_command_classes;
         mlp(&mut map, "planning_expert.history_encoder", history_dim);
-        let dynamics_dim = config.num_history_points * expert.history_dynamics_dim;
+        let dynamics_dim = config.num_history_points * config.expert.history_dynamics_dim;
         mlp(&mut map, "planning_expert.history_velocity_encoder", dynamics_dim);
         mlp(&mut map, "planning_expert.history_acceleration_encoder", dynamics_dim);
         mlp(&mut map, "planning_expert.query_fusion", 7 * hidden);

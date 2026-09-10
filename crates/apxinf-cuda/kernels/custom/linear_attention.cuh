@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gdn_block_inverse.cuh"
+
 // Copyright 2026 apxinf contributors.
 // Pure CUDA operators grouped by physical operation; launch policy lives under adapters/.
 //
@@ -13,6 +15,12 @@
 // raw geometry (heads, head dims, chunk size).
 
 // small device helpers
+
+__device__ __forceinline__ float gdn_exp2_approx(float x) {
+  float y;
+  asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(y) : "f"(x));
+  return y;
+}
 
 __device__ __forceinline__ float la_sigmoid(float x) {
   return 1.0f / (1.0f + expf(-x));
@@ -175,12 +183,21 @@ __global__ void gdn_cumsum_kernel(
     const float* g, float* g_cum, int seq_pad, int chunk_size) {
   const int head = blockIdx.y;
   const int chunk = blockIdx.x;
-  if (threadIdx.x != 0) return;
   const int64_t base = static_cast<int64_t>(head) * seq_pad + static_cast<int64_t>(chunk) * chunk_size;
-  float running = 0.0f;
-  for (int i = 0; i < chunk_size; ++i) {
-    running += g[base + i];
-    g_cum[base + i] = running * 1.4426950408889634f;
+  const int lane = threadIdx.x;
+  float carry = 0.0f;
+  // Match the warp-local inclusive scan and then add the preceding warp sum.
+  // A scalar running sum has different FP32 rounding at almost every token.
+  for (int start = 0; start < chunk_size; start += 32) {
+    const int i = start + lane;
+    float value = i < chunk_size ? g[base + i] : 0.0f;
+    for (int offset = 1; offset < 32; offset <<= 1) {
+      const float previous = __shfl_up_sync(0xffffffff, value, offset);
+      if (lane >= offset) value = __fadd_rn(previous, value);
+    }
+    if (start != 0) value = __fadd_rn(carry, value);
+    if (i < chunk_size) g_cum[base + i] = value * 1.4426950408889634f;
+    carry = __shfl_sync(0xffffffff, value, 31);
   }
 }
 
@@ -208,8 +225,8 @@ __global__ void gdn_attn_raw_kernel(
       a1 += k[row_i + d] * k_j;
       a2 += q[row_i + d] * k_j;
     }
-    const float decay = exp2f(g_cum[token_base + i] - g_cum[token_base + j]);
-    a_out[matrix_base + cell] = (j < i) ? -a1 * beta_i * decay : 0.0f;
+    const float decay = gdn_exp2_approx(g_cum[token_base + i] - g_cum[token_base + j]);
+    a_out[matrix_base + cell] = (j < i) ? -__fmul_rn(__fmul_rn(a1, decay), beta_i) : 0.0f;
     t_out[matrix_base + cell] = (j <= i) ? __bfloat162float(__float2bfloat16(a2 * decay)) : 0.0f;
   }
 }
@@ -270,7 +287,7 @@ __global__ void gdn_chunk_gemm_kernel(
     float kcd = 0.0f;
     for (int m = 0; m < chunk_size; ++m) {
       const float kb0 = __bfloat162float(__float2bfloat16(k[(token_base + m) * head_k_dim + j] * beta[token_base + m]));
-      const float kb = __bfloat162float(__float2bfloat16(kb0 * exp2f(g_cum[token_base + m])));
+      const float kb = __bfloat162float(__float2bfloat16(kb0 * gdn_exp2_approx(g_cum[token_base + m])));
       kcd += a[a_base + i * chunk_size + m] * kb;
     }
     kcd_out[kcd_base + cell] = __bfloat162float(__float2bfloat16(kcd));
@@ -306,7 +323,7 @@ __global__ void gdn_chunk_state_kernel(
       const int j = cell - i * head_v_dim;
       float vp = 0.0f;
       float ai = 0.0f;
-      const float qg = exp2f(g_cum[token_base + i]);
+      const float qg = gdn_exp2_approx(g_cum[token_base + i]);
       for (int m = 0; m < head_k_dim; ++m) {
         const float s = __bfloat162float(__float2bfloat16(state_head[m * head_v_dim + j]));
         vp += kcd_in[kcd_base + i * head_k_dim + m] * s;
@@ -332,14 +349,14 @@ __global__ void gdn_chunk_state_kernel(
     }
     __syncthreads();
     const float g_last = g_cum[token_base + chunk_size - 1];
-    const float decay = exp2f(g_last);
+    const float decay = gdn_exp2_approx(g_last);
     const int state_cells = head_k_dim * head_v_dim;
     for (int cell = threadIdx.x; cell < state_cells; cell += blockDim.x) {
       const int m = cell / head_v_dim;
       const int j = cell - m * head_v_dim;
       float acc = 0.0f;
       for (int i = 0; i < chunk_size; ++i) {
-        const float value = __bfloat162float(__float2bfloat16(v_new[i * head_v_dim + j] * exp2f(g_last - g_cum[token_base + i])));
+        const float value = __bfloat162float(__float2bfloat16(v_new[i * head_v_dim + j] * gdn_exp2_approx(g_last - g_cum[token_base + i])));
         acc += k[(token_base + i) * head_k_dim + m] * value;
       }
       state_head[cell] = state_head[cell] * decay + acc;
