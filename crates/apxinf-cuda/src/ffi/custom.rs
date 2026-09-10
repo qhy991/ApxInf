@@ -5,6 +5,18 @@ use std::ffi::c_void;
 use super::cuda::{cudaError_t, cudaStream_t};
 
 extern "C" {
+    pub fn apxinf_batch_norm_relu_bf16(
+        x: *const c_void,
+        mean: *const c_void,
+        invstd: *const c_void,
+        weight: *const c_void,
+        bias: *const c_void,
+        out: *mut c_void,
+        channels: i32,
+        spatial: i32,
+        count: i64,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
     pub fn apxinf_expand_spatial_bf16(
         x: *const c_void,
         out: *mut c_void,

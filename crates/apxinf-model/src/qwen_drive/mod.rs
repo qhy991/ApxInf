@@ -39,6 +39,8 @@ pub mod perception_depth;
 #[cfg(feature = "cuda")]
 pub mod perception_fpn;
 #[cfg(feature = "cuda")]
+pub mod perception_view;
+#[cfg(feature = "cuda")]
 pub mod vision;
 
 pub use config::{

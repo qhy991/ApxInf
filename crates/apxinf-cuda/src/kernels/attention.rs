@@ -1617,17 +1617,17 @@ pub fn causal_gqa_bf16(
     }
     #[cfg(any(apxinf_fa2_sm80, apxinf_fa2_f16_sm100))]
     {
-        // FIX (implement_r10): the vendored FA2 family is measured pathological on
-        // every exercised instantiation (hdim96 r4/r6 ~19.2s, hdim128 r7 ~28.2s per
-        // 3472-token launch; hdim256-causal r8 >~225s lower bound) and the hdim256
-        // splitkv decode kernel is measured NON-FUNCTIONAL (r9: 'misaligned address'
-        // abort at decode step-0 layer 3, exit=-6). Route ALL hdim256 causal GQA --
-        // prefill AND decode -- through the composed gemm_ex + fused causal softmax
-        // helper so no vendored FA2 kernel is ever launched on the causal path.
-        // fa2_attention_splitkv / fa2_attention_causal stay intact for other head
-        // dims (none exist in this model); revert/replace in the acceptance-bound
-        // revision per the prevailing marker policy.
+        // Use the head256 specialization for complete causal prefill and
+        // single-token decode. Unequal multi-token prefixes use composed GQA.
         if q_shape[2] == 256 {
+            #[cfg(apxinf_fa2_sm80)]
+            if q_shape[0] == key_tokens && q_shape[0] > 1 {
+                return fa2_attention_causal(ctx,q,k,v,q_shape[0],key_tokens,q_shape[1],k_shape[1],q_shape[2]);
+            }
+            #[cfg(apxinf_fa2_sm80)]
+            if q_shape[0] == 1 {
+                return fa2_attention_splitkv(ctx,q,k,v,1,1,key_tokens,q_shape[1],k_shape[1],q_shape[2],false);
+            }
             return composed_gqa_bf16(ctx, q, k, v, key_tokens, true);
         }
         if fa2_splitkv_enabled(q_shape[0], key_tokens, q_shape[1], k_shape[1], q_shape[2]) {

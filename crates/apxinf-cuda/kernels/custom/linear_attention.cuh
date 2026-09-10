@@ -243,7 +243,7 @@ __global__ void gdn_tri_solve_kernel(float* a, int chunk_size) {
   }
 }
 
-// VT/U = bf16(A @ bf16(V * beta)); KCD/W = bf16(A @ bf16(K * beta * exp2(g))).
+// VT/U = bf16(A @ bf16(V * beta)); W = bf16(A @ bf16(bf16(K * beta) * exp2(g))).
 __global__ void gdn_chunk_gemm_kernel(
     const float* a, const float* v, const float* k, const float* beta,
     const float* g_cum, float* vt_out, float* kcd_out,
@@ -269,7 +269,8 @@ __global__ void gdn_chunk_gemm_kernel(
     const int j = cell - i * head_k_dim;
     float kcd = 0.0f;
     for (int m = 0; m < chunk_size; ++m) {
-      const float kb = __bfloat162float(__float2bfloat16(k[(token_base + m) * head_k_dim + j] * beta[token_base + m] * exp2f(g_cum[token_base + m])));
+      const float kb0 = __bfloat162float(__float2bfloat16(k[(token_base + m) * head_k_dim + j] * beta[token_base + m]));
+      const float kb = __bfloat162float(__float2bfloat16(kb0 * exp2f(g_cum[token_base + m])));
       kcd += a[a_base + i * chunk_size + m] * kb;
     }
     kcd_out[kcd_base + cell] = __bfloat162float(__float2bfloat16(kcd));
@@ -451,10 +452,13 @@ __global__ void rms_norm_plus1_bf16_kernel(
     if (lane == 0) warp_sums[0] = v;
   }
   __syncthreads();
-  const float rms = rsqrtf(warp_sums[0] / cols + eps);
+  // Preserve the reference mean-reduction and epsilon rounding boundaries.
+  // Division followed by a fused add can cross a BF16 rounding boundary.
+  const float mean = __fmul_rn(warp_sums[0], __fdiv_rn(1.0f, static_cast<float>(cols)));
+  const float rms = rsqrtf(__fadd_rn(mean, eps));
   for (int i = threadIdx.x; i < cols; i += blockDim.x) {
     output[base + i] = __float2bfloat16(
-        la_plus1[i] * rms * (1.0f + __bfloat162float(weight[i])));
+        __fmul_rn(__fmul_rn(la_plus1[i], rms), __fadd_rn(1.0f, __bfloat162float(weight[i]))));
   }
 }
 

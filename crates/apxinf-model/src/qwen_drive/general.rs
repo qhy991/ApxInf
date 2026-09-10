@@ -92,6 +92,33 @@ fn alloc_zeros(ctx: &Context, bytes: usize) -> Result<DeviceBuffer> {
     DeviceBuffer::alloc_zeros(bytes.max(1), ctx.device_id()).map_err(Error::Cuda)
 }
 
+/// Apply a BF16 linear weight in its original checkpoint [out,in] layout.
+fn linear_checkpoint(ctx: &Context, input: &Tensor, weight: &Tensor) -> Result<Tensor> {
+    let x=input.shape().dims();let w=weight.shape().dims();
+    if x.len()!=2 || w.len()!=2 || x[1]!=w[1] || input.dtype()!=DType::BF16 || weight.dtype()!=DType::BF16 {
+        return Err(Error::Other("qwen_drive: checkpoint linear shape/dtype mismatch".into()));
+    }
+    let stride=i32::try_from(x[1]).map_err(|_|Error::Other("linear input stride overflow".into()))?;
+    let columns=i32::try_from(w[0]).map_err(|_|Error::Other("linear output stride overflow".into()))?;
+    let output=device_tensor(ctx,&[x[0],w[0]],DType::BF16)?;
+    gemm::write_ex(ctx,DType::BF16,CublasTranspose::None,CublasTranspose::Transpose,x[0],w[0],x[1],
+        1.0,&DeviceBuffer::from_tensor(input).map_err(Error::Cuda)?,stride,
+        &DeviceBuffer::from_tensor(weight).map_err(Error::Cuda)?,stride,0.0,
+        &DeviceBuffer::from_tensor(&output).map_err(Error::Cuda)?,columns)?;
+    Ok(output)
+}
+
+fn project_and_pack(ctx: &Context, input: &Tensor, weights: &[&Tensor]) -> Result<Tensor> {
+    let rows=input.shape().dims()[0];
+    let mut outputs=Vec::with_capacity(weights.len());
+    for weight in weights {
+        let value=linear_checkpoint(ctx,input,weight)?;
+        outputs.push(value.reshape(vec![rows,value.shape().dims()[1],1,1])?);
+    }
+    let packed=elementwise::concat_channels_bf16(ctx,&outputs.iter().collect::<Vec<_>>())?;
+    packed.reshape(vec![rows,packed.shape().dims()[1]])
+}
+
 fn upload_u32(ctx: &Context, values: &[u32]) -> Result<DeviceBuffer> {
     let bytes: Vec<u8> = values.iter().flat_map(|value| value.to_ne_bytes()).collect();
     let buffer = DeviceBuffer::alloc(bytes.len().max(1), ctx.device_id()).map_err(Error::Cuda)?;
@@ -490,7 +517,7 @@ impl QwenDriveModel {
         let normed = la::rms_norm_plus1(ctx, &x, post_norm, eps)?;
         let gu = gemm::matmul(ctx, &normed, gate_up_w)?;
         let act = activation::swiglu_bf16_rounded(ctx, &gu)?;
-        let down = gemm::matmul(ctx, &act, down_w)?;
+        let down = linear_checkpoint(ctx, &act, down_w)?;
         if trace {
             trace_rows("text0_post_norm", &normed)?;
             trace_rows("text0_gate_up", &gu)?;
@@ -521,7 +548,13 @@ impl QwenDriveModel {
         let head_dim = text.head_dim;
         let rotary = text.rotary_dim();
         let normed = la::rms_norm_plus1(ctx, &x, &w.input_norm, eps)?;
-        let fused = gemm::matmul(ctx, &normed, &w.qkv_w)?;
+        let fused = project_and_pack(ctx, &normed, &[&w.q_w, &w.k_w, &w.v_w])?;
+        if layer_idx == 3 && seq > 1 {
+            trace_rows("text3_input_norm", &normed)?;
+            trace_rows("text3_fused_qkv", &fused)?;
+            trace_rows("text3_cos", cos)?;
+            trace_rows("text3_sin", sin)?;
+        }
         let q_out = device_tensor(ctx, &[seq, heads, head_dim], DType::BF16)?;
         let (k_cache, v_cache) = match &self.caches[layer_idx] {
             LayerCache::FullAttention { k, v } => (k.clone(), v.clone()),
@@ -548,9 +581,19 @@ impl QwenDriveModel {
         let k_view = cache_view(&k_cache, kv_len)?;
         let v_view = cache_view(&v_cache, kv_len)?;
         let attn = attention::causal_gqa_bf16(ctx, &q_out, &k_view, &v_view, kv_len)?;
+        if layer_idx == 3 && seq > 1 {
+            trace_rows("text3_q", &q_out.reshape(vec![seq, heads * head_dim])?)?;
+            trace_rows("text3_k", &k_view.reshape(vec![kv_len, kv_heads * head_dim])?)?;
+            trace_rows("text3_v", &v_view.reshape(vec![kv_len, kv_heads * head_dim])?)?;
+            trace_rows("text3_attention", &attn.reshape(vec![seq, heads * head_dim])?)?;
+        }
         let attn = attn.reshape(vec![seq, heads * head_dim])?;
         la::sigmoid_gate_mul(ctx, &attn, &fused, heads, head_dim)?;
-        let proj = gemm::matmul(ctx, &attn, &w.o_w)?;
+        let proj = linear_checkpoint(ctx, &attn, &w.o_w)?;
+        if layer_idx == 3 && seq > 1 {
+            trace_rows("text3_gated_attention", &attn)?;
+            trace_rows("text3_out_proj", &proj)?;
+        }
         let hidden = elementwise::add(ctx, &x, &proj)?;
         self.forward_mlp(hidden, &w.post_norm, &w.gate_up_w, &w.down_w, false)
     }
@@ -585,20 +628,7 @@ impl QwenDriveModel {
         let normed = la::rms_norm_plus1(ctx, &x, &w.input_norm, eps)?;
         // Preserve all four reference GEMM geometries. Transposing or fusing
         // these weights selects different BF16 reductions in cuBLAS.
-        let project = |weight: &Tensor, columns: usize| -> Result<Tensor> {
-            let projected = device_tensor(ctx, &[seq, columns], DType::BF16)?;
-            gemm::write_ex(ctx, DType::BF16, CublasTranspose::None,
-                CublasTranspose::Transpose, seq, columns, text.hidden_size,
-                1.0, &DeviceBuffer::from_tensor(&normed).map_err(Error::Cuda)?, text.hidden_size as i32,
-                &DeviceBuffer::from_tensor(weight).map_err(Error::Cuda)?, text.hidden_size as i32,
-                0.0, &DeviceBuffer::from_tensor(&projected).map_err(Error::Cuda)?, columns as i32)?;
-            projected.reshape(vec![seq, columns, 1, 1])
-        };
-        let qkv = project(&w.qkv_w, conv_dim)?;
-        let z = project(&w.z_w, value_dim)?;
-        let b = project(&w.b_w, num_v_heads)?;
-        let a = project(&w.a_w, num_v_heads)?;
-        let zba = elementwise::concat_channels_bf16(ctx, &[&qkv, &z, &b, &a])?
+        let zba = project_and_pack(ctx, &normed, &[&w.qkv_w, &w.z_w, &w.b_w, &w.a_w])?
             .reshape(vec![seq, conv_dim + value_dim + 2 * num_v_heads])?;
         if layer_idx == 0 && seq > 1 {
             trace_rows("text0_input", &x)?;
@@ -741,7 +771,7 @@ impl QwenDriveModel {
             1e-6,
         )?;
         let gated = gated.reshape(vec![seq, value_dim])?;
-        let proj = gemm::matmul(ctx, &gated, &w.out_w)?;
+        let proj = linear_checkpoint(ctx, &gated, &w.out_w)?;
         let hidden = elementwise::add(ctx, &x, &proj)?;
         if layer_idx == 0 && seq > 1 {
             trace_rows("text0_gated_norm", &gated)?;

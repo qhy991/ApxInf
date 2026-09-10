@@ -30,6 +30,17 @@ namespace {
 #include "../kernels/custom/pooling.cuh"
 }  // namespace
 
+extern "C" cudaError_t apxinf_batch_norm_relu_bf16(const void* x,const void* mean,
+    const void* invstd,const void* weight,const void* bias,void* out,
+    int channels,int spatial,int64_t count,cudaStream_t stream) {
+  if(!x||!mean||!invstd||!weight||!bias||!out||channels<=0||spatial<=0||count<=0)
+    return cudaErrorInvalidValue;
+  batch_norm_relu_bf16_kernel<<<256,256,0,stream>>>((const __nv_bfloat16*)x,
+      (const __nv_bfloat16*)mean,(const float*)invstd,(const __nv_bfloat16*)weight,
+      (const __nv_bfloat16*)bias,(__nv_bfloat16*)out,channels,spatial,count);
+  return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_group_norm_bf16_rounded(const void* x,const void* w,const void* b,void* y,
     int n,int c,int spatial,int groups,float eps,cudaStream_t stream) {
   if(!x||!w||!b||!y||n<=0||c<=0||spatial<=0||groups<=0||c%groups) return cudaErrorInvalidValue;

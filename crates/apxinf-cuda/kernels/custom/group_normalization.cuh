@@ -1,4 +1,20 @@
 #pragma once
+
+// Inference BatchNorm with precomputed FP32 inverse standard deviation.
+// Round the affine result to BF16 before applying ReLU.
+__global__ void batch_norm_relu_bf16_kernel(const __nv_bfloat16* x,
+    const __nv_bfloat16* mean,const float* invstd,const __nv_bfloat16* weight,
+    const __nv_bfloat16* bias,__nv_bfloat16* out,int channels,int spatial,int64_t count) {
+  for(int64_t i=static_cast<int64_t>(blockIdx.x)*blockDim.x+threadIdx.x;
+      i<count;i+=static_cast<int64_t>(blockDim.x)*gridDim.x) {
+    const int c=(i/spatial)%channels;
+    const float centered=__bfloat162float(x[i])-__bfloat162float(mean[c]);
+    const float scaled=__bfloat162float(weight[c])*centered;
+    const __nv_bfloat16 y=__float2bfloat16(fmaf(scaled,invstd[c],__bfloat162float(bias[c])));
+    out[i]=__bfloat162float(y)<0 ? __float2bfloat16(0) : y;
+  }
+}
+
 // BF16 moments and epsilon preserve the Torch 2.11 GroupNorm arithmetic contract.
 
 struct GroupNormMoments { float mean, m2, count; };

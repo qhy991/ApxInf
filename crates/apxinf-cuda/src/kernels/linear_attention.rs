@@ -1203,6 +1203,12 @@ pub fn gqa_bf16(
         ));
     }
     if ctx.caps().compute_major == 8 && ctx.caps().compute_minor == 9 && q_shape[2] == 256 {
+        #[cfg(apxinf_fa2_sm80)]
+        if q_shape[0] <= 64 {
+            return super::attention::fa2_attention_splitkv(
+                ctx, q, k, v, 1, q_shape[0], key_tokens, q_shape[1], k_shape[1], q_shape[2], false,
+            );
+        }
         return super::attention::composed_gqa_bf16(ctx, q, k, v, key_tokens, false);
     }
     #[cfg(any(apxinf_fa2_sm80, apxinf_fa2_f16_sm100))]

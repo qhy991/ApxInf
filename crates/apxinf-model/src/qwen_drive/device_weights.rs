@@ -109,9 +109,10 @@ pub struct DeviceMlp {
 
 pub struct FullAttentionLayerWeights {
     pub input_norm: Tensor,
-    /// Fused `[hidden, q_heads*2*head_dim + 2*kv_heads*head_dim]` (q|gate per
-    /// head first, then k heads, then v heads), transposed at load.
-    pub qkv_w: Tensor,
+    /// Separate checkpoint [out,hidden] projections; Q contains q|gate per head.
+    pub q_w: Tensor,
+    pub k_w: Tensor,
+    pub v_w: Tensor,
     pub q_norm: Tensor,
     pub k_norm: Tensor,
     pub o_w: Tensor,
@@ -264,24 +265,25 @@ impl QwenDriveDeviceWeights {
             let gate = take_transposed(&mut language, &format!("{p}.mlp.gate_proj.weight"))?;
             let up_w = take_transposed(&mut language, &format!("{p}.mlp.up_proj.weight"))?;
             let gate_up_w = up(backend, &concat_columns(&[&gate, &up_w])?)?;
-            let down_w = up(backend, &take_transposed(&mut language, &format!("{p}.mlp.down_proj.weight"))?)?;
+            let down_w = up(backend, &take(&mut language, &format!("{p}.mlp.down_proj.weight"))?)?;
             if text.is_full_attention(index) {
-                let q = take_transposed(&mut language, &format!("{p}.self_attn.q_proj.weight"))?;
-                let k = take_transposed(&mut language, &format!("{p}.self_attn.k_proj.weight"))?;
-                let v = take_transposed(&mut language, &format!("{p}.self_attn.v_proj.weight"))?;
-                let qkv_w = concat_columns(&[&q, &k, &v])?;
-                let dims = qkv_w.shape().dims().to_vec();
-                if dims != [hidden, q_width + 2 * kv_width] {
+                let q = take(&mut language, &format!("{p}.self_attn.q_proj.weight"))?;
+                let k = take(&mut language, &format!("{p}.self_attn.k_proj.weight"))?;
+                let v = take(&mut language, &format!("{p}.self_attn.v_proj.weight"))?;
+                if q.shape().dims() != [q_width, hidden] || k.shape().dims() != [kv_width, hidden]
+                    || v.shape().dims() != [kv_width, hidden] {
                     return Err(Error::Other(format!(
-                        "qwen_drive: fused qkv width mismatch at layer {index}: {dims:?}"
+                        "qwen_drive: q/k/v projection shape mismatch at layer {index}"
                     )));
                 }
                 layers.push(MixerWeights::FullAttention(FullAttentionLayerWeights {
                     input_norm,
-                    qkv_w: up(backend, &qkv_w)?,
+                    q_w: up(backend, &q)?,
+                    k_w: up(backend, &k)?,
+                    v_w: up(backend, &v)?,
                     q_norm: up(backend, &take(&mut language, &format!("{p}.self_attn.q_norm.weight"))?)?,
                     k_norm: up(backend, &take(&mut language, &format!("{p}.self_attn.k_norm.weight"))?)?,
-                    o_w: up(backend, &take_transposed(&mut language, &format!("{p}.self_attn.o_proj.weight"))?)?,
+                    o_w: up(backend, &take(&mut language, &format!("{p}.self_attn.o_proj.weight"))?)?,
                     post_norm,
                     gate_up_w,
                     down_w,
@@ -321,7 +323,7 @@ impl QwenDriveDeviceWeights {
                     dt_bias: up(backend, &widen_to_f32(&take(&mut language, &format!("{p}.linear_attn.dt_bias"))?)?)?,
                     a_log: up(backend, &bf16_grid_round_f32(&a_log_raw)?)?,
                     gated_norm: up(backend, &narrow_to_bf16(&take(&mut language, &format!("{p}.linear_attn.norm.weight"))?)?)?,
-                    out_w: up(backend, &take_transposed(&mut language, &format!("{p}.linear_attn.out_proj.weight"))?)?,
+                    out_w: up(backend, &take(&mut language, &format!("{p}.linear_attn.out_proj.weight"))?)?,
                     post_norm,
                     gate_up_w,
                     down_w,
