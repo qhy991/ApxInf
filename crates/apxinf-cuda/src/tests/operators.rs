@@ -27,6 +27,59 @@ fn silu_ref(x: f32) -> f32 {
 }
 
 #[test]
+fn rounded_swiglu_preserves_bf16_activation_boundary() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    let (rows, inner) = (3, 129);
+    let input: Vec<f32> = (0..rows * inner * 2)
+        .map(|i| half::bf16::from_f32((i % 101) as f32 / 8.0 - 6.0).to_f32()).collect();
+    let expected: Vec<f32> = (0..rows * inner).map(|i| {
+        let row = i / inner;
+        let col = i % inner;
+        let gate = input[row * 2 * inner + col];
+        let up = input[row * 2 * inner + inner + col];
+        half::bf16::from_f32(half::bf16::from_f32(silu_ref(gate)).to_f32() * up).to_f32()
+    }).collect();
+    let x = upload_fp32_as_bf16(&ctx, &input, vec![rows, 2 * inner]).unwrap();
+    let y = crate::kernels::activation::swiglu_bf16_rounded(&ctx, &x).unwrap();
+    assert_bf16_close_elementwise(&download_bf16_as_fp32(&y).unwrap(), &expected);
+}
+
+#[test]
+fn composed_joint_gqa_is_unmasked_and_respects_head_groups() {
+    let ctx = CudaContext::new(0).expect("CUDA device required");
+    // Include more queries than keys and a query tile boundary. Noncausal
+    // attention must attend all keys in both cases without offset underflow.
+    for (queries, keys, heads, kv_heads, dim) in [(3, 5, 4, 2, 256), (5, 3, 4, 2, 256), (1025, 3, 2, 1, 16)] {
+        let values = |n, shift| (0..n).map(|i| {
+            half::bf16::from_f32((((i + shift) % 37) as f32 - 18.0) / 32.0).to_f32()
+        }).collect::<Vec<f32>>();
+        let q = values(queries * heads * dim, 0);
+        let k = values(keys * kv_heads * dim, 7);
+        let v = values(keys * kv_heads * dim, 19);
+        let mut expected = vec![0.0f32; queries * heads * dim];
+        for row in 0..queries {
+            for head in 0..heads {
+                let group = head / (heads / kv_heads);
+                let mut scores = vec![0.0f32; keys];
+                for token in 0..keys {
+                    scores[token] = (0..dim).map(|d| q[(row * heads + head) * dim + d] * k[(token * kv_heads + group) * dim + d]).sum::<f32>() / (dim as f32).sqrt();
+                }
+                let max = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let total: f32 = scores.iter().map(|s| (s-max).exp()).sum();
+                for d in 0..dim {
+                    expected[(row * heads + head) * dim + d] = (0..keys).map(|t| (scores[t]-max).exp()/total * v[(t*kv_heads+group)*dim+d]).sum();
+                }
+            }
+        }
+        let qt = upload_fp32_as_bf16(&ctx, &q, vec![queries,heads,dim]).unwrap();
+        let kt = upload_fp32_as_bf16(&ctx, &k, vec![keys,kv_heads,dim]).unwrap();
+        let vt = upload_fp32_as_bf16(&ctx, &v, vec![keys,kv_heads,dim]).unwrap();
+        let actual = crate::kernels::attention::composed_gqa_bf16(&ctx,&qt,&kt,&vt,keys,false).unwrap();
+        assert_bf16_close_reduction(&download_bf16_as_fp32(&actual).unwrap(),&expected);
+    }
+}
+
+#[test]
 fn silu_bf16_matches_fp32_reference() {
     let ctx = CudaContext::new(0).expect("CUDA device required");
     // A mix of magnitudes and signs so we exercise the tails of exp/sigmoid.

@@ -38,7 +38,7 @@ use super::weights::{QwenDriveExpertWeights, QwenDriveVlmWeights};
 const GDN_CHUNK: usize = 64;
 
 // Private takeover checkpoint probe; opt-in and removed before product acceptance.
-fn trace_rows(name: &str, tensor: &Tensor) -> Result<()> {
+pub(super) fn trace_rows(name: &str, tensor: &Tensor) -> Result<()> {
     let Some(root) = std::env::var_os("APXINF_QWEN_TRACE_DIR") else { return Ok(()); };
     let width = *tensor.shape().dims().last().unwrap();
     let count = tensor.numel() / width;

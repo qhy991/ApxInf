@@ -1120,6 +1120,12 @@ pub fn gqa_bf16(
             "non-causal joint BF16 GQA shape mismatch".into(),
         ));
     }
+    if q_shape[0] == 0 || q_shape[1] == 0 || q_shape[2] == 0 {
+        return Err(Error::Other("non-causal GQA requires nonempty queries".into()));
+    }
+    if ctx.caps().compute_major == 8 && ctx.caps().compute_minor == 9 && q_shape[2] == 256 {
+        return super::attention::composed_gqa_bf16(ctx, q, k, v, key_tokens, false);
+    }
     #[cfg(any(apxinf_fa2_sm80, apxinf_fa2_f16_sm100))]
     {
         let output = output_buffer(ctx, q.size_in_bytes())?;

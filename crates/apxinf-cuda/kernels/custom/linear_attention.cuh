@@ -77,7 +77,9 @@ __global__ void causal_conv1d_silu_bf16_kernel(
     }
     acc += value * __bfloat162float(weight[channel * kernel_size + i]);
   }
-  out[static_cast<int64_t>(token) * channels + channel] = __float2bfloat16(la_silu(acc));
+  // Preserve the BF16 convolution output before the separate SiLU operation.
+  const float conv = __bfloat162float(__float2bfloat16(acc));
+  out[static_cast<int64_t>(token) * channels + channel] = __float2bfloat16(la_silu(conv));
   if (token == seq - 1) {
     for (int i = 0; i < kernel_size; ++i) {
       float value = 0.0f;
@@ -128,8 +130,9 @@ __global__ void gdn_qk_prep_kernel(
   }
   const float q_inv = rsqrtf(la_reduce[0] + eps);
   const float k_inv = rsqrtf(la_reduce[blockDim.x] + eps);
-  const float q_normed = q_value * q_inv * scale;
-  const float k_normed = k_value * k_inv;
+  // FLA materializes l2norm in the input dtype before scaling/recurrence.
+  const float q_normed = __bfloat162float(__float2bfloat16(q_value * q_inv)) * scale;
+  const float k_normed = __bfloat162float(__float2bfloat16(k_value * k_inv));
   for (int r = 0; r < reps; ++r) {
     const int head = k_head * reps + r;
     const int64_t dst = (static_cast<int64_t>(head) * seq_pad + token) * head_k_dim + d;
@@ -155,7 +158,7 @@ __global__ void gdn_vb_prep_kernel(
   const int64_t conv_base = static_cast<int64_t>(token) * conv_dim;
   const float b_value = __bfloat162float(b_proj[static_cast<int64_t>(token) * ba_row_stride + head]);
   const float a_value = __bfloat162float(a_proj[static_cast<int64_t>(token) * ba_row_stride + head]);
-  const float beta = la_sigmoid(b_value);
+  const float beta = __bfloat162float(__float2bfloat16(la_sigmoid(b_value)));
   const float g = -expf(a_log[head]) * la_softplus(a_value + dt_bias[head]);
   v_out[(static_cast<int64_t>(head) * seq_pad + token) * head_v_dim + d] =
       __bfloat162float(conv_out[conv_base + v_offset + head * head_v_dim + d]);
@@ -377,7 +380,7 @@ __global__ void gdn_recurrent_kernel(
   out[static_cast<int64_t>(head) * head_v_dim + j] = __float2bfloat16(acc);
 }
 
-// Gated RMSNorm: y = bf16(rms(x)), y2 = bf16(w * y), out = bf16(y2 * silu(z)).
+// Fused gated RMSNorm: FP32 normalization, weight and SiLU gate; one BF16 store.
 // x rows are [rows, cols]; z rows are strided slices z[(row/z_heads) *
 // z_row_stride + z_col_offset + (row%z_heads)*cols].
 __global__ void gated_rms_silu_bf16_kernel(
@@ -411,8 +414,8 @@ __global__ void gated_rms_silu_bf16_kernel(
   __syncthreads();
   const float rms = rsqrtf(warp_sums[0] / cols + eps);
   for (int i = threadIdx.x; i < cols; i += blockDim.x) {
-    const float y0 = __bfloat162float(__float2bfloat16(la_gated[i] * rms));
-    const float y1 = __bfloat162float(__float2bfloat16(__bfloat162float(weight[i]) * y0));
+    const float y0 = la_gated[i] * rms;
+    const float y1 = __bfloat162float(weight[i]) * y0;
     const float zf = __bfloat162float(z[z_base + i]);
     out[base + i] = __float2bfloat16(y1 * la_silu(zf));
   }

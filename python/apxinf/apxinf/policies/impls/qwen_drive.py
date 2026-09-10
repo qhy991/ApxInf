@@ -438,6 +438,67 @@ class QwenDrivePolicy:
             int(observation["nav_command"]),
         )
 
+    def _encode_perception(self, observation):
+        """Canonical perception inputs and camera calibration, without model work.
+
+        Projection conventions follow the Apache-2.0 Qwen-Drive reference's
+        perception dataset/geometry helpers (Alibaba Group Holding Limited).
+        """
+        frame = observation["frame"]
+        images = observation["images"]
+        target_width, target_height = 896, 512
+        patches, grids, counts = [], [], []
+        for item in frame["content"]:
+            if "image" in item:
+                patch, (height, width) = self._patchify(
+                    images[item["image"]], (target_width, target_height), self.current_pixels
+                )
+                patches.append(patch)
+                grids.append([1, height, width])
+                counts.append(height * width // self.merge**2)
+        body = []
+        index = 0
+        for item in frame["content"]:
+            if "text" in item:
+                body.extend(self.tokenizer.encode(item["text"]))
+            elif "image" in item:
+                body.extend([self.vision_start_id] + [self.image_token_id] * counts[index] + [self.vision_end_id])
+                index += 1
+            else:
+                raise ValueError("perception content needs text or image")
+        ids = ([self.im_start_id] + self.tokenizer.encode("user") + self.newline_ids + body
+               + [self.im_end_id] + self.newline_ids + [self.im_start_id]
+               + self.tokenizer.encode("assistant") + self.newline_ids)
+        projections = []
+        cameras = frame["cam_order"]
+        if any(len(observation[key]) != len(cameras) for key in
+               ("cam_intrinsic", "sensor2lidar_rotation", "sensor2lidar_translation")):
+            raise ValueError("perception camera calibration count mismatch")
+        for camera, intrinsic, rotation, translation in zip(
+            cameras, observation["cam_intrinsic"], observation["sensor2lidar_rotation"],
+            observation["sensor2lidar_translation"]
+        ):
+            lidar_to_camera = np.linalg.inv(np.asarray(rotation, dtype=np.float32))
+            translation = np.asarray(translation, dtype=np.float32) @ lidar_to_camera.T
+            transform = np.eye(4, dtype=np.float32)
+            transform[:3, :3] = lidar_to_camera.T
+            transform[3, :3] = -translation
+            k = np.asarray(intrinsic, dtype=np.float32)
+            padded = np.eye(4, dtype=np.float32)
+            padded[:k.shape[0], :k.shape[1]] = k
+            projection = padded @ transform.T
+            height, width = np.asarray(images[camera]).shape[:2]
+            scale = np.diag(np.asarray([target_width / width, target_height / height, 1], dtype=np.float32))
+            projection[:3, :] = scale @ projection[:3, :]
+            projections.append(projection)
+        metadata = {
+            "sample_token": observation["token"], "dataset_type": frame["dataset_type"],
+            "cam_order": list(cameras), "lidar2img": np.stack(projections),
+            "lidar2ego": np.repeat(np.asarray(observation["lidar2ego"], dtype=np.float32)[None], len(cameras), axis=0),
+            "img_shape": [(target_height, target_width)] * len(cameras), "box_coord_system": "ego",
+        }
+        return ids, np.ascontiguousarray(np.concatenate(patches), dtype=np.float32), grids, metadata
+
     def _noise(self, observation, noise) -> np.ndarray:
         selected = noise
         if selected is None:

@@ -98,6 +98,7 @@ pub fn forward(
     // Patch embedding: [N, patch_vec] @ [patch_vec, hidden] + bias.
     let mut x = gemm::matmul(ctx, pixel_values, &weights.patch_w)?;
     x = elementwise::bias_bf16(ctx, &x, Some(&weights.patch_b))?;
+    super::general::trace_rows("model_visual_patch_embed", &x)?;
 
     // Bilinear-interpolated learned position embeddings (host canonicalization).
     let pos_embeds = compute_pos_embeds(config, weights, ctx, grid_thw)?;
@@ -142,6 +143,7 @@ pub fn forward(
         let h2 = gemm::matmul(ctx, &h, &block.fc2_w)?;
         let h2 = elementwise::bias_bf16(ctx, &h2, Some(&block.fc2_b))?;
         x = elementwise::add(ctx, &x, &h2)?;
+        super::general::trace_rows(&format!("model_visual_blocks_{block_idx}"), &x)?;
     }
 
     // Merger: LayerNorm(1024) -> merge 4 rows -> fc1 -> exact erf GELU -> fc2.

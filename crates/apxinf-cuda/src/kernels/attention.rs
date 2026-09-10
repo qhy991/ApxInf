@@ -174,12 +174,13 @@ pub fn set_attn_seg_map(map: Vec<u8>) {
 /// Composed causal GQA prefill for the hdim256 text stack: chunked fp32 QK^T
 /// GEMMs, the base-compiled fused causal mask+softmax kernel, and fp32 PV GEMMs
 /// (the route-3 floor generalized to the causal hdim256 surface).
-fn composed_causal_gqa_bf16(
+pub(crate) fn composed_gqa_bf16(
     ctx: &CudaContext,
     q: &Tensor,
     k: &Tensor,
     v: &Tensor,
     key_tokens: usize,
+    causal: bool,
 ) -> Result<Tensor> {
     // FIX (implement_r9): the vendored FA2 hdim256 causal instantiation is measured
     // pathological on sm_89 (r8: text layer-3 prefill consumed the remaining ~225s of
@@ -197,7 +198,7 @@ fn composed_causal_gqa_bf16(
     let kv_heads = k_shape[1];
     let head_dim = q_shape[2];
     let group = heads / kv_heads;
-    let base = key_tokens - q_shape[0];
+    let base = if causal { key_tokens - q_shape[0] } else { 0 };
     let alpha = (head_dim as f32).sqrt().recip(); // FIX (implement_r9): softmax scale bound to the true head dim 256
     // TEMP-DIAG (implement_r5, successor synthesis_r4 bundle 2): value-level attn_mix probe
     // for the composed-causal path, absorbing the r3 P-invariant lines. Fires on prefill
@@ -209,7 +210,7 @@ fn composed_causal_gqa_bf16(
     // already-resident fp32 buffers (qf32/kf32/vf32/out_f32), no new kernels; one-time ~86MB
     // K/V readbacks per fired layer; revert in the acceptance-bound revision.
     static ATTN_PROBE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let attn_probe = q_shape[0] > 1
+    let attn_probe = causal && q_shape[0] > 1
         && matches!(
             ATTN_PROBE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             0 | 7
@@ -244,8 +245,9 @@ fn composed_causal_gqa_bf16(
         .map_err(Error::Cuda)?; // FIX (implement_r10): fp32 [C,heads,kend] token-major slab reused per chunk; min() is byte-identical at the r9 prefill geometry (q=10457>C_Q=1024) and shrinks the decode Q=1 slab from ~685MB to heads*kv*4 (~669KB); beta=0 GEMMs write every read cell
     for t0 in (0..q_shape[0]).step_by(C_Q) {
         let c_len = C_Q.min(q_shape[0] - t0);
-        let kend = base + t0 + c_len;
-        let kv_offset = (base + t0) as u32;
+        let kend = if causal { base + t0 + c_len } else { key_tokens };
+        // An offset beyond all keys makes the same softmax kernel unmasked.
+        let kv_offset = if causal { base + t0 } else { key_tokens } as u32;
         for h in 0..heads {
             let g = h / group; // FIX (implement_r9): kv head for q head h
             let q_head = buffer_slice(
@@ -1593,7 +1595,7 @@ pub fn causal_gqa_bf16(
         // dims (none exist in this model); revert/replace in the acceptance-bound
         // revision per the prevailing marker policy.
         if q_shape[2] == 256 {
-            return composed_causal_gqa_bf16(ctx, q, k, v, key_tokens);
+            return composed_gqa_bf16(ctx, q, k, v, key_tokens, true);
         }
         if fa2_splitkv_enabled(q_shape[0], key_tokens, q_shape[1], k_shape[1], q_shape[2]) {
             return fa2_attention_splitkv(
