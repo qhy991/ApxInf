@@ -485,7 +485,9 @@ __global__ void rms_norm_plus1_bf16_kernel(
   __syncthreads();
   // Preserve the reference mean-reduction and epsilon rounding boundaries.
   // Division followed by a fused add can cross a BF16 rounding boundary.
-  const float mean = __fmul_rn(warp_sums[0], __fdiv_rn(1.0f, static_cast<float>(cols)));
+  float mean = __fmul_rn(warp_sums[0], __fdiv_rn(1.0f, static_cast<float>(cols)));
+  if (gridDim.x >= 16 && cols > 128 && cols % 4 == 0)
+    mean = rms_vector_square_mean_bf16(input + base, cols);
   const float rms = rsqrtf(__fadd_rn(mean, eps));
   for (int i = threadIdx.x; i < cols; i += blockDim.x) {
     output[base + i] = __float2bfloat16(
