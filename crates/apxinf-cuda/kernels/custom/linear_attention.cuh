@@ -27,6 +27,18 @@ __device__ __forceinline__ float la_sigmoid(float x) {
   return 1.0f / (1.0f + expf(-x));
 }
 
+// Triton's sigmoid lowering used by FLA gated RMSNorm: exp(x) becomes
+// ex2.approx(x*log2(e)) and the reciprocal uses div.full.f32.
+__device__ __forceinline__ float la_triton_sigmoid(float x) {
+  const float exponent = __fmul_rn(-x, 1.4426950408889634f);
+  float power;
+  asm("ex2.approx.f32 %0, %1;" : "=f"(power) : "f"(exponent));
+  const float denominator = __fadd_rn(1.0f, power);
+  float result;
+  asm("div.full.f32 %0, %1, %2;" : "=f"(result) : "f"(1.0f), "f"(denominator));
+  return result;
+}
+
 // softplus with the PyTorch threshold=20 convention.
 __device__ __forceinline__ float la_softplus(float x) {
   return x > 20.0f ? x : log1pf(expf(x));
@@ -439,7 +451,8 @@ __global__ void gated_rms_silu_bf16_kernel(
     const float y0 = la_gated[i] * rms;
     const float y1 = __bfloat162float(weight[i]) * y0;
     const float zf = __bfloat162float(z[z_base + i]);
-    out[base + i] = __float2bfloat16(y1 * la_silu(zf));
+    out[base + i] = __float2bfloat16(
+        __fmul_rn(__fmul_rn(y1, zf), la_triton_sigmoid(zf)));
   }
 }
 
