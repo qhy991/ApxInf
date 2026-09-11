@@ -82,7 +82,10 @@ fn bf16_grid_round_f32(tensor: &Tensor) -> Result<Tensor> {
 fn narrow_to_bf16(tensor: &Tensor) -> Result<Tensor> {
     let dims = tensor.shape().dims().to_vec();
     let values = tensor.to_f32_vec()?;
-    let narrowed: Vec<half::bf16> = values.iter().map(|value| half::bf16::from_f32(*value)).collect();
+    let narrowed: Vec<half::bf16> = values
+        .iter()
+        .map(|value| half::bf16::from_f32(*value))
+        .collect();
     Tensor::from_bf16(dims, &narrowed)
 }
 
@@ -90,12 +93,27 @@ fn up(backend: &dyn Backend, tensor: &Tensor) -> Result<Tensor> {
     backend.to_device(tensor)
 }
 
-fn up_mlp(backend: &dyn Backend, mlp: &super::weights::ExpertMlp) -> Result<DeviceMlp> {
+fn up_mlp(
+    backend: &dyn Backend,
+    mlp: &super::weights::ExpertMlp,
+    checkpoint_layout: bool,
+) -> Result<DeviceMlp> {
+    let fc1 = if checkpoint_layout {
+        transpose_2d(&mlp.fc1_w)?
+    } else {
+        mlp.fc1_w.clone()
+    };
+    let fc2 = if checkpoint_layout {
+        transpose_2d(&mlp.fc2_w)?
+    } else {
+        mlp.fc2_w.clone()
+    };
     Ok(DeviceMlp {
-        fc1_w: up(backend, &mlp.fc1_w)?,
+        fc1_w: up(backend, &fc1)?,
         fc1_b: up(backend, &mlp.fc1_b)?,
-        fc2_w: up(backend, &mlp.fc2_w)?,
+        fc2_w: up(backend, &fc2)?,
         fc2_b: up(backend, &mlp.fc2_b)?,
+        checkpoint_layout,
     })
 }
 
@@ -105,6 +123,8 @@ pub struct DeviceMlp {
     pub fc1_b: Tensor,
     pub fc2_w: Tensor,
     pub fc2_b: Tensor,
+    /// Both weights retain checkpoint `[out,in]` layout for single-row MLPs.
+    pub checkpoint_layout: bool,
 }
 
 pub struct FullAttentionLayerWeights {
@@ -187,6 +207,7 @@ pub struct ExpertLayerDeviceWeights {
     pub post_norm: Tensor,
     pub gate_up_w: Tensor,
     pub down_w: Tensor,
+    /// Checkpoint [6*hidden,hidden] layout for the biased matrix-vector product.
     pub modulation_w: Tensor,
     pub modulation_b: Tensor,
 }
@@ -215,7 +236,9 @@ pub struct ExpertDeviceWeights {
 /// compute dtype exactly like the reference encoder.
 fn fourier_freq_table(num_features: usize, max_frequency: f32) -> Result<Tensor> {
     if num_features == 0 || !max_frequency.is_finite() || max_frequency <= 0.0 {
-        return Err(Error::Other("qwen_drive: invalid Fourier table geometry".into()));
+        return Err(Error::Other(
+            "qwen_drive: invalid Fourier table geometry".into(),
+        ));
     }
     // Torch CUDA BF16 logspace rounds the endpoint, step and each arithmetic
     // operation to BF16, and constructs the second half backwards from the end.
@@ -248,12 +271,20 @@ mod frequency_tests {
 
     #[test]
     fn bf16_logspace_matches_frozen_cuda_reference() {
-        let expected = [1.0,1.203125,1.4453125,1.7421875,2.09375,2.515625,3.015625,
-            3.65625,4.375,5.28125,6.375,7.625,9.125,11.125,13.3125,15.9375];
-        assert_eq!(fourier_freq_table(16,16.0).unwrap().to_f32_vec().unwrap(),expected);
-        assert_eq!(fourier_freq_table(1,16.0).unwrap().to_f32_vec().unwrap(),[1.0]);
-        assert!(fourier_freq_table(0,16.0).is_err());
-        assert!(fourier_freq_table(16,0.0).is_err());
+        let expected = [
+            1.0, 1.203125, 1.4453125, 1.7421875, 2.09375, 2.515625, 3.015625, 3.65625, 4.375,
+            5.28125, 6.375, 7.625, 9.125, 11.125, 13.3125, 15.9375,
+        ];
+        assert_eq!(
+            fourier_freq_table(16, 16.0).unwrap().to_f32_vec().unwrap(),
+            expected
+        );
+        assert_eq!(
+            fourier_freq_table(1, 16.0).unwrap().to_f32_vec().unwrap(),
+            [1.0]
+        );
+        assert!(fourier_freq_table(0, 16.0).is_err());
+        assert!(fourier_freq_table(16, 0.0).is_err());
     }
 }
 
@@ -288,18 +319,32 @@ impl QwenDriveDeviceWeights {
         let mut a_log_layer0_first4: Vec<f32> = Vec::new();
         for index in 0..text.n_layers {
             let p = format!("model.language_model.layers.{index}");
-            let input_norm = up(backend, &take(&mut language, &format!("{p}.input_layernorm.weight"))?)?;
-            let post_norm = up(backend, &take(&mut language, &format!("{p}.post_attention_layernorm.weight"))?)?;
+            let input_norm = up(
+                backend,
+                &take(&mut language, &format!("{p}.input_layernorm.weight"))?,
+            )?;
+            let post_norm = up(
+                backend,
+                &take(
+                    &mut language,
+                    &format!("{p}.post_attention_layernorm.weight"),
+                )?,
+            )?;
             let gate = take_transposed(&mut language, &format!("{p}.mlp.gate_proj.weight"))?;
             let up_w = take_transposed(&mut language, &format!("{p}.mlp.up_proj.weight"))?;
             let gate_up_w = up(backend, &concat_columns(&[&gate, &up_w])?)?;
-            let down_w = up(backend, &take(&mut language, &format!("{p}.mlp.down_proj.weight"))?)?;
+            let down_w = up(
+                backend,
+                &take(&mut language, &format!("{p}.mlp.down_proj.weight"))?,
+            )?;
             if text.is_full_attention(index) {
                 let q = take(&mut language, &format!("{p}.self_attn.q_proj.weight"))?;
                 let k = take(&mut language, &format!("{p}.self_attn.k_proj.weight"))?;
                 let v = take(&mut language, &format!("{p}.self_attn.v_proj.weight"))?;
-                if q.shape().dims() != [q_width, hidden] || k.shape().dims() != [kv_width, hidden]
-                    || v.shape().dims() != [kv_width, hidden] {
+                if q.shape().dims() != [q_width, hidden]
+                    || k.shape().dims() != [kv_width, hidden]
+                    || v.shape().dims() != [kv_width, hidden]
+                {
                     return Err(Error::Other(format!(
                         "qwen_drive: q/k/v projection shape mismatch at layer {index}"
                     )));
@@ -309,15 +354,27 @@ impl QwenDriveDeviceWeights {
                     q_w: up(backend, &q)?,
                     k_w: up(backend, &k)?,
                     v_w: up(backend, &v)?,
-                    q_norm: up(backend, &take(&mut language, &format!("{p}.self_attn.q_norm.weight"))?)?,
-                    k_norm: up(backend, &take(&mut language, &format!("{p}.self_attn.k_norm.weight"))?)?,
-                    o_w: up(backend, &take(&mut language, &format!("{p}.self_attn.o_proj.weight"))?)?,
+                    q_norm: up(
+                        backend,
+                        &take(&mut language, &format!("{p}.self_attn.q_norm.weight"))?,
+                    )?,
+                    k_norm: up(
+                        backend,
+                        &take(&mut language, &format!("{p}.self_attn.k_norm.weight"))?,
+                    )?,
+                    o_w: up(
+                        backend,
+                        &take(&mut language, &format!("{p}.self_attn.o_proj.weight"))?,
+                    )?,
                     post_norm,
                     gate_up_w,
                     down_w,
                 }));
             } else {
-                let in_qkv = take(&mut language, &format!("{p}.linear_attn.in_proj_qkv.weight"))?;
+                let in_qkv = take(
+                    &mut language,
+                    &format!("{p}.linear_attn.in_proj_qkv.weight"),
+                )?;
                 let in_z = take(&mut language, &format!("{p}.linear_attn.in_proj_z.weight"))?;
                 let in_b = take(&mut language, &format!("{p}.linear_attn.in_proj_b.weight"))?;
                 let in_a = take(&mut language, &format!("{p}.linear_attn.in_proj_a.weight"))?;
@@ -333,7 +390,8 @@ impl QwenDriveDeviceWeights {
                 }
                 // FIX (implement_r3 / synthesis_r3): bf16-grid-round A_log at load (see
                 // bf16_grid_round_f32); the pre-round max-delta feeds the confirmation line.
-                let a_log_raw = widen_to_f32(&take(&mut language, &format!("{p}.linear_attn.A_log"))?)?;
+                let a_log_raw =
+                    widen_to_f32(&take(&mut language, &format!("{p}.linear_attn.A_log"))?)?;
                 let a_log_pre = a_log_raw.to_f32_vec()?;
                 a_log_max_delta = a_log_pre.iter().fold(a_log_max_delta, |m, &v| {
                     m.max((v - half::bf16::from_f32(v).to_f32()).abs())
@@ -348,10 +406,22 @@ impl QwenDriveDeviceWeights {
                     b_w: up(backend, &in_b)?,
                     a_w: up(backend, &in_a)?,
                     conv_w: up(backend, &conv.reshape(vec![conv_dim, kernel])?)?,
-                    dt_bias: up(backend, &widen_to_f32(&take(&mut language, &format!("{p}.linear_attn.dt_bias"))?)?)?,
+                    dt_bias: up(
+                        backend,
+                        &widen_to_f32(&take(&mut language, &format!("{p}.linear_attn.dt_bias"))?)?,
+                    )?,
                     a_log: up(backend, &bf16_grid_round_f32(&a_log_raw)?)?,
-                    gated_norm: up(backend, &narrow_to_bf16(&take(&mut language, &format!("{p}.linear_attn.norm.weight"))?)?)?,
-                    out_w: up(backend, &take(&mut language, &format!("{p}.linear_attn.out_proj.weight"))?)?,
+                    gated_norm: up(
+                        backend,
+                        &narrow_to_bf16(&take(
+                            &mut language,
+                            &format!("{p}.linear_attn.norm.weight"),
+                        )?)?,
+                    )?,
+                    out_w: up(
+                        backend,
+                        &take(&mut language, &format!("{p}.linear_attn.out_proj.weight"))?,
+                    )?,
                     post_norm,
                     gate_up_w,
                     down_w,
@@ -364,14 +434,22 @@ impl QwenDriveDeviceWeights {
             "[qwen_drive] a_log_bf16_round max_delta={:.6} layer0_first4={:?}",
             a_log_max_delta, a_log_layer0_first4
         );
-        let embed_tokens = up(backend, &take(&mut language, "model.language_model.embed_tokens.weight")?)?;
-        let final_norm = up(backend, &take(&mut language, "model.language_model.norm.weight")?)?;
+        let embed_tokens = up(
+            backend,
+            &take(&mut language, "model.language_model.embed_tokens.weight")?,
+        )?;
+        let final_norm = up(
+            backend,
+            &take(&mut language, "model.language_model.norm.weight")?,
+        )?;
         if !language.is_empty() {
             let mut names: Vec<String> = language.keys().cloned().collect();
             names.sort_unstable();
             // MTP/auxiliary tensors are allowed but must be named, not silently
             // dropped: keep the check informational-strict like the scaffold.
-            let mtp_only = names.iter().all(|name| name.starts_with("model.language_model.mtp"));
+            let mtp_only = names
+                .iter()
+                .all(|name| name.starts_with("model.language_model.mtp"));
             if !mtp_only {
                 return Err(Error::Other(format!(
                     "qwen_drive device weights: {} unconsumed language tensors, first: {}",
@@ -386,9 +464,12 @@ impl QwenDriveDeviceWeights {
         let merge_sq = vision_cfg.spatial_merge_size * vision_cfg.spatial_merge_size;
         let patch = take(&mut visual, "model.visual.patch_embed.proj.weight")?;
         let patch_dims = patch.shape().dims().to_vec();
-        let patch_vec = vision_cfg.in_channels * vision_cfg.temporal_patch_size
-            * vision_cfg.patch_size * vision_cfg.patch_size;
-        if patch_dims.len() != 5 || patch_dims[0] != vision_cfg.hidden_size
+        let patch_vec = vision_cfg.in_channels
+            * vision_cfg.temporal_patch_size
+            * vision_cfg.patch_size
+            * vision_cfg.patch_size;
+        if patch_dims.len() != 5
+            || patch_dims[0] != vision_cfg.hidden_size
             || patch_dims.iter().product::<usize>() != vision_cfg.hidden_size * patch_vec
         {
             return Err(Error::Other(format!(
@@ -402,16 +483,34 @@ impl QwenDriveDeviceWeights {
             blocks.push(VisionBlockWeights {
                 norm1_w: up(backend, &take(&mut visual, &format!("{p}.norm1.weight"))?)?,
                 norm1_b: up(backend, &take(&mut visual, &format!("{p}.norm1.bias"))?)?,
-                qkv_w: up(backend, &take_transposed(&mut visual, &format!("{p}.attn.qkv.weight"))?)?,
+                qkv_w: up(
+                    backend,
+                    &take_transposed(&mut visual, &format!("{p}.attn.qkv.weight"))?,
+                )?,
                 qkv_b: up(backend, &take(&mut visual, &format!("{p}.attn.qkv.bias"))?)?,
-                proj_w: up(backend, &take_transposed(&mut visual, &format!("{p}.attn.proj.weight"))?)?,
+                proj_w: up(
+                    backend,
+                    &take_transposed(&mut visual, &format!("{p}.attn.proj.weight"))?,
+                )?,
                 proj_b: up(backend, &take(&mut visual, &format!("{p}.attn.proj.bias"))?)?,
                 norm2_w: up(backend, &take(&mut visual, &format!("{p}.norm2.weight"))?)?,
                 norm2_b: up(backend, &take(&mut visual, &format!("{p}.norm2.bias"))?)?,
-                fc1_w: up(backend, &take_transposed(&mut visual, &format!("{p}.mlp.linear_fc1.weight"))?)?,
-                fc1_b: up(backend, &take(&mut visual, &format!("{p}.mlp.linear_fc1.bias"))?)?,
-                fc2_w: up(backend, &take_transposed(&mut visual, &format!("{p}.mlp.linear_fc2.weight"))?)?,
-                fc2_b: up(backend, &take(&mut visual, &format!("{p}.mlp.linear_fc2.bias"))?)?,
+                fc1_w: up(
+                    backend,
+                    &take_transposed(&mut visual, &format!("{p}.mlp.linear_fc1.weight"))?,
+                )?,
+                fc1_b: up(
+                    backend,
+                    &take(&mut visual, &format!("{p}.mlp.linear_fc1.bias"))?,
+                )?,
+                fc2_w: up(
+                    backend,
+                    &take_transposed(&mut visual, &format!("{p}.mlp.linear_fc2.weight"))?,
+                )?,
+                fc2_b: up(
+                    backend,
+                    &take(&mut visual, &format!("{p}.mlp.linear_fc2.bias"))?,
+                )?,
             });
         }
         let merger_fc1 = take_transposed(&mut visual, "model.visual.merger.linear_fc1.weight")?;
@@ -422,15 +521,33 @@ impl QwenDriveDeviceWeights {
         }
         let vision = VisionDeviceWeights {
             patch_w: up(backend, &patch_w)?,
-            patch_b: up(backend, &take(&mut visual, "model.visual.patch_embed.proj.bias")?)?,
-            pos_embed: up(backend, &take(&mut visual, "model.visual.pos_embed.weight")?)?,
+            patch_b: up(
+                backend,
+                &take(&mut visual, "model.visual.patch_embed.proj.bias")?,
+            )?,
+            pos_embed: up(
+                backend,
+                &take(&mut visual, "model.visual.pos_embed.weight")?,
+            )?,
             blocks,
-            merger_norm_w: up(backend, &take(&mut visual, "model.visual.merger.norm.weight")?)?,
-            merger_norm_b: up(backend, &take(&mut visual, "model.visual.merger.norm.bias")?)?,
+            merger_norm_w: up(
+                backend,
+                &take(&mut visual, "model.visual.merger.norm.weight")?,
+            )?,
+            merger_norm_b: up(
+                backend,
+                &take(&mut visual, "model.visual.merger.norm.bias")?,
+            )?,
             merger_fc1_w: up(backend, &merger_fc1)?,
-            merger_fc1_b: up(backend, &take(&mut visual, "model.visual.merger.linear_fc1.bias")?)?,
+            merger_fc1_b: up(
+                backend,
+                &take(&mut visual, "model.visual.merger.linear_fc1.bias")?,
+            )?,
             merger_fc2_w: up(backend, &merger_fc2)?,
-            merger_fc2_b: up(backend, &take(&mut visual, "model.visual.merger.linear_fc2.bias")?)?,
+            merger_fc2_b: up(
+                backend,
+                &take(&mut visual, "model.visual.merger.linear_fc2.bias")?,
+            )?,
         };
         if !visual.is_empty() {
             let mut names: Vec<String> = visual.keys().cloned().collect();
@@ -445,7 +562,13 @@ impl QwenDriveDeviceWeights {
         let expert = expert
             .map(|expert| Self::upload_expert(config, expert, backend))
             .transpose()?;
-        Ok(Self { embed_tokens, layers, final_norm, vision, expert })
+        Ok(Self {
+            embed_tokens,
+            layers,
+            final_norm,
+            vision,
+            expert,
+        })
     }
 
     fn upload_expert(
@@ -464,22 +587,26 @@ impl QwenDriveDeviceWeights {
                 post_norm: up(backend, &layer.post_attention_layernorm)?,
                 gate_up_w: up(backend, &layer.gate_up_w)?,
                 down_w: up(backend, &layer.down_w)?,
-                modulation_w: up(backend, &layer.modulation_w)?,
+                modulation_w: up(backend, &transpose_2d(&layer.modulation_w)?)?,
                 modulation_b: up(backend, &layer.modulation_b)?,
             });
         }
         Ok(ExpertDeviceWeights {
             trajectory_proj_w: up(backend, &weights.trajectory_proj_w)?,
             trajectory_proj_b: up(backend, &weights.trajectory_proj_b)?,
-            fourier: up_mlp(backend, &weights.fourier_encoder)?,
+            fourier: up_mlp(backend, &weights.fourier_encoder, false)?,
             waypoint_embed: up(backend, &weights.waypoint_embed)?,
-            time_mlp: up_mlp(backend, &weights.time_mlp)?,
-            nav_mlp: up_mlp(backend, &weights.nav_mlp)?,
-            ego_mlp: up_mlp(backend, &weights.ego_mlp)?,
-            history_encoder: up_mlp(backend, &weights.history_encoder)?,
-            history_velocity_encoder: up_mlp(backend, &weights.history_velocity_encoder)?,
-            history_acceleration_encoder: up_mlp(backend, &weights.history_acceleration_encoder)?,
-            query_fusion: up_mlp(backend, &weights.query_fusion)?,
+            time_mlp: up_mlp(backend, &weights.time_mlp, true)?,
+            nav_mlp: up_mlp(backend, &weights.nav_mlp, true)?,
+            ego_mlp: up_mlp(backend, &weights.ego_mlp, true)?,
+            history_encoder: up_mlp(backend, &weights.history_encoder, true)?,
+            history_velocity_encoder: up_mlp(backend, &weights.history_velocity_encoder, true)?,
+            history_acceleration_encoder: up_mlp(
+                backend,
+                &weights.history_acceleration_encoder,
+                true,
+            )?,
+            query_fusion: up_mlp(backend, &weights.query_fusion, false)?,
             layers,
             final_norm: up(backend, &weights.final_layernorm)?,
             out_proj_w: up(backend, &weights.out_proj_w)?,

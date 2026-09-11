@@ -30,6 +30,15 @@ namespace {
 #include "../kernels/custom/pooling.cuh"
 }  // namespace
 
+extern "C" cudaError_t apxinf_sinusoidal_embedding_bf16(const void* positions,void* output,
+    int rows,int dim,float scale,float frequency_step,cudaStream_t stream) {
+  if(!positions||!output||rows<=0||dim<=0||dim%2||!std::isfinite(scale)||!std::isfinite(frequency_step))
+    return cudaErrorInvalidValue;
+  sinusoidal_embedding_bf16_kernel<<<rows,128,0,stream>>>(
+      (const float*)positions,(__nv_bfloat16*)output,dim,scale,frequency_step);
+  return cudaGetLastError();
+}
+
 extern "C" cudaError_t apxinf_batch_norm_relu_bf16(const void* x,const void* mean,
     const void* invstd,const void* weight,const void* bias,void* out,
     int channels,int spatial,int64_t count,cudaStream_t stream) {

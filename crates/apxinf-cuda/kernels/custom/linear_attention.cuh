@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gdn_block_inverse.cuh"
+#include "rms_reduction.cuh"
 
 // Copyright 2026 apxinf contributors.
 // Pure CUDA operators grouped by physical operation; launch policy lives under adapters/.
@@ -635,7 +636,10 @@ __global__ void adaln_rms_norm_bf16_kernel(
     if (lane == 0) warp_sums[0] = v;
   }
   __syncthreads();
-  const float rms = rsqrtf(warp_sums[0] / cols + eps);
+  float mean = warp_sums[0] / cols;
+  if (gridDim.x >= 16 && cols > 128 && cols % 4 == 0)
+    mean = rms_vector_square_mean_bf16(x + base, cols);
+  const float rms = rsqrtf(__fadd_rn(mean, eps));
   for (int i = threadIdx.x; i < cols; i += blockDim.x) {
     const float normed = __bfloat162float(__float2bfloat16(
         la_adaln[i] * rms * __bfloat162float(weight[i])));
@@ -707,7 +711,11 @@ __global__ void expert_qkv_prepare_bf16_kernel(
       if (lane == 0) warp_sums[0] = v;
     }
     __syncthreads();
-    const float rms = rsqrtf(warp_sums[0] / head_dim + eps);
+    float mean = warp_sums[0] / head_dim;
+    if (static_cast<int64_t>(gridDim.x) * (is_q ? q_heads : kv_heads) >= 16
+        && head_dim > 128 && head_dim % 4 == 0)
+      mean = rms_vector_square_mean_bf16(fused + src, head_dim);
+    const float rms = rsqrtf(__fadd_rn(mean, eps));
     __syncthreads();
     for (int i = threadIdx.x; i < head_dim; i += blockDim.x) {
       la_expert[i] = __bfloat162float(__float2bfloat16(
@@ -804,13 +812,15 @@ __global__ void concat7_cols_bf16_kernel(
 }
 
 // Flow-matching Euler update: w += (endpoint - w) / remaining * step (fp32).
+// Scalar division uses a rounded reciprocal; retain each FP32 rounding boundary.
 __global__ void flow_update_f32_kernel(
     float* w, const float* endpoint, float remaining, float step, int64_t count) {
   int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const int64_t stride = static_cast<int64_t>(blockDim.x) * gridDim.x;
   for (; index < count; index += stride) {
-    const float delta = endpoint[index] - w[index];
-    w[index] = w[index] + (delta / remaining) * step;
+    const float delta = __fsub_rn(endpoint[index], w[index]);
+    const float velocity = __fmul_rn(delta, __fdiv_rn(1.0f, remaining));
+    w[index] = __fadd_rn(w[index], __fmul_rn(velocity, step));
   }
 }
 

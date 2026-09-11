@@ -15,6 +15,35 @@ use crate::context::CudaContext;
 use crate::cublas::CublasTranspose;
 use crate::tuning::{TacticStore, TuningDb, TuningMode, TuningPaths, TuningSession};
 
+/// BF16 `bias + weight @ vector`, with checkpoint-row-major weight `[N,K]`.
+/// Bias is the GEMM accumulator input, preserving the original matrix layout
+/// and avoiding a BF16 rounding between the dot product and the bias addition.
+pub fn bf16_addmv(ctx: &CudaContext, weight: &Tensor, vector: &Tensor, bias: &Tensor) -> Result<Tensor> {
+    let w = weight.shape().dims();
+    if w.len() != 2 || w.contains(&0) || vector.shape().dims() != [w[1]] || bias.shape().dims() != [w[0]] {
+        return Err(Error::Other("BF16 addmv expects weight[N,K], vector[K], bias[N]".into()));
+    }
+    for tensor in [weight,vector,bias] {
+        if tensor.dtype() != DType::BF16 || tensor.device() != Device::Cuda(ctx.device_id()) {
+            return Err(Error::Other("BF16 addmv requires inputs on the context device".into()));
+        }
+        checked_bytes(DType::BF16,tensor.shape().dims(),"BF16 addmv")?;
+    }
+    let k = i32::try_from(w[1]).map_err(|_| Error::Other("addmv input width overflow".into()))?;
+    let n = i32::try_from(w[0]).map_err(|_| Error::Other("addmv output width overflow".into()))?;
+    let output = crate::workspace::output_buffer(ctx, bias.size_in_bytes())?;
+    let wp = CudaBuffer::from_tensor(weight).map_err(Error::Cuda)?;
+    let xp = CudaBuffer::from_tensor(vector).map_err(Error::Cuda)?;
+    let bp = CudaBuffer::from_tensor(bias).map_err(Error::Cuda)?;
+    unsafe {
+        crate::ffi::check_cuda(crate::ffi::cudaMemcpyAsync(output.ptr(),bp.ptr(),bias.size_in_bytes(),
+            crate::ffi::cudaMemcpyKind::cudaMemcpyDeviceToDevice,ctx.stream().handle())).map_err(Error::Cuda)?;
+    }
+    write_ex(ctx,DType::BF16,CublasTranspose::None,CublasTranspose::Transpose,
+        1,w[0],w[1],1.0,&xp,k,&wp,k,1.0,&output,n)?;
+    Ok(output.into_tensor(apxinf_core::Shape::new(vec![w[0]]),DType::BF16))
+}
+
 /// BF16 linear projection with bias added before the final BF16 output rounding.
 /// Uses the bias epilogue's default legal cuBLASLt heuristic, separate from
 /// plain-GEMM tactics whose epilogue contract does not include a bias.

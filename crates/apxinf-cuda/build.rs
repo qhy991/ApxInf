@@ -527,7 +527,14 @@ fn main() {
                         cmd.args([
                             "--expt-relaxed-constexpr",
                             "--expt-extended-lambda",
-                            "--use_fast_math",
+                        ]);
+                        // Reference SDPA specializations use libdevice exp/log in the
+                        // split combiner; fast math changes BF16 output rounding.
+                        if !entry.ends_with("fa2_head256_adapter.cu")
+                            && !entry.ends_with("fa2_head64_adapter.cu") {
+                            cmd.arg("--use_fast_math");
+                        }
+                        cmd.args([
                             "-U__CUDA_NO_HALF_OPERATORS__",
                             "-U__CUDA_NO_HALF_CONVERSIONS__",
                             "-U__CUDA_NO_HALF2_OPERATORS__",

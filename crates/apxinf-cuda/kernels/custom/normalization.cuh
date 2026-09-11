@@ -1,5 +1,7 @@
 #pragma once
 
+#include "rms_reduction.cuh"
+
 // NCHW channel normalization preserving the BF16 arithmetic boundaries of
 // mean -> centered square -> variance -> sqrt -> divide -> affine.
 __global__ void channel_layer_norm_bf16_rounded_kernel(
@@ -263,7 +265,10 @@ __global__ void rms_norm_bf16_kernel(
     const float value = __bfloat162float(input[static_cast<int64_t>(row) * cols + col]);
     square_sum += value * value;
   }
-  const float inverse_rms = rsqrtf(block_sum(square_sum, scratch) / cols + eps);
+  float mean = block_sum(square_sum, scratch) / cols;
+  if (rows >= 16 && cols > 128 && cols % 4 == 0)
+    mean = rms_vector_square_mean_bf16(input + static_cast<int64_t>(row) * cols, cols);
+  const float inverse_rms = rsqrtf(__fadd_rn(mean, eps));
   for (int col = threadIdx.x; col < cols; col += blockDim.x) {
     const int64_t index = static_cast<int64_t>(row) * cols + col;
     output[index] = __float2bfloat16(
@@ -317,4 +322,3 @@ __global__ void ada_rms_norm_bf16_kernel(
         __bfloat162float(style[cols + col]));
   }
 }
-
