@@ -149,6 +149,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "apxinf-qwen35"
+version = "0.1.0"
+dependencies = [
+ "apxinf-core",
+ "apxinf-loader",
+ "apxinf-model",
+ "apxinf-tokenizer",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "apxinf-tokenizer"
 version = "0.1.0"
 dependencies = [
