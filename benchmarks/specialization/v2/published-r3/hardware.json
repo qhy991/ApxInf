@@ -1,0 +1,21 @@
+{
+  "macos": "27.0.1",
+  "architecture": "arm64",
+  "profiler_returncode": 0,
+  "hardware": {
+    "SPDisplaysDataType": [
+      {
+        "spdisplays_metal": "spdisplays_supported",
+        "sppci_model": "Apple M4"
+      }
+    ],
+    "SPHardwareDataType": [
+      {
+        "chip_type": "Apple M4",
+        "machine_name": "Mac mini",
+        "number_processors": "proc 10:0:4:6",
+        "physical_memory": "16 GB"
+      }
+    ]
+  }
+}

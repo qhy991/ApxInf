@@ -1,0 +1,1092 @@
+{
+  "status": "complete",
+  "inputs": {
+    "path": "$RUN/inputs.json",
+    "bytes": 2472,
+    "sha256": "1f11e2cf2ad3a4c27da43b17bed1899bb6609b1017202c073ae5ecb745013693"
+  },
+  "builds": [
+    {
+      "id": "1-full",
+      "variant": "full",
+      "target": "$RUN/build-targets/1-full",
+      "clean": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/1-full",
+          "-p",
+          "apxinf",
+          "--features",
+          "accelerate,metal-w8",
+          "--bin",
+          "apxinf"
+        ],
+        "returncode": 0,
+        "wall_seconds": 44.538083749997895,
+        "log": "$RUN/1-full-clean.log"
+      },
+      "binary": {
+        "path": "$RUN/artifacts/1-full/apxinf",
+        "bytes": 8943776,
+        "sha256": "8adf274a7f2a60e672f5702e76779a4457411ada50b6be1dff0383232679a6b1"
+      },
+      "runtime_libraries": "$RUN/artifacts/1-full/apxinf:\n\t/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 1900.178.0)\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 3423.0.0)\n\t/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 368.11.4)\n\t/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate (compatibility version 1.0.0, current version 4.0.0)\n\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 3423.0.0)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)\n",
+      "scope": {
+        "model_dependencies": {
+          "path": "$RUN/1-full-model.d",
+          "bytes": 6145,
+          "sha256": "2c3147af4e1a66ca8f91b636ae51cb4df704f528d4bd23fa25510282f6c082fa"
+        },
+        "metal_dependencies": {
+          "path": "$RUN/1-full-metal.d",
+          "bytes": 2151,
+          "sha256": "67b5d9e9e2ffaf34c08c384ed08087cf4b94188b651b045f5e7dfea4c2a5d72f"
+        },
+        "loader_dependencies": {
+          "path": "$RUN/1-full-loader.d",
+          "bytes": 1069,
+          "sha256": "40859129424d60d7514c3ac22be58249f2f0536fbfe1b0afb372ea76bbb8140d"
+        },
+        "tokenizer_dependencies": {
+          "path": "$RUN/1-full-tokenizer.d",
+          "bytes": 655,
+          "sha256": "f5fc0cedb630bb357b1dcc37a242e2b7ff7ba40e020814a8f1e79c5c44bdba31"
+        },
+        "model_families": {
+          "llama": true,
+          "qwen35": true,
+          "qwen3vl": true,
+          "pi05": true
+        },
+        "model_features": [
+          "accelerate",
+          "metal-experiments",
+          "metal-w8",
+          "metal-w8-head-mlp",
+          "model-llama",
+          "model-pi05",
+          "model-qwen35",
+          "model-qwen3vl",
+          "model-registry"
+        ],
+        "registry_modules": {
+          "auto": true,
+          "builtin": true,
+          "registry": true,
+          "vla": true,
+          "debug": true
+        },
+        "native": {
+          ".a": [
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_full_attention_decode_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_gdn_core_fused_count18_profile_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_gdn_recurrent_count18_profile_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_gdn_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_linear_layer_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_linear_layer_stack3_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_mlp_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_mlp_stack3_boundary_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_tail_mlp_head_v1_bridge.a"
+          ],
+          ".o": [
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_full_attention_decode_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_gdn_core_fused_count18_profile_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_gdn_recurrent_count18_profile_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_gdn_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_linear_layer_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_linear_layer_stack3_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_mlp_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_mlp_stack3_boundary_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_tail_mlp_head_v1_bridge.o"
+          ],
+          ".inc": [
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_full_attention_decode_v1_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_gdn_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_linear_layer_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_matvec_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_mlp_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_tail_mlp_head_v1_source.inc"
+          ]
+        },
+        "tokenizer_features": [
+          "esaxx_fast",
+          "indicatif",
+          "onig",
+          "progressbar"
+        ],
+        "gguf": true,
+        "experimental_metal_modules": [
+          "gdn",
+          "linear_layer",
+          "tail_mlp_head_v1",
+          "gdn_core_fused_profile_v1",
+          "gdn_recurrent_profile_v1",
+          "full_attention_decode_v1"
+        ],
+        "dependency_presence": {
+          "clap": true,
+          "byteorder": true,
+          "indicatif": true
+        },
+        "dependency_tree": {
+          "path": "$RUN/1-full-dependency-tree.txt",
+          "bytes": 4700,
+          "sha256": "8cf479dd5c1c4c03f20ef729d6f360b629b6af3d719c3fa2c37272867f0c3ed6"
+        },
+        "head_symbols": {
+          "path": "$RUN/1-full-head-symbols.txt",
+          "bytes": 2090,
+          "sha256": "8faec88c42cac6d7982f23148ccaaad9721d9a94419348569c938a987b027699"
+        }
+      },
+      "noop": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/1-full",
+          "-p",
+          "apxinf",
+          "--features",
+          "accelerate,metal-w8",
+          "--bin",
+          "apxinf"
+        ],
+        "returncode": 0,
+        "wall_seconds": 0.0920200829859823,
+        "log": "$RUN/1-full-noop.log"
+      },
+      "incremental": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/1-full",
+          "-p",
+          "apxinf",
+          "--features",
+          "accelerate,metal-w8",
+          "--bin",
+          "apxinf"
+        ],
+        "returncode": 0,
+        "wall_seconds": 3.562476874998538,
+        "log": "$RUN/1-full-incremental.log"
+      }
+    },
+    {
+      "id": "2-reference",
+      "variant": "reference",
+      "target": "$RUN/build-targets/2-reference",
+      "clean": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/2-reference",
+          "-p",
+          "apxinf-qwen35",
+          "--features",
+          "general-reference",
+          "--bin",
+          "apxinf-qwen35-08b"
+        ],
+        "returncode": 0,
+        "wall_seconds": 42.75790570900426,
+        "log": "$RUN/2-reference-clean.log"
+      },
+      "binary": {
+        "path": "$RUN/artifacts/2-reference/apxinf-qwen35-08b",
+        "bytes": 7536496,
+        "sha256": "39140be6b07889e525f2c9df7f98185e6fe32baa7360e6f3fc0f8f7c374d3ba1"
+      },
+      "runtime_libraries": "$RUN/artifacts/2-reference/apxinf-qwen35-08b:\n\t/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 1900.178.0)\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 3423.0.0)\n\t/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 368.11.4)\n\t/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate (compatibility version 1.0.0, current version 4.0.0)\n\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 3423.0.0)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)\n",
+      "scope": {
+        "model_dependencies": {
+          "path": "$RUN/2-reference-model.d",
+          "bytes": 6160,
+          "sha256": "4e8f0fdb35015833ebbb8ae16fb33b4aac5c959336654b06cb9c216f9bf8cab2"
+        },
+        "metal_dependencies": {
+          "path": "$RUN/2-reference-metal.d",
+          "bytes": 2166,
+          "sha256": "70cee42386059a20bc269e05c2d45424785bba0f28686df1d392af00286a82a1"
+        },
+        "loader_dependencies": {
+          "path": "$RUN/2-reference-loader.d",
+          "bytes": 1084,
+          "sha256": "b70ad77008a8df14470257a160535878deead9e774a2a65b40b88c67f58c71eb"
+        },
+        "tokenizer_dependencies": {
+          "path": "$RUN/2-reference-tokenizer.d",
+          "bytes": 670,
+          "sha256": "eba621fabd39a4025ea53e7eec77068ab2f30d77e5d034ffdb4a115bd0637de0"
+        },
+        "model_families": {
+          "llama": true,
+          "qwen35": true,
+          "qwen3vl": true,
+          "pi05": true
+        },
+        "model_features": [
+          "accelerate",
+          "metal-experiments",
+          "metal-w8",
+          "metal-w8-head-mlp",
+          "model-llama",
+          "model-pi05",
+          "model-qwen35",
+          "model-qwen3vl",
+          "model-registry"
+        ],
+        "registry_modules": {
+          "auto": true,
+          "builtin": true,
+          "registry": true,
+          "vla": true,
+          "debug": true
+        },
+        "native": {
+          ".a": [
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_full_attention_decode_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_gdn_core_fused_count18_profile_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_gdn_recurrent_count18_profile_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_gdn_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_linear_layer_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_linear_layer_stack3_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_mlp_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_mlp_stack3_boundary_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_tail_mlp_head_v1_bridge.a"
+          ],
+          ".o": [
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_full_attention_decode_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_gdn_core_fused_count18_profile_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_gdn_recurrent_count18_profile_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_gdn_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_linear_layer_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_linear_layer_stack3_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_mlp_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_mlp_stack3_boundary_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_tail_mlp_head_v1_bridge.o"
+          ],
+          ".inc": [
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_full_attention_decode_v1_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_gdn_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_linear_layer_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_matvec_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_mlp_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_tail_mlp_head_v1_source.inc"
+          ]
+        },
+        "tokenizer_features": [
+          "esaxx_fast",
+          "indicatif",
+          "onig",
+          "progressbar"
+        ],
+        "gguf": true,
+        "experimental_metal_modules": [
+          "gdn",
+          "linear_layer",
+          "tail_mlp_head_v1",
+          "gdn_core_fused_profile_v1",
+          "gdn_recurrent_profile_v1",
+          "full_attention_decode_v1"
+        ],
+        "dependency_presence": {
+          "clap": false,
+          "byteorder": true,
+          "indicatif": true
+        },
+        "dependency_tree": {
+          "path": "$RUN/2-reference-dependency-tree.txt",
+          "bytes": 4369,
+          "sha256": "f5723396081b9420b673f96ea3b984d361ba727970a5d26e77e075e14bbd0d5f"
+        },
+        "head_symbols": {
+          "path": "$RUN/2-reference-head-symbols.txt",
+          "bytes": 2090,
+          "sha256": "8faec88c42cac6d7982f23148ccaaad9721d9a94419348569c938a987b027699"
+        }
+      },
+      "noop": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/2-reference",
+          "-p",
+          "apxinf-qwen35",
+          "--features",
+          "general-reference",
+          "--bin",
+          "apxinf-qwen35-08b"
+        ],
+        "returncode": 0,
+        "wall_seconds": 0.11206862499238923,
+        "log": "$RUN/2-reference-noop.log"
+      },
+      "incremental": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/2-reference",
+          "-p",
+          "apxinf-qwen35",
+          "--features",
+          "general-reference",
+          "--bin",
+          "apxinf-qwen35-08b"
+        ],
+        "returncode": 0,
+        "wall_seconds": 0.9423248329840135,
+        "log": "$RUN/2-reference-incremental.log"
+      }
+    },
+    {
+      "id": "3-minimal",
+      "variant": "minimal",
+      "target": "$RUN/build-targets/3-minimal",
+      "clean": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/3-minimal",
+          "-p",
+          "apxinf-qwen35",
+          "--bin",
+          "apxinf-qwen35-08b"
+        ],
+        "returncode": 0,
+        "wall_seconds": 36.04823479198967,
+        "log": "$RUN/3-minimal-clean.log"
+      },
+      "binary": {
+        "path": "$RUN/artifacts/3-minimal/apxinf-qwen35-08b",
+        "bytes": 7267376,
+        "sha256": "80a76be2aac2677a4da3af993f18723412da5cdd70ddde3bfd5e8ba19d3178e1"
+      },
+      "runtime_libraries": "$RUN/artifacts/3-minimal/apxinf-qwen35-08b:\n\t/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 1900.178.0)\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 3423.0.0)\n\t/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 368.11.4)\n\t/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate (compatibility version 1.0.0, current version 4.0.0)\n\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 3423.0.0)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)\n",
+      "scope": {
+        "model_dependencies": {
+          "path": "$RUN/3-minimal-model.d",
+          "bytes": 2097,
+          "sha256": "93e1629ccdb28875738800e80ba1cc364dd1830520a74bf3494b878909fe32ba"
+        },
+        "metal_dependencies": {
+          "path": "$RUN/3-minimal-metal.d",
+          "bytes": 636,
+          "sha256": "9c1e0b0077b6fcd28ad6f83d089990b60ce26f1b44f7b971cb8ab5d20d6765c4"
+        },
+        "loader_dependencies": {
+          "path": "$RUN/3-minimal-loader.d",
+          "bytes": 945,
+          "sha256": "67337022886ef709fa1e1fd791b214a9564491a47aab43bf4e1314fa16a26723"
+        },
+        "tokenizer_dependencies": {
+          "path": "$RUN/3-minimal-tokenizer.d",
+          "bytes": 664,
+          "sha256": "314fbbfc9a56a6af817e9bdb252ac80e61406cca37a61e9f01e645a9a4939c5e"
+        },
+        "model_families": {
+          "llama": false,
+          "qwen35": true,
+          "qwen3vl": false,
+          "pi05": false
+        },
+        "model_features": [
+          "accelerate",
+          "metal-w8-head-mlp",
+          "model-qwen35"
+        ],
+        "registry_modules": {
+          "auto": false,
+          "builtin": false,
+          "registry": false,
+          "vla": false,
+          "debug": false
+        },
+        "native": {
+          ".a": [
+            "release/build/apxinf-metal-44e3721ced982504/out/libapxinf_metal_w8_bridge.a",
+            "release/build/apxinf-metal-44e3721ced982504/out/libapxinf_metal_w8_mlp_bridge.a"
+          ],
+          ".o": [
+            "release/build/apxinf-metal-44e3721ced982504/out/b79279e6d0abf4f5-metal_w8_bridge.o",
+            "release/build/apxinf-metal-44e3721ced982504/out/b79279e6d0abf4f5-metal_w8_mlp_bridge.o"
+          ],
+          ".inc": [
+            "release/build/apxinf-metal-44e3721ced982504/out/metal_w8_mlp_source.inc",
+            "release/build/apxinf-metal-44e3721ced982504/out/metal_w8_source.inc"
+          ]
+        },
+        "tokenizer_features": [
+          "onig"
+        ],
+        "gguf": false,
+        "experimental_metal_modules": [],
+        "dependency_presence": {
+          "clap": false,
+          "byteorder": false,
+          "indicatif": false
+        },
+        "dependency_tree": {
+          "path": "$RUN/3-minimal-dependency-tree.txt",
+          "bytes": 4164,
+          "sha256": "7a1269f9d3e60bcdf0f25c63d302d2646676e33340f2e7b9717341b841274804"
+        },
+        "head_symbols": {
+          "path": "$RUN/3-minimal-head-symbols.txt",
+          "bytes": 1937,
+          "sha256": "82334fcec3319e4aa873c3a235a60bc0f94d7a08258ccad14713494af471784a"
+        }
+      },
+      "noop": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/3-minimal",
+          "-p",
+          "apxinf-qwen35",
+          "--bin",
+          "apxinf-qwen35-08b"
+        ],
+        "returncode": 0,
+        "wall_seconds": 0.10603450000053272,
+        "log": "$RUN/3-minimal-noop.log"
+      },
+      "incremental": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/3-minimal",
+          "-p",
+          "apxinf-qwen35",
+          "--bin",
+          "apxinf-qwen35-08b"
+        ],
+        "returncode": 0,
+        "wall_seconds": 0.912289250001777,
+        "log": "$RUN/3-minimal-incremental.log"
+      }
+    },
+    {
+      "id": "4-minimal",
+      "variant": "minimal",
+      "target": "$RUN/build-targets/4-minimal",
+      "clean": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/4-minimal",
+          "-p",
+          "apxinf-qwen35",
+          "--bin",
+          "apxinf-qwen35-08b"
+        ],
+        "returncode": 0,
+        "wall_seconds": 30.413304124987917,
+        "log": "$RUN/4-minimal-clean.log"
+      },
+      "binary": {
+        "path": "$RUN/artifacts/4-minimal/apxinf-qwen35-08b",
+        "bytes": 7267376,
+        "sha256": "80a76be2aac2677a4da3af993f18723412da5cdd70ddde3bfd5e8ba19d3178e1"
+      },
+      "runtime_libraries": "$RUN/artifacts/4-minimal/apxinf-qwen35-08b:\n\t/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 1900.178.0)\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 3423.0.0)\n\t/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 368.11.4)\n\t/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate (compatibility version 1.0.0, current version 4.0.0)\n\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 3423.0.0)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)\n",
+      "scope": {
+        "model_dependencies": {
+          "path": "$RUN/4-minimal-model.d",
+          "bytes": 2097,
+          "sha256": "db2b22858b0b5fde4489830f078bafff471994da188000ef2361d4166f7cb32f"
+        },
+        "metal_dependencies": {
+          "path": "$RUN/4-minimal-metal.d",
+          "bytes": 636,
+          "sha256": "9ff64078748b0e250e800cd5bebb8fe4741f8f5de382ffd87bad649f56690ef5"
+        },
+        "loader_dependencies": {
+          "path": "$RUN/4-minimal-loader.d",
+          "bytes": 945,
+          "sha256": "838c06f204a9f5931396444b6b82fe0c54bcd56b8943016e8edb95ba5192e21d"
+        },
+        "tokenizer_dependencies": {
+          "path": "$RUN/4-minimal-tokenizer.d",
+          "bytes": 664,
+          "sha256": "4e3b9b7db7419d3efae8c5cf5877da3504d9f395ed5c150ce358f5d9e077f170"
+        },
+        "model_families": {
+          "llama": false,
+          "qwen35": true,
+          "qwen3vl": false,
+          "pi05": false
+        },
+        "model_features": [
+          "accelerate",
+          "metal-w8-head-mlp",
+          "model-qwen35"
+        ],
+        "registry_modules": {
+          "auto": false,
+          "builtin": false,
+          "registry": false,
+          "vla": false,
+          "debug": false
+        },
+        "native": {
+          ".a": [
+            "release/build/apxinf-metal-44e3721ced982504/out/libapxinf_metal_w8_bridge.a",
+            "release/build/apxinf-metal-44e3721ced982504/out/libapxinf_metal_w8_mlp_bridge.a"
+          ],
+          ".o": [
+            "release/build/apxinf-metal-44e3721ced982504/out/b79279e6d0abf4f5-metal_w8_bridge.o",
+            "release/build/apxinf-metal-44e3721ced982504/out/b79279e6d0abf4f5-metal_w8_mlp_bridge.o"
+          ],
+          ".inc": [
+            "release/build/apxinf-metal-44e3721ced982504/out/metal_w8_mlp_source.inc",
+            "release/build/apxinf-metal-44e3721ced982504/out/metal_w8_source.inc"
+          ]
+        },
+        "tokenizer_features": [
+          "onig"
+        ],
+        "gguf": false,
+        "experimental_metal_modules": [],
+        "dependency_presence": {
+          "clap": false,
+          "byteorder": false,
+          "indicatif": false
+        },
+        "dependency_tree": {
+          "path": "$RUN/4-minimal-dependency-tree.txt",
+          "bytes": 4164,
+          "sha256": "7a1269f9d3e60bcdf0f25c63d302d2646676e33340f2e7b9717341b841274804"
+        },
+        "head_symbols": {
+          "path": "$RUN/4-minimal-head-symbols.txt",
+          "bytes": 1937,
+          "sha256": "82334fcec3319e4aa873c3a235a60bc0f94d7a08258ccad14713494af471784a"
+        }
+      },
+      "noop": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/4-minimal",
+          "-p",
+          "apxinf-qwen35",
+          "--bin",
+          "apxinf-qwen35-08b"
+        ],
+        "returncode": 0,
+        "wall_seconds": 0.08953783300239593,
+        "log": "$RUN/4-minimal-noop.log"
+      },
+      "incremental": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/4-minimal",
+          "-p",
+          "apxinf-qwen35",
+          "--bin",
+          "apxinf-qwen35-08b"
+        ],
+        "returncode": 0,
+        "wall_seconds": 0.6790109169960488,
+        "log": "$RUN/4-minimal-incremental.log"
+      }
+    },
+    {
+      "id": "5-reference",
+      "variant": "reference",
+      "target": "$RUN/build-targets/5-reference",
+      "clean": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/5-reference",
+          "-p",
+          "apxinf-qwen35",
+          "--features",
+          "general-reference",
+          "--bin",
+          "apxinf-qwen35-08b"
+        ],
+        "returncode": 0,
+        "wall_seconds": 38.94506574998377,
+        "log": "$RUN/5-reference-clean.log"
+      },
+      "binary": {
+        "path": "$RUN/artifacts/5-reference/apxinf-qwen35-08b",
+        "bytes": 7536496,
+        "sha256": "39140be6b07889e525f2c9df7f98185e6fe32baa7360e6f3fc0f8f7c374d3ba1"
+      },
+      "runtime_libraries": "$RUN/artifacts/5-reference/apxinf-qwen35-08b:\n\t/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 1900.178.0)\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 3423.0.0)\n\t/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 368.11.4)\n\t/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate (compatibility version 1.0.0, current version 4.0.0)\n\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 3423.0.0)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)\n",
+      "scope": {
+        "model_dependencies": {
+          "path": "$RUN/5-reference-model.d",
+          "bytes": 6160,
+          "sha256": "cb3f02f9a12e71b3540c0ce31b8b1663b09e1463f910523ab3d0ef75d9c1de0c"
+        },
+        "metal_dependencies": {
+          "path": "$RUN/5-reference-metal.d",
+          "bytes": 2166,
+          "sha256": "fffa4f15be93369df95a7e77fbee6a06213290a528229ab23ca62ed9be70bd0c"
+        },
+        "loader_dependencies": {
+          "path": "$RUN/5-reference-loader.d",
+          "bytes": 1084,
+          "sha256": "0bb25f16f817d903bd2d2c6825a83a5970d562c13f4c959265734c90af2037c2"
+        },
+        "tokenizer_dependencies": {
+          "path": "$RUN/5-reference-tokenizer.d",
+          "bytes": 670,
+          "sha256": "d893a9386a22f5a9a4f8d92cc4f13c8be41cdecd86196872b45fac0baed62ec7"
+        },
+        "model_families": {
+          "llama": true,
+          "qwen35": true,
+          "qwen3vl": true,
+          "pi05": true
+        },
+        "model_features": [
+          "accelerate",
+          "metal-experiments",
+          "metal-w8",
+          "metal-w8-head-mlp",
+          "model-llama",
+          "model-pi05",
+          "model-qwen35",
+          "model-qwen3vl",
+          "model-registry"
+        ],
+        "registry_modules": {
+          "auto": true,
+          "builtin": true,
+          "registry": true,
+          "vla": true,
+          "debug": true
+        },
+        "native": {
+          ".a": [
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_full_attention_decode_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_gdn_core_fused_count18_profile_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_gdn_recurrent_count18_profile_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_gdn_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_linear_layer_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_linear_layer_stack3_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_mlp_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_mlp_stack3_boundary_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_tail_mlp_head_v1_bridge.a"
+          ],
+          ".o": [
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_full_attention_decode_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_gdn_core_fused_count18_profile_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_gdn_recurrent_count18_profile_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_gdn_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_linear_layer_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_linear_layer_stack3_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_mlp_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_mlp_stack3_boundary_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_tail_mlp_head_v1_bridge.o"
+          ],
+          ".inc": [
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_full_attention_decode_v1_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_gdn_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_linear_layer_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_matvec_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_mlp_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_tail_mlp_head_v1_source.inc"
+          ]
+        },
+        "tokenizer_features": [
+          "esaxx_fast",
+          "indicatif",
+          "onig",
+          "progressbar"
+        ],
+        "gguf": true,
+        "experimental_metal_modules": [
+          "gdn",
+          "linear_layer",
+          "tail_mlp_head_v1",
+          "gdn_core_fused_profile_v1",
+          "gdn_recurrent_profile_v1",
+          "full_attention_decode_v1"
+        ],
+        "dependency_presence": {
+          "clap": false,
+          "byteorder": true,
+          "indicatif": true
+        },
+        "dependency_tree": {
+          "path": "$RUN/5-reference-dependency-tree.txt",
+          "bytes": 4369,
+          "sha256": "f5723396081b9420b673f96ea3b984d361ba727970a5d26e77e075e14bbd0d5f"
+        },
+        "head_symbols": {
+          "path": "$RUN/5-reference-head-symbols.txt",
+          "bytes": 2090,
+          "sha256": "8faec88c42cac6d7982f23148ccaaad9721d9a94419348569c938a987b027699"
+        }
+      },
+      "noop": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/5-reference",
+          "-p",
+          "apxinf-qwen35",
+          "--features",
+          "general-reference",
+          "--bin",
+          "apxinf-qwen35-08b"
+        ],
+        "returncode": 0,
+        "wall_seconds": 0.18716654099989682,
+        "log": "$RUN/5-reference-noop.log"
+      },
+      "incremental": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/5-reference",
+          "-p",
+          "apxinf-qwen35",
+          "--features",
+          "general-reference",
+          "--bin",
+          "apxinf-qwen35-08b"
+        ],
+        "returncode": 0,
+        "wall_seconds": 0.9492302919970825,
+        "log": "$RUN/5-reference-incremental.log"
+      }
+    },
+    {
+      "id": "6-full",
+      "variant": "full",
+      "target": "$RUN/build-targets/6-full",
+      "clean": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/6-full",
+          "-p",
+          "apxinf",
+          "--features",
+          "accelerate,metal-w8",
+          "--bin",
+          "apxinf"
+        ],
+        "returncode": 0,
+        "wall_seconds": 42.80323145899456,
+        "log": "$RUN/6-full-clean.log"
+      },
+      "binary": {
+        "path": "$RUN/artifacts/6-full/apxinf",
+        "bytes": 8943776,
+        "sha256": "8adf274a7f2a60e672f5702e76779a4457411ada50b6be1dff0383232679a6b1"
+      },
+      "runtime_libraries": "$RUN/artifacts/6-full/apxinf:\n\t/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 1900.178.0)\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 3423.0.0)\n\t/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 368.11.4)\n\t/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate (compatibility version 1.0.0, current version 4.0.0)\n\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 3423.0.0)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)\n",
+      "scope": {
+        "model_dependencies": {
+          "path": "$RUN/6-full-model.d",
+          "bytes": 6145,
+          "sha256": "eaa3e8a280721c9ad49fb77d214e5c7cc7e6dda310de83e6ae623546445ed8b9"
+        },
+        "metal_dependencies": {
+          "path": "$RUN/6-full-metal.d",
+          "bytes": 2151,
+          "sha256": "88fc230c1765e0361ef59b58022799d4c35232c857191b33f7299dadcd4041f7"
+        },
+        "loader_dependencies": {
+          "path": "$RUN/6-full-loader.d",
+          "bytes": 1069,
+          "sha256": "1ab69b566132b5bf636c7f2660f83cc4762bdb50eed08a4131f502c43dfdec83"
+        },
+        "tokenizer_dependencies": {
+          "path": "$RUN/6-full-tokenizer.d",
+          "bytes": 655,
+          "sha256": "3de15fd18be0dbfc7778931d2f68bdd832041ffd662eed3d7e2972779df865e7"
+        },
+        "model_families": {
+          "llama": true,
+          "qwen35": true,
+          "qwen3vl": true,
+          "pi05": true
+        },
+        "model_features": [
+          "accelerate",
+          "metal-experiments",
+          "metal-w8",
+          "metal-w8-head-mlp",
+          "model-llama",
+          "model-pi05",
+          "model-qwen35",
+          "model-qwen3vl",
+          "model-registry"
+        ],
+        "registry_modules": {
+          "auto": true,
+          "builtin": true,
+          "registry": true,
+          "vla": true,
+          "debug": true
+        },
+        "native": {
+          ".a": [
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_full_attention_decode_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_gdn_core_fused_count18_profile_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_gdn_recurrent_count18_profile_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_gdn_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_linear_layer_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_linear_layer_stack3_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_mlp_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_mlp_stack3_boundary_v1_bridge.a",
+            "release/build/apxinf-metal-7900658138e13d53/out/libapxinf_metal_w8_tail_mlp_head_v1_bridge.a"
+          ],
+          ".o": [
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_full_attention_decode_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_gdn_core_fused_count18_profile_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_gdn_recurrent_count18_profile_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_gdn_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_linear_layer_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_linear_layer_stack3_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_mlp_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_mlp_stack3_boundary_v1_bridge.o",
+            "release/build/apxinf-metal-7900658138e13d53/out/b79279e6d0abf4f5-metal_w8_tail_mlp_head_v1_bridge.o"
+          ],
+          ".inc": [
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_full_attention_decode_v1_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_gdn_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_linear_layer_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_matvec_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_mlp_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_source.inc",
+            "release/build/apxinf-metal-7900658138e13d53/out/metal_w8_tail_mlp_head_v1_source.inc"
+          ]
+        },
+        "tokenizer_features": [
+          "esaxx_fast",
+          "indicatif",
+          "onig",
+          "progressbar"
+        ],
+        "gguf": true,
+        "experimental_metal_modules": [
+          "gdn",
+          "linear_layer",
+          "tail_mlp_head_v1",
+          "gdn_core_fused_profile_v1",
+          "gdn_recurrent_profile_v1",
+          "full_attention_decode_v1"
+        ],
+        "dependency_presence": {
+          "clap": true,
+          "byteorder": true,
+          "indicatif": true
+        },
+        "dependency_tree": {
+          "path": "$RUN/6-full-dependency-tree.txt",
+          "bytes": 4700,
+          "sha256": "8cf479dd5c1c4c03f20ef729d6f360b629b6af3d719c3fa2c37272867f0c3ed6"
+        },
+        "head_symbols": {
+          "path": "$RUN/6-full-head-symbols.txt",
+          "bytes": 2090,
+          "sha256": "8faec88c42cac6d7982f23148ccaaad9721d9a94419348569c938a987b027699"
+        }
+      },
+      "noop": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/6-full",
+          "-p",
+          "apxinf",
+          "--features",
+          "accelerate,metal-w8",
+          "--bin",
+          "apxinf"
+        ],
+        "returncode": 0,
+        "wall_seconds": 0.07825487499940209,
+        "log": "$RUN/6-full-noop.log"
+      },
+      "incremental": {
+        "command": [
+          "cargo",
+          "build",
+          "--offline",
+          "--locked",
+          "--release",
+          "--jobs",
+          "4",
+          "--target-dir",
+          "$RUN/build-targets/6-full",
+          "-p",
+          "apxinf",
+          "--features",
+          "accelerate,metal-w8",
+          "--bin",
+          "apxinf"
+        ],
+        "returncode": 0,
+        "wall_seconds": 2.499310708983103,
+        "log": "$RUN/6-full-incremental.log"
+      }
+    }
+  ],
+  "environment_before": {
+    "swap": {
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "sysctl: sysctl fmt -1 1024 1: Operation not permitted\n"
+    },
+    "vm": {
+      "returncode": 0,
+      "stdout": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                   235644.\nPages active:                                 278040.\nPages inactive:                               265060.\nPages speculative:                             11920.\nPages throttled:                                   0.\nPages wired down:                             158045.\nPages purgeable:                                3866.\n\"Translation faults\":                     2565242717.\nPages copy-on-write:                       408180579.\nPages zero filled:                        1182949818.\nPages reactivated:                         113101352.\nPages purged:                               10363550.\nFile-backed pages:                            309014.\nAnonymous pages:                              246006.\nPages stored in compressor:                   142549.\nPages occupied by compressor:                  66416.\nDecompressions:                            194560586.\nCompressions:                              230631134.\nPageins:                                   204670828.\nPageouts:                                     225130.\nSwapins:                                     4352962.\nSwapouts:                                    7044121.\n",
+      "stderr": ""
+    },
+    "thermal": {
+      "returncode": 0,
+      "stdout": "Error:Failed to get thermal warning level with error code 0xe00002bc\nError: Failed to get performance warning level with error code 0xe00002bc\nError: No CPU power status with error code 0xe00002bc\n",
+      "stderr": ""
+    }
+  },
+  "compiler_environment": {
+    "SDKROOT": "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk",
+    "CARGO_HOME": "$CARGO_CACHE"
+  },
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: aarch64-apple-darwin\nrelease: 1.98.0\nLLVM version: 22.1.8\n",
+  "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)\n",
+  "environment_after": {
+    "swap": {
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "sysctl: sysctl fmt -1 1024 1: Operation not permitted\n"
+    },
+    "vm": {
+      "returncode": 0,
+      "stdout": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                    67914.\nPages active:                                 284446.\nPages inactive:                               457239.\nPages speculative:                              6238.\nPages throttled:                                   0.\nPages wired down:                             157409.\nPages purgeable:                                5008.\n\"Translation faults\":                     2596314721.\nPages copy-on-write:                       412078178.\nPages zero filled:                        1192941997.\nPages reactivated:                         113236943.\nPages purged:                               10391906.\nFile-backed pages:                            283808.\nAnonymous pages:                              464115.\nPages stored in compressor:                    96357.\nPages occupied by compressor:                  41879.\nDecompressions:                            194717283.\nCompressions:                              230654072.\nPageins:                                   205367242.\nPageouts:                                     225377.\nSwapins:                                     4404137.\nSwapouts:                                    7052142.\n",
+      "stderr": ""
+    },
+    "thermal": {
+      "returncode": 0,
+      "stdout": "Error:Failed to get thermal warning level with error code 0xe00002bc\nError: Failed to get performance warning level with error code 0xe00002bc\nError: No CPU power status with error code 0xe00002bc\n",
+      "stderr": ""
+    }
+  }
+}

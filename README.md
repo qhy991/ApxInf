@@ -443,3 +443,15 @@ More PI0.5 implementation, correctness, and performance details are in
 [`doc/20260804-pi05/implementation.md`](doc/20260804-pi05/implementation.md)
 and
 [`doc/20260804-pi05/openpi-websocket.md`](doc/20260804-pi05/openpi-websocket.md).
+
+### Dedicated Qwen3.5 executable on Apple Silicon
+
+The optional `apxinf-qwen35` package builds a native executable for one fixed Qwen3.5-0.8B checkpoint.
+It supports plain text, JSON, and repeated independent JSONL requests.
+The executable needs external model assets and macOS system libraries.
+
+See the [build instructions](crates/apxinf-qwen35/README.md),
+[design](doc/model-specialized-binary-design.md), and
+[measured results](benchmarks/specialization/v2/RESULTS.md).
+The experiment reduced build time and executable size.
+It did not establish a stable generation speedup.
