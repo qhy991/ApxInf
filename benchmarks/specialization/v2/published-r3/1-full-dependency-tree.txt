@@ -1,0 +1,199 @@
+apxinf v0.1.0 ($SNAPSHOT)
+apxinf-core v0.1.0 ($SNAPSHOT/crates/apxinf-core)
+bytemuck v1.25.0
+bytemuck_derive v1.10.2 (proc-macro)
+proc-macro2 v1.0.106
+unicode-ident v1.0.24
+quote v1.0.45
+proc-macro2 v1.0.106 (*)
+syn v2.0.117
+proc-macro2 v1.0.106 (*)
+quote v1.0.45 (*)
+unicode-ident v1.0.24
+cblas v0.4.0
+cblas-sys v0.1.4
+libc v0.2.184
+libc v0.2.184
+num-complex v0.4.6
+num-traits v0.2.19
+autocfg v1.5.0
+half v2.4.1
+bytemuck v1.25.0 (*)
+cfg-if v1.0.4
+libc v0.2.184
+thiserror v1.0.69
+thiserror-impl v1.0.69 (proc-macro)
+proc-macro2 v1.0.106 (*)
+quote v1.0.45 (*)
+syn v2.0.117 (*)
+apxinf-loader v0.1.0 ($SNAPSHOT/crates/apxinf-loader)
+apxinf-core v0.1.0 ($SNAPSHOT/crates/apxinf-core) (*)
+bytemuck v1.25.0 (*)
+byteorder v1.5.0
+half v2.4.1 (*)
+memmap2 v0.9.10
+libc v0.2.184
+serde v1.0.228
+serde_core v1.0.228
+serde_derive v1.0.228 (proc-macro)
+proc-macro2 v1.0.106 (*)
+quote v1.0.45 (*)
+syn v2.0.117 (*)
+serde_json v1.0.149
+itoa v1.0.18
+memchr v2.8.0
+serde_core v1.0.228
+zmij v1.0.21
+thiserror v1.0.69 (*)
+apxinf-model v0.1.0 ($SNAPSHOT/crates/apxinf-model)
+apxinf-core v0.1.0 ($SNAPSHOT/crates/apxinf-core) (*)
+apxinf-loader v0.1.0 ($SNAPSHOT/crates/apxinf-loader) (*)
+apxinf-metal v0.1.0 ($SNAPSHOT/crates/apxinf-metal)
+cc v1.2.58
+find-msvc-tools v0.1.9
+shlex v1.3.0
+half v2.4.1 (*)
+once_cell v1.21.4
+serde_json v1.0.149 (*)
+thiserror v1.0.69 (*)
+apxinf-tokenizer v0.1.0 ($SNAPSHOT/crates/apxinf-tokenizer)
+apxinf-core v0.1.0 ($SNAPSHOT/crates/apxinf-core) (*)
+minijinja v2.24.0
+memo-map v0.3.3
+serde v1.0.228 (*)
+minijinja-contrib v2.24.0
+minijinja v2.24.0 (*)
+serde v1.0.228 (*)
+serde v1.0.228 (*)
+serde_json v1.0.149 (*)
+tokenizers v0.20.4
+aho-corasick v1.1.4
+memchr v2.8.0
+derive_builder v0.20.2
+derive_builder_macro v0.20.2 (proc-macro)
+derive_builder_core v0.20.2
+darling v0.20.11
+darling_core v0.20.11
+fnv v1.0.7
+ident_case v1.0.1
+proc-macro2 v1.0.106 (*)
+quote v1.0.45 (*)
+strsim v0.11.1
+syn v2.0.117 (*)
+darling_macro v0.20.11 (proc-macro)
+darling_core v0.20.11 (*)
+quote v1.0.45 (*)
+syn v2.0.117 (*)
+proc-macro2 v1.0.106 (*)
+quote v1.0.45 (*)
+syn v2.0.117 (*)
+syn v2.0.117 (*)
+esaxx-rs v0.1.10
+cc v1.2.58 (*)
+getrandom v0.2.17
+cfg-if v1.0.4
+libc v0.2.184
+indicatif v0.17.11
+console v0.15.11
+libc v0.2.184
+once_cell v1.21.4
+unicode-width v0.2.2
+number_prefix v0.4.0
+portable-atomic v1.13.1
+unicode-width v0.2.2
+itertools v0.12.1
+either v1.15.0
+lazy_static v1.5.0
+log v0.4.29
+macro_rules_attribute v0.2.2
+macro_rules_attribute-proc_macro v0.2.2 (proc-macro)
+paste v1.0.15 (proc-macro)
+monostate v0.1.18
+monostate-impl v0.1.18 (proc-macro)
+proc-macro2 v1.0.106 (*)
+quote v1.0.45 (*)
+syn v2.0.117 (*)
+serde_core v1.0.228
+onig v6.5.1
+bitflags v2.11.0
+once_cell v1.21.4
+onig_sys v69.9.1
+cc v1.2.58 (*)
+pkg-config v0.3.32
+paste v1.0.15 (proc-macro)
+rand v0.8.5
+libc v0.2.184
+rand_chacha v0.3.1
+ppv-lite86 v0.2.21
+zerocopy v0.8.48
+rand_core v0.6.4
+getrandom v0.2.17 (*)
+rand_core v0.6.4 (*)
+rayon v1.11.0
+either v1.15.0
+rayon-core v1.13.0
+crossbeam-deque v0.8.6
+crossbeam-epoch v0.9.18
+crossbeam-utils v0.8.21
+crossbeam-utils v0.8.21
+crossbeam-utils v0.8.21
+rayon-cond v0.3.0
+either v1.15.0
+itertools v0.11.0
+either v1.15.0
+rayon v1.11.0 (*)
+regex v1.12.3
+aho-corasick v1.1.4 (*)
+memchr v2.8.0
+regex-automata v0.4.14
+aho-corasick v1.1.4 (*)
+memchr v2.8.0
+regex-syntax v0.8.10
+regex-syntax v0.8.10
+regex-syntax v0.8.10
+serde v1.0.228 (*)
+serde_json v1.0.149 (*)
+spm_precompiled v0.1.4
+base64 v0.13.1
+nom v7.1.3
+memchr v2.8.0
+minimal-lexical v0.2.1
+serde v1.0.228 (*)
+unicode-segmentation v1.12.0
+thiserror v1.0.69 (*)
+unicode-normalization-alignments v0.1.12
+smallvec v1.15.1
+unicode-segmentation v1.12.0
+unicode_categories v0.1.1
+clap v4.5.23
+clap_builder v4.5.23
+anstream v0.6.21
+anstyle v1.0.14
+anstyle-parse v0.2.7
+utf8parse v0.2.2
+anstyle-query v1.1.5
+colorchoice v1.0.5
+is_terminal_polyfill v1.70.2
+utf8parse v0.2.2
+anstyle v1.0.14
+clap_lex v0.7.7
+strsim v0.11.1
+clap_derive v4.5.18 (proc-macro)
+heck v0.5.0
+proc-macro2 v1.0.106 (*)
+quote v1.0.45 (*)
+syn v2.0.117 (*)
+half v2.4.1 (*)
+serde_json v1.0.149 (*)
+sha2 v0.10.9
+cfg-if v1.0.4
+cpufeatures v0.2.17
+libc v0.2.184
+digest v0.10.7
+block-buffer v0.10.4
+generic-array v0.14.7
+typenum v1.20.1
+version_check v0.9.5
+crypto-common v0.1.7
+generic-array v0.14.7 (*)
+typenum v1.20.1
