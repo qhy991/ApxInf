@@ -1,0 +1,635 @@
+{
+  "schema": 1,
+  "base_repository": "/Users/haiyan-mini/Agent4Kernel/apxinf-mlx",
+  "base_branch": "codex/apxinf-mlx-models",
+  "base_commit": "d5185c3a3151b95e933a719acee8254fbc0e590c",
+  "branch": "codex/qwen-image-metal-transfer",
+  "scope": "Curated operator transfer references for future Rust/MLX/MSL work; no Rust model integration or hardware requalification.",
+  "runtime_source_changed": false,
+  "hardware_runs_started": false,
+  "candidates": [
+    {
+      "id": "fc03",
+      "path": "scripts/qwen_image_metal_transfer/candidates/fc03.py",
+      "sha256": "b177b17cfae70a288227a7fdf318e9ce00aa788500189b0cf77ffbfd2c37acbf",
+      "origin_repository": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task",
+      "origin_commit": "56e386717556e90a9e3a6ced3de2f1a05c8dbc49",
+      "origin_path": "solution/kernel.py",
+      "original_archive": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task/campaigns/flame-8h-20261012/archive/fc03",
+      "origin_git_blob_verified": true,
+      "representation": "affine Q4 checkpoint decoded into resident dense BF16 projections; not compressed Q4 execution",
+      "selection_reason": "Dense BF16 preparation and local compiled glue. Use to reconstruct ordered casts, not as a Q4 path.",
+      "original_result_status": "improves_all_cells",
+      "original_error": null,
+      "historical_operator_protocol_pass": true,
+      "new_hardware_qualification": false,
+      "recorded_correctness_cells": 4,
+      "recorded_checks": 8,
+      "all_recorded_candidate_checks_pass": true,
+      "historical_review_rows": [
+        {
+          "case": "t1024-text128",
+          "native_median_ms": 144.408896,
+          "candidate_median_ms": 131.637875,
+          "median_latency_reduction_percent": 8.843652540630176,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.71875,
+            0.2822265625
+          ]
+        },
+        {
+          "case": "t1024-text512",
+          "native_median_ms": 145.0627915,
+          "candidate_median_ms": 134.7426045,
+          "median_latency_reduction_percent": 7.114289538540975,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.271484375,
+            0.7294921875
+          ]
+        },
+        {
+          "case": "t2304-text128",
+          "native_median_ms": 363.529354,
+          "candidate_median_ms": 331.843042,
+          "median_latency_reduction_percent": 8.716300802493105,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.5107421875,
+            0.490234375
+          ]
+        },
+        {
+          "case": "t2304-text512",
+          "native_median_ms": 369.305,
+          "candidate_median_ms": 336.7047705,
+          "median_latency_reduction_percent": 8.827454136824574,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.6064453125,
+            0.39453125
+          ]
+        }
+      ],
+      "original_result_sha256": "aad1285ea65a5aa7e48ac5aa3368255334d28cddb04729b130097f27fa345f9c",
+      "original_root_review_sha256": "79b2020c27bcd04b7dcefaeeb7cd061405f783ca0403edc7c05f9e072fb42da2"
+    },
+    {
+      "id": "fc05",
+      "path": "scripts/qwen_image_metal_transfer/candidates/fc05.py",
+      "sha256": "6308871e5f4cae4367a05b0f15d60be4b9626f07be5c7155915ab1a8d9a8161e",
+      "origin_repository": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task",
+      "origin_commit": "e9b9e7155f4a7163348825e1ec0969bdc16e364c",
+      "origin_path": "solution/kernel.py",
+      "original_archive": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task/campaigns/flame-8h-20261012/archive/fc05",
+      "origin_git_blob_verified": true,
+      "representation": "affine Q4 checkpoint decoded into resident dense BF16 projections; not compressed Q4 execution",
+      "selection_reason": "Dense gate/up concatenation. Check matching feature rows and output split before transfer.",
+      "original_result_status": "improves_all_cells",
+      "original_error": null,
+      "historical_operator_protocol_pass": true,
+      "new_hardware_qualification": false,
+      "recorded_correctness_cells": 4,
+      "recorded_checks": 8,
+      "all_recorded_candidate_checks_pass": true,
+      "historical_review_rows": [
+        {
+          "case": "t1024-text128",
+          "native_median_ms": 146.06427100000002,
+          "candidate_median_ms": 132.95075,
+          "median_latency_reduction_percent": 8.977911511296298,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.947265625,
+            0.0537109375
+          ]
+        },
+        {
+          "case": "t1024-text512",
+          "native_median_ms": 148.6359795,
+          "candidate_median_ms": 135.56927100000001,
+          "median_latency_reduction_percent": 8.791080426122521,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.1982421875,
+            0.802734375
+          ]
+        },
+        {
+          "case": "t2304-text128",
+          "native_median_ms": 369.5961455,
+          "candidate_median_ms": 337.6646035,
+          "median_latency_reduction_percent": 8.639576572640417,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.591796875,
+            0.4091796875
+          ]
+        },
+        {
+          "case": "t2304-text512",
+          "native_median_ms": 375.466604,
+          "candidate_median_ms": 342.99595850000003,
+          "median_latency_reduction_percent": 8.64807819232839,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.0771484375,
+            0.923828125
+          ]
+        }
+      ],
+      "original_result_sha256": "5035a22baafd65ffe48dc82f82caf969b5225cd68a63062822e08658a40fa654",
+      "original_root_review_sha256": "7b5df009d28ab70998af85831e73e93fd1994c521d4d6f5e3bcd864e7ce01230"
+    },
+    {
+      "id": "fc06",
+      "path": "scripts/qwen_image_metal_transfer/candidates/fc06.py",
+      "sha256": "0e13db4676bf7cda0df0ea64bf566129feea74e044d4a6c05535a3c020da8686",
+      "origin_repository": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task",
+      "origin_commit": "9628ec491aa3ab56d216d4801caa282bcf62c58e",
+      "origin_path": "solution/kernel.py",
+      "original_archive": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task/campaigns/flame-8h-20261012/archive/fc06",
+      "origin_git_blob_verified": true,
+      "representation": "affine Q4 checkpoint decoded into resident dense BF16 projections; not compressed Q4 execution",
+      "selection_reason": "Dense QKV and gate/up concatenation. Reuse packing reasoning; compressed Q4 requires metadata preservation.",
+      "original_result_status": "improves_all_cells",
+      "original_error": null,
+      "historical_operator_protocol_pass": true,
+      "new_hardware_qualification": false,
+      "recorded_correctness_cells": 4,
+      "recorded_checks": 8,
+      "all_recorded_candidate_checks_pass": true,
+      "historical_review_rows": [
+        {
+          "case": "t1024-text128",
+          "native_median_ms": 145.63074999999998,
+          "candidate_median_ms": 132.85752100000002,
+          "median_latency_reduction_percent": 8.77096972995055,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.7060546875,
+            0.294921875
+          ]
+        },
+        {
+          "case": "t1024-text512",
+          "native_median_ms": 151.350792,
+          "candidate_median_ms": 136.81647900000002,
+          "median_latency_reduction_percent": 9.603063722322636,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.443359375,
+            0.5576171875
+          ]
+        },
+        {
+          "case": "t2304-text128",
+          "native_median_ms": 368.11060399999997,
+          "candidate_median_ms": 336.271396,
+          "median_latency_reduction_percent": 8.649359093170805,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.6337890625,
+            0.3671875
+          ]
+        },
+        {
+          "case": "t2304-text512",
+          "native_median_ms": 374.2747915,
+          "candidate_median_ms": 342.8856455,
+          "median_latency_reduction_percent": 8.386657801397767,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.79296875,
+            0.2080078125
+          ]
+        }
+      ],
+      "original_result_sha256": "b713546ab9febc1a5446e699e31d27608406019e3e33d201226218e5742cd511",
+      "original_root_review_sha256": "77a32498a43c1baa0b8292a45c0509e946318ab747046dcd1be35801d647ec6b"
+    },
+    {
+      "id": "fc07",
+      "path": "scripts/qwen_image_metal_transfer/candidates/fc07.py",
+      "sha256": "947f448ab772e046f7d9c5e7320ed0f6a31c548594383a0369a6211be484d763",
+      "origin_repository": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task",
+      "origin_commit": "7b9a2d2a5cb6608a56ad0d6806a4a8e7daefea03",
+      "origin_path": "solution/kernel.py",
+      "original_archive": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task/campaigns/flame-8h-20261012/archive/fc07",
+      "origin_git_blob_verified": true,
+      "representation": "affine Q4 checkpoint decoded into resident dense BF16 projections; not compressed Q4 execution",
+      "selection_reason": "BF16 modulation and residual cast boundaries. Candidate numerical coverage exists; timing is not qualified.",
+      "original_result_status": "failed",
+      "original_error": "AssertionError: native/native timing drift; apparatus invalid, preserve samples",
+      "historical_operator_protocol_pass": false,
+      "new_hardware_qualification": false,
+      "recorded_correctness_cells": 4,
+      "recorded_checks": 8,
+      "all_recorded_candidate_checks_pass": true,
+      "historical_review_rows": [
+        {
+          "case": "t1024-text128",
+          "native_median_ms": 145.4171665,
+          "candidate_median_ms": 132.799417,
+          "median_latency_reduction_percent": 8.676932582096486,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.3984375,
+            0.6025390625
+          ]
+        },
+        {
+          "case": "t1024-text512",
+          "native_median_ms": 147.398021,
+          "candidate_median_ms": 134.3562705,
+          "median_latency_reduction_percent": 8.84798209061437,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.6748046875,
+            0.326171875
+          ]
+        },
+        {
+          "case": "t2304-text128",
+          "native_median_ms": 368.1576665,
+          "candidate_median_ms": 336.100479,
+          "median_latency_reduction_percent": 8.707461616855937,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.3134765625,
+            0.6875
+          ]
+        },
+        {
+          "case": "t2304-text512",
+          "native_median_ms": null,
+          "candidate_median_ms": null,
+          "median_latency_reduction_percent": null,
+          "exact_p": null,
+          "controls_exact_p": [
+            0.9775390625,
+            0.0234375
+          ]
+        }
+      ],
+      "original_result_sha256": "11703f65937e5b6d0efcca0052f2217b17541818a6c21efb96ec7b6667122b58",
+      "original_root_review_sha256": "20c0094e06efd0f1cc6ff6139b36c7eaf1756be1c82bad71d12d3e87e4919d27"
+    },
+    {
+      "id": "fc08",
+      "path": "scripts/qwen_image_metal_transfer/candidates/fc08.py",
+      "sha256": "6f17711b2a1d4b80c270adf8b46d28261972cf8a3cfd02e3dae442bcb3baa4a0",
+      "origin_repository": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task",
+      "origin_commit": "b9c43067bef49ac22d9debc48df2514daf56acef",
+      "origin_path": "solution/kernel.py",
+      "original_archive": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task/campaigns/flame-8h-20261012/archive/fc08",
+      "origin_git_blob_verified": true,
+      "representation": "affine Q4 checkpoint decoded into resident dense BF16 projections; not compressed Q4 execution",
+      "selection_reason": "Compiled normalization/modulation. Candidate numerical coverage exists; timing is not qualified.",
+      "original_result_status": "failed",
+      "original_error": "AssertionError: native/native timing drift; apparatus invalid, preserve samples",
+      "historical_operator_protocol_pass": false,
+      "new_hardware_qualification": false,
+      "recorded_correctness_cells": 4,
+      "recorded_checks": 8,
+      "all_recorded_candidate_checks_pass": true,
+      "historical_review_rows": [
+        {
+          "case": "t1024-text128",
+          "native_median_ms": 145.676896,
+          "candidate_median_ms": 132.460771,
+          "median_latency_reduction_percent": 9.072217601341537,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.396484375,
+            0.6044921875
+          ]
+        },
+        {
+          "case": "t1024-text512",
+          "native_median_ms": 147.3059375,
+          "candidate_median_ms": 134.0539165,
+          "median_latency_reduction_percent": 8.996257194317092,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.5966796875,
+            0.404296875
+          ]
+        },
+        {
+          "case": "t2304-text128",
+          "native_median_ms": 366.821604,
+          "candidate_median_ms": 335.2735835,
+          "median_latency_reduction_percent": 8.600371449223587,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.7666015625,
+            0.234375
+          ]
+        },
+        {
+          "case": "t2304-text512",
+          "native_median_ms": null,
+          "candidate_median_ms": null,
+          "median_latency_reduction_percent": null,
+          "exact_p": null,
+          "controls_exact_p": [
+            0.0107421875,
+            0.990234375
+          ]
+        }
+      ],
+      "original_result_sha256": "fd123f3ea7c94b6a2a3f7ce21ab023d537a4bd496dfd47569c663b2701ed317c",
+      "original_root_review_sha256": "f133ae4a8919db1b817a8616cfb7f7f62977d9e53897a51a558ecec18446f3b5"
+    },
+    {
+      "id": "fc09",
+      "path": "scripts/qwen_image_metal_transfer/candidates/fc09.py",
+      "sha256": "1bfe7556f8ce95d5bd3b648c9cb87a11ffc565701c9221667e68db197d3dccf3",
+      "origin_repository": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task",
+      "origin_commit": "9a8e722a0059d2de4447037246def05e56f69c47",
+      "origin_path": "solution/kernel.py",
+      "original_archive": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task/campaigns/flame-8h-20261012/archive/fc09",
+      "origin_git_blob_verified": true,
+      "representation": "affine Q4 checkpoint decoded into resident dense BF16 projections; not compressed Q4 execution",
+      "selection_reason": "64x64x32 BF16 NT GEMM with FP32 accumulation. Historical resident-layer selection; extract only where dense weights fit.",
+      "original_result_status": "improves_all_cells",
+      "original_error": null,
+      "historical_operator_protocol_pass": true,
+      "new_hardware_qualification": false,
+      "recorded_correctness_cells": 4,
+      "recorded_checks": 8,
+      "all_recorded_candidate_checks_pass": true,
+      "historical_review_rows": [
+        {
+          "case": "t1024-text128",
+          "native_median_ms": 145.3454165,
+          "candidate_median_ms": 130.506146,
+          "median_latency_reduction_percent": 10.209658383001019,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.548828125,
+            0.4521484375
+          ]
+        },
+        {
+          "case": "t1024-text512",
+          "native_median_ms": 147.41872899999998,
+          "candidate_median_ms": 131.990292,
+          "median_latency_reduction_percent": 10.465723795515814,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.4375,
+            0.5634765625
+          ]
+        },
+        {
+          "case": "t2304-text128",
+          "native_median_ms": 366.6329995,
+          "candidate_median_ms": 328.38379199999997,
+          "median_latency_reduction_percent": 10.432559958367849,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.5078125,
+            0.4931640625
+          ]
+        },
+        {
+          "case": "t2304-text512",
+          "native_median_ms": 372.425771,
+          "candidate_median_ms": 335.313271,
+          "median_latency_reduction_percent": 9.96507301316697,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.2197265625,
+            0.78125
+          ]
+        }
+      ],
+      "original_result_sha256": "029044e97ffac79b1cfc6c371f57e04597d3df3a6358be1f16e961fc6f849185",
+      "original_root_review_sha256": "8fa1d3bc0ffd1e5d25accb7ce2f4c43ebcfb13eb9317dae5af7bb9bae5117799"
+    },
+    {
+      "id": "fc10",
+      "path": "scripts/qwen_image_metal_transfer/candidates/fc10.py",
+      "sha256": "55c0405959b7b7663925d4afc5d29e6c0752157675cce25c34bfc405f35b5d55",
+      "origin_repository": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task",
+      "origin_commit": "d23c0c5125736ff29520861ba7bda3ce6fc98503",
+      "origin_path": "solution/kernel.py",
+      "original_archive": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task/campaigns/flame-8h-20261012/archive/fc10",
+      "origin_git_blob_verified": true,
+      "representation": "affine Q4 checkpoint decoded into resident dense BF16 projections; not compressed Q4 execution",
+      "selection_reason": "Gated residual GEMM epilogues. Compare against fc09 prospectively; no incremental gain has been established.",
+      "original_result_status": "improves_all_cells",
+      "original_error": null,
+      "historical_operator_protocol_pass": true,
+      "new_hardware_qualification": false,
+      "recorded_correctness_cells": 4,
+      "recorded_checks": 8,
+      "all_recorded_candidate_checks_pass": true,
+      "historical_review_rows": [
+        {
+          "case": "t1024-text128",
+          "native_median_ms": 147.329646,
+          "candidate_median_ms": 130.69552099999999,
+          "median_latency_reduction_percent": 11.29041265734122,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.732421875,
+            0.2685546875
+          ]
+        },
+        {
+          "case": "t1024-text512",
+          "native_median_ms": 147.21975,
+          "candidate_median_ms": 131.3932295,
+          "median_latency_reduction_percent": 10.750269919626964,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.279296875,
+            0.7216796875
+          ]
+        },
+        {
+          "case": "t2304-text128",
+          "native_median_ms": 367.7671875,
+          "candidate_median_ms": 329.313813,
+          "median_latency_reduction_percent": 10.455901398218137,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.9052734375,
+            0.095703125
+          ]
+        },
+        {
+          "case": "t2304-text512",
+          "native_median_ms": 373.024667,
+          "candidate_median_ms": 334.2505415,
+          "median_latency_reduction_percent": 10.394520504993853,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.5302734375,
+            0.470703125
+          ]
+        }
+      ],
+      "original_result_sha256": "80676e84f4d35a34f2552321dcaca58beb1de7db2a346161ed1cb40ad609ae6f",
+      "original_root_review_sha256": "6156038f5207ce86e3f57c088d309d5e73868e644c29c7714026f8fa359ec21c"
+    },
+    {
+      "id": "fc11",
+      "path": "scripts/qwen_image_metal_transfer/candidates/fc11.py",
+      "sha256": "f6509b0b867b9815555bfca2eec49784e09810af615642117b51bc457f1098a0",
+      "origin_repository": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task",
+      "origin_commit": "34eab1529338d9ad9e4891428d1f03f8a0b44276",
+      "origin_path": "solution/kernel.py",
+      "original_archive": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task/campaigns/flame-8h-20261012/archive/fc11",
+      "origin_git_blob_verified": true,
+      "representation": "affine Q4 checkpoint decoded into resident dense BF16 projections; not compressed Q4 execution",
+      "selection_reason": "SwiGLU GEMM epilogue and interleaved gate/up rows. Only first-cell correctness was recorded; extend coverage before use.",
+      "original_result_status": "failed",
+      "original_error": "AssertionError: native/native timing drift; apparatus invalid, preserve samples",
+      "historical_operator_protocol_pass": false,
+      "new_hardware_qualification": false,
+      "recorded_correctness_cells": 1,
+      "recorded_checks": 2,
+      "all_recorded_candidate_checks_pass": true,
+      "historical_review_rows": [
+        {
+          "case": "t1024-text128",
+          "native_median_ms": null,
+          "candidate_median_ms": null,
+          "median_latency_reduction_percent": null,
+          "exact_p": null,
+          "controls_exact_p": [
+            0.00390625,
+            0.9970703125
+          ]
+        }
+      ],
+      "original_result_sha256": "cc9ee21c9a0b814b01a4200f928f4c4a34021627f0f8d5eefb674c8a286492ee",
+      "original_root_review_sha256": "8e4e7df6942f2c9a628dc379c311f1c5ad2e619bb07ac0c2a852a43b30991a49"
+    },
+    {
+      "id": "fc12",
+      "path": "scripts/qwen_image_metal_transfer/candidates/fc12.py",
+      "sha256": "15fe1e0192945f083695bf37689856d1d1493a5a6d28931dde5c95abeb38bc1f",
+      "origin_repository": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task",
+      "origin_commit": "6e821040c16d45e7ad04fa5e2a7cd2749b646bdb",
+      "origin_path": "solution/kernel.py",
+      "original_archive": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-layer-m4-task/campaigns/flame-8h-20261012/archive/fc12",
+      "origin_git_blob_verified": true,
+      "representation": "affine Q4 checkpoint decoded into resident dense BF16 projections; not compressed Q4 execution",
+      "selection_reason": "128x64 BF16 GEMM tile and gated epilogue. Treat as a measured-coverage candidate, not an admitted replacement.",
+      "original_result_status": "failed",
+      "original_error": "AssertionError: native/native timing drift; apparatus invalid, preserve samples",
+      "historical_operator_protocol_pass": false,
+      "new_hardware_qualification": false,
+      "recorded_correctness_cells": 4,
+      "recorded_checks": 8,
+      "all_recorded_candidate_checks_pass": true,
+      "historical_review_rows": [
+        {
+          "case": "t1024-text128",
+          "native_median_ms": 145.7815,
+          "candidate_median_ms": 133.2139375,
+          "median_latency_reduction_percent": 8.620821229031128,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.3037109375,
+            0.697265625
+          ]
+        },
+        {
+          "case": "t1024-text512",
+          "native_median_ms": 147.6362085,
+          "candidate_median_ms": 134.85677099999998,
+          "median_latency_reduction_percent": 8.656032032954863,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.8837890625,
+            0.1171875
+          ]
+        },
+        {
+          "case": "t2304-text128",
+          "native_median_ms": 364.7291045,
+          "candidate_median_ms": 332.81995800000004,
+          "median_latency_reduction_percent": 8.748725041765882,
+          "exact_p": 0.0009765625,
+          "controls_exact_p": [
+            0.1953125,
+            0.8056640625
+          ]
+        },
+        {
+          "case": "t2304-text512",
+          "native_median_ms": null,
+          "candidate_median_ms": null,
+          "median_latency_reduction_percent": null,
+          "exact_p": null,
+          "controls_exact_p": [
+            0.9609375,
+            0.0400390625
+          ]
+        }
+      ],
+      "original_result_sha256": "7a3ccce28bd52f5c9a2aa39ed932793fe0e48b880933561d726be821d5f8daa1",
+      "original_root_review_sha256": "a6ab59b05fc60016038f2a6f1fe4864136e14f1c8003bf8ce7b21c595c45610e"
+    },
+    {
+      "id": "q4-a-concat-compile-v1",
+      "path": "scripts/qwen_image_metal_transfer/candidates/q4-a-concat-compile-v1.py",
+      "sha256": "fe6723d4cc692260c5ba6d4d599d202f634811ca70bca9dfb9f8a8d2593595f0",
+      "origin_repository": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-q4-layer-m4-12h-20261013",
+      "origin_commit": "5bcf49aa1c390559641a863c327defb8ed4e9c51",
+      "origin_path": "solution/kernel.py",
+      "original_archive": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-q4-layer-m4-12h-20261013/archive/q4-a-concat-compile-v1",
+      "origin_git_blob_verified": true,
+      "representation": "compressed affine Q4/group64 weights, BF16 activations, FP32 RoPE",
+      "selection_reason": "Primary Q4 transfer starting point. Preserve packed QKV and gate/up row metadata; reuse MLX quantized_matmul.",
+      "historical_operator_protocol_pass": true,
+      "recorded_correctness_cells": 4,
+      "recorded_checks": 8,
+      "all_recorded_candidate_checks_pass": true,
+      "new_hardware_qualification": false,
+      "full_model_qualification": false
+    }
+  ],
+  "documents": [
+    {
+      "path": "doc/qwen-image-metal-transfer/LAYER-DATAFLOW.md",
+      "sha256": "f2848b5310da6d2cb0ee26c88e070c030bb4e0b3de07a009da3ea4b4128950cc",
+      "origin_path": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-q4-layer-m4-12h-20261013/experience/LAYER-DATAFLOW.md"
+    },
+    {
+      "path": "doc/qwen-image-metal-transfer/DATAFLOW-REVIEW.md",
+      "sha256": "fa5712bc85b6703dbd8dab8a55497e9f0d749d661a86dd09e2dac44c0706e461",
+      "origin_path": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-q4-layer-m4-12h-20261013/experience/ROOT-DATAFLOW-REVIEW.md"
+    },
+    {
+      "path": "doc/qwen-image-metal-transfer/PRIOR-TRANSFER-LIMITS.md",
+      "sha256": "25a7a79a49847d719f83decdf3bc47ddc5116ac7916e456bd386bd2520c4ff54",
+      "origin_path": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-q4-layer-m4-12h-20261013/experience/TRANSFER.md"
+    },
+    {
+      "path": "doc/qwen-image-metal-transfer/SCALE-CORRECTION.md",
+      "sha256": "f1bbb1eccf7e9717281c053216883c3cba3adc043c7769c5fc041525d88a1355",
+      "origin_path": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-q4-layer-m4-12h-20261013/experience/ROOT-MEGAKERNEL-SCALE-CORRECTION.md"
+    },
+    {
+      "path": "doc/qwen-image-metal-transfer/Q4-RESULT.md",
+      "sha256": "07f1dd35968b94fa02263a0943fdc38f6043c58a5ea2280f391d90c8dd7e0423",
+      "origin_path": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-q4-layer-m4-12h-20261013/archive/q4-a-concat-compile-v1/RESULT.md"
+    }
+  ],
+  "profiling": {
+    "original_archive": "/Users/haiyan-mini/Agent4Kernel/qwen-image21-q4-layer-m4-12h-20261013/archive/q4-profile-native-a-v1",
+    "captured": true,
+    "export_parsed": false,
+    "bottleneck_attributed": false,
+    "total_trace_bound_pass": false,
+    "scope": "Source-bound native and candidate-A complete-block Metal GPU captures. Trace buffers stay at the original host; not copied into Git."
+  }
+}

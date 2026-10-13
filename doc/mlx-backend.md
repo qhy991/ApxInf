@@ -344,3 +344,7 @@ sorting keys. Consumers must compare JSON values, not serialized map order.
 CUDA tuning records are explicitly sorted after parsing; CUDA hardware
 regressions remain to be run on a CUDA host. This PR does not claim those
 hardware checks from Metal-only testing.
+
+## Qwen Image transfer references
+
+The [Qwen Image block0 transfer package](qwen-image-metal-transfer/README.md) retains compressed Q4 and dense BF16 reference implementations for a future native Rust task. These references do not register a model or extend the admitted family table.
