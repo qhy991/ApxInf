@@ -3,7 +3,7 @@ use apxinf_core::{Error, Result};
 use serde::Deserialize;
 
 /// Longest admitted request. Longer requests fail; they are never truncated.
-pub const MAX_INPUT_TOKENS: usize = 4096;
+pub const MAX_INPUT_TOKENS: usize = 16384;
 
 /// Backbone geometry of `mlx-community/clef-flash-4bit` (Qwen3.5 hybrid).
 #[derive(Clone, Debug, Deserialize)]

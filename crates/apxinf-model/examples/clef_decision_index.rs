@@ -7,7 +7,7 @@
 //! `ROWS_JSONL` holds suite rows (`state`, `questions`, `_evaluation`), for
 //! example from `python -m decision_index suite sample` or an export of
 //! `Suite(...).rows(apply_exclusions=True)`. Clef encodes each request itself,
-//! so no pre-tokenized records are needed. A request over the 4096-token
+//! so no pre-tokenized records are needed. A request over the 16384-token
 //! limit is recorded as `unsupported` (the kit scores it as wrong); an
 //! unsupported question type is recorded the same way. Rerunning the same
 //! command resumes after the last complete `ok` or `unsupported` row.
@@ -21,6 +21,8 @@ use std::time::Instant;
 use apxinf_core::Device;
 use apxinf_model::{AutoModel, DecisionSchema, LoadOptions};
 use serde_json::{json, Map, Value};
+
+const CACHE_LIMIT_BYTES: usize = 1 << 30;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -118,19 +120,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         result.insert("model_request_wall_ms".into(), json!(elapsed_ms));
         serde_json::to_writer(&mut writer, &result)?;
         writer.write_all(b"\n")?;
+        writer.flush()?;
+        // Between requests only reused buffers are cached; bound them so the
+        // cache does not push a 16 GB host into swap over thousands of shapes.
+        if apxinf_mlx::memory_stats()?.cache_bytes > CACHE_LIMIT_BYTES {
+            apxinf_mlx::clear_cache()?;
+        }
         if (index + 1) % 25 == 0 || index + 1 == rows.len() {
-            writer.flush()?;
             let memory = apxinf_mlx::memory_stats()?;
             eprintln!(
-                "progress={}/{} elapsed_s={:.1} peak_gib={:.2}",
+                "progress={}/{} elapsed_s={:.1} peak_gib={:.2} cache_gib={:.2}",
                 index + 1,
                 rows.len(),
                 run_started.elapsed().as_secs_f64(),
-                memory.peak_bytes as f64 / (1u64 << 30) as f64
+                memory.peak_bytes as f64 / (1u64 << 30) as f64,
+                memory.cache_bytes as f64 / (1u64 << 30) as f64
             );
         }
     }
-    writer.flush()?;
     let memory = apxinf_mlx::memory_stats()?;
     eprintln!(
         "run_s={:.3} peak_bytes={} active_bytes={}",
