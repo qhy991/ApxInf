@@ -14,7 +14,7 @@ use super::weights::{
     Attention, Backbone, DecoderLayer, EvidenceLayer, GatedDelta, Head, Linear, Mha, Mixer, Mlp,
     Norm, Q4,
 };
-use apxinf_core::Result;
+use apxinf_core::{Error, Result};
 use apxinf_mlx::fusions::{
     padded_rows, CausalDepthwiseConv, F16GateSwiglu, F16Gemm, GatedDeltaLayout,
     GatedDeltaRecurrence, HalfSplitRope, PadRowsF16, Q4DecodeArithmetic, Q4RowDecodeF16,
@@ -25,6 +25,24 @@ use apxinf_mlx::{Array, Compiled, MlxDType, Stream};
 const EPS: f32 = 1e-6;
 const HEAD_EPS: f32 = 1e-5;
 const G_BETA_WARM_LENGTHS: [usize; 3] = [1, 2, MAX_INPUT_TOKENS];
+
+fn embedding_ids(ids: &[u32], vocab_size: usize) -> Result<Vec<i32>> {
+    ids.iter()
+        .enumerate()
+        .map(|(position, &id)| {
+            if id as usize >= vocab_size {
+                return Err(Error::Other(format!(
+                    "Clef token ID {id} at position {position} is outside text vocabulary {vocab_size}"
+                )));
+            }
+            i32::try_from(id).map_err(|_| {
+                Error::Other(format!(
+                    "Clef token ID {id} at position {position} exceeds the signed embedding index range"
+                ))
+            })
+        })
+        .collect()
+}
 
 struct Kernels {
     recurrence: GatedDeltaRecurrence,
@@ -313,15 +331,8 @@ impl Network {
     /// Per-question logits, lazily; the caller evaluates them once.
     pub fn logits(&self, encoded: &Encoded) -> Result<Vec<Array>> {
         let tokens = encoded.input_ids.len();
-        let ids = Array::from_i32(
-            &self.stream,
-            &[tokens],
-            &encoded
-                .input_ids
-                .iter()
-                .map(|&id| id as i32)
-                .collect::<Vec<_>>(),
-        )?;
+        let ids = embedding_ids(&encoded.input_ids, self.config.text.vocab_size)?;
+        let ids = Array::from_i32(&self.stream, &[tokens], &ids)?;
         let hidden = self.backbone_forward(&ids.reshape(&[1, tokens])?, tokens)?;
         self.head_forward(
             &hidden.reshape(&[tokens, self.config.text.hidden_size])?,
@@ -683,6 +694,26 @@ impl Network {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedding_ids_preserve_valid_ids_and_reject_invalid_suffixes() {
+        let vocab_size = 248_320;
+        assert_eq!(
+            embedding_ids(&[0, 248_319], vocab_size).unwrap(),
+            [0, 248_319]
+        );
+        for invalid in [248_320, i32::MAX as u32 + 1, u32::MAX] {
+            let error = embedding_ids(&[0, 248_319, invalid], vocab_size)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&format!("token ID {invalid} at position 2")));
+            assert!(error.contains("vocabulary 248320"));
+        }
+        assert!(embedding_ids(&[i32::MAX as u32 + 1], usize::MAX)
+            .unwrap_err()
+            .to_string()
+            .contains("signed embedding index range"));
+    }
 
     fn g_beta_inputs(stream: &Stream, tokens: usize, variant: usize) -> Result<Vec<Array>> {
         let value_heads = 32;
