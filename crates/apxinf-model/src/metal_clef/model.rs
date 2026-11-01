@@ -119,7 +119,7 @@ impl GpuKernels {
     /// SwiGLU epilogue, and the transposed down decode.
     fn mlp(&self, h: &Array, m: &Mlp) -> Result<Array> {
         let tokens = h.shape()[1];
-        let x = if padded_rows(tokens) == tokens {
+        let x = if padded_rows(tokens)? == tokens {
             h.cast(MlxDType::F16)?
         } else {
             self.pad.call(h)?
