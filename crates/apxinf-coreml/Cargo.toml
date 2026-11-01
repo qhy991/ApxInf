@@ -12,5 +12,6 @@ apxinf-core = { path = "../apxinf-core" }
 half = "2"
 prost = "0.14"
 sha2 = "0.10"
+tempfile = "3"
 [build-dependencies]
 cc = "1"
