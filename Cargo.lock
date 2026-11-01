@@ -103,6 +103,7 @@ dependencies = [
  "half",
  "prost",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]

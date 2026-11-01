@@ -202,6 +202,14 @@ impl ProgramCache {
     /// The compiled directory for `package`, compiling it on a miss. The key
     /// is the program and weight bytes and the macOS build.
     pub fn compiled(&self, package: &Package) -> Result<PathBuf> {
+        self.compiled_with(package, compile)
+    }
+
+    fn compiled_with(
+        &self,
+        package: &Package,
+        compiler: impl FnOnce(&Path, &Path) -> Result<()>,
+    ) -> Result<PathBuf> {
         let io = |e: std::io::Error| Error::Other(format!("Core ML cache: {e}"));
         let mut hash = Sha256::new();
         hash.update(package.model_bytes());
@@ -223,22 +231,21 @@ impl ProgramCache {
             ));
         }
         std::fs::create_dir_all(&self.dir).map_err(io)?;
-        let staging = self.dir.join(format!(".{key}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&staging);
-        let result = (|| {
-            package.write(&staging.join("program.mlpackage"))?;
-            let target = staging.join("program.mlmodelc");
-            compile(&staging.join("program.mlpackage"), &target)?;
-            // A concurrent loader may have renamed the same key first; keep either.
-            if std::fs::rename(&target, &compiled).is_err() && !compiled.is_dir() {
-                return Err(Error::Other(
-                    "cannot place the compiled Core ML program".into(),
-                ));
-            }
-            Ok(())
-        })();
-        let _ = std::fs::remove_dir_all(&staging);
-        result.map(|()| compiled)
+        let staging = tempfile::Builder::new()
+            .prefix(&format!(".{key}-"))
+            .tempdir_in(&self.dir)
+            .map_err(io)?;
+        let source = staging.path().join("program.mlpackage");
+        let target = staging.path().join("program.mlmodelc");
+        package.write(&source)?;
+        compiler(&source, &target)?;
+        // A concurrent loader may have renamed the same key first; keep either.
+        if std::fs::rename(&target, &compiled).is_err() && !compiled.is_dir() {
+            return Err(Error::Other(
+                "cannot place the compiled Core ML program".into(),
+            ));
+        }
+        Ok(compiled)
     }
 
     pub fn load(&self, package: &Package, units: ComputeUnits) -> Result<Model> {
@@ -272,7 +279,103 @@ impl ProgramCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProgramBuilder;
     use std::mem::ManuallyDrop;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn package() -> Package {
+        let mut builder = ProgramBuilder::new();
+        let input = builder.input("x", &[1]);
+        builder.finish(&[&input]).unwrap()
+    }
+
+    fn write_compiled(target: &Path) -> Result<()> {
+        std::fs::create_dir(target).unwrap();
+        std::fs::write(target.join("compiled"), b"same program").unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_cache_misses_keep_in_progress_packages_and_published_program() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = ProgramCache::new(root.path());
+        let package = package();
+        let (staged_tx, staged_rx) = mpsc::channel();
+        let (continue_tx, continue_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let cache = &cache;
+            let package = &package;
+            let first = scope.spawn(move || {
+                cache.compiled_with(package, |source, target| {
+                    let marker = source.join("in-progress");
+                    std::fs::write(&marker, b"first caller").unwrap();
+                    staged_tx.send(source.to_owned()).unwrap();
+                    continue_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                    assert_eq!(std::fs::read(&marker).unwrap(), b"first caller");
+                    write_compiled(target)
+                })
+            });
+            let first_source = staged_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            let compiled = cache
+                .compiled_with(package, |_, target| {
+                    assert!(first_source.join("in-progress").is_file());
+                    write_compiled(target)
+                })
+                .unwrap();
+            assert!(first_source.join("in-progress").is_file());
+            continue_tx.send(()).unwrap();
+            assert_eq!(first.join().unwrap().unwrap(), compiled);
+            assert_eq!(
+                std::fs::read(compiled.join("compiled")).unwrap(),
+                b"same program"
+            );
+            assert!(!first_source.exists());
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        });
+    }
+
+    #[test]
+    fn compiler_error_removes_only_its_staging_and_allows_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = ProgramCache::new(root.path());
+        let package = package();
+        let unrelated = root.path().join("other-in-progress");
+        std::fs::create_dir(&unrelated).unwrap();
+        assert!(cache
+            .compiled_with(&package, |_, target| {
+                write_compiled(target)?;
+                Err(Error::Contract("compiler failed"))
+            })
+            .is_err());
+        assert!(unrelated.is_dir());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        let compiled = cache
+            .compiled_with(&package, |_, target| write_compiled(target))
+            .unwrap();
+        assert!(compiled.join("compiled").is_file());
+        assert!(unrelated.is_dir());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn sealed_cache_returns_hits_and_rejects_misses_without_compiling() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cache = ProgramCache::new(root.path());
+        let package = package();
+        let compiled = cache
+            .compiled_with(&package, |_, target| write_compiled(target))
+            .unwrap();
+        cache.seal();
+        assert_eq!(cache.compiled(&package).unwrap(), compiled);
+        let missing = tempfile::tempdir().unwrap();
+        let mut cache = ProgramCache::new(missing.path());
+        cache.seal();
+        assert!(cache
+            .compiled_with(&package, |_, _| panic!("sealed miss compiled"))
+            .is_err());
+        assert_eq!(std::fs::read_dir(missing.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn invalid_input_extent_returns_error_before_native_prediction() {
