@@ -129,7 +129,7 @@ fn padded_split_f16_gemm_matches_fp32_reference_rounded_to_bf16() -> Result<()> 
     use apxinf_mlx::fusions::{padded_rows, PadRowsF16, SplitF16Gemm};
     let s = Stream::metal(0)?;
     let (tokens, k, half) = (70, 64, 64);
-    let padded = padded_rows(tokens);
+    let padded = padded_rows(tokens)?;
     assert_eq!(padded, 128);
     let h = Array::from_f32(&s, &[1, tokens, k], &data(tokens * k, 13, 0.125))?.cast(D::BF16)?;
     let pad = PadRowsF16::new(&s)?;
