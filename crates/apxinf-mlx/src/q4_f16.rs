@@ -240,8 +240,12 @@ impl Q4RowDecodeF16 {
 }
 
 /// Number of rows after padding `tokens` up to a multiple of 64.
-pub fn padded_rows(tokens: usize) -> usize {
-    tokens.div_ceil(64) * 64
+/// Returns an error if the padded count cannot fit in `usize`.
+pub fn padded_rows(tokens: usize) -> Result<usize> {
+    tokens
+        .div_ceil(64)
+        .checked_mul(64)
+        .ok_or(Error::Contract("padded row count overflows usize"))
 }
 
 /// Casts BF16 `[1, T, D]` to FP16 `[1, P, D]`, `P = padded_rows(T)`, with
@@ -268,7 +272,7 @@ impl PadRowsF16 {
         let [1, tokens, width] = *h.shape() else {
             return Err(Error::Contract("row padding requires one [1, T, D] batch"));
         };
-        let padded = padded_rows(tokens);
+        let padded = padded_rows(tokens)?;
         let total = padded
             .checked_mul(width)
             .filter(|&n| n > 0 && u32::try_from(n).is_ok())
@@ -462,11 +466,23 @@ impl F16Gemm {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_index_extent, check_q4_decode, check_split_gemm};
+    use super::{check_index_extent, check_q4_decode, check_split_gemm, padded_rows};
     use apxinf_core::{Error, Result};
 
     fn assert_contract_error(result: Result<usize>) {
         assert!(matches!(result, Err(Error::Contract(_))), "{result:?}");
+    }
+
+    #[test]
+    fn padding_rounds_rows_and_rejects_overflow() {
+        for (tokens, expected) in [(0, 0), (1, 64), (63, 64), (64, 64), (65, 128)] {
+            assert_eq!(padded_rows(tokens).unwrap(), expected);
+        }
+        let largest_aligned = usize::MAX - 63;
+        assert_eq!(padded_rows(largest_aligned).unwrap(), largest_aligned);
+        for tokens in [largest_aligned + 1, usize::MAX] {
+            assert_contract_error(padded_rows(tokens));
+        }
     }
 
     #[test]
