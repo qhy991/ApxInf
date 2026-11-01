@@ -7,13 +7,19 @@ use super::config::codec::*;
 use super::config::CODE_GROUPS;
 use super::ops::Ops;
 use super::weights::{Codec, CodecLayer, Conv, ConvNext, Snake};
-use apxinf_core::Result;
+use apxinf_core::{Error, Result};
 use apxinf_mlx::{Array, MlxDType};
 use std::collections::BTreeSet;
 use std::ops::Range;
 
 const CHUNK: usize = 300;
 const LEFT_CONTEXT: usize = 25;
+
+fn sample_count(frames: usize) -> Result<usize> {
+    frames.checked_mul(SAMPLES_PER_FRAME).ok_or(Error::Contract(
+        "Qwen3-TTS waveform sample count exceeds usize",
+    ))
+}
 
 fn chunks(frames: usize) -> impl Iterator<Item = (Range<usize>, usize)> {
     (0..frames).step_by(CHUNK).map(move |start| {
@@ -225,6 +231,7 @@ impl Decoder {
     /// `chunked_decode` of codes `[1, 16, F]`: `F * 1920` samples, as host `f32`.
     pub fn decode(&self, codes: &Array) -> Result<Vec<f32>> {
         let frames = codes.shape()[2];
+        let sample_count = sample_count(frames)?;
         let widths: Vec<_> = self
             .w
             .upsample
@@ -241,8 +248,8 @@ impl Decoder {
             let samples = wav.shape()[2];
             chunks.push(wav.slice(&[0, 0, context * SAMPLES_PER_FRAME], &[1, 1, samples])?);
         }
-        let audio = Array::concat(&chunks.iter().collect::<Vec<_>>(), 2)?
-            .reshape(&[frames * SAMPLES_PER_FRAME])?;
+        let audio =
+            Array::concat(&chunks.iter().collect::<Vec<_>>(), 2)?.reshape(&[sample_count])?;
         audio.cast(MlxDType::F32)?.to_f32_vec()
     }
 }
@@ -250,6 +257,20 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waveform_sample_count_checks_multiplication_before_decoding() {
+        assert_eq!(sample_count(0).unwrap(), 0);
+        assert_eq!(sample_count(1).unwrap(), SAMPLES_PER_FRAME);
+        assert_eq!(
+            sample_count(super::super::config::MAX_FRAMES).unwrap(),
+            8192 * 1920
+        );
+        let last = usize::MAX / SAMPLES_PER_FRAME;
+        assert_eq!(sample_count(last).unwrap(), last * SAMPLES_PER_FRAME);
+        assert!(sample_count(last + 1).is_err());
+        assert!(sample_count(usize::MAX).is_err());
+    }
 
     #[test]
     fn chunk_ranges_keep_exact_context_and_cover_each_new_frame() {

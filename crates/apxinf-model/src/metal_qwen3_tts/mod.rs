@@ -14,7 +14,7 @@ use crate::{LoadOptions, LoadedModel, ModelPrecision};
 use apxinf_core::{Backend, Device, Error, Result};
 use apxinf_mlx::{Array, MlxBackend};
 use apxinf_tokenizer::Tokenizer;
-use config::{codec as codec_config, Config, CODE_GROUPS, VOCAB};
+use config::{codec as codec_config, Config, CODE_GROUPS, TEXT_VOCAB, VOCAB};
 use ops::Ops;
 use std::path::Path;
 use std::sync::Arc;
@@ -152,14 +152,23 @@ fn admit_request(config: &Config, request: &SpeechRequest<'_>) -> Result<()> {
     Ok(())
 }
 
+fn text_ids(ids: Vec<u32>) -> Result<Vec<i32>> {
+    ids.into_iter()
+        .enumerate()
+        .map(|(position, id)| {
+            if id as usize >= TEXT_VOCAB {
+                return Err(Error::Other(format!(
+                    "Qwen3-TTS text token {id} at position {position} outside vocabulary {TEXT_VOCAB}"
+                )));
+            }
+            Ok(id as i32)
+        })
+        .collect()
+}
+
 impl QwenTts {
     fn ids(&self, text: &str) -> Result<Vec<i32>> {
-        Ok(self
-            .tokenizer
-            .encode_with_special_tokens(text, true)?
-            .into_iter()
-            .map(|id| id as i32)
-            .collect())
+        text_ids(self.tokenizer.encode_with_special_tokens(text, true)?)
     }
 
     fn rows(&self, ids: &[i32]) -> Result<Array> {
@@ -324,6 +333,18 @@ impl SpeechRuntime for QwenTts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_ids_preserve_valid_tokens_and_reject_out_of_vocabulary_ids() {
+        assert_eq!(
+            text_ids(vec![0, 151_672, 151_673, 151_671, 151_935]).unwrap(),
+            [0, 151_672, 151_673, 151_671, 151_935]
+        );
+        for invalid in [TEXT_VOCAB as u32, i32::MAX as u32 + 1, u32::MAX] {
+            let error = text_ids(vec![1, invalid]).unwrap_err().to_string();
+            assert!(error.contains(&format!("token {invalid} at position 1")));
+        }
+    }
 
     #[test]
     fn automatic_fusion_requires_a_measured_architecture() {

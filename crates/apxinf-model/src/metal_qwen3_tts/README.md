@@ -11,8 +11,10 @@ The family admits batch one, non-streaming synthesis, the checkpoint's voices
 and non-dialect languages (or `auto`), an optional style instruction and a
 seed. Sampling follows `generation_config.json`, which must hold the validated
 values (temperature 0.9, top-k 50, top-p 1, repetition penalty 1.05 for the
-first codebook); `max_new_tokens` is the frame limit. Other model types, sizes
-and geometry fail at load.
+first codebook); `max_new_tokens` is the frame limit, admitted in `1..=8192`.
+The maximum follows the supported CustomVoice checkpoint's
+[generation config](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/blob/0c0e3051f131929182e2c023b9537f8b1c68adfe/generation_config.json).
+Other model types, sizes and geometry fail at load.
 
 - `config.rs` checks the fixed geometry of the Talker, code predictor and
   waveform decoder, and reads voices, languages and dialect overrides.

@@ -12,6 +12,8 @@ pub const LAYERS: usize = 28;
 pub const MLP: usize = 6144;
 pub const VOCAB: usize = 3072;
 pub const TEXT_VOCAB: usize = 151_936;
+/// Maximum codec frames in the supported CustomVoice generation config.
+pub const MAX_FRAMES: usize = 8192;
 pub const CODE_GROUPS: usize = 16;
 pub const PREDICTOR_HIDDEN: usize = 1024;
 pub const PREDICTOR_LAYERS: usize = 5;
@@ -221,8 +223,12 @@ impl Config {
         let max_frames = field(&generation, "max_new_tokens")?
             .as_u64()
             .and_then(|v| usize::try_from(v).ok())
-            .filter(|&v| v > 0)
-            .ok_or_else(|| Error::Other("Qwen3-TTS max_new_tokens must be positive".into()))?;
+            .filter(|&v| (1..=MAX_FRAMES).contains(&v))
+            .ok_or_else(|| {
+                Error::Other(format!(
+                    "Qwen3-TTS max_new_tokens must be in 1..={MAX_FRAMES}"
+                ))
+            })?;
 
         let tokens = Tokens {
             tts_bos: uint(&main, "tts_bos_token_id")?,
@@ -403,5 +409,24 @@ mod tests {
         let mut codec_wrong = codec.clone();
         codec_wrong["decoder_config"]["upsample_rates"] = json!([8, 5, 4, 4]);
         assert!(parse(&main, &codec_wrong, &generation).is_err());
+    }
+
+    #[test]
+    fn synthesis_length_is_bounded_during_checkpoint_admission() {
+        let (main, codec, mut generation) = configs();
+        for frames in [1, MAX_FRAMES] {
+            generation["max_new_tokens"] = frames.into();
+            assert_eq!(
+                parse(&main, &codec, &generation)
+                    .unwrap()
+                    .sampling
+                    .max_frames,
+                frames
+            );
+        }
+        for frames in [0, MAX_FRAMES as u64 + 1, u64::MAX] {
+            generation["max_new_tokens"] = frames.into();
+            assert!(parse(&main, &codec, &generation).is_err(), "{frames}");
+        }
     }
 }
